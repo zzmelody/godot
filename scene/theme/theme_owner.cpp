@@ -90,7 +90,9 @@ ThemeContext *ThemeOwner::_get_active_owner_context() const {
 
 // Theme propagation.
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void ThemeOwner::assign_theme_on_parented(Node *p_for_node) {
+#ifndef VEYA_COOKER
 	// We check if there are any themes affecting the parent. If that's the case
 	// its children also need to be affected.
 	// We don't notify here because `NOTIFICATION_THEME_CHANGED` will be handled
@@ -107,9 +109,15 @@ void ThemeOwner::assign_theme_on_parented(Node *p_for_node) {
 			propagate_theme_changed(p_for_node, parent_w->get_theme_owner_node(), false, true);
 		}
 	}
-}
+#else
 
+#endif
+}
+/*>>----- VEYA_COOKER */
+
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void ThemeOwner::clear_theme_on_unparented(Node *p_for_node) {
+#ifndef VEYA_COOKER
 	// We check if there were any themes affecting the parent. If that's the case
 	// its children need were also affected and need to be updated.
 	// We don't notify because we're exiting the tree, and it's not important.
@@ -125,9 +133,15 @@ void ThemeOwner::clear_theme_on_unparented(Node *p_for_node) {
 			propagate_theme_changed(p_for_node, nullptr, false, true);
 		}
 	}
-}
+#else
 
+#endif
+}
+/*>>----- VEYA_COOKER */
+
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void ThemeOwner::propagate_theme_changed(Node *p_to_node, Node *p_owner_node, bool p_notify, bool p_assign) {
+#ifndef VEYA_COOKER
 	Control *c = Object::cast_to<Control>(p_to_node);
 	Window *w = c == nullptr ? Object::cast_to<Window>(p_to_node) : nullptr;
 
@@ -171,11 +185,17 @@ void ThemeOwner::propagate_theme_changed(Node *p_to_node, Node *p_owner_node, bo
 	for (int i = 0; i < p_to_node->get_child_count(); i++) {
 		propagate_theme_changed(p_to_node->get_child(i), p_owner_node, p_notify, assign);
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 // Theme lookup.
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void ThemeOwner::get_theme_type_dependencies(const Node *p_for_node, const StringName &p_theme_type, Vector<StringName> &r_result) const {
+#ifndef VEYA_COOKER
 	const Control *for_c = Object::cast_to<Control>(p_for_node);
 	const Window *for_w = Object::cast_to<Window>(p_for_node);
 	ERR_FAIL_COND_MSG(!for_c && !for_w, "Only Control and Window nodes and derivatives can be polled for theming.");
@@ -223,7 +243,11 @@ void ThemeOwner::get_theme_type_dependencies(const Node *p_for_node, const Strin
 
 	// Otherwise, get the native dependencies for the provided theme type.
 	ThemeDB::get_singleton()->get_native_type_dependencies(p_theme_type, r_result);
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 Variant ThemeOwner::get_theme_item_in_types(Theme::DataType p_data_type, const StringName &p_name, const Vector<StringName> &p_theme_types) {
 	ERR_FAIL_COND_V_MSG(p_theme_types.is_empty(), Variant(), "At least one theme type must be specified.");
@@ -387,7 +411,9 @@ int ThemeOwner::get_theme_default_font_size() {
 	return ThemeDB::get_singleton()->get_fallback_font_size();
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 Ref<Theme> ThemeOwner::_get_owner_node_theme(Node *p_owner_node) const {
+#ifndef VEYA_COOKER
 	const Control *owner_c = Object::cast_to<Control>(p_owner_node);
 	if (owner_c) {
 		return owner_c->get_theme();
@@ -399,9 +425,15 @@ Ref<Theme> ThemeOwner::_get_owner_node_theme(Node *p_owner_node) const {
 	}
 
 	return Ref<Theme>();
+#else
+	return Ref<Theme>();
+#endif
 }
+/*>>----- VEYA_COOKER */
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 Node *ThemeOwner::_get_next_owner_node(Node *p_from_node) const {
+#ifndef VEYA_COOKER
 	Node *parent = p_from_node->get_parent();
 
 	Control *parent_c = Object::cast_to<Control>(parent);
@@ -415,4 +447,8 @@ Node *ThemeOwner::_get_next_owner_node(Node *p_from_node) const {
 	}
 
 	return nullptr;
+#else
+	return nullptr;
+#endif
 }
+/*>>----- VEYA_COOKER */

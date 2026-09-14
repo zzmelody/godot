@@ -47,7 +47,8 @@
 #include "extensions/physics/gltf_physics_shape.h"
 #endif // PHYSICS_3D_DISABLED
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/editor_import_blend_runner.h"
 #include "editor/editor_scene_exporter_gltf_plugin.h"
 #include "editor/editor_scene_importer_blend.h"
@@ -102,6 +103,7 @@ static void _editor_init() {
 	EditorNode::get_singleton()->add_child(EditorImportBlendRunner::get_singleton());
 }
 #endif // TOOLS_ENABLED
+/*>>----- VEYA_COOKER */
 
 #define GLTF_REGISTER_DOCUMENT_EXTENSION(m_doc_ext_class) \
 	Ref<m_doc_ext_class> extension_##m_doc_ext_class; \
@@ -145,7 +147,8 @@ void initialize_gltf_module(ModuleInitializationLevel p_level) {
 		}
 	}
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(EditorSceneFormatImporterGLTF);
 		EditorPlugins::add_by_type<SceneExporterGLTFPlugin>();
@@ -160,6 +163,7 @@ void initialize_gltf_module(ModuleInitializationLevel p_level) {
 		EditorNode::add_init_callback(_editor_init);
 	}
 #endif // TOOLS_ENABLED
+/*>>----- VEYA_COOKER */
 }
 
 void uninitialize_gltf_module(ModuleInitializationLevel p_level) {

@@ -334,6 +334,12 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 				} else {
 					WARN_PRINT(vformat("Node %s of type %s cannot be created. A placeholder will be created instead.", snames[n.name], snames[n.type]).ascii().get_data());
 					if (n.parent >= 0 && n.parent < nc && ret_nodes[n.parent]) {
+/*<<----- VEYA_COOKER: never manufacture a removed 2D/UI placeholder while packing 3D assets. */
+#ifdef VEYA_COOKER
+						if (Object::cast_to<Node3D>(ret_nodes[n.parent])) {
+							obj = memnew(Node3D);
+						}
+#else
 						if (Object::cast_to<Control>(ret_nodes[n.parent])) {
 							obj = memnew(Control);
 						} else if (Object::cast_to<Node2D>(ret_nodes[n.parent])) {
@@ -343,6 +349,8 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 							obj = memnew(Node3D);
 #endif // _3D_DISABLED
 						}
+#endif
+/*>>----- VEYA_COOKER */
 					}
 
 					if (!obj) {

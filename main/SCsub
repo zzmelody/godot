@@ -9,7 +9,12 @@ env.main_sources = []
 
 env_main = env.Clone()
 
-env_main.add_source_files(env.main_sources, "*.cpp")
+# /*<<----- VEYA_COOKER: native batch entry, no project manager, Script MainLoop or EditorNode. */
+if env["veya_cooker"]:
+    env_main.add_source_files(env.main_sources, ["#cooker/main.cpp", "performance.cpp"])
+else:
+    env_main.add_source_files(env.main_sources, "*.cpp")
+# /*>>----- VEYA_COOKER */
 
 if env["steamapi"] and env.editor_build:
     env_main.Append(CPPDEFINES=["STEAMAPI_ENABLED"])

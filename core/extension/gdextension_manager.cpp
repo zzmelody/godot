@@ -113,6 +113,11 @@ GDExtensionManager::LoadStatus GDExtensionManager::_unload_extension_internal(co
 }
 
 GDExtensionManager::LoadStatus GDExtensionManager::load_extension(const String &p_path) {
+	/*<<----- VEYA_COOKER: asset jobs must never load game or asset-supplied native extensions. */
+#ifdef VEYA_COOKER
+	ERR_FAIL_V_MSG(LOAD_STATUS_FAILED, "Native extensions are disabled in Asset Cooker.");
+#endif
+	/*>>----- VEYA_COOKER */
 	if (Engine::get_singleton()->is_recovery_mode_hint()) {
 		return LOAD_STATUS_FAILED;
 	}

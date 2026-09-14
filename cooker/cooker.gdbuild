@@ -1,0 +1,13 @@
+{
+  "type": "build_profile",
+  "disabled_classes": [
+    "CanvasItem", "CanvasLayer", "Viewport", "ViewportTexture", "StatusIndicator", "SceneTree", "SceneTreeTimer",
+    "World2D", "Curve2D", "TileSet", "TileSetSource", "TileMapPattern", "TileData",
+    "SkeletonModification2D", "SkeletonModificationStack2D",
+    "CanvasTexture", "CanvasItemMaterial", "BlitMaterial",
+    "Font", "StyleBox", "Theme", "ThemeDB", "LabelSettings", "TextLine", "TextParagraph",
+    "ColorPalette", "DPITexture", "VideoStream", "VideoStreamPlayback", "Label3D", "TextMesh",
+    "MultiplayerAPI", "MultiplayerPeer", "HTTPRequest",
+    "RenderDataRD", "RenderSceneDataRD", "RenderSceneBuffersRD", "FramebufferCacheRD", "UniformSetCacheRD"
+  ]
+}

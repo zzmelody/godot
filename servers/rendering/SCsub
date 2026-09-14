@@ -6,5 +6,11 @@ Import("env")
 env.add_source_files(env.servers_sources, "*.cpp")
 
 SConscript("dummy/SCsub")
-SConscript("renderer_rd/SCsub")
+# /*<<----- VEYA_COOKER: no Forward+/Mobile renderer, GPU effects or preview shaders. */
+if env["veya_cooker"]:
+    # RenderingDevice's data API still references the CPU SPIR-V reflection library.
+    SConscript("renderer_rd/spirv-reflect/SCsub")
+else:
+    SConscript("renderer_rd/SCsub")
+# /*>>----- VEYA_COOKER */
 SConscript("storage/SCsub")

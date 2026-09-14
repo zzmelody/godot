@@ -9,7 +9,19 @@ Import("env")
 
 env.editor_sources = []
 
-if env.editor_build:
+# /*<<----- VEYA_COOKER: explicit importer library; never include full editor or previews. */
+if env["veya_cooker"]:
+    env.add_source_files(env.editor_sources, [
+        "import/3d/resource_importer_scene.cpp",
+        "import/3d/resource_importer_obj.cpp",
+    ])
+    lib = env.add_library("editor", env.editor_sources)
+    env.Prepend(LIBS=[lib])
+# /*>>----- VEYA_COOKER */
+
+# /*<<----- VEYA_COOKER: exclude the normal editor source tree from this target. */
+if env.editor_build and not env["veya_cooker"]:
+# /*>>----- VEYA_COOKER */
     # Generate doc data paths
     env.CommandNoCache(
         "doc/doc_data_class_path.gen.h",

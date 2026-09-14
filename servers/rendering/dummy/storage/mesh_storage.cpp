@@ -89,6 +89,11 @@ void MeshStorage::_multimesh_free(RID p_rid) {
 void MeshStorage::_multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_buffer) {
 	DummyMultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
 	ERR_FAIL_NULL(multimesh);
+	/*<<----- VEYA_COOKER: validate the serialized instance buffer before accessing it. */
+#ifdef VEYA_COOKER
+	ERR_FAIL_COND(p_buffer.size() != int64_t(multimesh->instance_count) * multimesh->stride);
+#endif
+	/*>>----- VEYA_COOKER */
 	multimesh->buffer.resize(p_buffer.size());
 	float *cache_data = multimesh->buffer.ptrw();
 	memcpy(cache_data, p_buffer.ptr(), p_buffer.size() * sizeof(float));
@@ -100,3 +105,47 @@ Vector<float> MeshStorage::_multimesh_get_buffer(RID p_multimesh) const {
 
 	return multimesh->buffer;
 }
+
+/*<<----- VEYA_COOKER: data-only 3D MultiMesh editing, no GPU or 2D instance support. */
+#ifdef VEYA_COOKER
+void MeshStorage::_multimesh_allocate_data(RID p_multimesh, int p_instances, RSE::MultimeshTransformFormat p_transform_format, bool p_use_colors, bool p_use_custom_data, bool p_use_indirect) {
+	DummyMultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL(multimesh);
+	ERR_FAIL_COND(p_instances < 0);
+	// MultiMesh starts with an empty 2D allocation before deserializing transform_format.
+	ERR_FAIL_COND(p_instances > 0 && p_transform_format != RSE::MULTIMESH_TRANSFORM_3D);
+	multimesh->instance_count = p_instances;
+	multimesh->stride = 12 + (p_use_colors ? 4 : 0) + (p_use_custom_data ? 4 : 0);
+	multimesh->buffer.resize(int64_t(p_instances) * multimesh->stride);
+	multimesh->buffer.fill(0.0f);
+}
+
+void MeshStorage::_multimesh_instance_set_transform(RID p_multimesh, int p_index, const Transform3D &p_transform) {
+	DummyMultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL(multimesh);
+	ERR_FAIL_INDEX(p_index, multimesh->instance_count);
+	float *data = multimesh->buffer.ptrw() + int64_t(p_index) * multimesh->stride;
+	for (int row = 0; row < 3; row++) {
+		for (int column = 0; column < 3; column++) {
+			data[row * 4 + column] = p_transform.basis[row][column];
+		}
+		data[row * 4 + 3] = p_transform.origin[row];
+	}
+}
+
+Transform3D MeshStorage::_multimesh_instance_get_transform(RID p_multimesh, int p_index) const {
+	DummyMultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL_V(multimesh, Transform3D());
+	ERR_FAIL_INDEX_V(p_index, multimesh->instance_count, Transform3D());
+	const float *data = multimesh->buffer.ptr() + int64_t(p_index) * multimesh->stride;
+	Transform3D transform;
+	for (int row = 0; row < 3; row++) {
+		for (int column = 0; column < 3; column++) {
+			transform.basis[row][column] = data[row * 4 + column];
+		}
+		transform.origin[row] = data[row * 4 + 3];
+	}
+	return transform;
+}
+#endif
+/*>>----- VEYA_COOKER */

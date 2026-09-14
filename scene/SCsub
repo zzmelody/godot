@@ -10,14 +10,23 @@ env.add_source_files(env.scene_sources, "*.cpp")
 
 # Chain load SCsubs
 SConscript("main/SCsub")
-SConscript("gui/SCsub")
+# /*<<----- VEYA_COOKER: no 2D/UI authoring implementation in the asset source graph. */
+if not env["veya_cooker"]:
+    SConscript("gui/SCsub")
+# /*>>----- VEYA_COOKER */
 if not env["disable_3d"]:
     SConscript("3d/SCsub")
-SConscript("2d/SCsub")
+# /*<<----- VEYA_COOKER: offline 3D resources do not need 2D scene implementations. */
+if not env["veya_cooker"]:
+    SConscript("2d/SCsub")
+# /*>>----- VEYA_COOKER */
 SConscript("animation/SCsub")
 SConscript("audio/SCsub")
 SConscript("resources/SCsub")
-SConscript("debugger/SCsub")
+# /*<<----- VEYA_COOKER: no live game debugger, node selection popup or viewport panner. */
+if not env["veya_cooker"]:
+    SConscript("debugger/SCsub")
+# /*>>----- VEYA_COOKER */
 SConscript("theme/SCsub")
 
 # Build it all as a library

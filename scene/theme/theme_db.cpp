@@ -245,7 +245,9 @@ void ThemeDB::destroy_theme_context(Node *p_node) {
 	memdelete(context);
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void ThemeDB::_propagate_theme_context(Node *p_from_node, ThemeContext *p_context) {
+#ifndef VEYA_COOKER
 	Control *from_control = Object::cast_to<Control>(p_from_node);
 	Window *from_window = from_control ? nullptr : Object::cast_to<Window>(p_from_node);
 
@@ -267,7 +269,11 @@ void ThemeDB::_propagate_theme_context(Node *p_from_node, ThemeContext *p_contex
 
 		_propagate_theme_context(child_node, p_context);
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void ThemeDB::_init_default_theme_context() {
 	default_theme_context = memnew(ThemeContext);

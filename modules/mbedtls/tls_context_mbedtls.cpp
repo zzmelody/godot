@@ -32,9 +32,11 @@
 
 #include "core/config/project_settings.h"
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: asset crypto does not read editor network preferences. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/settings/editor_settings.h"
 #endif // TOOLS_ENABLED
+/*>>----- VEYA_COOKER */
 
 static void my_debug(void *ctx, int level,
 		const char *file, int line,
@@ -153,13 +155,15 @@ Error TLSContextMbedTLS::init_server(int p_transport, Ref<TLSOptions> p_options,
 	}
 
 #if MBEDTLS_VERSION_MAJOR >= 3
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: asset crypto does not read editor network preferences. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	if (EditorSettings::get_singleton()) {
 		if (!EditorSettings::get_singleton()->get_setting("network/tls/enable_tls_v1.3").operator bool()) {
 			mbedtls_ssl_conf_max_tls_version(&conf, MBEDTLS_SSL_VERSION_TLS1_2);
 		}
 	} else
 #endif
+/*>>----- VEYA_COOKER */
 	{
 		if (!GLOBAL_GET("network/tls/enable_tls_v1.3").operator bool()) {
 			mbedtls_ssl_conf_max_tls_version(&conf, MBEDTLS_SSL_VERSION_TLS1_2);
@@ -211,13 +215,15 @@ Error TLSContextMbedTLS::init_client(int p_transport, const String &p_hostname, 
 	}
 
 #if MBEDTLS_VERSION_MAJOR >= 3
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: asset crypto does not read editor network preferences. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	if (EditorSettings::get_singleton()) {
 		if (!EditorSettings::get_singleton()->get_setting("network/tls/enable_tls_v1.3").operator bool()) {
 			mbedtls_ssl_conf_max_tls_version(&conf, MBEDTLS_SSL_VERSION_TLS1_2);
 		}
 	} else
 #endif
+/*>>----- VEYA_COOKER */
 	{
 		if (!GLOBAL_GET("network/tls/enable_tls_v1.3").operator bool()) {
 			mbedtls_ssl_conf_max_tls_version(&conf, MBEDTLS_SSL_VERSION_TLS1_2);

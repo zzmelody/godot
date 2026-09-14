@@ -25,6 +25,11 @@ common_win = [
     "drop_target_windows.cpp",
 ]
 
+# /*<<----- VEYA_COOKER: no window, native menu, drag/drop, WGL or Vulkan platform source. */
+if env["veya_cooker"]:
+    common_win = ["os_windows.cpp", "windows_terminal_logger.cpp", "windows_utils.cpp", "key_mapping_windows.cpp"]
+# /*>>----- VEYA_COOKER */
+
 if env["angle"]:
     common_win += ["gl_manager_windows_angle.cpp"]
 
@@ -104,7 +109,10 @@ if env["winrt"]:
         env_winrt.Append(CPPPATH=[env["winrt_path"]])
     env_winrt.AppendUnique(CPPDEFINES=["WINRT_ENABLED"])
     tts_sources += ["tts_driver_onecore.cpp"]
-env_winrt.add_source_files(sources, tts_sources)
+# /*<<----- VEYA_COOKER: asset jobs never initialize text-to-speech. */
+if not env["veya_cooker"]:
+    env_winrt.add_source_files(sources, tts_sources)
+# /*>>----- VEYA_COOKER */
 
 sources += res_obj
 

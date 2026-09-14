@@ -36,12 +36,21 @@
 #include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
+/*<<----- VEYA_COOKER: native progress sink instead of editor UI dependencies. */
+#ifdef VEYA_COOKER
+#include "cooker/import_progress.h"
+#else
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "editor/import/3d/scene_import_settings.h"
 #include "editor/settings/editor_settings.h"
+#endif
+/*>>----- VEYA_COOKER */
 #include "scene/3d/importer_mesh_instance_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
+/*<<----- VEYA_COOKER: importer owns its skeleton dependency, not via EditorNode headers. */
+#include "scene/3d/skeleton_3d.h"
+/*>>----- VEYA_COOKER */
 #include "scene/3d/navigation/navigation_region_3d.h"
 #include "scene/3d/occluder_instance_3d.h"
 #include "scene/3d/physics/area_3d.h"
@@ -3391,6 +3400,8 @@ Error ResourceImporterScene::import(ResourceUID::ID p_source_id, const String &p
 	}
 	err = OK;
 
+/*<<----- VEYA_COOKER: native jobs cannot run user post-import scripts. */
+#ifndef VEYA_COOKER
 	progress.step(TTR("Running Custom Script..."), 2);
 
 	String post_import_script_path = p_options["import_script/path"];
@@ -3417,6 +3428,8 @@ Error ResourceImporterScene::import(ResourceUID::ID p_source_id, const String &p
 		}
 	}
 
+#endif
+/*>>----- VEYA_COOKER */
 	// Apply RESET animation before serializing.
 	if (_scene_import_type == "PackedScene") {
 		int scene_child_count = scene->get_child_count();
@@ -3430,6 +3443,8 @@ Error ResourceImporterScene::import(ResourceUID::ID p_source_id, const String &p
 		}
 	}
 
+/*<<----- VEYA_COOKER: no script execution; native post-process plugins below remain usable. */
+#ifndef VEYA_COOKER
 	if (post_import_script.is_valid()) {
 		post_import_script->init(p_source_file);
 		scene = post_import_script->post_import(scene);
@@ -3441,6 +3456,8 @@ Error ResourceImporterScene::import(ResourceUID::ID p_source_id, const String &p
 		}
 	}
 
+#endif
+/*>>----- VEYA_COOKER */
 	for (int i = 0; i < post_importer_plugins.size(); i++) {
 		post_importer_plugins.write[i]->post_process(scene, p_options);
 	}
@@ -3448,9 +3465,15 @@ Error ResourceImporterScene::import(ResourceUID::ID p_source_id, const String &p
 	progress.step(TTR("Saving..."), 104);
 
 	int flags = 0;
+/*<<----- VEYA_COOKER: reproducible binary compression, independent of desktop preferences. */
+#ifdef VEYA_COOKER
+	flags |= ResourceSaver::FLAG_COMPRESS;
+#else
 	if (EditorSettings::get_singleton() && EDITOR_GET("filesystem/on_save/compress_binary_resources")) {
 		flags |= ResourceSaver::FLAG_COMPRESS;
 	}
+#endif
+/*>>----- VEYA_COOKER */
 
 	if (_scene_import_type == "AnimationLibrary") {
 		Ref<AnimationLibrary> library;
@@ -3479,7 +3502,11 @@ Error ResourceImporterScene::import(ResourceUID::ID p_source_id, const String &p
 		print_verbose("Saving scene to: " + p_save_path + ".scn");
 		err = ResourceSaver::save(packer, p_save_path + ".scn", flags); //do not take over, let the changed files reload themselves
 		ERR_FAIL_COND_V_MSG(err != OK, err, "Cannot save scene to file '" + p_save_path + ".scn'.");
+/*<<----- VEYA_COOKER: rendering previews are deliberately not produced. */
+#ifndef VEYA_COOKER
 		EditorInterface::get_singleton()->make_scene_preview(p_source_file, scene, 1024);
+#endif
+/*>>----- VEYA_COOKER */
 	} else if (_scene_import_type == "ArrayMesh") {
 		_save_scene_as_single_mesh(p_source_file, p_save_path, scene, p_options, flags);
 	} else if (_scene_import_type == "MeshLibrary") {
@@ -3500,11 +3527,21 @@ Vector<Ref<EditorSceneFormatImporter>> ResourceImporterScene::scene_importers;
 Vector<Ref<EditorScenePostImportPlugin>> ResourceImporterScene::post_importer_plugins;
 
 bool ResourceImporterScene::has_advanced_options() const {
+/*<<----- VEYA_COOKER: import settings are job data, never an interactive dialog. */
+#ifdef VEYA_COOKER
+	return false;
+#else
 	return true;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void ResourceImporterScene::show_advanced_options(const String &p_path) {
+/*<<----- VEYA_COOKER: no editor singleton exists. */
+#ifndef VEYA_COOKER
 	SceneImportSettingsDialog::get_singleton()->open_settings(p_path, _scene_import_type);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 ResourceImporterScene::ResourceImporterScene(const String &p_scene_import_type) {

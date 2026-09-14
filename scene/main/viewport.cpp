@@ -777,7 +777,9 @@ void Viewport::_notification(int p_what) {
 }
 
 #if !defined(PHYSICS_2D_DISABLED) || !defined(PHYSICS_3D_DISABLED)
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_process_picking() {
+#ifndef VEYA_COOKER
 	if (!is_inside_tree()) {
 		return;
 	}
@@ -1076,7 +1078,11 @@ void Viewport::_process_picking() {
 		}
 #endif // PHYSICS_3D_DISABLED
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 #endif // !defined(PHYSICS_2D_DISABLED) || !defined(PHYSICS_3D_DISABLED)
 
 RID Viewport::get_viewport_rid() const {
@@ -1563,7 +1569,9 @@ void Viewport::_gui_cancel_tooltip() {
 	}
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 String Viewport::_gui_get_tooltip(Control *p_control, const Vector2 &p_pos, Control **r_tooltip_owner) {
+#ifndef VEYA_COOKER
 	Vector2 pos = p_pos;
 	String tooltip;
 
@@ -1595,13 +1603,20 @@ String Viewport::_gui_get_tooltip(Control *p_control, const Vector2 &p_pos, Cont
 	}
 
 	return tooltip;
+#else
+	if (r_tooltip_owner) { *r_tooltip_owner = nullptr; }
+	return String();
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void Viewport::cancel_tooltip() {
 	_gui_cancel_tooltip();
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::show_tooltip(Control *p_control) {
+#ifndef VEYA_COOKER
 	if (!p_control) {
 		return;
 	}
@@ -1612,13 +1627,19 @@ void Viewport::show_tooltip(Control *p_control) {
 	}
 	gui.tooltip_control = p_control;
 	_gui_show_tooltip_at(p_control->get_size() / 2);
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void Viewport::_gui_show_tooltip() {
 	_gui_show_tooltip_at(gui.last_mouse_pos);
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_show_tooltip_at(const Point2i &p_pos) {
+#ifndef VEYA_COOKER
 	if (!gui.tooltip_control) {
 		return;
 	}
@@ -1735,9 +1756,15 @@ void Viewport::_gui_show_tooltip_at(const Point2i &p_pos) {
 		gui.tooltip_popup->popup(r);
 	}
 	gui.tooltip_popup->child_controls_changed();
-}
+#else
 
+#endif
+}
+/*>>----- VEYA_COOKER */
+
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_call_input(Control *p_control, const Ref<InputEvent> &p_input) {
+#ifndef VEYA_COOKER
 	Ref<InputEvent> ev = p_input;
 
 	// Returns true if an event should be impacted by a control's mouse filter.
@@ -1780,9 +1807,15 @@ void Viewport::_gui_call_input(Control *p_control, const Ref<InputEvent> &p_inpu
 		ev = ev->xformed_by(ci->get_transform()); // Transform event upwards.
 		ci = ci->get_parent_item();
 	}
-}
+#else
 
+#endif
+}
+/*>>----- VEYA_COOKER */
+
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_call_notification(Control *p_control, int p_what) {
+#ifndef VEYA_COOKER
 	CanvasItem *ci = p_control;
 	while (ci) {
 		Control *control = Object::cast_to<Control>(ci);
@@ -1809,7 +1842,11 @@ void Viewport::_gui_call_notification(Control *p_control, int p_what) {
 
 		ci = ci->get_parent_item();
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 // `gui_find_control` doesn't take embedded windows into account. So the caller of this function
 // needs to make sure, that there is no embedded window at the specified position.
@@ -1841,7 +1878,9 @@ Control *Viewport::gui_find_control(const Point2 &p_global) {
 	return nullptr;
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 Control *Viewport::_gui_find_control_at_pos(CanvasItem *p_node, const Point2 &p_global, const Transform2D &p_xform) {
+#ifndef VEYA_COOKER
 	if (!p_node->is_visible()) {
 		return nullptr; // Canvas item hidden, discard.
 	}
@@ -1883,9 +1922,15 @@ Control *Viewport::_gui_find_control_at_pos(CanvasItem *p_node, const Point2 &p_
 	}
 
 	return nullptr;
+#else
+	return nullptr;
+#endif
 }
+/*>>----- VEYA_COOKER */
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 bool Viewport::_gui_drop(Control *p_at_control, Point2 p_at_pos, bool p_just_check) {
+#ifndef VEYA_COOKER
 	// Attempt drop, try parent controls too.
 	CanvasItem *ci = p_at_control;
 	Viewport *section_root = get_section_root_viewport();
@@ -1915,9 +1960,15 @@ bool Viewport::_gui_drop(Control *p_at_control, Point2 p_at_pos, bool p_just_che
 	}
 
 	return false;
+#else
+	return false;
+#endif
 }
+/*>>----- VEYA_COOKER */
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_input_event(Ref<InputEvent> p_event) {
+#ifndef VEYA_COOKER
 	ERR_FAIL_COND(p_event.is_null());
 
 	Ref<InputEventMouseButton> mb = p_event;
@@ -2428,7 +2479,11 @@ void Viewport::_gui_input_event(Ref<InputEvent> p_event) {
 			}
 		}
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void Viewport::_perform_drop(Control *p_control) {
 	gui_perform_drop_at(p_control ? p_control->get_local_mouse_position() : Vector2(), p_control);
@@ -2507,7 +2562,9 @@ void Viewport::_gui_force_drag(Control *p_base, const Variant &p_data, Control *
 	Viewport::_propagate_drag_notification(section_root, NOTIFICATION_DRAG_BEGIN);
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_set_drag_preview(Control *p_base, Control *p_control) {
+#ifndef VEYA_COOKER
 	ERR_FAIL_NULL(p_control);
 	ERR_FAIL_COND(p_control->is_inside_tree());
 	ERR_FAIL_COND(p_control->get_parent() != nullptr);
@@ -2522,7 +2579,11 @@ void Viewport::_gui_set_drag_preview(Control *p_base, Control *p_control) {
 	p_control->move_to_front();
 
 	gui.drag_preview_id = p_control->get_instance_id();
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 Control *Viewport::_gui_get_drag_preview() {
 	if (gui.drag_preview_id.is_null()) {
@@ -2541,13 +2602,21 @@ void Viewport::_gui_remove_root_control(List<Control *>::Element *RI) {
 	gui.roots.erase(RI);
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_unfocus_control(Control *p_control) {
+#ifndef VEYA_COOKER
 	if (gui.key_focus == p_control) {
 		gui.key_focus->release_focus();
 	}
-}
+#else
 
+#endif
+}
+/*>>----- VEYA_COOKER */
+
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_hide_control(Control *p_control) {
+#ifndef VEYA_COOKER
 	if (gui.mouse_focus == p_control) {
 		_drop_mouse_focus();
 	}
@@ -2565,9 +2634,15 @@ void Viewport::_gui_hide_control(Control *p_control) {
 	if (gui.tooltip_control == p_control) {
 		_gui_cancel_tooltip();
 	}
-}
+#else
 
+#endif
+}
+/*>>----- VEYA_COOKER */
+
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_remove_control(Control *p_control) {
+#ifndef VEYA_COOKER
 	if (gui.mouse_focus == p_control) {
 		gui.mouse_focus = nullptr;
 		gui.mouse_focus_mask.clear();
@@ -2585,13 +2660,19 @@ void Viewport::_gui_remove_control(Control *p_control) {
 	if (gui.tooltip_control == p_control) {
 		gui.tooltip_control = nullptr;
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void Viewport::canvas_item_top_level_changed() {
 	_gui_update_mouse_over();
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_gui_update_mouse_over() {
+#ifndef VEYA_COOKER
 	if (gui.mouse_over.is_null() || gui.mouse_over_hierarchy.is_empty()) {
 		return;
 	}
@@ -2695,7 +2776,11 @@ void Viewport::_gui_update_mouse_over() {
 	}
 
 	gui.sending_mouse_enter_exit_notifications = false;
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 Window *Viewport::get_base_window() {
 	ERR_READ_THREAD_GUARD_V(nullptr);
@@ -2749,7 +2834,9 @@ void Viewport::_gui_accept_event() {
 	}
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_drop_mouse_focus() {
+#ifndef VEYA_COOKER
 	Control *c = gui.mouse_focus;
 	BitField<MouseButtonMask> mask = gui.mouse_focus_mask;
 	gui.mouse_focus = nullptr;
@@ -2771,7 +2858,11 @@ void Viewport::_drop_mouse_focus() {
 			c->_call_gui_input(mb);
 		}
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void Viewport::_drop_physics_mouseover(bool p_paused_only) {
 #ifndef PHYSICS_2D_DISABLED
@@ -2800,7 +2891,9 @@ void Viewport::_gui_grab_click_focus(Control *p_control) {
 	callable_mp(this, &Viewport::_post_gui_grab_click_focus).call_deferred();
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_post_gui_grab_click_focus() {
+#ifndef VEYA_COOKER
 	Control *focus_grabber = gui.mouse_click_grabber;
 	if (!focus_grabber) {
 		// Redundant grab requests were made.
@@ -2849,7 +2942,11 @@ void Viewport::_post_gui_grab_click_focus() {
 			}
 		}
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 ///////////////////////////////
 
@@ -3276,7 +3373,9 @@ void Viewport::_update_mouse_over(const Ref<InputEventMouse> &p_mm) {
 	}
 }
 
+/*<<----- VEYA_COOKER: asset processes never perform interactive viewport layout/input. */
 void Viewport::_update_mouse_over(Vector2 p_pos) {
+#ifndef VEYA_COOKER
 	gui.last_mouse_pos = p_pos; // Necessary, because mouse cursor can be over Viewports that are not reached by the InputEvent.
 	// Look for embedded windows at mouse position.
 	if (is_embedding_subwindows()) {
@@ -3428,7 +3527,11 @@ void Viewport::_update_mouse_over(Vector2 p_pos) {
 			section_root->gui.target_control = over;
 		}
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void Viewport::_mouse_leave_viewport() {
 	if (!is_inside_tree() || is_input_disabled()) {
@@ -4460,14 +4563,20 @@ void Viewport::_update_audio_listener_2d() {
 	}
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::_audio_listener_2d_set(AudioListener2D *p_audio_listener) {
+#ifndef VEYA_COOKER
 	if (audio_listener_2d == p_audio_listener) {
 		return;
 	} else if (audio_listener_2d) {
 		audio_listener_2d->clear_current();
 	}
 	audio_listener_2d = p_audio_listener;
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void Viewport::_audio_listener_2d_remove(AudioListener2D *p_audio_listener) {
 	if (audio_listener_2d == p_audio_listener) {
@@ -4583,7 +4692,9 @@ Camera2D *Viewport::get_camera_2d() const {
 	return camera_2d;
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::assign_next_enabled_camera_2d(const StringName &p_camera_group) {
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 	Vector<Node *> camera_list = get_tree()->get_nodes_in_group(p_camera_group);
 
@@ -4604,10 +4715,16 @@ void Viewport::assign_next_enabled_camera_2d(const StringName &p_camera_group) {
 	if (!camera_2d) {
 		set_canvas_transform(Transform2D());
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 #if DEBUG_ENABLED
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Viewport::enable_camera_2d_override(bool p_enable) {
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 
 	if (p_enable) {
@@ -4615,7 +4732,11 @@ void Viewport::enable_camera_2d_override(bool p_enable) {
 	} else {
 		camera_2d_override.disable(camera_2d);
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 bool Viewport::is_camera_2d_override_enabled() const {
 	ERR_READ_THREAD_GUARD_V(false);
@@ -5620,7 +5741,9 @@ void SubViewport::set_size_force(const Size2i &p_size) {
 	_internal_set_size(p_size, _get_view_count(), true);
 }
 
+/*<<----- VEYA_COOKER: asset processes never perform interactive viewport layout/input. */
 void SubViewport::_internal_set_size(const Size2i &p_size, const int p_view_count, bool p_force) {
+#ifndef VEYA_COOKER
 	SubViewportContainer *c = Object::cast_to<SubViewportContainer>(get_parent());
 	if (!p_force && c && c->is_stretch_enabled()) {
 #ifdef DEBUG_ENABLED
@@ -5635,7 +5758,11 @@ void SubViewport::_internal_set_size(const Size2i &p_size, const int p_view_coun
 		c->update_minimum_size();
 		c->queue_redraw();
 	}
+#else
+	_set_size(p_size, p_view_count, _get_size_2d_override(), true);
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 Size2i SubViewport::get_size() const {
 	ERR_READ_THREAD_GUARD_V(Size2());
@@ -5710,7 +5837,9 @@ DisplayServerEnums::WindowID SubViewport::get_window_id() const {
 	return DisplayServerEnums::INVALID_WINDOW_ID;
 }
 
+/*<<----- VEYA_COOKER: asset processes never perform interactive viewport layout/input. */
 Transform2D SubViewport::get_screen_transform_internal(bool p_absolute_position) const {
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Transform2D());
 	Transform2D container_transform;
 	SubViewportContainer *c = Object::cast_to<SubViewportContainer>(get_parent());
@@ -5723,9 +5852,15 @@ Transform2D SubViewport::get_screen_transform_internal(bool p_absolute_position)
 		WARN_PRINT_ONCE("SubViewport is not a child of a SubViewportContainer. get_screen_transform doesn't return the actual screen position.");
 	}
 	return container_transform * get_final_transform();
+#else
+	return Transform2D();
+#endif
 }
+/*>>----- VEYA_COOKER */
 
+/*<<----- VEYA_COOKER: asset processes never perform interactive viewport layout/input. */
 Transform2D SubViewport::get_popup_base_transform() const {
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Transform2D());
 	if (is_embedding_subwindows()) {
 		return Transform2D();
@@ -5739,7 +5874,11 @@ Transform2D SubViewport::get_popup_base_transform() const {
 		container_transform.scale(Vector2(c->get_stretch_shrink(), c->get_stretch_shrink()));
 	}
 	return c->get_screen_transform() * container_transform * get_final_transform();
+#else
+	return Transform2D();
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 Viewport *SubViewport::get_section_root_viewport() const {
 	if (Object::cast_to<SubViewportContainer>(get_parent()) && get_parent()->get_viewport()) {
@@ -5753,7 +5892,9 @@ bool SubViewport::is_attached_in_viewport() const {
 	return Object::cast_to<SubViewportContainer>(get_parent());
 }
 
+/*<<----- VEYA_COOKER: asset processes never perform interactive viewport layout/input. */
 void SubViewport::_notification(int p_what) {
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
@@ -5769,7 +5910,11 @@ void SubViewport::_notification(int p_what) {
 			RS::get_singleton()->viewport_set_active(get_viewport_rid(), false);
 		} break;
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void SubViewport::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_size", "size"), &SubViewport::set_size);
@@ -5809,7 +5954,9 @@ void SubViewport::_bind_methods() {
 	BIND_ENUM_CONSTANT(UPDATE_ALWAYS);
 }
 
+/*<<----- VEYA_COOKER: asset processes never perform interactive viewport layout/input. */
 void SubViewport::_validate_property(PropertyInfo &p_property) const {
+#ifndef VEYA_COOKER
 	if (!Engine::get_singleton()->is_editor_hint()) {
 		return;
 	}
@@ -5827,7 +5974,11 @@ void SubViewport::_validate_property(PropertyInfo &p_property) const {
 			p_property.usage = PROPERTY_USAGE_DEFAULT;
 		}
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 SubViewport::SubViewport() {
 	RS::get_singleton()->viewport_set_size(get_viewport_rid(), get_size().width, get_size().height, get_view_count());
@@ -5890,7 +6041,11 @@ T *Viewport::CameraOverride<T>::get_overridden_camera() const {
 
 // Explicit template instantiation to allow template definitions inside cpp file
 // and prevent instantiation using other than the desired camera types.
+/*<<----- VEYA_COOKER: no 2D camera constructor or interactive override implementation. */
+#ifndef VEYA_COOKER
 template class Viewport::CameraOverride<Camera2D>;
+#endif
+/*>>----- VEYA_COOKER */
 #ifndef _3D_DISABLED
 template class Viewport::CameraOverride<Camera3D>;
 #endif // _3D_DISABLED

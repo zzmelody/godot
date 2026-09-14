@@ -37,7 +37,8 @@
 
 #include "modules/gltf/extensions/gltf_document_extension_convert_importer_mesh.h"
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/editor_scene_importer_fbx2gltf.h"
 #include "editor/editor_scene_importer_ufbx.h"
 //
@@ -57,6 +58,7 @@ static void _editor_init() {
 	}
 }
 #endif // TOOLS_ENABLED
+/*>>----- VEYA_COOKER */
 
 #define FBX_REGISTER_DOCUMENT_EXTENSION(m_doc_ext_class) \
 	Ref<m_doc_ext_class> extension_##m_doc_ext_class; \
@@ -73,7 +75,8 @@ void initialize_fbx_module(ModuleInitializationLevel p_level) {
 		}
 	}
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(EditorSceneFormatImporterUFBX);
 
@@ -85,6 +88,7 @@ void initialize_fbx_module(ModuleInitializationLevel p_level) {
 		EditorNode::add_init_callback(_editor_init);
 	}
 #endif // TOOLS_ENABLED
+/*>>----- VEYA_COOKER */
 }
 
 void uninitialize_fbx_module(ModuleInitializationLevel p_level) {

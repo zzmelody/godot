@@ -36,11 +36,13 @@
 #include "3d/navigation_mesh_generator.h"
 #endif // DISABLE_DEPRECATED
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/navigation_link_3d_editor_plugin.h"
 #include "editor/navigation_obstacle_3d_editor_plugin.h"
 #include "editor/navigation_region_3d_editor_plugin.h"
 #endif
+/*>>----- VEYA_COOKER */
 
 #include "core/config/engine.h"
 #include "core/object/callable_mp.h"
@@ -67,13 +69,15 @@ void initialize_navigation_3d_module(ModuleInitializationLevel p_level) {
 #endif // DISABLE_DEPRECATED
 	}
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		EditorPlugins::add_by_type<NavigationLink3DEditorPlugin>();
 		EditorPlugins::add_by_type<NavigationRegion3DEditorPlugin>();
 		EditorPlugins::add_by_type<NavigationObstacle3DEditorPlugin>();
 	}
 #endif
+/*>>----- VEYA_COOKER */
 }
 
 void uninitialize_navigation_3d_module(ModuleInitializationLevel p_level) {

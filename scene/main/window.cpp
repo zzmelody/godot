@@ -245,7 +245,9 @@ void Window::_get_property_list(List<PropertyInfo> *p_list) const {
 	}
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Window::_validate_property(PropertyInfo &p_property) const {
+#ifndef VEYA_COOKER
 	if (p_property.name == "position") {
 		if (initial_position != WINDOW_INITIAL_POSITION_ABSOLUTE) {
 			p_property.usage = PROPERTY_USAGE_NONE;
@@ -300,7 +302,11 @@ void Window::_validate_property(PropertyInfo &p_property) const {
 
 		p_property.hint_string = hint_string;
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 //
 
@@ -1951,7 +1957,9 @@ bool Window::is_wrapping_controls() const {
 	return wrap_controls;
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 Size2 Window::_get_contents_minimum_size() const {
+#ifndef VEYA_COOKER
 	Size2 max;
 
 	for (int i = 0; i < get_child_count(); i++) {
@@ -1965,7 +1973,11 @@ Size2 Window::_get_contents_minimum_size() const {
 	}
 
 	return max;
+#else
+	return Size2();
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void Window::child_controls_changed() {
 	ERR_MAIN_THREAD_GUARD;
@@ -2529,7 +2541,9 @@ void Window::set_theme_context(ThemeContext *p_context, bool p_propagate) {
 	theme_owner->set_owner_context(p_context, p_propagate);
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void Window::set_theme(const Ref<Theme> &p_theme) {
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 	if (theme == p_theme) {
 		return;
@@ -2559,7 +2573,11 @@ void Window::set_theme(const Ref<Theme> &p_theme) {
 	}
 
 	theme_owner->propagate_theme_changed(this, nullptr, is_inside_tree(), true);
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 Ref<Theme> Window::get_theme() const {
 	ERR_READ_THREAD_GUARD_V(Ref<Theme>());

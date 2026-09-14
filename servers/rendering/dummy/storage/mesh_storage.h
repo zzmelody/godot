@@ -51,6 +51,12 @@ private:
 
 	struct DummyMultiMesh {
 		PackedFloat32Array buffer;
+		/*<<----- VEYA_COOKER: track the CPU instance buffer layout. */
+#ifdef VEYA_COOKER
+		int instance_count = 0;
+		int stride = 12;
+#endif
+		/*>>----- VEYA_COOKER */
 	};
 
 	mutable RID_Owner<DummyMultiMesh> multimesh_owner;
@@ -184,11 +190,23 @@ public:
 	virtual void _multimesh_initialize(RID p_rid) override;
 	virtual void _multimesh_free(RID p_rid) override;
 
+	/*<<----- VEYA_COOKER: keep authored 3D instance transforms in CPU storage without a renderer. */
+#ifdef VEYA_COOKER
+	virtual void _multimesh_allocate_data(RID p_multimesh, int p_instances, RSE::MultimeshTransformFormat p_transform_format, bool p_use_colors = false, bool p_use_custom_data = false, bool p_use_indirect = false) override;
+#else
 	virtual void _multimesh_allocate_data(RID p_multimesh, int p_instances, RSE::MultimeshTransformFormat p_transform_format, bool p_use_colors = false, bool p_use_custom_data = false, bool p_use_indirect = false) override {}
+#endif
+	/*>>----- VEYA_COOKER */
 	virtual int _multimesh_get_instance_count(RID p_multimesh) const override { return 0; }
 
 	virtual void _multimesh_set_mesh(RID p_multimesh, RID p_mesh) override {}
+	/*<<----- VEYA_COOKER: keep authored 3D instance transforms in CPU storage without a renderer. */
+#ifdef VEYA_COOKER
+	virtual void _multimesh_instance_set_transform(RID p_multimesh, int p_index, const Transform3D &p_transform) override;
+#else
 	virtual void _multimesh_instance_set_transform(RID p_multimesh, int p_index, const Transform3D &p_transform) override {}
+#endif
+	/*>>----- VEYA_COOKER */
 	virtual void _multimesh_instance_set_transform_2d(RID p_multimesh, int p_index, const Transform2D &p_transform) override {}
 	virtual void _multimesh_instance_set_color(RID p_multimesh, int p_index, const Color &p_color) override {}
 	virtual void _multimesh_instance_set_custom_data(RID p_multimesh, int p_index, const Color &p_color) override {}
@@ -199,7 +217,13 @@ public:
 	virtual RID _multimesh_get_mesh(RID p_multimesh) const override { return RID(); }
 	virtual AABB _multimesh_get_aabb(RID p_multimesh) override { return AABB(); }
 
+	/*<<----- VEYA_COOKER: keep authored 3D instance transforms in CPU storage without a renderer. */
+#ifdef VEYA_COOKER
+	virtual Transform3D _multimesh_instance_get_transform(RID p_multimesh, int p_index) const override;
+#else
 	virtual Transform3D _multimesh_instance_get_transform(RID p_multimesh, int p_index) const override { return Transform3D(); }
+#endif
+	/*>>----- VEYA_COOKER */
 	virtual Transform2D _multimesh_instance_get_transform_2d(RID p_multimesh, int p_index) const override { return Transform2D(); }
 	virtual Color _multimesh_instance_get_color(RID p_multimesh, int p_index) const override { return Color(); }
 	virtual Color _multimesh_instance_get_custom_data(RID p_multimesh, int p_index) const override { return Color(); }

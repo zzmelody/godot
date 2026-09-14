@@ -30,7 +30,15 @@
 
 #include "os_windows.h"
 
+/*<<----- VEYA_COOKER: native batch executable does not link a desktop display driver. */
+#ifndef VEYA_COOKER
 #include "display_server_windows.h"
+#else
+#include "core/config/project_settings.h"
+#include "servers/display/display_server.h"
+typedef HRESULT(WINAPI *RtlGetVersionPtr)(OSVERSIONINFOEXW *lpVersionInformation);
+#endif
+/*>>----- VEYA_COOKER */
 #include "lang_table.h"
 #include "windows_terminal_logger.h"
 #include "windows_utils.h"
@@ -2609,6 +2617,8 @@ String OS_Windows::get_system_ca_certificates() {
 }
 
 void OS_Windows::add_frame_delay(bool p_can_draw, bool p_wake_for_events) {
+/*<<----- VEYA_COOKER: no window event loop to wake. */
+#ifndef VEYA_COOKER
 	if (p_wake_for_events) {
 		uint64_t delay = get_frame_delay(p_can_draw);
 		if (delay == 0) {
@@ -2623,6 +2633,8 @@ void OS_Windows::add_frame_delay(bool p_can_draw, bool p_wake_for_events) {
 		}
 	}
 
+#endif
+/*>>----- VEYA_COOKER */
 	const uint32_t frame_delay = Engine::get_singleton()->get_frame_delay();
 	if (frame_delay) {
 		// Add fixed frame delay to decrease CPU/GPU usage. This doesn't take
@@ -2909,7 +2921,11 @@ OS_Windows::OS_Windows(HINSTANCE _hInstance) {
 	AudioDriverManager::add_driver(&driver_xaudio2);
 #endif
 
+/*<<----- VEYA_COOKER: only the native job entry is available, never desktop rendering. */
+#ifndef VEYA_COOKER
 	DisplayServerWindows::register_windows_driver();
+#endif
+/*>>----- VEYA_COOKER */
 
 	// Enable ANSI escape code support on Windows 10 v1607 (Anniversary Update) and later.
 	// This lets the engine and projects use ANSI escape codes to color text just like on macOS and Linux.

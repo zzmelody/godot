@@ -42,10 +42,14 @@ env_fbx.add_source_files(module_obj, "structures/*.cpp")
 
 SConscript("extensions/SCsub")
 
-if env.editor_build:
+# /*<<----- VEYA_COOKER: retain native format importer; exclude external DCC runners and UI. */
+if env["veya_cooker"]:
+    env_fbx.add_source_files(module_obj, "editor/editor_scene_importer_ufbx.cpp")
+elif env.editor_build:
     env_fbx.add_source_files(module_obj, "editor/*.cpp")
 
 env.modules_sources += module_obj
 
 # Needed to force rebuilding the module files when the thirdparty library is updated.
 env.Depends(module_obj, thirdparty_obj)
+# /*>>----- VEYA_COOKER */

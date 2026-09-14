@@ -37,13 +37,17 @@
 
 #include "core/object/class_db.h"
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/noise_editor_plugin.h"
 #endif
+/*>>----- VEYA_COOKER */
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/plugins/editor_plugin.h"
 #endif
+/*>>----- VEYA_COOKER */
 
 void initialize_noise_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
@@ -54,11 +58,13 @@ void initialize_noise_module(ModuleInitializationLevel p_level) {
 		ClassDB::add_compatibility_class("NoiseTexture", "NoiseTexture2D");
 	}
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		EditorPlugins::add_by_type<NoiseEditorPlugin>();
 	}
 #endif
+/*>>----- VEYA_COOKER */
 }
 
 void uninitialize_noise_module(ModuleInitializationLevel p_level) {

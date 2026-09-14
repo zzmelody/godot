@@ -51,7 +51,11 @@
 #endif // _3D_DISABLED
 
 #ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: batch RESET does not require the editor undo service. */
+#ifndef VEYA_COOKER
 #include "editor/editor_undo_redo_manager.h"
+#endif
+/*>>----- VEYA_COOKER */
 #endif // TOOLS_ENABLED
 
 bool AnimationMixer::_set(const StringName &p_name, const Variant &p_value) {
@@ -2323,6 +2327,10 @@ Ref<AnimatedValuesBackup> AnimationMixer::apply_reset(bool p_user_initiated) {
 	ERR_FAIL_COND_V(reset_anim.is_null(), Ref<AnimatedValuesBackup>());
 
 	Ref<AnimatedValuesBackup> backup_current = make_backup();
+/*<<----- VEYA_COOKER: apply RESET animation directly; no interactive undo history. */
+#ifdef VEYA_COOKER
+	reset();
+#else
 	if (p_user_initiated) {
 		EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
 		ur->create_action(TTR("Animation Apply Reset"));
@@ -2332,6 +2340,8 @@ Ref<AnimatedValuesBackup> AnimationMixer::apply_reset(bool p_user_initiated) {
 	} else {
 		reset();
 	}
+#endif
+/*>>----- VEYA_COOKER */
 
 	return backup_current;
 }

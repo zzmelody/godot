@@ -54,7 +54,9 @@
 #include "modules/gltf/structures/gltf_animation.h"
 #include "modules/gltf/structures/gltf_camera.h"
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: batch import has no EditorFileSystem or interactive export validation. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
+/*>>----- VEYA_COOKER */
 #include "editor/file_system/editor_file_system.h"
 #endif
 
@@ -949,7 +951,9 @@ GLTFImageIndex FBXDocument::_parse_image_save_image(Ref<FBXState> p_state, const
 		p_state->source_images.push_back(Ref<Image>());
 		return p_state->images.size() - 1;
 	}
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: batch import has no EditorFileSystem or interactive export validation. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
+/*>>----- VEYA_COOKER */
 	if (Engine::get_singleton()->is_editor_hint() && handling == FBXState::HandleBinaryImageMode::HANDLE_BINARY_IMAGE_MODE_EXTRACT_TEXTURES) {
 		if (p_state->base_path.is_empty()) {
 			if (p_index < 0) {

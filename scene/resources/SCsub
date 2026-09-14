@@ -30,6 +30,9 @@ env.scene_sources += scene_obj
 # Needed to force rebuilding the scene files when the thirdparty code is updated.
 env.Depends(scene_obj, thirdparty_obj)
 
-SConscript("2d/SCsub")
+# /*<<----- VEYA_COOKER: no tile sets, 2D shapes/navigation or skeleton modifiers. */
+if not env["veya_cooker"]:
+    SConscript("2d/SCsub")
+# /*>>----- VEYA_COOKER */
 if not env["disable_3d"]:
     SConscript("3d/SCsub")

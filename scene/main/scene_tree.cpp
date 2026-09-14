@@ -1427,7 +1427,9 @@ void SceneTree::_add_node_to_process_group(Node *p_node, Node *p_owner) {
 	}
 }
 
+/*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
 void SceneTree::_call_input_pause(const StringName &p_group, CallInputType p_call_type, const Ref<InputEvent> &p_input, Viewport *p_viewport) {
+#ifndef VEYA_COOKER
 	Vector<Node *> nodes_copy;
 	{
 		_THREAD_SAFE_METHOD_
@@ -1518,7 +1520,11 @@ void SceneTree::_call_input_pause(const StringName &p_group, CallInputType p_cal
 			nodes_removed_on_group_call.clear();
 		}
 	}
+#else
+
+#endif
 }
+/*>>----- VEYA_COOKER */
 
 void SceneTree::_call_group_flags(const Variant **p_args, int p_argcount, Callable::CallError &r_error) {
 	r_error.error = Callable::CallError::CALL_OK;

@@ -165,6 +165,9 @@ opts.Add(
     )
 )
 opts.Add(EnumVariable("arch", "CPU architecture", "auto", ["auto"] + architectures, architecture_aliases, ignorecase=2))
+# /*<<----- VEYA_COOKER: tools-only asset executable without Editor UI. */
+opts.Add(BoolVariable("veya_cooker", "Build the Veya native asset cooker", False))
+# /*>>----- VEYA_COOKER */
 opts.Add(BoolVariable("dev_build", "Developer build with dev-only debugging code (DEV_ENABLED)", False))
 opts.Add(
     EnumVariable(
@@ -530,6 +533,13 @@ env.platform_apis = platform_apis
 # - Optimization level
 # - Debug symbols for crash traces / debuggers
 
+# /*<<----- VEYA_COOKER: preserve consistent TOOLS_ENABLED ABI in every translation unit. */
+if env["veya_cooker"]:
+    if env["target"] != "editor":
+        print_error("veya_cooker requires target=editor.")
+        Exit(255)
+    env.Append(CPPDEFINES=["VEYA_COOKER"])
+# /*>>----- VEYA_COOKER */
 env.editor_build = env["target"] == "editor"
 env.dev_build = env["dev_build"]
 env.debug_features = env["target"] in ["editor", "template_debug"]
@@ -1053,7 +1063,8 @@ suffix += env.extra_suffix
 sys.path.remove(tmppath)
 sys.modules.pop("detect")
 
-if env.editor_build:
+# /*<<----- VEYA_COOKER: no Editor UI depending on disabled 2D/advanced GUI classes. */
+if env.editor_build and not env["veya_cooker"]:
     unsupported_opts = []
     for disable_opt in [
         "disable_3d",
@@ -1072,6 +1083,8 @@ if env.editor_build:
             )
         )
         Exit(255)
+
+# /*>>----- VEYA_COOKER */
 
 if env["disable_3d"]:
     env.Append(CPPDEFINES=["_3D_DISABLED"])
@@ -1145,7 +1158,8 @@ for name, path in modules_detected.items():
 env.module_list = modules_enabled
 methods.sort_module_list(env)
 
-if env.editor_build:
+# /*<<----- VEYA_COOKER: editor fonts/vector icons are not importer dependencies. */
+if env.editor_build and not env["veya_cooker"]:
     # Add editor-specific dependencies to the dependency graph.
     env.module_add_dependencies("editor", ["freetype", "regex", "svg"])
 
@@ -1153,6 +1167,8 @@ if env.editor_build:
     if not env.module_check_dependencies("editor"):
         print_error("Not all modules required by editor builds are enabled.")
         Exit(255)
+
+# /*>>----- VEYA_COOKER */
 
 env["PROGSUFFIX_WRAP"] = suffix + env.module_version_string + ".console" + env["PROGSUFFIX"]
 env["PROGSUFFIX"] = suffix + env.module_version_string + env["PROGSUFFIX"]

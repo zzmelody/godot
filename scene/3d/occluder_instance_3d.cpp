@@ -44,9 +44,11 @@
 #include "scene/resources/surface_tool.h"
 #include "servers/rendering/rendering_server.h"
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/editor_node.h"
 #endif
+/*>>----- VEYA_COOKER */
 
 RID Occluder3D::get_rid() const {
 	return occluder;
@@ -457,12 +459,14 @@ void OccluderInstance3D::set_occluder(const Ref<Occluder3D> &p_occluder) {
 	update_gizmos();
 	update_configuration_warnings();
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	// PolygonOccluder3D is edited via an editor plugin, this ensures the plugin is shown/hidden when necessary
 	if (Engine::get_singleton()->is_editor_hint()) {
 		callable_mp(EditorNode::get_singleton(), &EditorNode::edit_current).call_deferred();
 	}
 #endif
+/*>>----- VEYA_COOKER */
 }
 
 void OccluderInstance3D::_occluder_changed() {

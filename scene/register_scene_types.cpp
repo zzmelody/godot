@@ -466,6 +466,8 @@ void register_scene_types() {
 
 	GDREGISTER_CLASS(StatusIndicator);
 
+/*<<----- VEYA_COOKER: no GUI asset registration or layout initialization. */
+#ifndef VEYA_COOKER
 	/* REGISTER GUI */
 
 	OS::get_singleton()->yield(); // may take time to init
@@ -579,6 +581,8 @@ void register_scene_types() {
 	Control::set_root_layout_direction(root_dir);
 	Window::set_root_layout_direction(root_dir);
 
+#endif
+/*>>----- VEYA_COOKER */
 	/* REGISTER ANIMATION */
 	GDREGISTER_CLASS(Tween);
 	GDREGISTER_ABSTRACT_CLASS(Tweener);
@@ -647,6 +651,11 @@ void register_scene_types() {
 	GDREGISTER_ABSTRACT_CLASS(SpriteBase3D);
 	GDREGISTER_CLASS(Sprite3D);
 	GDREGISTER_CLASS(AnimatedSprite3D);
+/*<<----- VEYA_COOKER: shared frames support 3D animated sprites, despite the resource name. */
+#ifdef VEYA_COOKER
+	GDREGISTER_CLASS(SpriteFrames);
+#endif
+/*>>----- VEYA_COOKER */
 	GDREGISTER_CLASS(Label3D);
 	GDREGISTER_ABSTRACT_CLASS(Light3D);
 	GDREGISTER_CLASS(DirectionalLight3D);
@@ -780,6 +789,8 @@ void register_scene_types() {
 	GDREGISTER_CLASS(ShaderInclude);
 
 	GDREGISTER_CLASS(ShaderMaterial);
+/*<<----- VEYA_COOKER: no canvas shaders or 2D scene asset registration; SpriteFrames remains for Sprite3D. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(CanvasTexture);
 	GDREGISTER_CLASS(CanvasItemMaterial);
 
@@ -870,6 +881,8 @@ void register_scene_types() {
 
 	OS::get_singleton()->yield(); // may take time to init
 
+#endif
+/*>>----- VEYA_COOKER */
 	/* REGISTER RESOURCES */
 
 	GDREGISTER_ABSTRACT_CLASS(Shader);
@@ -1023,10 +1036,14 @@ void register_scene_types() {
 
 	OS::get_singleton()->yield(); // may take time to init
 
+/*<<----- VEYA_COOKER: 2D paths/audio are not asset types. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(AudioStreamPlayer2D);
 	GDREGISTER_CLASS(Curve2D);
 	GDREGISTER_CLASS(Path2D);
 	GDREGISTER_CLASS(PathFollow2D);
+#endif
+/*>>----- VEYA_COOKER */
 
 #ifndef PHYSICS_2D_DISABLED
 	GDREGISTER_ABSTRACT_CLASS(Shape2D);
@@ -1306,13 +1323,21 @@ void register_scene_types() {
 		GLOBAL_DEF_BASIC(vformat("%s/layer_%d", PNAME("layer_names/avoidance"), i + 1), "");
 	}
 
+/*<<----- VEYA_COOKER: no UI shaders or scene debugger startup. */
+#ifndef VEYA_COOKER
 	if (RenderingServer::get_singleton()) {
 		// RenderingServer needs to exist for this to succeed.
 		ColorPickerShape::init_shaders();
 		GraphEdit::init_shaders();
 	}
 
+#endif
+/*>>----- VEYA_COOKER */
+/*<<----- VEYA_COOKER: no interactive scene debugger in an asset process. */
+#ifndef VEYA_COOKER
 	SceneDebugger::initialize();
+#endif
+/*>>----- VEYA_COOKER */
 
 	OS::get_singleton()->benchmark_end_measure("Scene", "Register Types");
 }
@@ -1320,7 +1345,11 @@ void register_scene_types() {
 void unregister_scene_types() {
 	OS::get_singleton()->benchmark_begin_measure("Scene", "Unregister Types");
 
+/*<<----- VEYA_COOKER: corresponding debugger startup is absent. */
+#ifndef VEYA_COOKER
 	SceneDebugger::deinitialize();
+#endif
+/*>>----- VEYA_COOKER */
 
 	if constexpr (GD_IS_CLASS_ENABLED(TextureLayered)) {
 		ResourceLoader::remove_resource_format_loader(resource_loader_texture_layered);
@@ -1369,10 +1398,22 @@ void unregister_scene_types() {
 #endif // _3D_DISABLED
 
 	ParticleProcessMaterial::finish_shaders();
+/*<<----- VEYA_COOKER: no canvas shader lifecycle. */
+#ifndef VEYA_COOKER
 	CanvasItemMaterial::finish_shaders();
+#endif
+/*>>----- VEYA_COOKER */
+/*<<----- VEYA_COOKER: no GUI shader lifecycle. */
+#ifndef VEYA_COOKER
 	ColorPickerShape::finish_shaders();
+#endif
+/*>>----- VEYA_COOKER */
 	BlitMaterial::cleanup_shader();
+/*<<----- VEYA_COOKER: no GUI shader lifecycle. */
+#ifndef VEYA_COOKER
 	GraphEdit::finish_shaders();
+#endif
+/*>>----- VEYA_COOKER */
 	SceneStringNames::free();
 
 	OS::get_singleton()->benchmark_end_measure("Scene", "Unregister Types");

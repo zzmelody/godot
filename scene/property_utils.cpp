@@ -37,9 +37,11 @@
 #include "core/templates/local_vector.h"
 #include "scene/resources/packed_scene.h"
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: scene pack jobs receive their owner explicitly; no edited scene singleton. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/editor_node.h"
 #endif // TOOLS_ENABLED
+/*>>----- VEYA_COOKER */
 
 bool PropertyUtils::is_property_value_different(const Object *p_object, const Variant &p_a, const Variant &p_b) {
 	if (p_a.get_type() == Variant::FLOAT && p_b.get_type() == Variant::FLOAT) {
@@ -244,11 +246,13 @@ Vector<SceneState::PackState> PropertyUtils::get_node_states_stack(const Node *p
 	LocalVector<_FastPackState> states_stack;
 	{
 		const Node *owner = p_owner;
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: scene pack jobs receive their owner explicitly; no edited scene singleton. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 		if (!p_owner && Engine::get_singleton()->is_editor_hint()) {
 			owner = EditorNode::get_singleton()->get_edited_scene();
 		}
 #endif
+/*>>----- VEYA_COOKER */
 
 		const Node *n = p_node;
 		while (n) {

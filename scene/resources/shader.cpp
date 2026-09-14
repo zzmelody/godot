@@ -40,7 +40,8 @@
 #include "servers/rendering/shader_language.h"
 #include "servers/rendering/shader_preprocessor.h"
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 #include "editor/doc/editor_help.h"
 
 #include "modules/modules_enabled.gen.h" // For regex.
@@ -48,6 +49,7 @@
 #include "modules/regex/regex.h"
 #endif
 #endif
+/*>>----- VEYA_COOKER */
 
 Shader::Mode Shader::get_mode() const {
 	return mode;
@@ -158,7 +160,8 @@ void Shader::get_shader_uniform_list(List<PropertyInfo> *p_params, bool p_get_gr
 	List<PropertyInfo> local;
 	RenderingServer::get_singleton()->get_shader_parameter_list(shader_rid, &local);
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	DocData::ClassDoc class_doc;
 	bool generate_doc = Engine::get_singleton()->is_editor_hint() && !get_path().is_empty();
 	if (generate_doc) {
@@ -167,6 +170,7 @@ void Shader::get_shader_uniform_list(List<PropertyInfo> *p_params, bool p_get_gr
 		class_doc.inherits = "Shader";
 	}
 #endif
+/*>>----- VEYA_COOKER */
 
 	for (PropertyInfo &pi : local) {
 		bool is_group = pi.usage == PROPERTY_USAGE_GROUP || pi.usage == PROPERTY_USAGE_SUBGROUP;
@@ -183,7 +187,8 @@ void Shader::get_shader_uniform_list(List<PropertyInfo> *p_params, bool p_get_gr
 			if (pi.type == Variant::RID) {
 				pi.type = Variant::OBJECT;
 			}
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 			if (generate_doc) {
 				DocData::PropertyDoc prop_doc;
 				prop_doc.name = "shader_parameter/" + pi.name;
@@ -202,14 +207,17 @@ void Shader::get_shader_uniform_list(List<PropertyInfo> *p_params, bool p_get_gr
 				}
 			}
 #endif
+/*>>----- VEYA_COOKER */
 			p_params->push_back(pi);
 		}
 	}
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: omit editor interface/plugins/help; retain native asset types. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 	if (generate_doc && class_doc.properties.size() > 0) {
 		EditorHelp::add_doc(class_doc);
 	}
 #endif
+/*>>----- VEYA_COOKER */
 }
 
 RID Shader::get_rid() const {

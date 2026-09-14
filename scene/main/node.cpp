@@ -383,7 +383,11 @@ void Node::_propagate_enter_tree() {
 	data.blocked--;
 
 #ifdef DEBUG_ENABLED
+/*<<----- VEYA_COOKER: no live debugger cache owns offline asset nodes. */
+#ifndef VEYA_COOKER
 	SceneDebugger::add_to_cache(data.scene_file_path, this);
+#endif
+/*>>----- VEYA_COOKER */
 #endif
 	// enter groups
 }
@@ -413,7 +417,11 @@ void Node::_propagate_exit_tree() {
 #ifdef DEBUG_ENABLED
 	if (!data.scene_file_path.is_empty()) {
 		// Only remove if file path is set (optimization).
+/*<<----- VEYA_COOKER: corresponding debugger cache insertion is absent. */
+#ifndef VEYA_COOKER
 		SceneDebugger::remove_from_cache(data.scene_file_path, this);
+#endif
+/*>>----- VEYA_COOKER */
 	}
 #endif
 	data.blocked++;
