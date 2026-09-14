@@ -62,11 +62,15 @@
 #include "servers/display/native_menu.h"
 #include "servers/movie_writer/movie_writer.h"
 #include "servers/movie_writer/movie_writer_pngwav.h"
+/*<<----- VEYA_COOKER: no GPU renderer registration or generated shader headers. */
+#ifndef VEYA_COOKER
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_data_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
+#endif
+/*>>----- VEYA_COOKER */
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_device_binds.h"
 #include "servers/rendering/rendering_server.h"
@@ -252,19 +256,39 @@ void register_server_types() {
 
 	GDREGISTER_ABSTRACT_CLASS(RenderData);
 	GDREGISTER_CLASS(RenderDataExtension);
+/*<<----- VEYA_COOKER: no GPU renderer registration or generated shader headers. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(RenderDataRD);
+#endif
+/*>>----- VEYA_COOKER */
 
 	GDREGISTER_ABSTRACT_CLASS(RenderSceneData);
 	GDREGISTER_CLASS(RenderSceneDataExtension);
+/*<<----- VEYA_COOKER: no GPU renderer registration or generated shader headers. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(RenderSceneDataRD);
+#endif
+/*>>----- VEYA_COOKER */
 
 	GDREGISTER_CLASS(RenderSceneBuffersConfiguration);
 	GDREGISTER_ABSTRACT_CLASS(RenderSceneBuffers);
 	GDREGISTER_CLASS(RenderSceneBuffersExtension);
+/*<<----- VEYA_COOKER: no GPU renderer registration or generated shader headers. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(RenderSceneBuffersRD);
+#endif
+/*>>----- VEYA_COOKER */
 
+/*<<----- VEYA_COOKER: no GPU renderer registration or generated shader headers. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(FramebufferCacheRD);
+#endif
+/*>>----- VEYA_COOKER */
+/*<<----- VEYA_COOKER: no GPU renderer registration or generated shader headers. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(UniformSetCacheRD);
+#endif
+/*>>----- VEYA_COOKER */
 
 	GDREGISTER_CLASS(CameraFeed);
 
