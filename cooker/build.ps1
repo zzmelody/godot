@@ -31,7 +31,7 @@ try {
         & $pythonExecutable @sconsArguments
     }
     if ($LASTEXITCODE -ne 0) { throw "Cooker build failed with exit code $LASTEXITCODE." }
-    Write-Output (Join-Path $cookerRoot 'bin/godot.windows.editor.x86_64.veya_cooker.exe')
+    Write-Output (Join-Path $cookerRoot 'bin/veya_cooke.exe')
 } finally {
     Pop-Location
 }

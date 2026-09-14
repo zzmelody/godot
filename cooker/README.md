@@ -12,7 +12,7 @@ desktop preferences, external Blender/FBX2glTF runners, and scene previews.
 `cooker.gdbuild` disables 2D/UI authoring classes, not image/texture resources
 needed by 3D materials. GDScript/.NET and real rendering backends are disabled.
 
-The Windows x64 build passes 20 native asset/error tests and four source/build
+The Windows x64 build passes 20 native asset/error tests and five source/build
 contract tests. `scene/gui`, `scene/2d`, `scene/resources/2d`, scene debugger,
 editor UI, GDScript/.NET and real rendering implementations are excluded from
 the compilation graph. Private Node/Viewport/theme interfaces needed for
@@ -33,11 +33,14 @@ platform defaults override the Python profile for these options. No dependency
 revision is fetched or changed by this script. `lto=none` is the default for
 initial verification; `-Lto full` is a separate size optimization experiment.
 
+The Windows executable is `bin/veya_cooke.exe`. SCons links this short name
+directly; ordinary Godot builds retain their original artifact names.
+
 ## Native batch protocol (version 1)
 
 ```text
-godot.windows.editor.x86_64.veya_cooker.exe --capabilities
-godot.windows.editor.x86_64.veya_cooker.exe --path PROJECT --job JOB.json
+veya_cooke.exe --capabilities
+veya_cooke.exe --path PROJECT --job JOB.json
 ```
 
 `PROJECT` must contain `project.godot`. There is no script entry, editor window,
@@ -91,7 +94,7 @@ yet build-verified.
 
 ```powershell
 python cooker/tests/test_source_contract.py
-python cooker/tests/test_runtime.py --cooker bin/godot.windows.editor.x86_64.veya_cooker.exe --reference-godot PATH/TO/Godot_v4.7.2-stable_win64_console.exe -v
+python cooker/tests/test_runtime.py --cooker bin/veya_cooke.exe --reference-godot PATH/TO/Godot_v4.7.2-stable_win64_console.exe -v
 ```
 
 The reference-engine check loads the produced PCK in a separate empty project,

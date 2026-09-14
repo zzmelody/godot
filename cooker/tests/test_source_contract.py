@@ -71,6 +71,26 @@ class CookerSourceContract(unittest.TestCase):
         for path in [ROOT / "SConstruct", *ROOT.rglob("SCsub"), ROOT / "cooker/profile.py"]:
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
+    def test_windows_executable_name(self):
+        tree = ast.parse((ROOT / "platform/windows/SCsub").read_text(encoding="utf-8"))
+        selection = next(node for node in tree.body if isinstance(node, ast.If)
+                         and isinstance(node.test, ast.Compare)
+                         and isinstance(node.test.comparators[0], ast.Constant)
+                         and node.test.comparators[0].value == "static_library")
+        code = compile(ast.Module(body=[selection], type_ignores=[]), "windows executable selection", "exec")
+
+        class BuildEnvironment(dict):
+            def add_program(self, target, sources, PROGSUFFIX):
+                return target + PROGSUFFIX
+
+        for cooker, expected in ((True, "#bin/veya_cooke.exe"),
+                                 (False, "#bin/godot.windows.editor.x86_64.exe")):
+            environment = BuildEnvironment(library_type="executable", veya_cooker=cooker,
+                                           PROGSUFFIX=".windows.editor.x86_64.exe")
+            context = {"env": environment, "sources": []}
+            exec(code, context)
+            self.assertEqual(context["prog"], expected)
+
     def test_compile_graph_excludes_editor_and_scripts(self):
         database = ROOT / "compile_commands.json"
         if not database.exists():
