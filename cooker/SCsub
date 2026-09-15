@@ -28,6 +28,12 @@ else:
 recipe_env.Append(CPPPATH=[str(source / name / "include") for name in lock["components"]])
 
 luau_env = recipe_env.Clone()
+if env.msvc:
+    # Godot's /fp:strict enables FP exceptions, incompatible with Luau's
+    # local float_control(precise, off) pragmas. Match Luau's default mode
+    # without changing floating-point behavior in the Godot/recipe host.
+    luau_env["CCFLAGS"] = [flag for flag in luau_env["CCFLAGS"] if not str(flag).startswith("/fp:")]
+    luau_env.Append(CCFLAGS=["/fp:precise"])
 luau_env.disable_warnings()
 objects = []
 for component in lock["components"]:

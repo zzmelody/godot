@@ -307,11 +307,17 @@ bool DPITexture::has_alpha() const {
 }
 
 RID DPITexture::get_scaled_rid() const {
+/*<<----- VEYA_COOKER: disabled UI DPI textures have no text oversampling service. */
+#ifdef VEYA_COOKER
+	return get_rid();
+#else
 	double scale = TextServer::get_current_drawn_item_oversampling();
 	if (scale == 0.0) {
 		scale = 1.0;
 	}
 	return _ensure_scale(scale);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void DPITexture::draw(RID p_canvas_item, const Point2 &p_pos, const Color &p_modulate, bool p_transpose) const {

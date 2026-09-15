@@ -357,6 +357,8 @@ void Viewport::_sub_window_register(Window *p_window) {
 }
 
 void Viewport::_sub_window_update(Window *p_window) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	int index = _sub_window_find(p_window);
 
 	// _sub_window_update is sometimes called deferred, and the window may have been closed since then.
@@ -416,6 +418,8 @@ void Viewport::_sub_window_update(Window *p_window) {
 		RS::get_singleton()->canvas_item_add_rect(sw.canvas_item, r, Color());
 	}
 	RS::get_singleton()->canvas_item_add_texture_rect(sw.canvas_item, vr, sw.window->get_texture()->get_rid());
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Viewport::_sub_window_grab_focus(Window *p_window) {
@@ -636,6 +640,8 @@ void Viewport::_notification(int p_what) {
 
 		case NOTIFICATION_READY: {
 #ifndef _3D_DISABLED
+/*<<----- VEYA_COOKER: preserve Camera3D scene data without activating audio listeners. */
+#ifndef VEYA_COOKER
 			if (audio_listener_3d_set.size() && !audio_listener_3d) {
 				AudioListener3D *first = nullptr;
 				for (AudioListener3D *E : audio_listener_3d_set) {
@@ -648,6 +654,8 @@ void Viewport::_notification(int p_what) {
 					first->make_current();
 				}
 			}
+#endif
+/*>>----- VEYA_COOKER */
 
 			if (camera_3d_set.size() && !camera_3d) {
 				// There are cameras but no current camera, pick first in tree and make it current.
@@ -1162,8 +1170,12 @@ bool Viewport::_set_size(const Size2i &p_size, const int p_view_count, const Siz
 	}
 
 	if (new_font_oversampling != font_oversampling) {
+/*<<----- VEYA_COOKER: size bookkeeping must not call the removed text service. */
+#ifndef VEYA_COOKER
 		TS->reference_oversampling_level(new_font_oversampling);
 		TS->unreference_oversampling_level(font_oversampling);
+#endif
+/*>>----- VEYA_COOKER */
 
 		DPITexture::reference_scaling_level(new_font_oversampling);
 		DPITexture::unreference_scaling_level(font_oversampling);
@@ -1471,6 +1483,8 @@ Viewport::PositionalShadowAtlasQuadrantSubdiv Viewport::get_positional_shadow_at
 }
 
 Ref<InputEvent> Viewport::_make_input_local(const Ref<InputEvent> &ev) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	if (ev.is_null()) {
 		return ev; // No transformation defined for null event
 	}
@@ -1484,9 +1498,15 @@ Ref<InputEvent> Viewport::_make_input_local(const Ref<InputEvent> &ev) {
 		return me;
 	}
 	return ev->xformed_by(ai);
+#else
+	return Ref<InputEvent>();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Vector2 Viewport::get_mouse_position() const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Vector2());
 	if (get_section_root_viewport() != SceneTree::get_singleton()->get_root()) {
 		// Rely on the most recent mouse coordinate from an InputEventMouse in push_input.
@@ -1503,13 +1523,21 @@ Vector2 Viewport::get_mouse_position() const {
 		// Fallback to Input for getting mouse position in case of emulated mouse.
 		return get_screen_transform_internal().affine_inverse().xform(Input::get_singleton()->get_mouse_position());
 	}
+#else
+	return Vector2();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Viewport::warp_mouse(const Vector2 &p_position) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 	Transform2D xform = get_screen_transform_internal();
 	Vector2 gpos = xform.xform(p_position);
 	Input::get_singleton()->warp_mouse(gpos);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Point2 Viewport::wrap_mouse_in_rect(const Vector2 &p_relative, const Rect2 &p_rect) {
@@ -2515,6 +2543,8 @@ void Viewport::gui_perform_drop_at(const Point2 &p_pos, Control *p_control) {
 }
 
 void Viewport::_gui_cleanup_internal_state(Ref<InputEvent> p_event) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_FAIL_COND(p_event.is_null());
 
 	Ref<InputEventMouseButton> mb = p_event;
@@ -2523,6 +2553,8 @@ void Viewport::_gui_cleanup_internal_state(Ref<InputEvent> p_event) {
 			gui.mouse_focus_mask.clear_flag(mouse_button_to_mask(mb->get_button_index())); // Remove from mask.
 		}
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 List<Control *>::Element *Viewport::_gui_add_root_control(Control *p_control) {
@@ -3033,6 +3065,8 @@ Viewport::SubWindowResize Viewport::_sub_window_get_resize_margin(Window *p_subw
 }
 
 bool Viewport::_sub_windows_forward_input(const Ref<InputEvent> &p_event) {
+/*<<----- VEYA_COOKER: asset-only viewports/windows never process interactive input or text layout. */
+#ifndef VEYA_COOKER
 	if (gui.subwindow_drag != SUB_WINDOW_DRAG_DISABLED) {
 		ERR_FAIL_NULL_V(gui.currently_dragged_subwindow, false);
 
@@ -3302,6 +3336,10 @@ bool Viewport::_sub_windows_forward_input(const Ref<InputEvent> &p_event) {
 	gui.subwindow_focused->_window_input(ev);
 
 	return true;
+#else
+	return false;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Viewport::_window_start_drag(Window *p_window) {
@@ -3346,6 +3384,8 @@ void Viewport::_window_start_resize(SubWindowResize p_edge, Window *p_window) {
 }
 
 void Viewport::_update_mouse_over(const Ref<InputEventMouse> &p_mm) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	// Update gui.mouse_over and gui.subwindow_over in all Viewports.
 	// Send necessary mouse_enter/mouse_exit signals and the MOUSE_ENTER/MOUSE_EXIT notifications for every Viewport in the SceneTree.
 
@@ -3371,6 +3411,8 @@ void Viewport::_update_mouse_over(const Ref<InputEventMouse> &p_mm) {
 			receiving_window->_update_mouse_over(p_mm->get_position());
 		}
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 /*<<----- VEYA_COOKER: asset processes never perform interactive viewport layout/input. */
@@ -3721,6 +3763,8 @@ void Viewport::_push_shortcut_input_internal(const Ref<InputEvent> &p_event) {
 }
 
 void Viewport::_push_unhandled_input_internal(const Ref<InputEvent> &p_event) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	// Shortcut Input.
 	_push_shortcut_input_internal(p_event);
 
@@ -3749,6 +3793,8 @@ void Viewport::_push_unhandled_input_internal(const Ref<InputEvent> &p_event) {
 		}
 	}
 #endif // !defined(PHYSICS_2D_DISABLED) || !defined(PHYSICS_3D_DISABLED)
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Viewport::notify_mouse_entered() {
@@ -4818,6 +4864,8 @@ void Viewport::_audio_listener_3d_remove(AudioListener3D *p_listener) {
 }
 
 void Viewport::_audio_listener_3d_make_next_current(AudioListener3D *p_exclude) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	if (audio_listener_3d_set.size() > 0) {
 		for (AudioListener3D *E : audio_listener_3d_set) {
 			if (p_exclude == E) {
@@ -4839,10 +4887,14 @@ void Viewport::_audio_listener_3d_make_next_current(AudioListener3D *p_exclude) 
 			_camera_3d_transform_changed_notify();
 		}
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 #ifndef PHYSICS_3D_DISABLED
 void Viewport::_collision_object_3d_input_event(CollisionObject3D *p_object, Camera3D *p_camera, const Ref<InputEvent> &p_input_event, const Vector3 &p_pos, const Vector3 &p_normal, int p_shape) {
+/*<<----- VEYA_COOKER: asset-only viewports/windows never process interactive input or text layout. */
+#ifndef VEYA_COOKER
 	ERR_FAIL_NULL(p_object);
 	ERR_FAIL_NULL(p_camera);
 	if (!p_object->is_inside_tree() || !p_camera->is_inside_tree()) {
@@ -4865,6 +4917,8 @@ void Viewport::_collision_object_3d_input_event(CollisionObject3D *p_object, Cam
 	physics_last_object_transform = object_transform;
 	physics_last_camera_transform = camera_transform;
 	physics_last_id = id;
+#endif
+/*>>----- VEYA_COOKER */
 }
 #endif // PHYSICS_3D_DISABLED
 

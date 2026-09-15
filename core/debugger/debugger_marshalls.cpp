@@ -149,6 +149,8 @@ bool DebuggerMarshalls::OutputError::deserialize(const Array &p_arr) {
 }
 
 Array DebuggerMarshalls::serialize_key_shortcut(const Ref<Shortcut> &p_shortcut) {
+/*<<----- VEYA_COOKER: asset diagnostics have no interactive debugger or keyboard shortcuts. */
+#ifndef VEYA_COOKER
 	ERR_FAIL_COND_V(p_shortcut.is_null(), Array());
 	Array keys;
 	for (const Ref<InputEvent> ev : p_shortcut->get_events()) {
@@ -163,9 +165,15 @@ Array DebuggerMarshalls::serialize_key_shortcut(const Ref<Shortcut> &p_shortcut)
 		}
 	}
 	return keys;
+#else
+	return Array();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Ref<Shortcut> DebuggerMarshalls::deserialize_key_shortcut(const Array &p_keys) {
+/*<<----- VEYA_COOKER: asset diagnostics have no interactive debugger or keyboard shortcuts. */
+#ifndef VEYA_COOKER
 	Array key_events;
 	ERR_FAIL_COND_V(p_keys.size() % 2 != 0, Ref<Shortcut>());
 	for (int i = 0; i < p_keys.size(); i += 2) {
@@ -180,6 +188,10 @@ Ref<Shortcut> DebuggerMarshalls::deserialize_key_shortcut(const Array &p_keys) {
 	shortcut.instantiate();
 	shortcut->set_events(key_events);
 	return shortcut;
+#else
+	return Ref<Shortcut>();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 String DebuggerMarshalls::parse_type_from_variant(const Variant &p_variant) {

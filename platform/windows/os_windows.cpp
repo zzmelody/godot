@@ -64,6 +64,12 @@ typedef HRESULT(WINAPI *RtlGetVersionPtr)(OSVERSIONINFOEXW *lpVersionInformation
 #include <bcrypt.h>
 #include <direct.h>
 #include <knownfolders.h>
+/*<<----- VEYA_COOKER: include Win32 timer/COM declarations directly after removing transitive audio driver headers. */
+#ifdef VEYA_COOKER
+#include <mmdeviceapi.h>
+#include <mmsystem.h>
+#endif
+/*>>----- VEYA_COOKER */
 #include <process.h>
 #include <psapi.h>
 #include <regstr.h>
@@ -1896,6 +1902,10 @@ DWRITE_FONT_STRETCH OS_Windows::_stretch_to_dw(int p_stretch) const {
 }
 
 Vector<String> OS_Windows::get_system_font_path_for_text(const String &p_font_name, const String &p_text, const String &p_locale, const String &p_script, int p_weight, int p_stretch, bool p_italic) const {
+/*<<----- VEYA_COOKER: no text service or system font fallback in the asset-only executable. */
+#ifdef VEYA_COOKER
+	return Vector<String>();
+#else
 	// This may be called before TextServerManager has been created, which would cause a crash downstream if we do not check here
 	if (!dwrite2_init || !TextServerManager::get_singleton()) {
 		return Vector<String>();
@@ -1984,6 +1994,8 @@ Vector<String> OS_Windows::get_system_font_path_for_text(const String &p_font_na
 		ret.push_back(fpath);
 	}
 	return ret;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 String OS_Windows::get_system_font_path(const String &p_font_name, int p_weight, int p_stretch, bool p_italic) const {

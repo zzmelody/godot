@@ -141,6 +141,8 @@ CanvasItem *CanvasItem::get_current_item_drawn() {
 }
 
 void CanvasItem::_redraw_callback() {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	if (!is_inside_tree()) {
 		pending_update = false;
 		return;
@@ -178,6 +180,8 @@ void CanvasItem::_redraw_callback() {
 		draw_commands_dirty = true;
 	}
 	pending_update = false; // Don't change to false until finished drawing (avoid recursive update).
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Transform2D CanvasItem::get_global_transform_with_canvas() const {
@@ -495,7 +499,11 @@ void CanvasItem::_notification(int p_what) {
 			parent_visible_in_tree = false;
 
 			if (oversampling_override_cache > 0) {
+/*<<----- VEYA_COOKER: disabled 2D canvas nodes cannot release a nonexistent text service. */
+#ifndef VEYA_COOKER
 				TS->unreference_oversampling_level(oversampling_override_cache);
+#endif
+/*>>----- VEYA_COOKER */
 				DPITexture::unreference_scaling_level(oversampling_override_cache);
 				oversampling_override_cache = -1.0;
 			}

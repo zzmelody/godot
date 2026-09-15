@@ -165,6 +165,8 @@ bool Window::_get(const StringName &p_name, Variant &r_ret) const {
 }
 
 void Window::_get_property_list(List<PropertyInfo> *p_list) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD;
 
 	Ref<Theme> default_theme = ThemeDB::get_singleton()->get_default_theme();
@@ -243,6 +245,8 @@ void Window::_get_property_list(List<PropertyInfo> *p_list) const {
 			p_list->push_back(PropertyInfo(Variant::OBJECT, PNAME("theme_override_styles") + String("/") + E, PROPERTY_HINT_RESOURCE_TYPE, StyleBox::get_class_static(), usage));
 		}
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 /*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
@@ -441,6 +445,8 @@ void Window::reset_size() {
 }
 
 Point2i Window::get_position_with_decorations() const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Point2i());
 	if (window_id != DisplayServerEnums::INVALID_WINDOW_ID) {
 		return DisplayServer::get_singleton()->window_get_position_with_decorations(window_id);
@@ -456,6 +462,10 @@ Point2i Window::get_position_with_decorations() const {
 		return position - border_offset;
 	}
 	return position;
+#else
+	return Point2i();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Size2i Window::get_size_with_decorations() const {
@@ -843,6 +853,8 @@ void Window::_propagate_window_notification(Node *p_node, int p_notification) {
 }
 
 void Window::_event_callback(DisplayServerEnums::WindowEvent p_event) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	switch (p_event) {
 		case DisplayServerEnums::WINDOW_EVENT_MOUSE_ENTER: {
 			if (!is_inside_tree()) {
@@ -936,9 +948,13 @@ void Window::_event_callback(DisplayServerEnums::WindowEvent p_event) {
 			emit_signal(SNAME("output_max_linear_value_changed"), get_output_max_linear_value());
 		} break;
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Window::update_mouse_cursor_state() {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 	// Update states based on mouse cursor position.
 	// This includes updated mouse_enter or mouse_exit signals or the current mouse cursor shape.
@@ -953,6 +969,8 @@ void Window::update_mouse_cursor_state() {
 	mm->set_global_position(xform.xform(pos));
 	mm->set_device(InputEvent::DEVICE_ID_INTERNAL);
 	push_input(mm, true);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Window::show() {
@@ -1573,6 +1591,8 @@ Transform2D Window::get_accessibility_transform() const {
 }
 
 void Window::_notification(int p_what) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 	switch (p_what) {
 		case NOTIFICATION_ACCESSIBILITY_INVALIDATE: {
@@ -1830,6 +1850,8 @@ void Window::_notification(int p_what) {
 			emit_signal(SceneStringName(mouse_exited));
 		} break;
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Window::set_content_scale_size(const Size2i &p_size) {
@@ -2014,6 +2036,8 @@ bool Window::_can_consume_input_events() const {
 }
 
 void Window::_window_input(const Ref<InputEvent> &p_ev) {
+/*<<----- VEYA_COOKER: asset-only viewports/windows never process interactive input or text layout. */
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 
 	if (exclusive_child != nullptr) {
@@ -2040,6 +2064,8 @@ void Window::_window_input(const Ref<InputEvent> &p_ev) {
 	if (is_inside_tree()) {
 		push_input(p_ev);
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Window::_window_input_text(const String &p_text, bool p_emit_signal) {
@@ -2522,8 +2548,12 @@ void Window::remove_child_notify(Node *p_child) {
 // Theming.
 
 void Window::set_theme_owner_node(Node *p_node) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 	theme_owner->set_owner_node(p_node);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Node *Window::get_theme_owner_node() const {
@@ -2537,8 +2567,12 @@ bool Window::has_theme_owner_node() const {
 }
 
 void Window::set_theme_context(ThemeContext *p_context, bool p_propagate) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_MAIN_THREAD_GUARD;
 	theme_owner->set_owner_context(p_context, p_propagate);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 /*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
@@ -2585,9 +2619,13 @@ Ref<Theme> Window::get_theme() const {
 }
 
 void Window::_theme_changed() {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	if (is_inside_tree()) {
 		theme_owner->propagate_theme_changed(this, this, true, false);
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Window::_notify_theme_override_changed() {
@@ -2606,6 +2644,8 @@ void Window::_invalidate_theme_cache() {
 }
 
 void Window::_update_theme_item_cache() {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	// Request an update on the next frame to reflect theme changes.
 	// Updating without a delay can cause a lot of lag.
 	if (!wrap_controls) {
@@ -2616,6 +2656,8 @@ void Window::_update_theme_item_cache() {
 	}
 
 	ThemeDB::get_singleton()->update_class_instance_items(this);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Window::_update_embedded_window() {
@@ -2646,6 +2688,8 @@ StringName Window::get_theme_type_variation() const {
 /// Theme property lookup.
 
 Ref<Texture2D> Window::get_theme_icon(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Ref<Texture2D>());
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2667,9 +2711,15 @@ Ref<Texture2D> Window::get_theme_icon(const StringName &p_name, const StringName
 	Ref<Texture2D> icon = theme_owner->get_theme_item_in_types(Theme::DATA_TYPE_ICON, p_name, theme_types);
 	theme_icon_cache[p_theme_type][p_name] = icon;
 	return icon;
+#else
+	return Ref<Texture2D>();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Ref<StyleBox> Window::get_theme_stylebox(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Ref<StyleBox>());
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2691,9 +2741,15 @@ Ref<StyleBox> Window::get_theme_stylebox(const StringName &p_name, const StringN
 	Ref<StyleBox> style = theme_owner->get_theme_item_in_types(Theme::DATA_TYPE_STYLEBOX, p_name, theme_types);
 	theme_style_cache[p_theme_type][p_name] = style;
 	return style;
+#else
+	return Ref<StyleBox>();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Ref<Font> Window::get_theme_font(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Ref<Font>());
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2715,9 +2771,15 @@ Ref<Font> Window::get_theme_font(const StringName &p_name, const StringName &p_t
 	Ref<Font> font = theme_owner->get_theme_item_in_types(Theme::DATA_TYPE_FONT, p_name, theme_types);
 	theme_font_cache[p_theme_type][p_name] = font;
 	return font;
+#else
+	return Ref<Font>();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 int Window::get_theme_font_size(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(0);
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2739,9 +2801,15 @@ int Window::get_theme_font_size(const StringName &p_name, const StringName &p_th
 	int font_size = theme_owner->get_theme_item_in_types(Theme::DATA_TYPE_FONT_SIZE, p_name, theme_types);
 	theme_font_size_cache[p_theme_type][p_name] = font_size;
 	return font_size;
+#else
+	return 0;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Color Window::get_theme_color(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Color());
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2763,9 +2831,15 @@ Color Window::get_theme_color(const StringName &p_name, const StringName &p_them
 	Color color = theme_owner->get_theme_item_in_types(Theme::DATA_TYPE_COLOR, p_name, theme_types);
 	theme_color_cache[p_theme_type][p_name] = color;
 	return color;
+#else
+	return Color();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 int Window::get_theme_constant(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(0);
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2787,6 +2861,10 @@ int Window::get_theme_constant(const StringName &p_name, const StringName &p_the
 	int constant = theme_owner->get_theme_item_in_types(Theme::DATA_TYPE_CONSTANT, p_name, theme_types);
 	theme_constant_cache[p_theme_type][p_name] = constant;
 	return constant;
+#else
+	return 0;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Variant Window::get_theme_item(Theme::DataType p_data_type, const StringName &p_name, const StringName &p_theme_type) const {
@@ -2817,6 +2895,8 @@ Ref<Texture2D> Window::get_editor_theme_icon(const StringName &p_name) const {
 #endif
 
 bool Window::has_theme_icon(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(false);
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2831,9 +2911,15 @@ bool Window::has_theme_icon(const StringName &p_name, const StringName &p_theme_
 	Vector<StringName> theme_types;
 	theme_owner->get_theme_type_dependencies(this, p_theme_type, theme_types);
 	return theme_owner->has_theme_item_in_types(Theme::DATA_TYPE_ICON, p_name, theme_types);
+#else
+	return false;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 bool Window::has_theme_stylebox(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(false);
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2848,9 +2934,15 @@ bool Window::has_theme_stylebox(const StringName &p_name, const StringName &p_th
 	Vector<StringName> theme_types;
 	theme_owner->get_theme_type_dependencies(this, p_theme_type, theme_types);
 	return theme_owner->has_theme_item_in_types(Theme::DATA_TYPE_STYLEBOX, p_name, theme_types);
+#else
+	return false;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 bool Window::has_theme_font(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(false);
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2865,9 +2957,15 @@ bool Window::has_theme_font(const StringName &p_name, const StringName &p_theme_
 	Vector<StringName> theme_types;
 	theme_owner->get_theme_type_dependencies(this, p_theme_type, theme_types);
 	return theme_owner->has_theme_item_in_types(Theme::DATA_TYPE_FONT, p_name, theme_types);
+#else
+	return false;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 bool Window::has_theme_font_size(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(false);
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2882,9 +2980,15 @@ bool Window::has_theme_font_size(const StringName &p_name, const StringName &p_t
 	Vector<StringName> theme_types;
 	theme_owner->get_theme_type_dependencies(this, p_theme_type, theme_types);
 	return theme_owner->has_theme_item_in_types(Theme::DATA_TYPE_FONT_SIZE, p_name, theme_types);
+#else
+	return false;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 bool Window::has_theme_color(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(false);
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2899,9 +3003,15 @@ bool Window::has_theme_color(const StringName &p_name, const StringName &p_theme
 	Vector<StringName> theme_types;
 	theme_owner->get_theme_type_dependencies(this, p_theme_type, theme_types);
 	return theme_owner->has_theme_item_in_types(Theme::DATA_TYPE_COLOR, p_name, theme_types);
+#else
+	return false;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 bool Window::has_theme_constant(const StringName &p_name, const StringName &p_theme_type) const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(false);
 	if (!initialized) {
 		WARN_PRINT_ONCE(vformat("Attempting to access theme items too early in %s; prefer NOTIFICATION_POSTINITIALIZE and NOTIFICATION_THEME_CHANGED", get_description()));
@@ -2916,6 +3026,10 @@ bool Window::has_theme_constant(const StringName &p_name, const StringName &p_th
 	Vector<StringName> theme_types;
 	theme_owner->get_theme_type_dependencies(this, p_theme_type, theme_types);
 	return theme_owner->has_theme_item_in_types(Theme::DATA_TYPE_CONSTANT, p_name, theme_types);
+#else
+	return false;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 /// Local property overrides.
@@ -3064,18 +3178,36 @@ bool Window::has_theme_constant_override(const StringName &p_name) const {
 /// Default theme properties.
 
 float Window::get_theme_default_base_scale() const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(0);
 	return theme_owner->get_theme_default_base_scale();
+#else
+	return 0;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Ref<Font> Window::get_theme_default_font() const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(Ref<Font>());
 	return theme_owner->get_theme_default_font();
+#else
+	return Ref<Font>();
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 int Window::get_theme_default_font_size() const {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(0);
 	return theme_owner->get_theme_default_font_size();
+#else
+	return 0;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 /// Bulk actions.
@@ -3160,6 +3292,8 @@ Window::LayoutDirection Window::get_layout_direction() const {
 }
 
 bool Window::is_layout_rtl() const {
+/*<<----- VEYA_COOKER: asset-only viewports/windows never process interactive input or text layout. */
+#ifndef VEYA_COOKER
 	ERR_READ_THREAD_GUARD_V(false);
 	if (layout_dir == LAYOUT_DIRECTION_INHERITED) {
 #ifdef TOOLS_ENABLED
@@ -3225,6 +3359,10 @@ bool Window::is_layout_rtl() const {
 	} else {
 		return (layout_dir == LAYOUT_DIRECTION_RTL);
 	}
+#else
+	return false;
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 #ifndef DISABLE_DEPRECATED
@@ -3379,6 +3517,8 @@ void Window::_update_displayed_title() {
 }
 
 void Window::_bind_methods() {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	ClassDB::bind_method(D_METHOD("set_title", "title"), &Window::set_title);
 	ClassDB::bind_method(D_METHOD("get_title"), &Window::get_title);
 
@@ -3719,6 +3859,8 @@ void Window::_bind_methods() {
 	BIND_THEME_ITEM(Theme::DATA_TYPE_CONSTANT, Window, close_v_offset);
 
 	BIND_THEME_ITEM(Theme::DATA_TYPE_CONSTANT, Window, resize_margin);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 Window::Window() {

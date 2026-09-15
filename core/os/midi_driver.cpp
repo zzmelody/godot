@@ -104,6 +104,8 @@ uint8_t MIDIDriver::Parser::channel(uint8_t p_status_byte) {
 
 void MIDIDriver::send_event(int p_device_index, uint8_t p_status,
 		const uint8_t *p_data, size_t p_data_len) {
+/*<<----- VEYA_COOKER: the batch asset process has neither MIDI devices nor an Input event sink. */
+#ifndef VEYA_COOKER
 	const MIDIMessage msg = Parser::status_to_msg_enum(p_status);
 	ERR_FAIL_COND(p_data_len < Parser::expected_data(msg));
 
@@ -140,6 +142,8 @@ void MIDIDriver::send_event(int p_device_index, uint8_t p_status,
 			break;
 	}
 	Input::get_singleton()->parse_input_event(event);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void MIDIDriver::Parser::parse_fragment(uint8_t p_fragment) {

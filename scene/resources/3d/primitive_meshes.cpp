@@ -3045,6 +3045,8 @@ RibbonTrailMesh::RibbonTrailMesh() {
 /*  TextMesh                                                             */
 /*************************************************************************/
 
+/*<<----- VEYA_COOKER: TextMesh is disabled; retain geometric primitives without text/font/theme implementation. */
+#ifndef VEYA_COOKER
 void TextMesh::_generate_glyph_mesh_data(const GlyphMeshKey &p_key, const Glyph &p_gl) const {
 	if (cache.has(p_key)) {
 		return;
@@ -3979,3 +3981,5 @@ void TextMesh::set_uppercase(bool p_uppercase) {
 bool TextMesh::is_uppercase() const {
 	return uppercase;
 }
+#endif
+/*>>----- VEYA_COOKER */

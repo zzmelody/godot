@@ -3570,6 +3570,8 @@ void Node::request_ready() {
 }
 
 void Node::_call_input(const Ref<InputEvent> &p_event) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	if (p_event->get_device() != InputEvent::DEVICE_ID_INTERNAL) {
 		GDVIRTUAL_CALL(_input, p_event);
 	}
@@ -3577,9 +3579,13 @@ void Node::_call_input(const Ref<InputEvent> &p_event) {
 		return;
 	}
 	input(p_event);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Node::_call_shortcut_input(const Ref<InputEvent> &p_event) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	if (p_event->get_device() != InputEvent::DEVICE_ID_INTERNAL) {
 		GDVIRTUAL_CALL(_shortcut_input, p_event);
 	}
@@ -3587,9 +3593,13 @@ void Node::_call_shortcut_input(const Ref<InputEvent> &p_event) {
 		return;
 	}
 	shortcut_input(p_event);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Node::_call_unhandled_input(const Ref<InputEvent> &p_event) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	if (p_event->get_device() != InputEvent::DEVICE_ID_INTERNAL) {
 		GDVIRTUAL_CALL(_unhandled_input, p_event);
 	}
@@ -3597,9 +3607,13 @@ void Node::_call_unhandled_input(const Ref<InputEvent> &p_event) {
 		return;
 	}
 	unhandled_input(p_event);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Node::_call_unhandled_key_input(const Ref<InputEvent> &p_event) {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	if (p_event->get_device() != InputEvent::DEVICE_ID_INTERNAL) {
 		GDVIRTUAL_CALL(_unhandled_key_input, p_event);
 	}
@@ -3607,6 +3621,8 @@ void Node::_call_unhandled_key_input(const Ref<InputEvent> &p_event) {
 		return;
 	}
 	unhandled_key_input(p_event);
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void Node::_validate_property(PropertyInfo &p_property) const {

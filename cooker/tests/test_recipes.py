@@ -35,7 +35,7 @@ class RecipeTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PATH"] = str(self.project / "no-external-executables")
         run = subprocess.run([str(EXECUTABLE), "--path", str(self.project), "--job", str(path)],
-                             capture_output=True, text=True, timeout=20, env=environment)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, env=environment)
         self.assertGreaterEqual(run.returncode, 0, run.stdout + run.stderr)  # No signal/crash on bad input.
         lines = [line for line in run.stdout.splitlines() if line.startswith('{')]
         self.assertTrue(lines, run.stdout + run.stderr)
@@ -69,7 +69,7 @@ class RecipeTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PATH"] = str(self.project / "no-external-executables")
         run = subprocess.run([str(EXECUTABLE), "--path", str(self.project), "--pipeline", "res://" + source.name],
-                             capture_output=True, text=True, timeout=20, env=environment)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, env=environment)
         lines = [line for line in run.stdout.splitlines() if line.startswith('{')]
         self.assertTrue(lines, run.stdout + run.stderr)
         result = json.loads(lines[-1])
@@ -78,7 +78,7 @@ class RecipeTests(unittest.TestCase):
         return result
 
     def test_capabilities_and_no_external_runtime(self):
-        run = subprocess.run([str(EXECUTABLE), "--capabilities"], capture_output=True, text=True, timeout=15)
+        run = subprocess.run([str(EXECUTABLE), "--capabilities"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         report = json.loads(next(line for line in run.stdout.splitlines() if line.startswith('{')))
         self.assertEqual(report["script_languages"], 0)
         self.assertEqual(report["recipe_runtime"]["version"], "0.738")
@@ -372,7 +372,7 @@ func _initialize() -> void:
     quit(2 if failed else 0)
 ''')
         run = subprocess.run([str(REFERENCE), "--headless", "--path", str(verify), "--script", str(verify / "verify.gd"),
-                              "--", str(self.project / pack)], capture_output=True, text=True, timeout=30)
+                              "--", str(self.project / pack)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("COOKER_RECIPE_PACK_OK", run.stdout)
         self.assertNotIn("ERROR:", run.stdout + run.stderr)

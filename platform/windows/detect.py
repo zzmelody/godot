@@ -423,6 +423,10 @@ def configure_msvc(env: "SConsEnvironment"):
         ]
     )
     env.AppendUnique(CPPDEFINES=["NOMINMAX"])  # disable bogus min/max WinDef.h macros
+    # /*<<----- VEYA_COOKER: match the headless MinGW selection; no audio or MIDI platform driver objects. */
+    if env["veya_cooker"]:
+        env["CPPDEFINES"] = [item for item in env["CPPDEFINES"] if item not in ("WASAPI_ENABLED", "WINMIDI_ENABLED")]
+    # /*>>----- VEYA_COOKER */
     if env["arch"] == "x86_64":
         env.AppendUnique(CPPDEFINES=["_WIN64"])
 

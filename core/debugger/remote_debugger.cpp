@@ -394,6 +394,8 @@ Array RemoteDebugger::_get_message() {
 }
 
 void RemoteDebugger::debug(bool p_can_continue, bool p_is_error_breakpoint) {
+/*<<----- VEYA_COOKER: asset diagnostics have no interactive debugger or keyboard shortcuts. */
+#ifndef VEYA_COOKER
 	//this function is called when there is a debugger break (bug on script)
 	//or when execution is paused from editor
 
@@ -647,6 +649,8 @@ void RemoteDebugger::debug(bool p_can_continue, bool p_is_error_breakpoint) {
 
 		threads_in_break.erase(Thread::get_caller_id());
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void RemoteDebugger::poll_events(bool p_is_idle) {

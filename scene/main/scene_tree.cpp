@@ -903,10 +903,14 @@ void SceneTree::_main_window_go_back() {
 }
 
 void SceneTree::_main_window_focus_in() {
+/*<<----- VEYA_COOKER: disabled desktop presentation cannot access input, text, theme or audio services. */
+#ifndef VEYA_COOKER
 	Input *id = Input::get_singleton();
 	if (id) {
 		id->ensure_touch_mouse_raised();
 	}
+#endif
+/*>>----- VEYA_COOKER */
 }
 
 void SceneTree::_notification(int p_notification) {
@@ -933,6 +937,8 @@ void SceneTree::_notification(int p_notification) {
 
 		case NOTIFICATION_APPLICATION_FOCUS_IN:
 		case NOTIFICATION_APPLICATION_FOCUS_OUT: {
+/*<<----- VEYA_COOKER: no player input state to release on a window focus notification. */
+#ifndef VEYA_COOKER
 			if (Input::get_singleton()) {
 				Input::get_singleton()->application_focused = p_notification == NOTIFICATION_APPLICATION_FOCUS_IN;
 
@@ -941,6 +947,8 @@ void SceneTree::_notification(int p_notification) {
 				// to be released after focus loss.
 				Input::get_singleton()->release_pressed_events();
 			}
+#endif
+/*>>----- VEYA_COOKER */
 
 			// Pass these to nodes, since they are mirrored.
 			get_root()->propagate_notification(p_notification);
