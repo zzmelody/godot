@@ -3,7 +3,17 @@ from misc.utility.scons_hints import *
 
 Import("env")
 
-env.add_source_files(env.scene_sources, "*.cpp")
+# /*<<----- VEYA_COOKER: cameras and lighting remain scene data; audio listeners/players and labels do not. */
+if env["veya_cooker"]:
+    excluded = {
+        "audio_listener_3d.cpp",
+        "audio_stream_player_3d.cpp",
+        "label_3d.cpp",
+    }
+    env.add_source_files(env.scene_sources, [source for source in env.Glob("*.cpp") if source.name not in excluded])
+else:
+    env.add_source_files(env.scene_sources, "*.cpp")
+# /*>>----- VEYA_COOKER */
 
 # Chain load SCsubs
 if not env["disable_physics_3d"]:

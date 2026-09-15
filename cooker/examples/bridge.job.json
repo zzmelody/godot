@@ -1,0 +1,7 @@
+{
+  "operation": "run-recipe",
+  "source": "res://native/third_party/godot/cooker/examples/bridge.luau",
+  "output": "res://assets/generated/luau_bridge/r1/bridge.scn",
+  "seed": 42,
+  "parameters": {"span": 8, "width": 2.6, "rise": 1.25, "segments": 24}
+}

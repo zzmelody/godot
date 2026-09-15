@@ -5,6 +5,7 @@ param(
     [ValidateRange(1, 64)][int]$Jobs = 12,
     [ValidateSet('none', 'full', 'auto')][string]$Lto = 'none',
     [string]$LogPath,
+    [string]$LuauSource,
     [switch]$KeepGoing,
     [switch]$CompilationDatabase
 )
@@ -20,6 +21,7 @@ if (-not $vsInstall) { throw 'Install Visual Studio C++ build tools and Windows 
 
 # Windows platform defaults override Python profile values for these two options.
 $sconsArguments = @('-m', 'SCons', 'platform=windows', 'profile=cooker/profile.py', 'arch=x86_64', 'd3d12=no', "lto=$Lto", "-j$Jobs")
+if ($LuauSource) { $sconsArguments += "veya_luau_source=$((Resolve-Path -LiteralPath $LuauSource).Path)" }
 if ($KeepGoing) { $sconsArguments += '-k' }
 if ($CompilationDatabase) { $sconsArguments += 'compiledb=yes' }
 if ($LogPath) { $LogPath = [System.IO.Path]::GetFullPath($LogPath) }

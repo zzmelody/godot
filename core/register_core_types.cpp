@@ -186,6 +186,8 @@ void register_core_types() {
 	GDREGISTER_CLASS(MissingResource);
 	GDREGISTER_CLASS(Image);
 
+	/*<<----- VEYA_COOKER: asset jobs never create runtime input events or shortcuts. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(Shortcut);
 	GDREGISTER_ABSTRACT_CLASS(InputEvent);
 	GDREGISTER_ABSTRACT_CLASS(InputEventFromWindow);
@@ -204,6 +206,8 @@ void register_core_types() {
 	GDREGISTER_CLASS(InputEventMagnifyGesture);
 	GDREGISTER_CLASS(InputEventPanGesture);
 	GDREGISTER_CLASS(InputEventMIDI);
+#endif
+	/*>>----- VEYA_COOKER */
 
 	// Network
 	GDREGISTER_ABSTRACT_CLASS(StreamPeer);
@@ -323,8 +327,12 @@ void register_core_types() {
 	GDREGISTER_CLASS(CoreBind::EngineDebugger);
 
 	GDREGISTER_CLASS(TranslationServer);
+	/*<<----- VEYA_COOKER: no Input or InputMap singleton exists in the offline process. */
+#ifndef VEYA_COOKER
 	GDREGISTER_ABSTRACT_CLASS(Input);
 	GDREGISTER_CLASS(InputMap);
+#endif
+	/*>>----- VEYA_COOKER */
 	GDREGISTER_CLASS(Expression);
 	GDREGISTER_CLASS(ProjectSettings);
 
@@ -379,8 +387,12 @@ void register_core_singletons() {
 	Engine::get_singleton()->add_singleton(Engine::Singleton("ResourceSaver", CoreBind::ResourceSaver::get_singleton()));
 	Engine::get_singleton()->add_singleton(Engine::Singleton("Marshalls", CoreBind::Marshalls::get_singleton()));
 	Engine::get_singleton()->add_singleton(Engine::Singleton("TranslationServer", TranslationServer::get_singleton()));
+	/*<<----- VEYA_COOKER: no Input or InputMap singleton exists in the offline process. */
+#ifndef VEYA_COOKER
 	Engine::get_singleton()->add_singleton(Engine::Singleton("Input", Input::get_singleton()));
 	Engine::get_singleton()->add_singleton(Engine::Singleton("InputMap", InputMap::get_singleton()));
+#endif
+	/*>>----- VEYA_COOKER */
 	Engine::get_singleton()->add_singleton(Engine::Singleton("EngineDebugger", CoreBind::EngineDebugger::get_singleton()));
 	Engine::get_singleton()->add_singleton(Engine::Singleton("GDExtensionManager", GDExtensionManager::get_singleton()));
 	Engine::get_singleton()->add_singleton(Engine::Singleton("ResourceUID", ResourceUID::get_singleton()));

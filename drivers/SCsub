@@ -8,39 +8,52 @@ Import("env")
 env.drivers_sources = []
 supported = env.get("supported", [])
 
-# OS drivers
-SConscript("unix/SCsub")
-SConscript("windows/SCsub")
+# /*<<----- VEYA_COOKER: retain filesystem/thread/PNG drivers only; asset jobs never open audio, MIDI, display or GPU devices. */
+if env["veya_cooker"]:
+    if env["platform"] == "windows":
+        SConscript("windows/SCsub")
+    else:
+        SConscript("unix/SCsub")
+    if env["platform"] in ["macos", "ios", "visionos"]:
+        SConscript("apple/SCsub")
+else:
+    # OS drivers
+    SConscript("unix/SCsub")
+    SConscript("windows/SCsub")
 
-# Sounds drivers
-SConscript("alsa/SCsub")
-SConscript("pulseaudio/SCsub")
-if env["platform"] == "windows":
-    SConscript("wasapi/SCsub")
-    if not env.msvc:
-        SConscript("backtrace/SCsub")
-if env["xaudio2"]:
-    if "xaudio2" not in supported:
-        print_error("Target platform '{}' does not support the XAudio2 audio driver".format(env["platform"]))
-        Exit(255)
-    SConscript("xaudio2/SCsub")
+    # Sounds drivers
+    SConscript("alsa/SCsub")
+    SConscript("pulseaudio/SCsub")
+    if env["platform"] == "windows":
+        SConscript("wasapi/SCsub")
+        if not env.msvc:
+            SConscript("backtrace/SCsub")
+    if env["xaudio2"]:
+        if "xaudio2" not in supported:
+            print_error("Target platform '{}' does not support the XAudio2 audio driver".format(env["platform"]))
+            Exit(255)
+        SConscript("xaudio2/SCsub")
 
-# Shared Apple platform drivers
-if env["platform"] in ["macos", "ios", "visionos"]:
-    SConscript("apple/SCsub")
-    SConscript("coreaudio/SCsub")
-if env["platform"] in ["ios", "visionos"]:
-    SConscript("apple_embedded/SCsub")
+    # Shared Apple platform drivers
+    if env["platform"] in ["macos", "ios", "visionos"]:
+        SConscript("apple/SCsub")
+        SConscript("coreaudio/SCsub")
+    if env["platform"] in ["ios", "visionos"]:
+        SConscript("apple_embedded/SCsub")
+# /*>>----- VEYA_COOKER */
 
 # Accessibility
 if env["accesskit"] and env["platform"] in ["macos", "windows", "linuxbsd"]:
     SConscript("accesskit/SCsub")
 
-# Midi drivers
-SConscript("alsamidi/SCsub")
-if env["platform"] in ["macos"]:
-    SConscript("coremidi/SCsub")
-SConscript("winmidi/SCsub")
+# /*<<----- VEYA_COOKER: no MIDI input in the noninteractive asset process. */
+if not env["veya_cooker"]:
+    # Midi drivers
+    SConscript("alsamidi/SCsub")
+    if env["platform"] in ["macos"]:
+        SConscript("coremidi/SCsub")
+    SConscript("winmidi/SCsub")
+# /*>>----- VEYA_COOKER */
 
 # Graphics drivers
 if env["vulkan"]:

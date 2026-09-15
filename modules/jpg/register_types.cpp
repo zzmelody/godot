@@ -31,21 +31,33 @@
 #include "register_types.h"
 
 #include "image_loader_libjpeg_turbo.h"
+/*<<----- VEYA_COOKER: JPEG import remains available without the movie-writer service. */
+#ifndef VEYA_COOKER
 #include "movie_writer_mjpeg.h"
+#endif
+/*>>----- VEYA_COOKER */
 
 #include "core/object/class_db.h"
 
 static Ref<ImageLoaderLibJPEGTurbo> image_loader_libjpeg_turbo;
+/*<<----- VEYA_COOKER: the offline tool owns no movie encoder. */
+#ifndef VEYA_COOKER
 static MovieWriterMJPEG *writer_mjpeg = nullptr;
+#endif
+/*>>----- VEYA_COOKER */
 
 void initialize_jpg_module(ModuleInitializationLevel p_level) {
 	switch (p_level) {
+		/*<<----- VEYA_COOKER: skip movie-writer registration in the offline image module. */
+#ifndef VEYA_COOKER
 		case MODULE_INITIALIZATION_LEVEL_SERVERS: {
 			if constexpr (GD_IS_CLASS_ENABLED(MovieWriterMJPEG)) {
 				writer_mjpeg = memnew(MovieWriterMJPEG);
 				MovieWriter::add_writer(writer_mjpeg);
 			}
 		} break;
+#endif
+		/*>>----- VEYA_COOKER */
 
 		case MODULE_INITIALIZATION_LEVEL_SCENE: {
 			image_loader_libjpeg_turbo.instantiate();
@@ -64,11 +76,15 @@ void uninitialize_jpg_module(ModuleInitializationLevel p_level) {
 			image_loader_libjpeg_turbo.unref();
 		} break;
 
+		/*<<----- VEYA_COOKER: no movie-writer object exists to destroy. */
+#ifndef VEYA_COOKER
 		case MODULE_INITIALIZATION_LEVEL_SERVERS: {
 			if constexpr (GD_IS_CLASS_ENABLED(MovieWriterMJPEG)) {
 				memdelete(writer_mjpeg);
 			}
 		} break;
+#endif
+		/*>>----- VEYA_COOKER */
 
 		default:
 			break;

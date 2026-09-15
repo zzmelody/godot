@@ -4558,9 +4558,13 @@ bool Viewport::is_visible_subviewport() const {
 #endif // TOOLS_ENABLED
 
 void Viewport::_update_audio_listener_2d() {
+	/*<<----- VEYA_COOKER: offline viewports never notify an audio server. */
+#ifndef VEYA_COOKER
 	if (AudioServer::get_singleton()) {
 		AudioServer::get_singleton()->notify_listener_changed();
 	}
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 /*<<----- VEYA_COOKER: offline assets have no GUI, 2D input, theme propagation or camera override. */
@@ -4778,9 +4782,13 @@ bool Viewport::is_audio_listener_3d() const {
 }
 
 void Viewport::_update_audio_listener_3d() {
+	/*<<----- VEYA_COOKER: camera scene data remains valid without an audio listener service. */
+#ifndef VEYA_COOKER
 	if (AudioServer::get_singleton()) {
 		AudioServer::get_singleton()->notify_listener_changed();
 	}
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 void Viewport::_listener_transform_3d_changed_notify() {

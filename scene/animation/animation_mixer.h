@@ -35,7 +35,11 @@
 #include "scene/main/node.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/animation_library.h"
+/*<<----- VEYA_COOKER: offline animation resources keep transform tracks without audio playback caches. */
+#ifndef VEYA_COOKER
 #include "scene/resources/audio_stream_polyphonic.h"
+#endif
+/*>>----- VEYA_COOKER */
 
 class AnimatedValuesBackup;
 
@@ -258,6 +262,8 @@ protected:
 		TrackCacheMethod() { type = Animation::TYPE_METHOD; }
 	};
 
+	/*<<----- VEYA_COOKER: audio-track playback state is absent from the offline asset process. */
+#ifndef VEYA_COOKER
 	// Audio stream information for each audio stream placed on the track.
 	struct PlayingAudioStreamInfo {
 		AudioStreamPlaybackPolyphonic::ID index = -1; // ID retrieved from AudioStreamPlaybackPolyphonic.
@@ -294,6 +300,8 @@ protected:
 			type = Animation::TYPE_AUDIO;
 		}
 	};
+#endif
+	/*>>----- VEYA_COOKER */
 
 	struct TrackCacheAnimation : public TrackCache {
 		bool playing = false;
@@ -307,18 +315,30 @@ protected:
 	AHashMap<Animation::TrackCacheID, TrackCache *, HashHasher> track_cache;
 	AHashMap<Ref<Animation>, LocalVector<TrackCache *>> animation_track_num_to_track_cache;
 	HashSet<TrackCache *> playing_caches;
+	/*<<----- VEYA_COOKER: no audio player ownership is retained by the offline mixer. */
+#ifndef VEYA_COOKER
 	Vector<Node *> playing_audio_stream_players;
+#endif
+	/*>>----- VEYA_COOKER */
 
 	// Helpers.
 	void _clear_caches();
+	/*<<----- VEYA_COOKER: audio cleanup is compiled only with audio playback support. */
+#ifndef VEYA_COOKER
 	void _clear_audio_streams();
+#endif
+	/*>>----- VEYA_COOKER */
 	void _clear_playing_caches();
 	void _init_root_motion_cache();
 	bool _update_caches();
 	void _create_track_num_to_track_cache_for_animation(const Ref<Animation> &p_animation);
 
+	/*<<----- VEYA_COOKER: AudioServer types must not leak into the cooker class layout. */
+#ifndef VEYA_COOKER
 	/* ---- Audio ---- */
 	AudioServer::PlaybackType playback_type;
+#endif
+	/*>>----- VEYA_COOKER */
 
 	/* ---- Blending processor ---- */
 	LocalVector<AnimationInstance> animation_instances;

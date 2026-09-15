@@ -36,15 +36,31 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/string/string_name.h"
+/*<<----- VEYA_COOKER: transform animation processing does not require audio player implementations. */
+#ifndef VEYA_COOKER
 #include "scene/2d/audio_stream_player_2d.h"
+#endif
+/*>>----- VEYA_COOKER */
 #include "scene/animation/animation_player.h"
+/*<<----- VEYA_COOKER: transform animation processing does not require audio server implementations. */
+#ifndef VEYA_COOKER
 #include "scene/audio/audio_stream_player.h"
+#endif
+/*>>----- VEYA_COOKER */
 #include "scene/resources/animation.h"
+/*<<----- VEYA_COOKER: audio stream playback is excluded from the offline mixer. */
+#ifndef VEYA_COOKER
 #include "servers/audio/audio_server.h"
 #include "servers/audio/audio_stream.h"
+#endif
+/*>>----- VEYA_COOKER */
 
 #ifndef _3D_DISABLED
+/*<<----- VEYA_COOKER: retain 3D transform tracks without the 3D audio player. */
+#ifndef VEYA_COOKER
 #include "scene/3d/audio_stream_player_3d.h"
+#endif
+/*>>----- VEYA_COOKER */
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/3d/skeleton_3d.h"
@@ -589,7 +605,11 @@ bool AnimationMixer::is_dummy() const {
 
 void AnimationMixer::_clear_caches() {
 	_init_root_motion_cache();
+	/*<<----- VEYA_COOKER: the offline mixer never creates audio streams. */
+#ifndef VEYA_COOKER
 	_clear_audio_streams();
+#endif
+	/*>>----- VEYA_COOKER */
 	_clear_playing_caches();
 	for (KeyValue<Animation::TrackCacheID, TrackCache *> &K : track_cache) {
 		memdelete(K.value);
@@ -602,6 +622,8 @@ void AnimationMixer::_clear_caches() {
 	emit_signal(SNAME("caches_cleared"));
 }
 
+/*<<----- VEYA_COOKER: audio cleanup is omitted together with audio player ownership. */
+#ifndef VEYA_COOKER
 void AnimationMixer::_clear_audio_streams() {
 	for (int i = 0; i < playing_audio_stream_players.size(); i++) {
 		playing_audio_stream_players[i]->call(SNAME("stop"));
@@ -609,6 +631,8 @@ void AnimationMixer::_clear_audio_streams() {
 	}
 	playing_audio_stream_players.clear();
 }
+#endif
+/*>>----- VEYA_COOKER */
 
 void AnimationMixer::_clear_playing_caches() {
 	for (const TrackCache *E : playing_caches) {
@@ -903,6 +927,8 @@ bool AnimationMixer::_update_caches() {
 						track = track_method;
 
 					} break;
+					/*<<----- VEYA_COOKER: audio tracks remain serializable data but receive no playback cache offline. */
+#ifndef VEYA_COOKER
 					case Animation::TYPE_AUDIO: {
 						TrackCacheAudio *track_audio = memnew(TrackCacheAudio);
 
@@ -915,6 +941,8 @@ bool AnimationMixer::_update_caches() {
 						track = track_audio;
 
 					} break;
+#endif
+					/*>>----- VEYA_COOKER */
 					case Animation::TYPE_ANIMATION: {
 						TrackCacheAnimation *track_animation = memnew(TrackCacheAnimation);
 
@@ -1105,6 +1133,8 @@ void AnimationMixer::_blend_init() {
 				t->use_continuous = false;
 				t->use_discrete = false;
 			} break;
+			/*<<----- VEYA_COOKER: audio blend state is absent from the offline cache. */
+#ifndef VEYA_COOKER
 			case Animation::TYPE_AUDIO: {
 				TrackCacheAudio *t = static_cast<TrackCacheAudio *>(track);
 				for (KeyValue<ObjectID, PlayingAudioTrackInfo> &L : t->playing_streams) {
@@ -1112,6 +1142,8 @@ void AnimationMixer::_blend_init() {
 					track_info.volume = 0.0;
 				}
 			} break;
+#endif
+			/*>>----- VEYA_COOKER */
 			default: {
 			} break;
 		}
@@ -1250,7 +1282,11 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 
 		const LocalVector<Animation::Track *> &tracks = a->get_tracks();
 		Animation::Track *const *tracks_ptr = tracks.ptr();
+		/*<<----- VEYA_COOKER: animation length is only consumed by audio stream lifetime tracking. */
+#ifndef VEYA_COOKER
 		double a_length = a->get_length();
+#endif
+		/*>>----- VEYA_COOKER */
 		int count = tracks.size();
 		for (int i = 0; i < count; i++) {
 			const Animation::Track *animation_track = tracks_ptr[i];
@@ -1724,6 +1760,8 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 						}
 					}
 				} break;
+				/*<<----- VEYA_COOKER: the cooker never dispatches animation audio keys. */
+#ifndef VEYA_COOKER
 				case Animation::TYPE_AUDIO: {
 					// The end of audio should be observed even if the blend value is 0, build up the information and store to the cache for that.
 					TrackCacheAudio *t = static_cast<TrackCacheAudio *>(track);
@@ -1824,6 +1862,12 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 						map[idx] = pasi;
 					}
 				} break;
+#else
+				case Animation::TYPE_AUDIO: {
+					continue;
+				} break;
+#endif
+				/*>>----- VEYA_COOKER */
 				case Animation::TYPE_ANIMATION: {
 					if (Math::is_zero_approx(blend)) {
 						continue;
@@ -2014,6 +2058,8 @@ void AnimationMixer::_blend_apply() {
 				}
 
 			} break;
+			/*<<----- VEYA_COOKER: audio stream lifetime and volume updates are runtime-only. */
+#ifndef VEYA_COOKER
 			case Animation::TYPE_AUDIO: {
 				TrackCacheAudio *t = static_cast<TrackCacheAudio *>(track);
 
@@ -2072,6 +2118,8 @@ void AnimationMixer::_blend_apply() {
 					t->playing_streams.erase(erase_maps[erase_idx]);
 				}
 			} break;
+#endif
+			/*>>----- VEYA_COOKER */
 			default: {
 			} // The rest don't matter.
 		}
@@ -2246,6 +2294,8 @@ void AnimationMixer::_build_backup_track_cache() {
 					t->element_size = (real_t)(t->value.operator Array()).size();
 				}
 			} break;
+			/*<<----- VEYA_COOKER: backup restoration cannot touch audio players in the CLI. */
+#ifndef VEYA_COOKER
 			case Animation::TYPE_AUDIO: {
 				TrackCacheAudio *t = static_cast<TrackCacheAudio *>(track);
 				Object *t_obj = ObjectDB::get_instance(t->object_id);
@@ -2256,6 +2306,8 @@ void AnimationMixer::_build_backup_track_cache() {
 					}
 				}
 			} break;
+#endif
+			/*>>----- VEYA_COOKER */
 			default: {
 			} // The rest don't matter.
 		}
@@ -2614,11 +2666,18 @@ AnimationMixer::TrackCache *AnimatedValuesBackup::get_cache_copy(AnimationMixer:
 			return tc;
 		}
 
+		/*<<----- VEYA_COOKER: cloned offline caches never contain audio playback state. */
+#ifndef VEYA_COOKER
 		case Animation::TYPE_AUDIO: {
 			AnimationMixer::TrackCacheAudio *src = static_cast<AnimationMixer::TrackCacheAudio *>(p_cache);
 			AnimationMixer::TrackCacheAudio *tc = memnew(AnimationMixer::TrackCacheAudio(*src));
 			return tc;
 		}
+#else
+		case Animation::TYPE_AUDIO: {
+		} break;
+#endif
+		/*>>----- VEYA_COOKER */
 
 		case Animation::TYPE_METHOD:
 		case Animation::TYPE_ANIMATION: {

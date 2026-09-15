@@ -6,8 +6,6 @@
 #include "core/core_globals.h"
 #include "core/debugger/engine_debugger.h"
 #include "core/extension/gdextension_manager.h"
-#include "core/input/input.h"
-#include "core/input/input_map.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access_pack.h"
 #include "core/io/json.h"
@@ -20,7 +18,6 @@
 #include "core/object/worker_thread_pool.h"
 #include "core/os/os.h"
 #include "core/register_core_types.h"
-#include "core/string/translation_server.h"
 #include "core/version.h"
 #include "drivers/register_driver_types.h"
 #include "editor/import/3d/resource_importer_obj.h"
@@ -48,31 +45,27 @@
 #include "scene/resources/multimesh.h"
 #include "scene/resources/3d/navigation_mesh_source_geometry_data_3d.h"
 #include "scene/resources/navigation_mesh.h"
-#include "scene/theme/theme_db.h"
 #include "servers/navigation_3d/navigation_server_3d.h"
 #include "servers/physics_3d/physics_server_3d.h"
 #include "servers/register_server_types.h"
 #include "servers/rendering/dummy/rasterizer_dummy.h"
 #include "servers/rendering/rendering_server_default.h"
-#include "servers/text/text_server_dummy.h"
 #include "cooker/asset_files.h"
+#include "cooker/pipeline.h"
+#include "cooker/recipe.h"
 
 namespace {
 Engine *engine = nullptr;
 ProjectSettings *settings = nullptr;
 PackedData *packed_data = nullptr;
-TranslationServer *translations = nullptr;
-TextServerManager *text_servers = nullptr;
 MessageQueue *messages = nullptr;
-ThemeDB *theme_db = nullptr;
 Performance *performance = nullptr;
-InputMap *input_map = nullptr;
-Input *input = nullptr;
 RenderingServer *renderer = nullptr;
 PhysicsServer3DManager *physics_manager = nullptr;
 PhysicsServer3D *physics = nullptr;
 String command;
 String job_path;
+String pipeline_path;
 bool initialized = false;
 
 Dictionary capabilities() {
@@ -82,8 +75,15 @@ Dictionary capabilities() {
 	result["godot"] = GODOT_VERSION_FULL_NAME;
 	result["renderer"] = "dummy";
 	result["script_languages"] = ScriptServer::get_language_count();
+	result["recipe_runtime"] = CookerRecipe::capabilities();
+	result["pipeline_runtime"] = CookerPipeline::capabilities();
+	Array operations;
+	for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack" }) {
+		operations.push_back(name);
+	}
+	result["operations"] = operations;
 	Dictionary classes;
-	for (const char *name : { "Node2D", "Control", "EditorNode", "GDScript", "ArrayMesh", "ImporterMesh", "PackedScene", "Skeleton3D", "Skin", "AnimationLibrary", "StandardMaterial3D", "ShaderMaterial", "GPUParticles3D", "ParticleProcessMaterial", "NavigationMesh", "HeightMapShape3D", "PCKPacker", "Image", "Texture2D" }) {
+	for (const char *name : { "Node2D", "Control", "Viewport", "SubViewport", "Window", "EditorNode", "GDScript", "Input", "InputMap", "AudioServer", "AudioStream", "AudioStreamPlayer", "DisplayServer", "CameraServer", "CameraFeed", "CameraTexture", "TextServer", "TextServerManager", "MovieWriter", "VideoStream", "VideoStreamPlayer", "ThemeDB", "ArrayMesh", "ImporterMesh", "PackedScene", "Camera3D", "Area3D", "LightmapGI", "Skeleton3D", "Skin", "AnimationLibrary", "StandardMaterial3D", "ShaderMaterial", "GPUParticles3D", "ParticleProcessMaterial", "NavigationMesh", "HeightMapShape3D", "PCKPacker", "Image", "Texture2D" }) {
 		classes[name] = ClassDB::class_exists(name);
 	}
 	result["classes"] = classes;
@@ -176,10 +176,104 @@ Error check_scene_types(const Ref<PackedScene> &p_scene, int p_depth = 0) {
 	return OK;
 }
 
-Error execute_job(Dictionary &r_result) {
-	Dictionary job;
-	Error error = read_job(job);
+bool valid_asset_id(const String &p_value) {
+	if (p_value.is_empty() || p_value.length() > 64) {
+		return false;
+	}
+	for (int i = 0; i < p_value.length(); ++i) {
+		char32_t character = p_value[i];
+		if (!((character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' || character == '-')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
+	for (const Variant *key = p_job.next(); key; key = p_job.next(key)) {
+		String name = *key;
+		ERR_FAIL_COND_V(name != "operation" && name != "output" && name != "asset_id" && name != "revision" && name != "kind" && name != "entry" && name != "files" && name != "source" && name != "generator" && name != "provenance", ERR_INVALID_PARAMETER);
+	}
+	for (const char *name : { "output", "asset_id", "kind", "entry" }) {
+		ERR_FAIL_COND_V(p_job.get(name, Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+	}
+	for (const char *name : { "source", "generator" }) {
+		ERR_FAIL_COND_V(p_job.has(name) && p_job[name].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+	}
+	ERR_FAIL_COND_V(p_job.get("revision", Variant()).get_type() != Variant::INT, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_job.get("files", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_job.has("provenance") && p_job["provenance"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+	String output = p_job["output"];
+	String asset_id = p_job["asset_id"];
+	int64_t revision = p_job["revision"];
+	String kind = p_job["kind"];
+	String entry = p_job["entry"];
+	ERR_FAIL_COND_V(!valid_asset_id(asset_id) || revision < 1, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(kind != "model" && kind != "texture" && kind != "material" && kind != "environment" && kind != "physics_material" && kind != "shader", ERR_INVALID_PARAMETER);
+	Error error = CookerFiles::check_path(output, true);
 	ERR_FAIL_COND_V(error != OK, error);
+	ERR_FAIL_COND_V(output.get_file() != "asset.manifest.json", ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(FileAccess::exists(output), ERR_ALREADY_EXISTS);
+	String base = output.get_base_dir();
+	Array declared = p_job["files"];
+	ERR_FAIL_COND_V(declared.is_empty() || declared.size() > 256, ERR_INVALID_PARAMETER);
+	Array records;
+	HashSet<String> seen;
+	bool found_entry = false;
+	for (const Variant &item : declared) {
+		ERR_FAIL_COND_V(item.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		String relative = item;
+		ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.begins_with("res://") || relative.contains("\\") || relative.contains(":"), ERR_INVALID_PARAMETER);
+		String path = base.path_join(relative);
+		error = CookerFiles::check_path(path);
+		ERR_FAIL_COND_V(error != OK || !path.begins_with(base + "/") || seen.has(relative), ERR_INVALID_PARAMETER);
+		String extension = relative.get_extension().to_lower();
+		ERR_FAIL_COND_V_MSG(extension != "scn" && extension != "res", ERR_UNAVAILABLE, "Asset manifests may publish only cooked .scn/.res files.");
+		Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ, &error);
+		ERR_FAIL_COND_V(file.is_null() || error != OK, error == OK ? ERR_FILE_CANT_READ : error);
+		Dictionary record;
+		record["path"] = relative;
+		record["bytes"] = int64_t(file->get_length());
+		record["sha256"] = FileAccess::get_sha256(path);
+		records.push_back(record);
+		seen.insert(relative);
+		found_entry |= relative == entry;
+	}
+	ERR_FAIL_COND_V_MSG(!found_entry, ERR_INVALID_PARAMETER, "Asset manifest entry must be one of the cooked files.");
+	Dictionary manifest;
+	manifest["schema_version"] = 1;
+	manifest["asset_id"] = asset_id;
+	manifest["revision"] = revision;
+	manifest["kind"] = kind;
+	manifest["entry"] = entry;
+	manifest["source"] = p_job.get("source", "local-import");
+	manifest["generator"] = p_job.get("generator", "");
+	manifest["pipeline"] = "veya-asset-cooker-luau";
+	manifest["files"] = records;
+	if (p_job.has("provenance")) {
+		manifest["provenance"] = p_job["provenance"];
+	}
+	error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(base));
+	ERR_FAIL_COND_V(error != OK, error);
+	String temporary = output + ".partial";
+	ERR_FAIL_COND_V(FileAccess::exists(temporary), ERR_ALREADY_EXISTS);
+	Ref<FileAccess> file = FileAccess::open(temporary, FileAccess::WRITE, &error);
+	ERR_FAIL_COND_V(file.is_null() || error != OK, error == OK ? ERR_FILE_CANT_WRITE : error);
+	file->store_string(JSON::stringify(manifest) + "\n");
+	file.unref();
+	error = DirAccess::rename_absolute(temporary, output);
+	if (error != OK) {
+		DirAccess::remove_absolute(temporary);
+		return error;
+	}
+	r_result["output"] = output;
+	r_result["sha256"] = FileAccess::get_sha256(output);
+	r_result["files"] = records;
+	return OK;
+}
+
+Error execute_job(const Dictionary &job, Dictionary &r_result) {
+	Error error = OK;
 	ERR_FAIL_COND_V(!job.has("operation") || job["operation"].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 	for (const char *name : { "options" }) {
 		ERR_FAIL_COND_V(job.has(name) && job[name].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
@@ -188,6 +282,12 @@ Error execute_job(Dictionary &r_result) {
 		ERR_FAIL_COND_V(job.has(name) && job[name].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
 	}
 	String operation = job.get("operation", "");
+	if (operation == "run-recipe") {
+		return CookerRecipe::run(job, r_result);
+	}
+	if (operation == "asset-manifest") {
+		return write_asset_manifest(job, r_result);
+	}
 	for (const char *name : { "type", "compression", "collision_output" }) {
 		ERR_FAIL_COND_V(job.has(name) && job[name].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 	}
@@ -495,6 +595,74 @@ Error execute_job(Dictionary &r_result) {
 	}
 	ERR_FAIL_V_MSG(ERR_INVALID_PARAMETER, "Unknown operation: " + operation);
 }
+
+Error execute_job_file(Dictionary &r_result) {
+	Dictionary job;
+	Error error = read_job(job);
+	ERR_FAIL_COND_V(error != OK, error);
+	return execute_job(job, r_result);
+}
+
+Error execute_pipeline(Dictionary &r_result) {
+	Array steps;
+	Dictionary description;
+	Error error = CookerPipeline::load(pipeline_path, steps, description);
+	ERR_FAIL_COND_V(error != OK, error);
+	Array reports;
+	for (int index = 0; index < steps.size(); ++index) {
+		Dictionary job = steps[index];
+		Dictionary report;
+		report["index"] = index;
+		Variant label = job.get("name", Variant());
+		ERR_FAIL_COND_V(label.get_type() != Variant::NIL && label.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		if (label.get_type() == Variant::STRING) {
+			report["name"] = label;
+		}
+		Variant condition = job.get("if_missing", false);
+		ERR_FAIL_COND_V(condition.get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
+		job.erase("name");
+		job.erase("if_missing");
+		ERR_FAIL_COND_V(job.get("operation", Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		String operation = job["operation"];
+		ERR_FAIL_COND_V_MSG(operation == "run-pipeline", ERR_INVALID_PARAMETER, "Nested pipelines are not supported.");
+		bool known_operation = false;
+		for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack" }) {
+			known_operation |= operation == name;
+		}
+		ERR_FAIL_COND_V_MSG(!known_operation, ERR_INVALID_PARAMETER, "Unknown pipeline operation: " + operation);
+		report["operation"] = operation;
+		if (bool(condition)) {
+			ERR_FAIL_COND_V_MSG(job.get("output", Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER, "if_missing requires an output path.");
+			String output = job["output"];
+			error = CookerFiles::check_path(output, true, operation == "pack");
+			ERR_FAIL_COND_V(error != OK, error);
+			if (FileAccess::exists(output)) {
+				report["ok"] = true;
+				report["skipped"] = true;
+				report["output"] = output;
+				reports.push_back(report);
+				continue;
+			}
+		}
+		Dictionary job_result;
+		error = execute_job(job, job_result);
+		for (const Variant *key = job_result.next(); key; key = job_result.next(key)) {
+			report[*key] = job_result[*key];
+		}
+		report["ok"] = error == OK;
+		report["error"] = int(error);
+		reports.push_back(report);
+		if (error != OK) {
+			r_result = description;
+			r_result["steps"] = reports;
+			r_result["failed_step"] = index;
+			return error;
+		}
+	}
+	r_result = description;
+	r_result["steps"] = reports;
+	return OK;
+}
 } // namespace
 
 bool Main::is_cmdline_tool() { return true; }
@@ -526,14 +694,6 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	settings = memnew(ProjectSettings);
 	register_core_settings();
 	performance = memnew(Performance);
-	input_map = memnew(InputMap);
-	input = memnew(Input);
-	translations = memnew(TranslationServer);
-	text_servers = memnew(TextServerManager);
-	Ref<TextServerDummy> text;
-	text.instantiate();
-	text_servers->add_interface(text);
-	text_servers->set_primary_interface(text);
 	physics_manager = memnew(PhysicsServer3DManager);
 	NavigationServer3DManager::initialize_server_manager();
 	register_early_core_singletons();
@@ -549,14 +709,12 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	renderer = memnew(RenderingServerDefault);
 	renderer->init();
 	renderer->set_render_loop_enabled(false);
-	theme_db = memnew(ThemeDB);
 	NavigationServer3DManager::initialize_server();
 	physics = physics_manager->new_default_server();
 	ERR_FAIL_NULL_V(physics, ERR_CANT_CREATE);
 	physics->init();
 	register_scene_types();
 	register_driver_types();
-	register_scene_singletons();
 	initialize_modules(MODULE_INITIALIZATION_LEVEL_SCENE);
 	GDExtensionManager::get_singleton()->initialize_extensions(GDExtension::INITIALIZATION_LEVEL_SCENE);
 	GDREGISTER_CLASS(EditorSceneFormatImporter);
@@ -584,13 +742,16 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		String arg = String::utf8(argv[i]);
 		if (arg == "--capabilities") {
 			command = "capabilities";
-		} else if ((arg == "--path" || arg == "--job") && i + 1 < argc) {
+		} else if ((arg == "--path" || arg == "--job" || arg == "--pipeline") && i + 1 < argc) {
 			String value = String::utf8(argv[++i]);
 			if (arg == "--path") {
 				project_path = value;
-			} else {
+			} else if (arg == "--job") {
 				job_path = value;
 				command = "job";
+			} else {
+				pipeline_path = value;
+				command = "pipeline";
 			}
 		} else if (arg == "--headless" || arg == "--editor" || arg == "--quit") {
 			// Always headless, always tools-enabled, always exits after one batch.
@@ -599,7 +760,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			command = "invalid";
 		}
 	}
-	if (command == "job") {
+	if (command == "job" || command == "pipeline") {
 		Error error = settings->setup(project_path, "", false, true);
 		if (error != OK) {
 			command = "invalid";
@@ -615,7 +776,9 @@ int Main::start() {
 	if (command == "capabilities") {
 		result = capabilities();
 	} else if (command == "job") {
-		error = execute_job(result);
+		error = execute_job_file(result);
+	} else if (command == "pipeline") {
+		error = execute_pipeline(result);
 	} else {
 		error = ERR_INVALID_PARAMETER;
 	}
@@ -632,6 +795,7 @@ void Main::cleanup(bool p_force) {
 	}
 	command = String();
 	job_path = String();
+	pipeline_path = String();
 	ResourceImporterScene::clean_up_importer_plugins();
 	ResourceLoader::remove_custom_loaders();
 	ResourceSaver::remove_custom_savers();
@@ -642,7 +806,6 @@ void Main::cleanup(bool p_force) {
 	unregister_platform_apis();
 	unregister_driver_types();
 	unregister_scene_types();
-	memdelete(theme_db);
 	physics->finish();
 	memdelete(physics);
 	NavigationServer3DManager::finalize_server();
@@ -659,11 +822,7 @@ void Main::cleanup(bool p_force) {
 	EngineDebugger::deinitialize();
 	OS::get_singleton()->finalize();
 	memdelete(packed_data);
-	memdelete(translations);
-	memdelete(text_servers);
 	memdelete(physics_manager);
-	memdelete(input);
-	memdelete(input_map);
 	memdelete(performance);
 	memdelete(settings);
 	unregister_core_driver_types();

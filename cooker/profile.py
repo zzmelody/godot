@@ -14,6 +14,7 @@ vulkan = False
 d3d12 = False
 angle = False
 opengl3 = False
+metal = False
 disable_xr = True
 disable_physics_2d = True
 disable_navigation_2d = True

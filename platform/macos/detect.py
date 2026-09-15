@@ -241,41 +241,56 @@ def configure(env: "SConsEnvironment"):
     ## Flags
 
     env.Prepend(CPPPATH=["#platform/macos"])
-    env.Append(CPPDEFINES=["MACOS_ENABLED", "UNIX_ENABLED", "COREAUDIO_ENABLED", "COREMIDI_ENABLED"])
-    env.Append(
-        LINKFLAGS=[
-            "-framework",
-            "Cocoa",
-            "-framework",
-            "Carbon",
-            "-framework",
-            "AudioUnit",
-            "-framework",
-            "CoreAudio",
-            "-framework",
-            "CoreMIDI",
-            "-framework",
-            "IOKit",
-            "-framework",
-            "GameController",
-            "-framework",
-            "CoreHaptics",
-            "-framework",
-            "CoreVideo",
-            "-framework",
-            "AVFoundation",
-            "-framework",
-            "CoreMedia",
-            "-framework",
-            "QuartzCore",
-            "-framework",
-            "Security",
-            "-framework",
-            "UniformTypeIdentifiers",
-            "-framework",
-            "IOSurface",
-        ]
-    )
+    # /*<<----- VEYA_COOKER: the CLI keeps only frameworks used by its headless OS and filesystem layer. */
+    if env["veya_cooker"]:
+        env.Append(CPPDEFINES=["MACOS_ENABLED", "UNIX_ENABLED"])
+        env.Append(
+            LINKFLAGS=[
+                "-framework",
+                "Cocoa",
+                "-framework",
+                "IOKit",
+                "-framework",
+                "Security",
+            ]
+        )
+    else:
+        env.Append(CPPDEFINES=["MACOS_ENABLED", "UNIX_ENABLED", "COREAUDIO_ENABLED", "COREMIDI_ENABLED"])
+        env.Append(
+            LINKFLAGS=[
+                "-framework",
+                "Cocoa",
+                "-framework",
+                "Carbon",
+                "-framework",
+                "AudioUnit",
+                "-framework",
+                "CoreAudio",
+                "-framework",
+                "CoreMIDI",
+                "-framework",
+                "IOKit",
+                "-framework",
+                "GameController",
+                "-framework",
+                "CoreHaptics",
+                "-framework",
+                "CoreVideo",
+                "-framework",
+                "AVFoundation",
+                "-framework",
+                "CoreMedia",
+                "-framework",
+                "QuartzCore",
+                "-framework",
+                "Security",
+                "-framework",
+                "UniformTypeIdentifiers",
+                "-framework",
+                "IOSurface",
+            ]
+        )
+    # /*>>----- VEYA_COOKER */
     env.Append(LIBS=["pthread", "z"])
 
     extra_frameworks = set()
@@ -306,9 +321,13 @@ def configure(env: "SConsEnvironment"):
 
     env.Append(LINKFLAGS=["-rpath", "@executable_path/../Frameworks", "-rpath", "@executable_path"])
 
-    if env["metal"] and env["arch"] != "arm64":
+    # /*<<----- VEYA_COOKER: platform defaults must not re-enable Metal after the cooker profile is loaded. */
+    if env["veya_cooker"]:
+        env["metal"] = False
+    elif env["metal"] and env["arch"] != "arm64":
         print_warning("Target architecture '{}' does not support the Metal rendering driver".format(env["arch"]))
         env["metal"] = False
+    # /*>>----- VEYA_COOKER */
 
     if env["metal"]:
         env.AppendUnique(CPPDEFINES=["METAL_ENABLED", "RD_ENABLED"])

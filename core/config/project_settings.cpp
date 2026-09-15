@@ -1646,6 +1646,8 @@ void ProjectSettings::_bind_methods() {
 }
 
 void ProjectSettings::_add_builtin_input_map() {
+	/*<<----- VEYA_COOKER: no gameplay InputMap defaults are materialized while locating an asset workspace. */
+#ifndef VEYA_COOKER
 	if (InputMap::get_singleton()) {
 		HashMap<String, List<Ref<InputEvent>>> builtins(InputMap::get_singleton()->get_builtins());
 
@@ -1666,6 +1668,8 @@ void ProjectSettings::_add_builtin_input_map() {
 			input_presets.push_back(action_name);
 		}
 	}
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 ProjectSettings::ProjectSettings() {

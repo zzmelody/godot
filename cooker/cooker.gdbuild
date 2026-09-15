@@ -2,11 +2,15 @@
   "type": "build_profile",
   "disabled_classes": [
     "CanvasItem", "CanvasLayer", "Viewport", "ViewportTexture", "StatusIndicator", "SceneTree", "SceneTreeTimer",
+    "Input", "InputMap", "InputEvent", "Shortcut",
     "World2D", "Curve2D", "TileSet", "TileSetSource", "TileMapPattern", "TileData",
     "SkeletonModification2D", "SkeletonModificationStack2D",
     "CanvasTexture", "CanvasItemMaterial", "BlitMaterial",
     "Font", "StyleBox", "Theme", "ThemeDB", "LabelSettings", "TextLine", "TextParagraph",
-    "ColorPalette", "DPITexture", "VideoStream", "VideoStreamPlayback", "Label3D", "TextMesh",
+    "ColorPalette", "DPITexture", "VideoStream", "VideoStreamPlayback", "VideoStreamPlayer", "Label3D", "TextMesh",
+    "TextServer", "TextServerManager",
+    "AudioServer", "AudioStream", "AudioStreamPlayback", "AudioStreamPlaybackPolyphonic", "AudioEffect", "AudioStreamPlayer", "AudioStreamPlayer2D", "AudioStreamPlayer3D", "AudioListener2D", "AudioListener3D",
+    "AccessibilityServer", "DisplayServer", "NativeMenu", "CameraServer", "CameraFeed", "CameraTexture", "MovieWriter",
     "MultiplayerAPI", "MultiplayerPeer", "HTTPRequest",
     "RenderDataRD", "RenderSceneDataRD", "RenderSceneBuffersRD", "FramebufferCacheRD", "UniformSetCacheRD"
   ]

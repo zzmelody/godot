@@ -31,6 +31,8 @@
 #import "os_macos.h"
 
 #import "dir_access_macos.h"
+/*<<----- VEYA_COOKER: headless asset jobs do not link the macOS display or application implementations. */
+#ifndef VEYA_COOKER
 #import "display_server_macos.h"
 #import "godot_application.h"
 #import "godot_application_delegate.h"
@@ -38,10 +40,18 @@
 #ifdef TOOLS_ENABLED
 #import "display_server_macos_embedded.h"
 #endif
+#else
+#import <AppKit/AppKit.h>
+#endif
+/*>>----- VEYA_COOKER */
 
 #include "core/config/engine.h"
 #include "core/crypto/crypto_core.h"
+/*<<----- VEYA_COOKER: the headless Cooker loop has no input singleton. */
+#ifndef VEYA_COOKER
 #include "core/input/input.h"
+#endif
+/*>>----- VEYA_COOKER */
 #include "core/io/file_access.h"
 #include "core/os/main_loop.h"
 #include "core/os/os.h"
@@ -55,6 +65,9 @@
 #endif
 
 #include <dlfcn.h>
+/*<<----- VEYA_COOKER: provide std::size directly after removing transitive input/audio includes. */
+#include <iterator>
+/*>>----- VEYA_COOKER */
 #include <libproc.h>
 #import <mach-o/dyld.h>
 #include <os/log.h>
@@ -1091,10 +1104,17 @@ OS_MacOS::OS_MacOS(const char *p_execpath, int p_argc, char **p_argv) {
 	AudioDriverManager::add_driver(&audio_driver);
 #endif
 
+	/*<<----- VEYA_COOKER: only the native headless job entry is available, never desktop rendering. */
+#ifndef VEYA_COOKER
 	DisplayServerMacOS::register_macos_driver();
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 // MARK: - OS_MacOS_NSApp
+
+/*<<----- VEYA_COOKER: exclude NSApplication and embedded editor loops from the native batch executable. */
+#ifndef VEYA_COOKER
 
 void OS_MacOS_NSApp::run() {
 	[NSApp run]; // Note: this call will never return. Use `OS_MacOS_NSApp::cleanup()` for cleanup.
@@ -1221,6 +1241,8 @@ OS_MacOS_NSApp::OS_MacOS_NSApp(const char *p_execpath, int p_argc, char **p_argv
 	action.sa_handler = handle_interrupt;
 	sigaction(SIGINT, &action, nullptr);
 }
+#endif
+/*>>----- VEYA_COOKER */
 
 // MARK: - OS_MacOS_Headless
 
@@ -1250,9 +1272,13 @@ void OS_MacOS_Headless::run() {
 		while (true) {
 			@autoreleasepool {
 				@try {
+					/*<<----- VEYA_COOKER: the headless asset loop owns no Input singleton or event buffer. */
+#ifndef VEYA_COOKER
 					if (Input::get_singleton()) {
 						Input::get_singleton()->flush_buffered_events();
 					}
+#endif
+					/*>>----- VEYA_COOKER */
 
 					if (Main::iteration()) {
 						break;
@@ -1277,7 +1303,8 @@ OS_MacOS_Headless::OS_MacOS_Headless(const char *p_execpath, int p_argc, char **
 
 // MARK: - OS_MacOS_Embedded
 
-#ifdef TOOLS_ENABLED
+/*<<----- VEYA_COOKER: embedded editor mode is unrelated to command-line asset jobs. */
+#if defined(TOOLS_ENABLED) && !defined(VEYA_COOKER)
 
 void OS_MacOS_Embedded::run() {
 	CFRunLoopGetCurrent();
@@ -1343,3 +1370,4 @@ OS_MacOS_Embedded::OS_MacOS_Embedded(const char *p_execpath, int p_argc, char **
 }
 
 #endif
+/*>>----- VEYA_COOKER */

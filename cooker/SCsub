@@ -1,0 +1,42 @@
+# /*<<----- VEYA_COOKER: isolated, statically linked recipe VM; no ECS, CLI, analyzer or JIT. */
+import json
+from pathlib import Path
+import subprocess
+
+Import("env")
+
+lock = json.loads(Path(env.File("#cooker/luau.json").abspath).read_text())
+source = Path(env.Dir("#").abspath, env["veya_luau_source"]).resolve()
+try:
+    revision = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.check_call(["git", "-C", str(source), "diff", "--quiet", "HEAD", "--", *lock["components"]])
+except (OSError, subprocess.CalledProcessError):
+    raise RuntimeError("Cooker needs a clean Luau checkout; see cooker/README.md (veya_luau_source).")
+if revision != lock["commit"]:
+    raise RuntimeError("Cooker Luau revision mismatch: expected " + lock["commit"])
+
+recipe_env = env.Clone()
+# Luau uses C++ exceptions to unwind protected Lua calls, including host RAII.
+# Do not change exception/ABI flags in the rest of Godot.
+recipe_env["CXXFLAGS"] = [flag for flag in recipe_env["CXXFLAGS"] if flag not in ("-fno-exceptions", "/EHs-c-")]
+if env.msvc:
+    recipe_env["CPPDEFINES"] = [item for item in recipe_env["CPPDEFINES"] if not (isinstance(item, tuple) and item[0] == "_HAS_EXCEPTIONS")]
+    recipe_env.Append(CPPDEFINES=[("_HAS_EXCEPTIONS", 1)])
+    recipe_env.Append(CXXFLAGS=["/EHsc"])
+else:
+    recipe_env.Append(CXXFLAGS=["-fexceptions"])
+recipe_env.Append(CPPPATH=[str(source / name / "include") for name in lock["components"]])
+
+luau_env = recipe_env.Clone()
+luau_env.disable_warnings()
+objects = []
+for component in lock["components"]:
+    # Explicit tracked sources from the locked commit; no untracked additions.
+    names = subprocess.check_output(["git", "-C", str(source), "ls-tree", "-r", "--name-only", "HEAD", component + "/src"], text=True).splitlines()
+    for name in names:
+        if name.endswith(".cpp"):
+            objects += luau_env.Object(target="#cooker/luau_objects/" + name[:-4], source=str(source / name))
+luau_library = luau_env.add_library("#cooker/luau_recipe_vm", objects)
+recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp"])
+env.Prepend(LIBS=[recipe_library, luau_library])
+# /*>>----- VEYA_COOKER */

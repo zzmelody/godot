@@ -8,10 +8,9 @@ Import("env")
 thirdparty_obj = []
 
 thirdparty_dir = "#thirdparty/misc/"
-thirdparty_sources = [
-    "mikktspace.c",
-    "qoa.c",
-]
+# /*<<----- VEYA_COOKER: QOA is audio-only; MikkTSpace remains required for imported mesh tangents. */
+thirdparty_sources = ["mikktspace.c"] if env["veya_cooker"] else ["mikktspace.c", "qoa.c"]
+# /*>>----- VEYA_COOKER */
 
 thirdparty_sources = [thirdparty_dir + file for file in thirdparty_sources]
 
@@ -24,7 +23,28 @@ env.scene_sources += thirdparty_obj
 
 scene_obj = []
 
-env.add_source_files(scene_obj, "*.cpp")
+# /*<<----- VEYA_COOKER: exclude audio, camera-feed, font/text, theme and video resource implementations. */
+if env["veya_cooker"]:
+    excluded = {
+        "audio_stream_polyphonic.cpp",
+        "audio_stream_wav.cpp",
+        "camera_texture.cpp",
+        "font.cpp",
+        "label_settings.cpp",
+        "style_box.cpp",
+        "style_box_flat.cpp",
+        "style_box_line.cpp",
+        "style_box_texture.cpp",
+        "syntax_highlighter.cpp",
+        "text_line.cpp",
+        "text_paragraph.cpp",
+        "theme.cpp",
+        "video_stream.cpp",
+    }
+    env.add_source_files(scene_obj, [source for source in env.Glob("*.cpp") if source.name not in excluded])
+else:
+    env.add_source_files(scene_obj, "*.cpp")
+# /*>>----- VEYA_COOKER */
 env.scene_sources += scene_obj
 
 # Needed to force rebuilding the scene files when the thirdparty code is updated.

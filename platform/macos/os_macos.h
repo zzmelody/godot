@@ -32,12 +32,18 @@
 
 #include "crash_handler_macos.h"
 
+/*<<----- VEYA_COOKER: declare Cocoa scalar/run-loop types without pulling audio, MIDI or input interfaces into the CLI. */
+#ifdef VEYA_COOKER
+#import <AppKit/AppKit.h>
+#else
 #include "core/input/input_event.h"
-#include "core/templates/rb_map.h"
 #import "drivers/coreaudio/audio_driver_coreaudio.h"
 #import "drivers/coremidi/midi_driver_coremidi.h"
-#include "drivers/unix/os_unix.h"
 #include "servers/audio/audio_server.h"
+#endif
+#include "core/templates/rb_map.h"
+#include "drivers/unix/os_unix.h"
+/*>>----- VEYA_COOKER */
 
 class JoypadSDL;
 

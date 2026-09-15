@@ -824,7 +824,12 @@ def configure_mingw(env: "SConsEnvironment"):
     if get_is_ar_thin_supported(env):
         env.Append(ARFLAGS=["--thin"])
 
-    env.Append(CPPDEFINES=["WINDOWS_ENABLED", "WASAPI_ENABLED", "WINMIDI_ENABLED"])
+    # /*<<----- VEYA_COOKER: avoid audio and MIDI platform objects when their drivers are absent from the CLI build. */
+    if env["veya_cooker"]:
+        env.Append(CPPDEFINES=["WINDOWS_ENABLED"])
+    else:
+        env.Append(CPPDEFINES=["WINDOWS_ENABLED", "WASAPI_ENABLED", "WINMIDI_ENABLED"])
+    # /*>>----- VEYA_COOKER */
     env.Append(
         CPPDEFINES=[
             ("WINVER", "0x0A00"),

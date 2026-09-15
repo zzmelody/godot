@@ -183,9 +183,9 @@ shape = SubResource("Shape")
         report = self.invoke("--capabilities")
         self.assertEqual(report["renderer"], "dummy")
         self.assertEqual(report["script_languages"], 0)
-        for name in ("Node2D", "Control", "EditorNode", "GDScript"):
+        for name in ("Node2D", "Control", "Viewport", "SubViewport", "Window", "EditorNode", "GDScript", "Input", "InputMap", "AudioServer", "AudioStream", "AudioStreamPlayer", "DisplayServer", "CameraServer", "CameraFeed", "CameraTexture", "TextServer", "TextServerManager", "MovieWriter", "VideoStream", "VideoStreamPlayer", "ThemeDB"):
             self.assertFalse(report["classes"][name], name)
-        for name in ("ArrayMesh", "PackedScene", "Skeleton3D", "Skin", "AnimationLibrary", "ShaderMaterial", "GPUParticles3D", "ParticleProcessMaterial", "NavigationMesh", "HeightMapShape3D", "PCKPacker", "Image", "Texture2D"):
+        for name in ("ArrayMesh", "PackedScene", "Camera3D", "Area3D", "LightmapGI", "Skeleton3D", "Skin", "AnimationLibrary", "ShaderMaterial", "GPUParticles3D", "ParticleProcessMaterial", "NavigationMesh", "HeightMapShape3D", "PCKPacker", "Image", "Texture2D"):
             self.assertTrue(report["classes"][name], name)
 
     def test_import_mesh_roundtrip(self):

@@ -21,13 +21,19 @@ if not env["veya_cooker"]:
     SConscript("2d/SCsub")
 # /*>>----- VEYA_COOKER */
 SConscript("animation/SCsub")
-SConscript("audio/SCsub")
+# /*<<----- VEYA_COOKER: animations remain importable, but playback audio and theme/text presentation do not enter the cooker. */
+if not env["veya_cooker"]:
+    SConscript("audio/SCsub")
+# /*>>----- VEYA_COOKER */
 SConscript("resources/SCsub")
 # /*<<----- VEYA_COOKER: no live game debugger, node selection popup or viewport panner. */
 if not env["veya_cooker"]:
     SConscript("debugger/SCsub")
 # /*>>----- VEYA_COOKER */
-SConscript("theme/SCsub")
+# /*<<----- VEYA_COOKER: no ThemeDB, default fonts or UI icon generation in a command-line asset process. */
+if not env["veya_cooker"]:
+    SConscript("theme/SCsub")
+# /*>>----- VEYA_COOKER */
 
 # Build it all as a library
 lib = env.add_library("scene", env.scene_sources)

@@ -37,7 +37,11 @@
 #include "core/variant/typed_array.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
+/*<<----- VEYA_COOKER: keep the generic performance service without linking audio latency queries. */
+#ifndef VEYA_COOKER
 #include "servers/audio/audio_server.h"
+#endif
+/*>>----- VEYA_COOKER */
 #include "servers/rendering/rendering_server.h"
 
 #ifndef NAVIGATION_2D_DISABLED
@@ -316,7 +320,13 @@ double Performance::get_monitor(Monitor p_monitor) const {
 #endif // PHYSICS_3D_DISABLED
 
 		case AUDIO_OUTPUT_LATENCY:
+			/*<<----- VEYA_COOKER: an offline process with no audio server reports zero latency. */
+#ifdef VEYA_COOKER
+			return 0;
+#else
 			return AudioServer::get_singleton()->get_output_latency();
+#endif
+			/*>>----- VEYA_COOKER */
 
 			// Deprecated, use the 2D/3D specific ones instead.
 		case NAVIGATION_ACTIVE_MAPS:

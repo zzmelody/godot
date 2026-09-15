@@ -167,6 +167,7 @@ opts.Add(
 opts.Add(EnumVariable("arch", "CPU architecture", "auto", ["auto"] + architectures, architecture_aliases, ignorecase=2))
 # /*<<----- VEYA_COOKER: tools-only asset executable without Editor UI. */
 opts.Add(BoolVariable("veya_cooker", "Build the Veya native asset cooker", False))
+opts.Add("veya_luau_source", "Pinned Luau source checkout used only by Cooker", "../luau")
 # /*>>----- VEYA_COOKER */
 opts.Add(BoolVariable("dev_build", "Developer build with dev-only debugging code (DEV_ENABLED)", False))
 opts.Add(

@@ -5,20 +5,27 @@ Import("env")
 
 env.servers_sources = []
 
-env.add_source_files(env.servers_sources, "register_server_types.cpp")
-
-SConscript("audio/SCsub")
-SConscript("camera/SCsub")
-SConscript("debugger/SCsub")
-SConscript("display/SCsub")
-SConscript("movie_writer/SCsub")
-SConscript("rendering/SCsub")
-SConscript("text/SCsub")
-SConscript("navigation_2d/SCsub")
-SConscript("physics_2d/SCsub")
-SConscript("navigation_3d/SCsub")
-SConscript("physics_3d/SCsub")
-SConscript("xr/SCsub")
+# /*<<----- VEYA_COOKER: compile only offline 3D services; never audio, display, camera, movie, text or live debugger servers. */
+if env["veya_cooker"]:
+    env.add_source_files(env.servers_sources, ["#cooker/register_server_types.cpp", "#cooker/server_stubs.cpp"])
+    SConscript("rendering/SCsub")
+    SConscript("navigation_3d/SCsub")
+    SConscript("physics_3d/SCsub")
+else:
+    env.add_source_files(env.servers_sources, "register_server_types.cpp")
+    SConscript("audio/SCsub")
+    SConscript("camera/SCsub")
+    SConscript("debugger/SCsub")
+    SConscript("display/SCsub")
+    SConscript("movie_writer/SCsub")
+    SConscript("rendering/SCsub")
+    SConscript("text/SCsub")
+    SConscript("navigation_2d/SCsub")
+    SConscript("physics_2d/SCsub")
+    SConscript("navigation_3d/SCsub")
+    SConscript("physics_3d/SCsub")
+    SConscript("xr/SCsub")
+# /*>>----- VEYA_COOKER */
 
 lib = env.add_library("servers", env.servers_sources)
 

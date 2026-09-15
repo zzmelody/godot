@@ -103,7 +103,12 @@ if env["builtin_libjpeg_turbo"]:
 
 module_obj = []
 
-env_jpg.add_source_files(module_obj, "*.cpp")
+# /*<<----- VEYA_COOKER: keep JPEG image I/O while omitting the editor movie encoder. */
+if env["veya_cooker"]:
+    env_jpg.add_source_files(module_obj, ["image_loader_libjpeg_turbo.cpp", "register_types.cpp"])
+else:
+    env_jpg.add_source_files(module_obj, "*.cpp")
+# /*>>----- VEYA_COOKER */
 env.modules_sources += module_obj
 
 # Needed to force rebuilding the module files when the thirdparty library is updated.

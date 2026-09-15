@@ -11,11 +11,14 @@ controller_databases = [
     "godotcontrollerdb.txt",
 ]
 
-gensource = env.CommandNoCache(
-    "default_controller_mappings.gen.cpp",
-    controller_databases,
-    env.Run(input_builders.make_default_controller_mappings),
-)
+# /*<<----- VEYA_COOKER: project settings establish res:// only; no runtime input objects or controller database. */
+if not env["veya_cooker"]:
+    gensource = env.CommandNoCache(
+        "default_controller_mappings.gen.cpp",
+        controller_databases,
+        env.Run(input_builders.make_default_controller_mappings),
+    )
 
-env.add_source_files(env.core_sources, "*.cpp")
-env.add_source_files(env.core_sources, gensource)
+    env.add_source_files(env.core_sources, "*.cpp")
+    env.add_source_files(env.core_sources, gensource)
+# /*>>----- VEYA_COOKER */

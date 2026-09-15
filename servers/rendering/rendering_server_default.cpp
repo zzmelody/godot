@@ -276,7 +276,11 @@ void RenderingServerDefault::_finish() {
 void RenderingServerDefault::init() {
 	if (create_thread) {
 		print_verbose("RenderingServerWrapMT: Starting render thread");
+		/*<<----- VEYA_COOKER: the cooker always uses the main-thread Dummy renderer and has no DisplayServer. */
+#ifndef VEYA_COOKER
 		DisplayServer::get_singleton()->release_rendering_thread();
+#endif
+		/*>>----- VEYA_COOKER */
 		WorkerThreadPool::TaskID tid = WorkerThreadPool::get_singleton()->add_task(callable_mp(this, &RenderingServerDefault::_thread_loop), true, "Rendering Server pump task", true);
 		command_queue.set_pump_task_id(tid);
 		command_queue.push(this, &RenderingServerDefault::_assign_mt_ids, tid);
@@ -413,14 +417,22 @@ void RenderingServerDefault::_thread_exit() {
 }
 
 void RenderingServerDefault::_thread_loop() {
+	/*<<----- VEYA_COOKER: no display context exists in the data-only renderer. */
+#ifndef VEYA_COOKER
 	DisplayServer::get_singleton()->gl_window_make_current(DisplayServerEnums::MAIN_WINDOW_ID); // Move GL to this thread.
+#endif
+	/*>>----- VEYA_COOKER */
 
 	while (!exit) {
 		WorkerThreadPool::get_singleton()->yield();
 		command_queue.flush_all();
 	}
 
+	/*<<----- VEYA_COOKER: no display context exists in the data-only renderer. */
+#ifndef VEYA_COOKER
 	DisplayServer::get_singleton()->release_rendering_thread();
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 /* INTERPOLATION */

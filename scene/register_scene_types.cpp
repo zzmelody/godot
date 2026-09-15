@@ -1408,7 +1408,11 @@ void unregister_scene_types() {
 	ColorPickerShape::finish_shaders();
 #endif
 /*>>----- VEYA_COOKER */
+	/*<<----- VEYA_COOKER: the canvas-only blit material is absent from the asset source graph. */
+#ifndef VEYA_COOKER
 	BlitMaterial::cleanup_shader();
+#endif
+	/*>>----- VEYA_COOKER */
 /*<<----- VEYA_COOKER: no GUI shader lifecycle. */
 #ifndef VEYA_COOKER
 	GraphEdit::finish_shaders();
@@ -1422,9 +1426,13 @@ void unregister_scene_types() {
 void register_scene_singletons() {
 	OS::get_singleton()->benchmark_begin_measure("Scene", "Register Singletons");
 
+	/*<<----- VEYA_COOKER: ThemeDB and its generated fonts/icons are not linked into the CLI. */
+#ifndef VEYA_COOKER
 	GDREGISTER_CLASS(ThemeDB);
 
 	Engine::get_singleton()->add_singleton(Engine::Singleton("ThemeDB", ThemeDB::get_singleton()));
+#endif
+	/*>>----- VEYA_COOKER */
 
 	OS::get_singleton()->benchmark_end_measure("Scene", "Register Singletons");
 }

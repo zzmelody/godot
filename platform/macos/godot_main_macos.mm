@@ -28,7 +28,11 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+/*<<----- VEYA_COOKER: the native batch entry never initializes NSApplication. */
+#ifndef VEYA_COOKER
 #import "godot_application.h"
+#endif
+/*>>----- VEYA_COOKER */
 #import "os_macos.h"
 
 #include "core/profiling/profiling.h"
@@ -57,8 +61,12 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 	uint32_t argsc = 0;
 
 	int wait_for_debugger = 0; // wait 5 second by default
+	/*<<----- VEYA_COOKER: display-mode selection is compiled only for ordinary macOS executables. */
+#ifndef VEYA_COOKER
 	bool is_embedded = false;
 	bool is_headless = false;
+#endif
+	/*>>----- VEYA_COOKER */
 
 	for (int i = 0; i < argc; i++) {
 		if (strcmp("-NSDocumentRevisionsDebugMode", argv[i]) == 0) {
@@ -75,6 +83,8 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 			continue;
 		}
 
+		/*<<----- VEYA_COOKER: batch arguments pass through without referencing excluded display modes. */
+#ifndef VEYA_COOKER
 		if (strcmp("--embedded", argv[i]) == 0) {
 			is_embedded = true;
 		}
@@ -88,6 +98,8 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 		if (i < argc - 1 && strcmp("--display-driver", argv[i]) == 0 && strcmp("headless", argv[i + 1]) == 0) {
 			is_headless = true;
 		}
+#endif
+		/*>>----- VEYA_COOKER */
 
 		args.ptr()[argsc] = argv[i];
 		argsc++;
@@ -96,6 +108,10 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 	uint32_t remaining_args = argsc - 1;
 
 	OS_MacOS *os = nullptr;
+	/*<<----- VEYA_COOKER: always select the headless OS loop even when callers omit --headless. */
+#ifdef VEYA_COOKER
+	os = memnew(OS_MacOS_Headless(args[0], remaining_args, remaining_args > 0 ? &args[1] : nullptr));
+#else
 	if (is_embedded) {
 #ifdef TOOLS_ENABLED
 		os = memnew(OS_MacOS_Embedded(args[0], remaining_args, remaining_args > 0 ? &args[1] : nullptr));
@@ -108,6 +124,8 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 	} else {
 		os = memnew(OS_MacOS_NSApp(args[0], remaining_args, remaining_args > 0 ? &args[1] : nullptr));
 	}
+#endif
+	/*>>----- VEYA_COOKER */
 
 #ifdef TOOLS_ENABLED
 	if (wait_for_debugger > 0) {
@@ -120,11 +138,15 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
 	}
 #endif
 
+	/*<<----- VEYA_COOKER: there is no dock process transform for a headless batch executable. */
+#ifndef VEYA_COOKER
 	if (is_embedded) {
 		// No dock icon for the embedded process, as it is hosted in the Godot editor.
 		ProcessSerialNumber psn = { 0, kCurrentProcess };
 		(void)TransformProcessType(&psn, kProcessTransformToBackgroundApplication);
 	}
+#endif
+	/*>>----- VEYA_COOKER */
 
 	// We must override main when testing is enabled.
 	TEST_MAIN_OVERRIDE

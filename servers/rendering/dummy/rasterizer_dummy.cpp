@@ -43,9 +43,13 @@
 #include "servers/rendering/dummy/storage/utilities.h"
 
 void RasterizerDummy::end_frame(bool p_present) {
+	/*<<----- VEYA_COOKER: the data-only renderer has no DisplayServer or swap chain. */
+#ifndef VEYA_COOKER
 	if (p_present) {
 		DisplayServer::get_singleton()->swap_buffers();
 	}
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 RendererCanvasRender *RasterizerDummy::get_canvas() {

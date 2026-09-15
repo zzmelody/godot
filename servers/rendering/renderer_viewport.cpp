@@ -344,7 +344,11 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 
 	if (OS::get_singleton()->get_current_rendering_method() == "gl_compatibility") {
 		// This is currently needed for GLES to keep the current window being rendered to up to date
+		/*<<----- VEYA_COOKER: no DisplayServer or window context is present. */
+#ifndef VEYA_COOKER
 		DisplayServer::get_singleton()->gl_window_make_current(p_viewport->viewport_to_screen);
+#endif
+		/*>>----- VEYA_COOKER */
 	}
 
 	/* Camera should always be BEFORE any other 3D */
@@ -1724,7 +1728,11 @@ void RendererViewport::viewport_set_canvas_cull_mask(RID p_viewport, uint32_t p_
 
 // Workaround for setting this on thread.
 void RendererViewport::call_set_vsync_mode(DisplayServerEnums::VSyncMode p_mode, DisplayServerEnums::WindowID p_window) {
+	/*<<----- VEYA_COOKER: a batch process has no swap chain or vsync setting. */
+#ifndef VEYA_COOKER
 	DisplayServer::get_singleton()->window_set_vsync_mode(p_mode, p_window);
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 int RendererViewport::get_total_objects_drawn() const {

@@ -33,7 +33,11 @@
 #include "core/config/engine.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+/*<<----- VEYA_COOKER: Area3D remains cookable physics data without querying an audio server. */
+#ifndef VEYA_COOKER
 #include "servers/audio/audio_server.h"
+#endif
+/*>>----- VEYA_COOKER */
 
 void Area3D::set_gravity_space_override_mode(SpaceOverride p_mode) {
 	gravity_space_override = p_mode;
@@ -602,12 +606,18 @@ void Area3D::set_audio_bus_name(const StringName &p_audio_bus) {
 }
 
 StringName Area3D::get_audio_bus_name() const {
+	/*<<----- VEYA_COOKER: preserve the serialized bus name when no audio bus registry exists. */
+#ifdef VEYA_COOKER
+	return audio_bus;
+#else
 	for (int i = 0; i < AudioServer::get_singleton()->get_bus_count(); i++) {
 		if (AudioServer::get_singleton()->get_bus_name(i) == audio_bus) {
 			return audio_bus;
 		}
 	}
 	return SceneStringName(Master);
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 void Area3D::set_use_reverb_bus(bool p_enable) {
@@ -623,12 +633,18 @@ void Area3D::set_reverb_bus_name(const StringName &p_audio_bus) {
 }
 
 StringName Area3D::get_reverb_bus_name() const {
+	/*<<----- VEYA_COOKER: preserve the serialized reverb name when no audio bus registry exists. */
+#ifdef VEYA_COOKER
+	return reverb_bus;
+#else
 	for (int i = 0; i < AudioServer::get_singleton()->get_bus_count(); i++) {
 		if (AudioServer::get_singleton()->get_bus_name(i) == reverb_bus) {
 			return reverb_bus;
 		}
 	}
 	return SceneStringName(Master);
+#endif
+	/*>>----- VEYA_COOKER */
 }
 
 void Area3D::set_reverb_amount(float p_amount) {
@@ -651,6 +667,8 @@ void Area3D::_validate_property(PropertyInfo &p_property) const {
 	if (!Engine::get_singleton()->is_editor_hint()) {
 		return;
 	}
+	/*<<----- VEYA_COOKER: bus-name editor hints require the removed AudioServer registry. */
+#ifndef VEYA_COOKER
 	if (p_property.name == "audio_bus_name" || p_property.name == "reverb_bus_name") {
 		String options;
 		for (int i = 0; i < AudioServer::get_singleton()->get_bus_count(); i++) {
@@ -662,7 +680,10 @@ void Area3D::_validate_property(PropertyInfo &p_property) const {
 		}
 
 		p_property.hint_string = options;
-	} else if (p_property.name.begins_with("gravity") && p_property.name != "gravity_space_override") {
+	} else
+#endif
+	if (p_property.name.begins_with("gravity") && p_property.name != "gravity_space_override") {
+	/*>>----- VEYA_COOKER */
 		if (gravity_space_override == SPACE_OVERRIDE_DISABLED) {
 			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 		} else {
