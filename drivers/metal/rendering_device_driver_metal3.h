@@ -42,6 +42,11 @@ class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0)) RenderingDeviceDriverMet
 #pragma mark - Generic
 
 	NS::SharedPtr<MTL::CommandQueue> device_queue;
+	// Level fences are local to each command buffer. Keep the last submitted
+	// buffer's completion fence so untracked resources also have a dependency
+	// when their next consumer is recorded in another frame's command buffer.
+	Mutex submission_fence_mutex;
+	NS::SharedPtr<MTL::Fence> last_submitted_fence;
 
 	struct Fence {
 		virtual void signal(MTL::CommandBuffer *p_cmd_buffer) = 0;
