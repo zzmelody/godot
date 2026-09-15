@@ -625,6 +625,19 @@ RID SkyRD::Sky::get_textures(SkyTextureSetVersion p_version, RID p_default_shade
 		uniforms.push_back(u);
 	}
 
+	bool use_array = RendererSceneRenderRD::get_singleton()->get_sky()->sky_use_octmap_array;
+	RID black = texture_storage->texture_rd_get_default(use_array ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+	bool capture_pass = p_version >= SKY_TEXTURE_SET_OCTMAP;
+	RID current = !capture_pass && managed_capture && published_complete ? radiance : black;
+	RID next = !capture_pass && managed_capture && blend_started >= 0.0 && capture_work ? capture_work->radiance : current;
+	for (int i = 0; i < 2; i++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		u.binding = 3 + i;
+		u.append_id(i == 0 ? current : next);
+		uniforms.push_back(u);
+	}
+
 	return UniformSetCacheRD::get_singleton()->get_cache_vec(p_default_shader_rd, SKY_SET_TEXTURES, uniforms);
 }
 
@@ -755,6 +768,9 @@ void SkyRD::init() {
 		String defines = "\n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS " + itos(sky_scene_state.max_directional_lights) + "\n";
 		defines += "\n#define SAMPLERS_BINDING_FIRST_INDEX " + itos(SAMPLERS_BINDING_FIRST_INDEX) + "\n";
 
+		if (sky_use_octmap_array) {
+			defines += "\n#define HEIGHT_FOG_RADIANCE_ARRAY\n";
+		}
 		// Initialize sky
 		Vector<String> sky_modes;
 		sky_modes.push_back(""); // Full size
@@ -962,6 +978,14 @@ RID SkyRD::SkySceneState::get_fog_only_texture_uniform_set(RID p_default_shader_
 			uniforms.push_back(u);
 		}
 
+		bool use_array = RendererSceneRenderRD::get_singleton()->get_sky()->sky_use_octmap_array;
+		for (int i = 0; i < 2; i++) {
+			RD::Uniform u;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			u.binding = 3 + i;
+			u.append_id(texture_storage->texture_rd_get_default(use_array ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK));
+			uniforms.push_back(u);
+		}
 		uniform_set_rid = RD::get_singleton()->uniform_set_create(uniforms, p_default_shader_rd, SKY_SET_TEXTURES);
 	}
 
@@ -1061,6 +1085,19 @@ void SkyRD::setup_sky(const RenderDataRD *p_render_data, const Size2i p_screen_s
 			sky->prev_time = p_render_data->scene_data->time;
 			sky->reflection.dirty = true;
 			RenderingServerDefault::redraw_request();
+		}
+
+		// Native panorama/procedural skies have no application capture generation.
+		// Their fogged radiance must still follow resolved fog and capture altitude.
+		if (!sky->managed_capture) {
+			RendererEnvironmentStorage::HeightFogData height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_render_data->environment);
+			float origin_y = p_render_data->scene_data->cam_transform.origin.y;
+			if (memcmp(&height_fog, &sky->prev_height_fog, sizeof(height_fog)) != 0 || (height_fog.control[3] > 0.0f && origin_y != sky->prev_height_fog_origin_y)) {
+				sky->prev_height_fog = height_fog;
+				sky->prev_height_fog_origin_y = origin_y;
+				sky->reflection.dirty = true;
+				RenderingServerDefault::redraw_request();
+			}
 		}
 
 		if (RendererSceneRenderRD::get_singleton()->environment_get_fog_aerial_perspective(p_render_data->environment) != sky->prev_fog_aerial_perspective) {
@@ -1282,6 +1319,20 @@ void SkyRD::setup_sky(const RenderDataRD *p_render_data, const Size2i p_screen_s
 	}
 
 	sky_scene_state.ubo.z_far = p_render_data->scene_data->view_projection[0].get_z_far(); // Should be the same for all projection.
+	sky_scene_state.ubo.height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_render_data->environment);
+	RendererRD::MaterialStorage::store_transform(p_render_data->scene_data->cam_transform, sky_scene_state.ubo.height_fog_world_from_view);
+	RendererRD::MaterialStorage::store_camera((correction * p_render_data->scene_data->cam_projection).inverse(), sky_scene_state.ubo.height_fog_inv_projection);
+	sky_scene_state.ubo.height_fog_view[0] = p_render_data->scene_data->cam_orthogonal ? 1.0f : 0.0f;
+	sky_scene_state.ubo.height_fog_view[1] = p_render_data->reflection_probe.is_valid() ? 1.0f : 0.0f;
+	sky_scene_state.ubo.height_fog_view[2] = sky && sky->managed_capture && sky->published_complete ? 1.0f : 0.0f;
+	sky_scene_state.ubo.height_fog_view[3] = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : 1.0f;
+	for (int i = 0; i < 4; i++) {
+		sky_scene_state.ubo.height_fog_capture[i] = 0;
+		sky_scene_state.ubo.height_fog_fallback[i] = 0;
+	}
+	sky_get_capture_sampling(RendererSceneRenderRD::get_singleton()->environment_get_sky(p_render_data->environment), p_render_data->reflection_probe.is_valid(), sky_scene_state.ubo.height_fog_capture, sky_scene_state.ubo.height_fog_fallback);
+	sky_scene_state.ubo.height_fog_capture[3] = roughness_layers - 1;
+	sky_scene_state.ubo.height_fog_radiance[0] = sky ? sky->uv_border_size : 0.0f;
 	sky_scene_state.ubo.fog_enabled = RendererSceneRenderRD::get_singleton()->environment_get_fog_enabled(p_render_data->environment);
 	sky_scene_state.ubo.fog_density = RendererSceneRenderRD::get_singleton()->environment_get_fog_density(p_render_data->environment);
 	sky_scene_state.ubo.fog_aerial_perspective = RendererSceneRenderRD::get_singleton()->environment_get_fog_aerial_perspective(p_render_data->environment);
@@ -1790,6 +1841,9 @@ void SkyRD::sky_request_capture(RID p_sky, RID p_material, int64_t p_generation,
 	input.fallback = p_fallback;
 	input.requested_at = double(OS::get_singleton()->get_ticks_usec()) * 1e-6;
 	input.brightness = renderer->environment_get_bg_energy_multiplier(p_environment) * renderer->environment_get_bg_intensity(p_environment);
+	input.scene_ubo.height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_environment);
+	input.scene_ubo.height_fog_view[1] = 1.0f;
+	input.scene_ubo.height_fog_view[3] = 1.0f;
 	input.scene_ubo.fog_enabled = renderer->environment_get_fog_enabled(p_environment);
 	input.scene_ubo.fog_density = renderer->environment_get_fog_density(p_environment);
 	input.scene_ubo.fog_aerial_perspective = renderer->environment_get_fog_aerial_perspective(p_environment);
@@ -1972,6 +2026,7 @@ bool SkyRD::_capture_step(Sky *sky) {
 		SkySceneState::UBO pass_ubo = sky->active_input.scene_ubo;
 		if (mip != 0) {
 			pass_ubo.fog_enabled = false;
+			pass_ubo.height_fog.control[3] = 0.0f;
 		}
 		RD::get_singleton()->buffer_update(sky->capture_scene_buffer, 0, sizeof(SkySceneState::UBO), &pass_ubo);
 		RD::DrawListID draw = RD::get_singleton()->draw_list_begin(fb, RD::DRAW_IGNORE_COLOR_ALL);

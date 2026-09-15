@@ -160,6 +160,13 @@ public:
 			uint32_t directional_light_count; // 4 - 344
 			uint32_t fog_use_legacy_blending; // 4 - 348
 			uint32_t pad1; // 4 - 352
+			RendererEnvironmentStorage::HeightFogData height_fog;
+			float height_fog_world_from_view[16];
+			float height_fog_inv_projection[16];
+			float height_fog_view[4]; // orthographic, capture view, complete source, exposure
+			float height_fog_capture[4]; // managed, shared blend, old complete, roughness layers
+			float height_fog_fallback[4];
+			float height_fog_radiance[4]; // border, reserved
 		};
 
 		UBO ubo;
@@ -325,6 +332,8 @@ public:
 		float prev_fog_density = 0.0;
 		float prev_fog_sky_affect = 0.0;
 		float prev_fog_light_energy = 0.0;
+		RendererEnvironmentStorage::HeightFogData prev_height_fog;
+		float prev_height_fog_origin_y = 0.0f;
 
 		void free_radiance();
 

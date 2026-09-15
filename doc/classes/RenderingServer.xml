@@ -4705,6 +4705,29 @@
 				Sets the [member VoxelGIData.use_two_bounces] value to use on the specified [param voxel_gi]'s [RID].
 			</description>
 		</method>
+
+		<method name="environment_set_height_fog_state">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="state" type="Dictionary" />
+			<description>Atomically submits version 1 analytic height fog for Mobile. Coefficients are per meter, distances are meters, and colors are canonical linear HDR.
+				An enabled payload requires [code]version[/code] (integer 1), [code]generation[/code] (nonnegative integer), [code]enabled[/code], [code]beta0_per_m[/code], [code]falloff_per_m[/code], [code]height_m[/code], [code]start_distance_m[/code], [code]max_opacity[/code], [code]base_source[/code] (Color), [code]directional_start_distance_m[/code], [code]directional_exponent[/code], [code]directional_sources[/code], [code]sky_capture_strength[/code], [code]sky_capture_roughness[/code] and [code]debug_view[/code]. Directional sources is an Array of up to two Dictionaries, each containing [code]direction_to_light[/code] (world Vector3) and [code]color[/code] (linear Color before the native 1/(4pi) phase factor). Directions are normalized on acceptance. Debug view is integer 0 (normal), 1 (T), or 2 (L); diagnostic values replace fragment RGB before framebuffer blending and retain the renderer storage conversion. A disabled payload may contain only version, generation and enabled=false.
+				All numeric values must be finite. Coefficients, distances, source RGB and sky capture strength are nonnegative; max opacity and capture roughness are in [0,1], directional exponent is in [0.000001,1000]. Capture strength may exceed 1. Unknown or malformed fields fail atomically. No author-unit conversion is performed. Invalid inputs disable analytic fog and report RENDER-FOG-FAILED. An empty dictionary releases analytic fog ownership. See environment_get_height_fog_status.</description>
+		</method>
+		<method name="environment_get_height_fog_state" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="env" type="RID" />
+			<description>Returns the last atomically accepted height fog payload. Invalid submissions preserve this payload while disabling rendering and changing status to FAILED.</description>
+		</method>
+		<method name="environment_get_height_fog_status" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="env" type="RID" />
+			<description>Returns version, renderer, supported, finite, infinite, generation, configured, state, error and reason. State is ACTIVE, DISABLED, UNSUPPORTED or FAILED. Missing optional sky capture radiance disables capture scattering only.</description>
+		</method>
+		<method name="get_height_fog_capabilities" qualifiers="const">
+			<return type="Dictionary" />
+			<description>Reports version 1 analytic finite/infinite height fog support. Mobile is supported; other rendering methods report RENDER-FOG-UNSUPPORTED.</description>
+		</method>
 	</methods>
 	<members>
 		<member name="render_loop_enabled" type="bool" setter="set_render_loop_enabled" getter="is_render_loop_enabled">

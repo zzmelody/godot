@@ -391,6 +391,19 @@ RendererEnvironmentStorage::TonemapParameters RendererSceneRender::environment_g
 
 // Fog
 
+void RendererSceneRender::environment_set_height_fog_state(RID p_env, const Dictionary &p_state) {
+	environment_storage.environment_set_height_fog_state(p_env, p_state);
+}
+Dictionary RendererSceneRender::environment_get_height_fog_state(RID p_env) const {
+	return environment_storage.environment_get_height_fog_state(p_env);
+}
+Dictionary RendererSceneRender::environment_get_height_fog_status(RID p_env) const {
+	return environment_storage.environment_get_height_fog_status(p_env);
+}
+Dictionary RendererSceneRender::get_height_fog_capabilities() const {
+	return environment_storage.get_height_fog_capabilities();
+}
+
 void RendererSceneRender::environment_set_fog(RID p_env, bool p_enable, const Color &p_light_color, float p_light_energy, float p_sun_scatter, float p_density, float p_height, float p_height_density, float p_aerial_perspective, float p_sky_affect, RSE::EnvironmentFogMode p_mode) {
 	environment_storage.environment_set_fog(p_env, p_enable, p_light_color, p_light_energy, p_sun_scatter, p_density, p_height, p_height_density, p_aerial_perspective, p_sky_affect, p_mode);
 }

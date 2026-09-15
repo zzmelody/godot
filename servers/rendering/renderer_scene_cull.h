@@ -1254,6 +1254,11 @@ public:
 	PASS3RC(float, environment_get_white, RID, bool, float)
 
 	// Fog
+	PASS2(environment_set_height_fog_state, RID, const Dictionary &)
+	PASS1RC(Dictionary, environment_get_height_fog_state, RID)
+	PASS1RC(Dictionary, environment_get_height_fog_status, RID)
+	PASS0RC(Dictionary, get_height_fog_capabilities)
+
 	PASS11(environment_set_fog, RID, bool, const Color &, float, float, float, float, float, float, float, RSE::EnvironmentFogMode)
 
 	PASS1RC(bool, environment_get_fog_enabled, RID)

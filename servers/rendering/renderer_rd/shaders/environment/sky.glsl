@@ -30,6 +30,7 @@ void main() {
 #VERSION_DEFINES
 
 #include "../oct_inc.glsl"
+#include "height_fog_inc.glsl"
 
 #ifdef USE_MULTIVIEW
 #extension GL_EXT_multiview : enable
@@ -80,6 +81,14 @@ layout(set = 0, binding = 2, std140) uniform SkySceneData {
 	uint directional_light_count; // 4 - 56
 	bool fog_use_legacy_blending; // 4 - 60
 	uint pad1; // 4 - 64
+	HeightFogData height_fog;
+	mat4 height_fog_world_from_view;
+	mat4 height_fog_inv_projection;
+	vec4 height_fog_view;
+	vec4 height_fog_capture;
+	vec4 height_fog_fallback;
+	vec4 height_fog_radiance;
+
 }
 sky_scene_data;
 
@@ -112,6 +121,14 @@ layout(set = 2, binding = 2) uniform texture2DArray quarter_res;
 #else
 layout(set = 2, binding = 1) uniform texture2D half_res;
 layout(set = 2, binding = 2) uniform texture2D quarter_res;
+#endif
+
+#ifdef HEIGHT_FOG_RADIANCE_ARRAY
+layout(set = 2, binding = 3) uniform texture2DArray height_fog_radiance;
+layout(set = 2, binding = 4) uniform texture2DArray height_fog_radiance_next;
+#else
+layout(set = 2, binding = 3) uniform texture2D height_fog_radiance;
+layout(set = 2, binding = 4) uniform texture2D height_fog_radiance_next;
 #endif
 
 layout(set = 3, binding = 0) uniform texture3D volumetric_fog_texture;
@@ -156,6 +173,24 @@ vec4 volumetric_fog_process(vec2 screen_uv) {
 #endif
 
 	return texture(sampler3D(volumetric_fog_texture, SAMPLER_LINEAR_CLAMP), fog_pos);
+}
+
+vec3 height_fog_capture_sample(vec3 lookup_ray) {
+ float border = sky_scene_data.height_fog_radiance.x;
+ vec2 oct_uv = vec3_to_oct_with_border(lookup_ray, vec2(border, 1.0 - 2.0 * border));
+ float layer = sky_scene_data.height_fog.options.x * sky_scene_data.height_fog_capture.w;
+#ifdef HEIGHT_FOG_RADIANCE_ARRAY
+ float low = floor(layer);
+ float high = min(low + 1.0, sky_scene_data.height_fog_capture.w);
+ vec3 old_color = mix(textureLod(sampler2DArray(height_fog_radiance, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(oct_uv, low), 0.0).rgb,
+     textureLod(sampler2DArray(height_fog_radiance, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(oct_uv, high), 0.0).rgb, fract(layer));
+ vec3 next_color = mix(textureLod(sampler2DArray(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(oct_uv, low), 0.0).rgb,
+     textureLod(sampler2DArray(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(oct_uv, high), 0.0).rgb, fract(layer));
+#else
+ vec3 old_color = textureLod(sampler2D(height_fog_radiance, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), oct_uv, layer).rgb;
+ vec3 next_color = textureLod(sampler2D(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), oct_uv, layer).rgb;
+#endif
+ return mix(old_color, next_color, sky_scene_data.height_fog_capture.y);
 }
 
 vec4 fog_process(vec3 view, vec3 sky_color) {
@@ -203,8 +238,11 @@ float atan2_approx(float y, float x) {
 void main() {
 	vec2 uv = uv_interp * 0.5 + 0.5;
 	vec3 cube_normal;
+	vec3 height_fog_world_ray;
+	vec3 height_fog_origin = params.position;
 #ifdef USE_CUBEMAP_PASS
 	cube_normal = oct_to_vec3_with_border(uv, params.border_size.y);
+	height_fog_world_ray = cube_normal;
 #else
 #ifdef USE_MULTIVIEW
 	// In multiview our projection matrices will contain positional and rotational offsets that we need to properly unproject.
@@ -219,6 +257,27 @@ void main() {
 	cube_normal.x = (uv_interp.x + params.projection.x) / params.projection.y;
 	cube_normal.y = (uv_interp.y + params.projection.z) / params.projection.w;
 #endif
+	// Physical fog follows the camera projection, independently of the artwork's
+	// custom sky FOV above. Two finite depths also support infinite far planes.
+#ifdef USE_MULTIVIEW
+	mat4 fog_inverse_projection = sky_scene_data.view_inv_projections[ViewIndex];
+#else
+	mat4 fog_inverse_projection = sky_scene_data.height_fog_inv_projection;
+#endif
+	vec4 fog_near_h = fog_inverse_projection * vec4(uv_interp, 1.0, 1.0);
+	vec4 fog_middle_h = fog_inverse_projection * vec4(uv_interp, 0.5, 1.0);
+	vec3 fog_near_point = fog_near_h.xyz / fog_near_h.w;
+	vec3 fog_ray = fog_middle_h.xyz / fog_middle_h.w - fog_near_point;
+	vec3 height_fog_view_ray = normalize(fog_ray);
+	vec3 height_fog_origin_view = vec3(0.0);
+#ifdef USE_MULTIVIEW
+	height_fog_origin_view = sky_scene_data.view_eye_offsets[ViewIndex].xyz;
+#endif
+	if (sky_scene_data.height_fog_view.x > 0.0) {
+		height_fog_origin_view += fog_near_point - fog_ray * fog_near_point.z / fog_ray.z;
+	}
+	height_fog_origin += mat3(sky_scene_data.height_fog_world_from_view) * height_fog_origin_view;
+	height_fog_world_ray = normalize(mat3(sky_scene_data.height_fog_world_from_view) * height_fog_view_ray);
 	cube_normal = mat3(params.orientation) * cube_normal;
 	cube_normal = normalize(cube_normal);
 #endif
@@ -279,10 +338,22 @@ void main() {
 #if !defined(DISABLE_FOG) && !defined(USE_CUBEMAP_PASS)
 
 	// Draw "fixed" fog before volumetric fog to ensure volumetric fog can appear in front of the sky.
-	if (sky_scene_data.fog_enabled) {
-		vec4 fog = fog_process(cube_normal, frag_color.rgb);
-		frag_color.rgb = mix(frag_color.rgb, fog.rgb, fog.a * sky_scene_data.fog_sky_affect);
-	}
+ if (sky_scene_data.height_fog.options.z > 0.0) {
+#if !defined(USE_HALF_RES_PASS) && !defined(USE_QUARTER_RES_PASS)
+  bool capture_ready = sky_scene_data.height_fog_view.y == 0.0 && sky_scene_data.height_fog_view.z > 0.0;
+#ifdef USE_CUBEMAP_PASS
+  capture_ready = false;
+#endif
+  vec3 capture_color = capture_ready && sky_scene_data.height_fog.source.w > 0.0 ? height_fog_capture_sample(cube_normal) : vec3(0.0);
+  vec4 native_fog = height_fog_integrate(sky_scene_data.height_fog, height_fog_origin, height_fog_world_ray, 0.0, true, capture_color, capture_ready);
+  frag_color.rgb = frag_color.rgb * native_fog.a + native_fog.rgb * sky_scene_data.height_fog_view.w;
+  if (sky_scene_data.height_fog.options.y == 1.0) { frag_color.rgb = vec3(native_fog.a); }
+  else if (sky_scene_data.height_fog.options.y == 2.0) { frag_color.rgb = native_fog.rgb; }
+#endif
+ } else if (sky_scene_data.fog_enabled) {
+  vec4 fog = fog_process(cube_normal, frag_color.rgb);
+  frag_color.rgb = mix(frag_color.rgb, fog.rgb, fog.a * sky_scene_data.fog_sky_affect);
+ }
 
 	if (sky_scene_data.volumetric_fog_enabled) {
 		vec4 fog = volumetric_fog_process(uv);

@@ -33,6 +33,20 @@
 				Sets the intensity of the glow level [param idx]. A value above [code]0.0[/code] enables the level. Each level relies on the previous level. This means that enabling higher glow levels will slow down the glow effect rendering, even if previous levels aren't enabled.
 			</description>
 		</method>
+
+		<method name="set_height_fog_state">
+			<return type="void" />
+			<param index="0" name="state" type="Dictionary" />
+			<description>Submits the complete native analytic height fog state. See [method RenderingServer.environment_set_height_fog_state].</description>
+		</method>
+		<method name="get_height_fog_state" qualifiers="const">
+			<return type="Dictionary" />
+			<description>Returns the accepted native height fog payload.</description>
+		</method>
+		<method name="get_height_fog_status" qualifiers="const">
+			<return type="Dictionary" />
+			<description>Returns native analytic height fog support and execution status.</description>
+		</method>
 	</methods>
 	<members>
 		<member name="adjustment_brightness" type="float" setter="set_adjustment_brightness" getter="get_adjustment_brightness" default="1.0">
@@ -381,6 +395,7 @@
 		<member name="volumetric_fog_temporal_reprojection_enabled" type="bool" setter="set_volumetric_fog_temporal_reprojection_enabled" getter="is_volumetric_fog_temporal_reprojection_enabled" default="true">
 			Enables temporal reprojection in the volumetric fog. Temporal reprojection blends the current frame's volumetric fog with the last frame's volumetric fog to smooth out jagged edges. The performance cost is minimal; however, it leads to moving [FogVolume]s and [Light3D]s "ghosting" and leaving a trail behind them. When temporal reprojection is enabled, try to avoid moving [FogVolume]s or [Light3D]s too fast. Short-lived dynamic lighting effects should have [member Light3D.light_volumetric_fog_energy] set to [code]0.0[/code] to avoid ghosting.
 		</member>
+		<member name="height_fog_state" type="Dictionary" setter="set_height_fog_state" getter="get_height_fog_state" default="{}">Complete native analytic height fog transport. Stored on duplication for immutable capture snapshots.</member>
 	</members>
 	<constants>
 		<constant name="BG_CLEAR_COLOR" value="0" enum="BGMode">

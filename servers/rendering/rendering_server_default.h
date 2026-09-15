@@ -878,6 +878,11 @@ public:
 
 	FUNC7(environment_set_adjustment, RID, bool, float, float, float, bool, RID)
 
+	FUNC2(environment_set_height_fog_state, RID, const Dictionary &)
+	FUNC1RC(Dictionary, environment_get_height_fog_state, RID)
+	FUNC1RC(Dictionary, environment_get_height_fog_status, RID)
+	FUNC0RC(Dictionary, get_height_fog_capabilities)
+
 	FUNC11(environment_set_fog, RID, bool, const Color &, float, float, float, float, float, float, float, RSE::EnvironmentFogMode)
 
 	FUNC4(environment_set_fog_depth, RID, float, float, float)

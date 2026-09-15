@@ -379,6 +379,10 @@ public:
 
 	// Fog
 
+	void set_height_fog_state(const Dictionary &p_state);
+	Dictionary get_height_fog_state() const;
+	Dictionary get_height_fog_status() const;
+
 	void set_fog_enabled(bool p_enabled);
 	bool is_fog_enabled() const;
 	void set_fog_mode(FogMode p_mode);

@@ -1068,6 +1068,43 @@ vec4 sample_sky_radiance(vec2 uv, float lod) {
 	return vec4(result, 1.0);
 }
 
+vec4 native_height_fog_process(vec3 vertex) {
+ vec3 origin_view = vec3(0.0);
+#ifdef USE_MULTIVIEW
+ origin_view = scene_data.eye_offset[ViewIndex].xyz;
+#endif
+ if (scene_data.height_fog_view.x > 0.0) {
+  vec2 ndc = gl_FragCoord.xy * scene_data.screen_pixel_size * 2.0 - 1.0;
+  vec4 near_h = inv_projection_matrix * vec4(ndc, 1.0, 1.0);
+  vec4 far_h = inv_projection_matrix * vec4(ndc, 0.0, 1.0);
+  vec3 near_point = near_h.xyz / near_h.w;
+  vec3 parallel_ray = far_h.xyz / far_h.w - near_point;
+  origin_view += near_point - parallel_ray * (near_point.z / parallel_ray.z);
+ }
+ mat4 world_from_view = transpose(mat4(scene_data.inv_view_matrix[0], scene_data.inv_view_matrix[1], scene_data.inv_view_matrix[2], vec4(0.0, 0.0, 0.0, 1.0)));
+ vec3 segment = vertex - origin_view;
+ float distance_to_surface = length(segment);
+ vec3 view_ray = distance_to_surface > 0.0 ? segment / distance_to_surface : vec3(0.0, 0.0, -1.0);
+ vec3 ray = normalize(mat3(world_from_view) * view_ray);
+ vec3 origin = (world_from_view * vec4(origin_view, 1.0)).xyz;
+ bool capture_ready = scene_data.height_fog_view.y == 0.0 && scene_data.height_fog_view.z > 0.0;
+ vec3 capture_color = vec3(0.0);
+ if (capture_ready && scene_data.height_fog.source.w > 0.0) {
+  vec3 radiance_ray = scene_data.radiance_inverse_xform * view_ray;
+  vec2 oct_uv = vec3_to_oct_with_border(radiance_ray, vec2(scene_data.radiance_border_size, 1.0 - 2.0 * scene_data.radiance_border_size));
+  float roughness_layer = scene_data.height_fog.options.x * MAX_ROUGHNESS_LOD;
+#ifdef USE_RADIANCE_OCTMAP_ARRAY
+  float low_layer = floor(roughness_layer);
+  vec3 low_color = sample_sky_radiance(vec3(oct_uv, low_layer), 0.0).rgb;
+  vec3 high_color = sample_sky_radiance(vec3(oct_uv, min(low_layer + 1.0, MAX_ROUGHNESS_LOD)), 0.0).rgb;
+  capture_color = mix(low_color, high_color, fract(roughness_layer));
+#else
+  capture_color = sample_sky_radiance(oct_uv, roughness_layer).rgb;
+#endif
+ }
+ return height_fog_integrate(scene_data.height_fog, origin, ray, distance_to_surface, false, capture_color, capture_ready);
+}
+
 hvec4 fog_process(vec3 vertex) {
 	vec3 fog_color = scene_data_block.data.fog_light_color;
 
@@ -1318,6 +1355,10 @@ void main() {
 	half premul_alpha = half(premul_alpha_highp);
 #endif
 	hvec4 fog = hvec4(fog_highp);
+#ifndef MODE_RENDER_DEPTH
+	vec4 native_height_fog = vec4(0.0, 0.0, 0.0, 1.0);
+	bool use_native_height_fog = false;
+#endif
 #ifdef CUSTOM_RADIANCE_USED
 	hvec4 custom_radiance = hvec4(custom_radiance_highp);
 #endif
@@ -1483,7 +1524,10 @@ void main() {
 #ifndef CUSTOM_FOG_USED
 	// Draw "fixed" fog before volumetric fog to ensure volumetric fog can appear in front of the sky.
 
-	if (!sc_disable_fog() && bool(scene_data.flags & SCENE_DATA_FLAGS_USE_FOG)) {
+	if (scene_data.height_fog.options.z > 0.0) {
+		use_native_height_fog = true;
+		native_height_fog = native_height_fog_process(vertex);
+	} else if (!sc_disable_fog() && bool(scene_data.flags & SCENE_DATA_FLAGS_USE_FOG)) {
 		fog = fog_process(vertex);
 	}
 
@@ -2357,8 +2401,13 @@ void main() {
 #endif // MODE_UNSHADED
 
 #ifndef FOG_DISABLED
-	diffuse_buffer.rgb = mix(diffuse_buffer.rgb, fog.rgb, fog.a);
-	specular_buffer.rgb = mix(specular_buffer.rgb, vec3(0.0), fog.a);
+	if (use_native_height_fog) {
+		diffuse_buffer.rgb = diffuse_buffer.rgb * native_height_fog.a + native_height_fog.rgb * scene_data.emissive_exposure_normalization;
+		specular_buffer.rgb *= native_height_fog.a;
+	} else {
+		diffuse_buffer.rgb = mix(diffuse_buffer.rgb, fog.rgb, fog.a);
+		specular_buffer.rgb = mix(specular_buffer.rgb, vec3(0.0), fog.a);
+	}
 #endif // !FOG_DISABLED
 
 #else //MODE_MULTIPLE_RENDER_TARGETS
@@ -2371,7 +2420,9 @@ void main() {
 
 #ifndef FOG_DISABLED
 	// Draw "fixed" fog before volumetric fog to ensure volumetric fog can appear in front of the sky.
-	out_color.rgb = mix(out_color.rgb, fog.rgb, fog.a);
+	if (!use_native_height_fog) {
+		out_color.rgb = mix(out_color.rgb, fog.rgb, fog.a);
+	}
 #endif // !FOG_DISABLED
 
 	// On mobile we use a UNORM buffer with 10bpp which results in a range from 0.0 - 1.0 resulting in HDR breaking
@@ -2379,6 +2430,29 @@ void main() {
 	out_color.rgb = out_color.rgb / sc_luminance_multiplier();
 #ifdef PREMUL_ALPHA_USED
 	out_color.rgb *= premul_alpha;
+#endif
+
+#ifndef FOG_DISABLED
+ if (use_native_height_fog) {
+  vec3 fog_L = native_height_fog.rgb * scene_data.emissive_exposure_normalization / sc_luminance_multiplier();
+#ifdef HEIGHT_FOG_BLEND_MUL
+  out_color.rgb = hvec3(mix(vec3(1.0), vec3(out_color.rgb), native_height_fog.a));
+#else
+  out_color.rgb *= half(native_height_fog.a);
+#if !defined(HEIGHT_FOG_BLEND_ADD_SUB)
+#ifdef HEIGHT_FOG_BLEND_PREMULTIPLIED
+  out_color.rgb += hvec3(fog_L * float(alpha));
+#else
+  out_color.rgb += hvec3(fog_L);
+#endif
+#endif
+#endif
+  if (scene_data.height_fog.options.y == 1.0) {
+   out_color.rgb = hvec3(vec3(native_height_fog.a) / sc_luminance_multiplier());
+  } else if (scene_data.height_fog.options.y == 2.0) {
+   out_color.rgb = hvec3(native_height_fog.rgb / sc_luminance_multiplier());
+  }
+ }
 #endif
 
 	frag_color = out_color;

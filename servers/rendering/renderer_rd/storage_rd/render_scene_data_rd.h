@@ -183,6 +183,8 @@ private:
 		float pass_alpha_multiplier;
 		float sky_capture_data[4]; // enabled, transition weight, old complete, reserved
 		float sky_capture_fallback[4];
+		RendererEnvironmentStorage::HeightFogData height_fog;
+		float height_fog_view[4]; // orthographic, capture view, complete radiance source, reserved
 	};
 
 	struct UBODATA {

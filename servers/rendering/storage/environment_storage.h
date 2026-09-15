@@ -31,10 +31,31 @@
 #pragma once
 
 #include "core/templates/rid_owner.h"
+#include "core/variant/dictionary.h"
 #include "servers/rendering/rendering_server_enums.h"
 
 class RendererEnvironmentStorage {
 public:
+	// Canonical linear radiance and per-meter coefficients. Matches HeightFogData
+	// in height_fog_inc.glsl; the author-unit conversion belongs to the caller.
+	struct HeightFogData {
+		float density[4] = {}; // beta0, falloff, reference height, excluded distance
+		float control[4] = {}; // max opacity, directional start, exponent, enabled
+		float source[4] = {}; // RGB, sky capture strength
+		float options[4] = {}; // capture roughness, debug mode, configured, reserved
+		float direction0[4] = {};
+		float color0[4] = {};
+		float direction1[4] = {};
+		float color1[4] = {};
+	};
+
+	void environment_set_height_fog_state(RID p_env, const Dictionary &p_state);
+	Dictionary environment_get_height_fog_state(RID p_env) const;
+	Dictionary environment_get_height_fog_status(RID p_env) const;
+	Dictionary get_height_fog_capabilities() const;
+	HeightFogData environment_get_height_fog_data(RID p_env) const;
+	void environment_fail_height_fog(RID p_env, const String &p_reason);
+
 	union TonemapParameters {
 		// Shader vec4:
 		float tonemapper_params[4];
@@ -90,6 +111,10 @@ private:
 		float max_value = 1.0;
 
 		// Fog
+		Dictionary height_fog_state;
+		HeightFogData height_fog_data;
+		String height_fog_error;
+		bool height_fog_configured = false;
 		bool fog_enabled = false;
 		RSE::EnvironmentFogMode fog_mode = RSE::EnvironmentFogMode::ENV_FOG_MODE_EXPONENTIAL;
 		Color fog_light_color = Color(0.518, 0.553, 0.608);

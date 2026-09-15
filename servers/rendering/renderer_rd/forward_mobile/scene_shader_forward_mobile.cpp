@@ -236,6 +236,13 @@ void SceneShaderForwardMobile::ShaderData::set_code(const String &p_code) {
 	print_line("\n**fragment_globals:\n" + gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT]);
 #endif
 
+	if (blend_mode == BLEND_MODE_ADD || blend_mode == BLEND_MODE_SUB) {
+		gen_code.defines.push_back("\n#define HEIGHT_FOG_BLEND_ADD_SUB\n");
+	} else if (blend_mode == BLEND_MODE_MUL) {
+		gen_code.defines.push_back("\n#define HEIGHT_FOG_BLEND_MUL\n");
+	} else if (blend_mode == BLEND_MODE_PREMULTIPLIED_ALPHA) {
+		gen_code.defines.push_back("\n#define HEIGHT_FOG_BLEND_PREMULTIPLIED\n");
+	}
 	SceneShaderForwardMobile::singleton->shader.version_set_code(version, gen_code.code, gen_code.uniforms, gen_code.stage_globals[ShaderCompiler::STAGE_VERTEX], gen_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT], gen_code.defines);
 
 	ubo_size = gen_code.uniform_total_size;

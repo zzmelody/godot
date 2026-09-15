@@ -30,9 +30,9 @@
 
 #include "environment_storage.h"
 
-#ifdef DEBUG_ENABLED
 #include "core/os/os.h"
-#endif
+
+#include <cfloat>
 
 // Storage
 
@@ -345,6 +345,189 @@ RendererEnvironmentStorage::TonemapParameters RendererEnvironmentStorage::enviro
 
 // Fog
 
+namespace {
+bool height_fog_number(const Dictionary &p_state, const char *p_key, double p_min, double p_max, float &r_value) {
+	Variant v = p_state.get(p_key, Variant());
+	if (v.get_type() != Variant::FLOAT && v.get_type() != Variant::INT) {
+		return false;
+	}
+	double value = v;
+	if (!Math::is_finite(value) || value < p_min || value > p_max) {
+		return false;
+	}
+	r_value = value;
+	return Math::is_finite(r_value);
+}
+bool height_fog_color(const Variant &p_value, float *r_color) {
+	if (p_value.get_type() != Variant::COLOR) {
+		return false;
+	}
+	Color color = p_value;
+	if ((!Math::is_finite(color.r) || !Math::is_finite(color.g) || !Math::is_finite(color.b) || !Math::is_finite(color.a)) || color.r < 0 || color.g < 0 || color.b < 0) {
+		return false;
+	}
+	r_color[0] = color.r;
+	r_color[1] = color.g;
+	r_color[2] = color.b;
+	return true;
+}
+} //namespace
+
+void RendererEnvironmentStorage::environment_fail_height_fog(RID p_env, const String &p_reason) {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL(env);
+	env->height_fog_configured = true;
+	env->height_fog_data = {};
+	env->height_fog_data.options[2] = 1.0f;
+	env->height_fog_error = p_reason;
+}
+
+void RendererEnvironmentStorage::environment_set_height_fog_state(RID p_env, const Dictionary &p_state) {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL(env);
+	if (p_state.is_empty()) {
+		env->height_fog_state.clear();
+		env->height_fog_data = {};
+		env->height_fog_configured = false;
+		env->height_fog_error = String();
+		return;
+	}
+	const String allowed[] = { "version", "generation", "enabled", "beta0_per_m", "falloff_per_m", "height_m", "start_distance_m", "max_opacity", "base_source", "directional_start_distance_m", "directional_exponent", "directional_sources", "sky_capture_strength", "sky_capture_roughness", "debug_view" };
+	for (const Variant *key = p_state.next(nullptr); key; key = p_state.next(key)) {
+		bool known = false;
+		if (key->get_type() == Variant::STRING || key->get_type() == Variant::STRING_NAME) {
+			for (const String &name : allowed) {
+				known |= String(*key) == name;
+			}
+		}
+		if (!known) {
+			environment_fail_height_fog(p_env, "unknown_parameter");
+			return;
+		}
+	}
+	Variant version = p_state.get("version", Variant());
+	Variant generation = p_state.get("generation", Variant());
+	Variant enabled = p_state.get("enabled", Variant());
+	if (version.get_type() != Variant::INT || int64_t(version) != 1 || generation.get_type() != Variant::INT || int64_t(generation) < 0 || enabled.get_type() != Variant::BOOL) {
+		environment_fail_height_fog(p_env, "invalid_contract");
+		return;
+	}
+	HeightFogData data;
+	data.options[2] = 1.0f;
+	bool requested = enabled;
+	if (requested || p_state.size() > 3) {
+		bool valid = height_fog_number(p_state, "beta0_per_m", 0, FLT_MAX, data.density[0]) &&
+				height_fog_number(p_state, "falloff_per_m", 0, FLT_MAX, data.density[1]) &&
+				height_fog_number(p_state, "height_m", -FLT_MAX, FLT_MAX, data.density[2]) &&
+				height_fog_number(p_state, "start_distance_m", 0, FLT_MAX, data.density[3]) &&
+				height_fog_number(p_state, "max_opacity", 0, 1, data.control[0]) &&
+				height_fog_number(p_state, "directional_start_distance_m", 0, FLT_MAX, data.control[1]) &&
+				height_fog_number(p_state, "directional_exponent", 1e-6, 1000, data.control[2]) &&
+				height_fog_color(p_state.get("base_source", Variant()), data.source) &&
+				height_fog_number(p_state, "sky_capture_strength", 0, FLT_MAX, data.source[3]) &&
+				height_fog_number(p_state, "sky_capture_roughness", 0, 1, data.options[0]);
+		Variant debug = p_state.get("debug_view", Variant());
+		valid = valid && debug.get_type() == Variant::INT && int64_t(debug) >= 0 && int64_t(debug) <= 2;
+		if (!valid) {
+			environment_fail_height_fog(p_env, "invalid_parameters");
+			return;
+		}
+		data.options[1] = int64_t(debug);
+		Variant sources_value = p_state.get("directional_sources", Variant());
+		if (sources_value.get_type() != Variant::ARRAY) {
+			environment_fail_height_fog(p_env, "invalid_directional_sources");
+			return;
+		}
+		Array sources = sources_value;
+		if (sources.size() > 2) {
+			environment_fail_height_fog(p_env, "invalid_directional_sources");
+			return;
+		}
+		for (int i = 0; i < sources.size(); i++) {
+			if (sources[i].get_type() != Variant::DICTIONARY) {
+				environment_fail_height_fog(p_env, "invalid_directional_sources");
+				return;
+			}
+			Dictionary source = sources[i];
+			Variant direction_value = source.get("direction_to_light", Variant());
+			float *direction = i == 0 ? data.direction0 : data.direction1;
+			float *color = i == 0 ? data.color0 : data.color1;
+			if (source.size() != 2 || direction_value.get_type() != Variant::VECTOR3 || !height_fog_color(source.get("color", Variant()), color)) {
+				environment_fail_height_fog(p_env, "invalid_directional_sources");
+				return;
+			}
+			Vector3 direction_vector = direction_value;
+			if (!direction_vector.is_finite() || !Math::is_finite(direction_vector.length_squared()) || direction_vector.length_squared() < 1e-12) {
+				environment_fail_height_fog(p_env, "invalid_directional_sources");
+				return;
+			}
+			direction_vector.normalize();
+			for (int j = 0; j < 3; j++) {
+				direction[j] = direction_vector[j];
+			}
+		}
+		data.control[3] = requested && data.density[0] > 0 && data.control[0] > 0 ? 1.0f : 0.0f;
+	}
+	env->height_fog_state = p_state.duplicate(true);
+	env->height_fog_data = data;
+	env->height_fog_configured = true;
+	env->height_fog_error = String();
+}
+
+Dictionary RendererEnvironmentStorage::get_height_fog_capabilities() const {
+	Dictionary result;
+	result["version"] = 1;
+	result["renderer"] = OS::get_singleton()->get_current_rendering_method();
+	bool supported = OS::get_singleton()->get_current_rendering_method() == "mobile";
+	result["supported"] = supported;
+	result["finite"] = supported;
+	result["infinite"] = supported;
+	result["error"] = supported ? "" : "RENDER-FOG-UNSUPPORTED";
+	return result;
+}
+
+Dictionary RendererEnvironmentStorage::environment_get_height_fog_state(RID p_env) const {
+	const Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, Dictionary());
+	return env->height_fog_state.duplicate(true);
+}
+
+Dictionary RendererEnvironmentStorage::environment_get_height_fog_status(RID p_env) const {
+	const Environment *env = environment_owner.get_or_null(p_env);
+	Dictionary result = get_height_fog_capabilities();
+	if (!env) {
+		result["state"] = "FAILED";
+		result["error"] = "RENDER-FOG-FAILED";
+		result["reason"] = "invalid_environment";
+		return result;
+	}
+	result["generation"] = env->height_fog_state.get("generation", 0);
+	result["configured"] = env->height_fog_configured;
+	result["reason"] = env->height_fog_error;
+	if (!env->height_fog_error.is_empty()) {
+		result["state"] = "FAILED";
+		result["error"] = "RENDER-FOG-FAILED";
+	} else if (env->height_fog_configured && !bool(result["supported"])) {
+		result["state"] = "UNSUPPORTED";
+	} else {
+		result["state"] = env->height_fog_data.control[3] > 0 && env->fog_mode != RSE::ENV_FOG_MODE_DEPTH ? "ACTIVE" : "DISABLED";
+	}
+	return result;
+}
+
+RendererEnvironmentStorage::HeightFogData RendererEnvironmentStorage::environment_get_height_fog_data(RID p_env) const {
+	const Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, HeightFogData());
+	HeightFogData data = env->height_fog_data;
+	if (env->fog_mode == RSE::ENV_FOG_MODE_DEPTH) {
+		return HeightFogData();
+	}
+	if (OS::get_singleton()->get_current_rendering_method() != "mobile") {
+		data.control[3] = 0.0f;
+	}
+	return data;
+}
+
 void RendererEnvironmentStorage::environment_set_fog(RID p_env, bool p_enable, const Color &p_light_color, float p_light_energy, float p_sun_scatter, float p_density, float p_height, float p_height_density, float p_fog_aerial_perspective, float p_sky_affect, RSE::EnvironmentFogMode p_mode) {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL(env);
@@ -363,6 +546,11 @@ void RendererEnvironmentStorage::environment_set_fog(RID p_env, bool p_enable, c
 bool RendererEnvironmentStorage::environment_get_fog_enabled(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, false);
+	// Analytic ownership also covers its disabled/failed/unsupported states:
+	// never revive the old exponential implementation behind an identity result.
+	if (env->height_fog_configured && env->fog_mode != RSE::ENV_FOG_MODE_DEPTH) {
+		return false;
+	}
 	return env->fog_enabled;
 }
 
