@@ -181,6 +181,8 @@ private:
 		float IBL_exposure_normalization; // Adjusts for baked exposure.
 		uint32_t camera_visible_layers;
 		float pass_alpha_multiplier;
+		float sky_capture_data[4]; // enabled, transition weight, old complete, reserved
+		float sky_capture_fallback[4];
 	};
 
 	struct UBODATA {

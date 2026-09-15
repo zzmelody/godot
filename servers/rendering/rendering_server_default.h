@@ -840,6 +840,9 @@ public:
 	FUNC2(sky_set_radiance_size, RID, int)
 	FUNC2(sky_set_mode, RID, RSE::SkyMode)
 	FUNC2(sky_set_material, RID, RID)
+	FUNC7(sky_request_capture, RID, RID, int64_t, const Vector3 &, double, const Color &, RID)
+	FUNC1RC(Dictionary, sky_get_capture_status, RID)
+	FUNC1(sky_cancel_capture, RID)
 	FUNC4R(Ref<Image>, sky_bake_panorama, RID, float, bool, const Size2i &)
 
 	/* ENVIRONMENT */

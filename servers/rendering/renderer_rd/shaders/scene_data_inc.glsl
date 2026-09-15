@@ -81,4 +81,6 @@ struct SceneData {
 	float IBL_exposure_normalization;
 	uint camera_visible_layers;
 	float pass_alpha_multiplier;
+	vec4 sky_capture_data;
+	vec4 sky_capture_fallback;
 };

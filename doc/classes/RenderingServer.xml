@@ -3756,6 +3756,34 @@
 				Once finished with your RID, you will want to free the RID using the RenderingServer's [method free_rid] method.
 			</description>
 		</method>
+		<method name="sky_request_capture">
+			<return type="void" />
+			<param index="0" name="sky" type="RID" />
+			<param index="1" name="snapshot_material" type="RID" />
+			<param index="2" name="generation" type="int" />
+			<param index="3" name="origin" type="Vector3" />
+			<param index="4" name="capture_time" type="float" />
+			<param index="5" name="fallback" type="Color" />
+			<param index="6" name="snapshot_environment" type="RID" />
+			<description>
+				Requests managed sky IBL on Mobile and Forward+. This does not change local ReflectionProbe scheduling. The caller supplies a dedicated immutable sky material and holds that material, shader, and every sampled texture unchanged while its RID appears as active_material or pending_material in [method sky_get_capture_status]. Environment fog and brightness parameters are copied when the request executes; [param fallback] is canonical linear HDR. Origin and shader TIME are frozen. Builtin directional lights, global uniforms and directional fog are explicitly unsupported by this snapshot contract and report failure, rather than sampling changing scene state.
+				Requests coalesce, acceptance is at most once per 0.25 seconds per sky, and globally one sky capture pass or roughness-filter step runs per renderer frame. Two complete FP16 radiance resources blend over 0.2 seconds. Native local probe views sample the committed sky resource. No capture completion or budget APIs are added to local probes.
+			</description>
+		</method>
+		<method name="sky_get_capture_status" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="sky" type="RID" />
+			<description>
+				Returns managed sky state and failure reason, active/pending material RIDs, requested/active/pending/ready/published generations, capture/filter counters, last work frame, origin, age, exposure and resource counts. This query does not render or read pixels. The caller can release immutable source resources after their material RID is absent from both active_material and pending_material. Unsupported renderers return UNSUPPORTED.
+			</description>
+		</method>
+		<method name="sky_cancel_capture">
+			<return type="void" />
+			<param index="0" name="sky" type="RID" />
+			<description>
+				Cancels only queued/active managed sky work and releases its input references. Keeps the last complete published sky. Does not modify local ReflectionProbe modes or captures.
+			</description>
+		</method>
 		<method name="sky_set_material">
 			<return type="void" />
 			<param index="0" name="sky" type="RID" />

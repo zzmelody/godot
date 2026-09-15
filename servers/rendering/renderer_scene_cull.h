@@ -1189,6 +1189,9 @@ public:
 	PASS2(sky_set_radiance_size, RID, int)
 	PASS2(sky_set_mode, RID, RSE::SkyMode)
 	PASS2(sky_set_material, RID, RID)
+	PASS7(sky_request_capture, RID, RID, int64_t, const Vector3 &, double, const Color &, RID)
+	PASS1RC(Dictionary, sky_get_capture_status, RID)
+	PASS1(sky_cancel_capture, RID)
 	PASS4R(Ref<Image>, sky_bake_panorama, RID, float, bool, const Size2i &)
 
 	// Compositor effect

@@ -134,7 +134,7 @@ private:
 		virtual ~SkyShaderData();
 	};
 
-	void _render_sky(RD::DrawListID p_list, float p_time, RID p_fb, PipelineCacheRD *p_pipeline, RID p_uniform_set, RID p_texture_set, const Projection &p_projection, const Basis &p_orientation, const Vector3 &p_position, float p_luminance_multiplier, float p_brightness_modifier, float p_border_size = 0.0);
+	void _render_sky(RD::DrawListID p_list, float p_time, RID p_fb, PipelineCacheRD *p_pipeline, RID p_uniform_set, RID p_texture_set, const Projection &p_projection, const Basis &p_orientation, const Vector3 &p_position, float p_luminance_multiplier, float p_brightness_modifier, float p_border_size = 0.0, RID p_scene_uniform_set = RID());
 
 public:
 	struct SkySceneState {
@@ -180,7 +180,12 @@ public:
 
 		RID fog_shader;
 		RID fog_material;
+
+		// These are lazily initialized, use "get_fog_only_texture_uniform_set" instead.
 		RID fog_only_texture_uniform_set;
+		RID fog_only_texture_multiview_uniform_set;
+
+		RID get_fog_only_texture_uniform_set(RID p_default_shader_rd, bool p_is_multiview);
 	} sky_scene_state;
 
 	struct ReflectionData {
@@ -231,6 +236,9 @@ public:
 		RID default_shader;
 		RID default_material;
 		RID default_shader_rd;
+		RID default_multiview_shader_rd; // This is lazily initialized, use "get_default_shader_rd" instead.
+
+		RID get_default_shader_rd(bool p_is_multiview = false);
 	} sky_shader;
 
 	struct SkyMaterialData : public RendererRD::MaterialStorage::MaterialData {
@@ -244,11 +252,47 @@ public:
 		virtual ~SkyMaterialData();
 	};
 
+private:
+	SkyMaterialData *_get_sky_material_data(RID p_env);
+	SkyMaterialData *_get_flat_color_sky_material_data(RID p_env);
+
+public:
+	struct CaptureInput {
+		RID material;
+		int64_t generation = 0;
+		Vector3 origin;
+		double time = 0.0;
+		double requested_at = 0.0;
+		Color fallback;
+		float brightness = 1.0;
+		SkySceneState::UBO scene_ubo = {};
+	};
 	struct Sky {
 		static inline const int REAL_TIME_SIZE = 256;
 		static inline const int REAL_TIME_ROUGHNESS_LAYERS = 7;
 
+		bool managed_capture = false;
+		bool published_complete = false;
+		CaptureInput pending_input;
+		CaptureInput active_input;
+		Sky *capture_work = nullptr;
+		RID capture_scene_buffer;
+		RID capture_light_buffer;
+		RID capture_scene_set;
+		int capture_phase = 0;
+		int capture_filter = 1;
+		int64_t published_generation = 0;
+		Vector3 published_origin;
+		uint64_t last_work_frame = UINT64_MAX;
+		double last_accept = -1.0;
+		double blend_started = -1.0;
+		float blend_weight = 0.0;
+		Color fallback;
+		String capture_error;
+		uint64_t total_capture_passes = 0;
+		uint64_t total_filter_steps = 0;
 		RID radiance;
+		RID radiance_first_layer_slice;
 		RID quarter_res_pass;
 		RID quarter_res_framebuffer;
 		Size2i screen_size;
@@ -271,18 +315,27 @@ public:
 		float baked_exposure = 1.0;
 
 		// State to track when radiance octmap needs updating.
-		SkyMaterialData *prev_material = nullptr;
+		SkyMaterialData *prev_material_data = nullptr;
 		Vector3 prev_position;
 		float prev_time;
+		float prev_fog_aerial_perspective = 0.0;
+		Color prev_fog_light_color;
+		float prev_fog_sun_scatter = 0.0;
+		bool prev_fog_enabled = false;
+		float prev_fog_density = 0.0;
+		float prev_fog_sky_affect = 0.0;
+		float prev_fog_light_energy = 0.0;
+
+		void free_radiance();
 
 		void free();
 
-		RID get_textures(SkyTextureSetVersion p_version, RID p_default_shader_rd, Ref<RenderSceneBuffersRD> p_render_buffers);
+		RID get_textures(SkyTextureSetVersion p_version, RID p_default_shader_rd, bool p_is_multiview, Ref<RenderSceneBuffersRD> p_render_buffers);
 		bool set_radiance_size(int p_radiance_size);
 		int get_radiance_size() const;
 		bool set_mode(RSE::SkyMode p_mode);
 		bool set_material(RID p_material);
-		Ref<Image> bake_panorama(float p_energy, int p_roughness_layers, const Size2i &p_size);
+		Ref<Image> bake_panorama(float p_energy, int p_roughness_layers, bool p_use_array, const Size2i &p_size);
 	};
 
 	uint32_t sky_ggx_samples_quality;
@@ -303,6 +356,18 @@ public:
 	void set_texture_format(RD::DataFormat p_texture_format);
 	~SkyRD();
 
+	void sky_request_capture(RID p_sky, RID p_material, int64_t p_generation, const Vector3 &p_origin, double p_capture_time, const Color &p_fallback, RID p_environment);
+	Dictionary sky_get_capture_status(RID p_sky) const;
+	void sky_cancel_capture(RID p_sky);
+	void process_captures();
+	RID sky_get_next_radiance_texture_rd(RID p_sky, bool p_capture_view) const;
+	bool sky_get_capture_sampling(RID p_sky, bool p_capture_view, float *r_data, float *r_fallback) const;
+	void _allocate_capture_radiance(Sky *p_sky);
+	void _release_capture_work(Sky *p_sky);
+	bool _capture_step(Sky *p_sky);
+	LocalVector<RID> capture_queue;
+	uint32_t capture_cursor = 0;
+	uint64_t last_capture_frame = UINT64_MAX;
 	void setup_sky(const RenderDataRD *p_render_data, const Size2i p_screen_size);
 	void update_radiance_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_env, const Vector3 &p_global_pos, double p_time, float p_luminance_multiplier = 1.0, float p_brightness_multiplier = 1.0);
 	void update_res_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_env, double p_time, float p_luminance_multiplier = 1.0, float p_brightness_multiplier = 1.0);

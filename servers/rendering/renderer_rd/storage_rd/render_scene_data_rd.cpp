@@ -237,6 +237,10 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 		}
 	}
 
+	for (int i = 0; i < 4; i++) {
+		ubo.sky_capture_data[i] = 0.0f;
+		ubo.sky_capture_fallback[i] = 0.0f;
+	}
 	if (p_camera_attributes.is_valid()) {
 		ubo.emissive_exposure_normalization = RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_camera_attributes);
 		ubo.IBL_exposure_normalization = 1.0;
@@ -255,6 +259,17 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 	} else {
 		ubo.emissive_exposure_normalization = 1.0;
 		ubo.IBL_exposure_normalization = 1.0;
+	}
+
+	if (p_env.is_valid()) {
+		RID capture_sky = render_scene_render->environment_get_sky(p_env);
+		if (render_scene_render->get_sky()->sky_get_capture_sampling(capture_sky, p_reflection_probe_instance.is_valid(), ubo.sky_capture_data, ubo.sky_capture_fallback)) {
+			// Managed maps store canonical FP16 radiance including sky artistry.
+			// The material shader applies its output storage conversion after lighting.
+			// Only camera exposure belongs here, or Mobile would divide radiance twice.
+			ubo.IBL_exposure_normalization = p_camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_camera_attributes) : 1.0f;
+			ubo.ambient_light_color_energy[3] = 1.0f;
+		}
 	}
 
 	bool roughness_limiter_enabled = p_opaque_render_buffers && render_scene_render->screen_space_roughness_limiter_is_active();

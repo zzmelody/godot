@@ -196,6 +196,10 @@ public:
 	virtual void sky_set_radiance_size(RID p_sky, int p_radiance_size) override;
 	virtual void sky_set_mode(RID p_sky, RSE::SkyMode p_mode) override;
 	virtual void sky_set_material(RID p_sky, RID p_material) override;
+	virtual void sky_request_capture(RID p_sky, RID p_material, int64_t p_generation, const Vector3 &p_origin, double p_capture_time, const Color &p_fallback, RID p_environment) override;
+	virtual Dictionary sky_get_capture_status(RID p_sky) const override;
+	virtual void sky_cancel_capture(RID p_sky) override;
+
 	virtual Ref<Image> sky_bake_panorama(RID p_sky, float p_energy, bool p_bake_irradiance, const Size2i &p_size) override;
 
 	/* ENVIRONMENT API */
@@ -341,6 +345,7 @@ public:
 	virtual bool free(RID p_rid) override;
 
 	virtual void update() override;
+	virtual void update_sky_captures() override;
 
 	virtual void set_debug_draw_mode(RSE::ViewportDebugDraw p_debug_draw) override;
 	_FORCE_INLINE_ RSE::ViewportDebugDraw get_debug_draw_mode() const {

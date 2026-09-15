@@ -529,6 +529,15 @@ RID RenderForwardMobile::_setup_render_pass_uniform_set(RenderListType p_render_
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 		u.append_id(radiance_texture);
 		uniforms.push_back(u);
+		RID next_radiance;
+		if (p_render_data && p_render_data->environment.is_valid()) {
+			next_radiance = sky.sky_get_next_radiance_texture_rd(environment_get_sky(p_render_data->environment), p_render_data->reflection_probe.is_valid());
+		}
+		RD::Uniform next;
+		next.binding = 26;
+		next.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		next.append_id(next_radiance.is_valid() ? next_radiance : radiance_texture);
+		uniforms.push_back(next);
 	}
 
 	{

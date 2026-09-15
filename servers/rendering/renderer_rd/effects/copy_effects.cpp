@@ -454,7 +454,7 @@ void CopyEffects::copy_to_rect(RID p_source_rd_texture, RID p_dest_texture, cons
 	RD::get_singleton()->compute_list_end();
 }
 
-void CopyEffects::copy_octmap_to_panorama(RID p_source_octmap, RID p_dest_panorama, const Size2i &p_panorama_size, float p_lod, bool p_is_array, const Size2 &p_source_octmap_border_size) {
+void CopyEffects::copy_octmap_to_panorama(RID p_source_octmap, RID p_dest_panorama, const Size2i &p_panorama_size, float p_lod, bool p_is_array, const Size2 &p_source_octmap_border_size, float p_luminance_multiplier) {
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	ERR_FAIL_NULL(uniform_set_cache);
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
@@ -472,8 +472,8 @@ void CopyEffects::copy_octmap_to_panorama(RID p_source_octmap, RID p_dest_panora
 	copy.push_constant.octmap_border_size[0] = p_source_octmap_border_size.x;
 	copy.push_constant.octmap_border_size[1] = p_source_octmap_border_size.y;
 
-	// TODO, if this is needed at the copy stage, then we need to pass in the multiplier.
-	copy.push_constant.luminance_multiplier = raster_effects.has_flag(RASTER_EFFECT_COPY) ? 2.0 : 1.0;
+	// Preserve legacy storage decoding unless the source supplies an explicit scale.
+	copy.push_constant.luminance_multiplier = p_luminance_multiplier >= 0.0f ? p_luminance_multiplier : (raster_effects.has_flag(RASTER_EFFECT_COPY) ? 2.0f : 1.0f);
 
 	// setup our uniforms
 	RID default_sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);

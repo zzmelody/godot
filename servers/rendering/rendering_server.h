@@ -625,6 +625,10 @@ public:
 	virtual void sky_set_radiance_size(RID p_sky, int p_radiance_size) = 0;
 	virtual void sky_set_mode(RID p_sky, RSE::SkyMode p_mode) = 0;
 	virtual void sky_set_material(RID p_sky, RID p_material) = 0;
+	virtual void sky_request_capture(RID p_sky, RID p_material, int64_t p_generation, const Vector3 &p_origin, double p_capture_time, const Color &p_fallback, RID p_environment) = 0;
+	virtual Dictionary sky_get_capture_status(RID p_sky) const = 0;
+	virtual void sky_cancel_capture(RID p_sky) = 0;
+
 	virtual Ref<Image> sky_bake_panorama(RID p_sky, float p_energy, bool p_bake_irradiance, const Size2i &p_size) = 0;
 
 	/* COMPOSITOR EFFECTS API */

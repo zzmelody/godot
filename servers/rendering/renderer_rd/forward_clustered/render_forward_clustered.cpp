@@ -3441,6 +3441,15 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 		u.append_id(radiance_texture);
 		uniforms.push_back(u);
+		RID next_radiance;
+		if (p_render_data && p_render_data->environment.is_valid()) {
+			next_radiance = sky.sky_get_next_radiance_texture_rd(environment_get_sky(p_render_data->environment), p_render_data->reflection_probe.is_valid());
+		}
+		RD::Uniform next;
+		next.binding = 39;
+		next.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		next.append_id(next_radiance.is_valid() ? next_radiance : radiance_texture);
+		uniforms.push_back(next);
 	}
 	{
 		RID ref_texture = (p_render_data && p_render_data->reflection_atlas.is_valid()) ? light_storage->reflection_atlas_get_texture(p_render_data->reflection_atlas) : RID();
@@ -3805,6 +3814,8 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		u.binding = 3;
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 		u.append_id(radiance_texture);
+		uniforms.push_back(u);
+		u.binding = 39;
 		uniforms.push_back(u);
 	}
 

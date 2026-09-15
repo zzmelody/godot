@@ -4376,6 +4376,10 @@ void RendererSceneCull::update() {
 	}
 	scene_render->update();
 	update_dirty_instances();
+	// Snapshot material parameter sets are uploaded by update_dirty_instances().
+	// Capture only after that resource flush, so a fresh immutable material is
+	// not mistaken for a failed binding or captured before its values exist.
+	scene_render->update_sky_captures();
 	render_particle_colliders();
 }
 
