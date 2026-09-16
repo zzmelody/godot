@@ -524,6 +524,8 @@ void SkyRD::Sky::free_radiance() {
 	pending_input = CaptureInput();
 	published_complete = false;
 	published_generation = 0;
+	published_fog_orientation = Basis();
+	published_has_height_fog = false;
 	blend_started = -1.0;
 	blend_weight = 0.0;
 	if (radiance.is_valid()) {
@@ -1092,9 +1094,11 @@ void SkyRD::setup_sky(const RenderDataRD *p_render_data, const Size2i p_screen_s
 		if (!sky->managed_capture) {
 			RendererEnvironmentStorage::HeightFogData height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_render_data->environment);
 			float origin_y = p_render_data->scene_data->cam_transform.origin.y;
-			if (memcmp(&height_fog, &sky->prev_height_fog, sizeof(height_fog)) != 0 || (height_fog.control[3] > 0.0f && origin_y != sky->prev_height_fog_origin_y)) {
+			Basis fog_orientation = height_fog.options[2] > 0.0f ? RendererSceneRenderRD::get_singleton()->environment_get_sky_orientation(p_render_data->environment) : Basis();
+			if (memcmp(&height_fog, &sky->prev_height_fog, sizeof(height_fog)) != 0 || (height_fog.control[3] > 0.0f && origin_y != sky->prev_height_fog_origin_y) || fog_orientation != sky->prev_height_fog_orientation) {
 				sky->prev_height_fog = height_fog;
 				sky->prev_height_fog_origin_y = origin_y;
+				sky->prev_height_fog_orientation = fog_orientation;
 				sky->reflection.dirty = true;
 				RenderingServerDefault::redraw_request();
 			}
@@ -1321,6 +1325,7 @@ void SkyRD::setup_sky(const RenderDataRD *p_render_data, const Size2i p_screen_s
 	sky_scene_state.ubo.z_far = p_render_data->scene_data->view_projection[0].get_z_far(); // Should be the same for all projection.
 	sky_scene_state.ubo.height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_render_data->environment);
 	RendererRD::MaterialStorage::store_transform(p_render_data->scene_data->cam_transform, sky_scene_state.ubo.height_fog_world_from_view);
+	RendererRD::MaterialStorage::store_transform(Transform3D(RendererSceneRenderRD::get_singleton()->environment_get_sky_orientation(p_render_data->environment)), sky_scene_state.ubo.height_fog_sky_orientation);
 	RendererRD::MaterialStorage::store_camera((correction * p_render_data->scene_data->cam_projection).inverse(), sky_scene_state.ubo.height_fog_inv_projection);
 	sky_scene_state.ubo.height_fog_view[0] = p_render_data->scene_data->cam_orthogonal ? 1.0f : 0.0f;
 	sky_scene_state.ubo.height_fog_view[1] = p_render_data->reflection_probe.is_valid() ? 1.0f : 0.0f;
@@ -1331,6 +1336,10 @@ void SkyRD::setup_sky(const RenderDataRD *p_render_data, const Size2i p_screen_s
 		sky_scene_state.ubo.height_fog_fallback[i] = 0;
 	}
 	sky_get_capture_sampling(RendererSceneRenderRD::get_singleton()->environment_get_sky(p_render_data->environment), p_render_data->reflection_probe.is_valid(), sky_scene_state.ubo.height_fog_capture, sky_scene_state.ubo.height_fog_fallback);
+	Basis old_capture_correction, next_capture_correction;
+	sky_get_capture_orientation_corrections(RendererSceneRenderRD::get_singleton()->environment_get_sky(p_render_data->environment), RendererSceneRenderRD::get_singleton()->environment_get_sky_orientation(p_render_data->environment), old_capture_correction, next_capture_correction);
+	RendererRD::MaterialStorage::store_transform_3x3(old_capture_correction, sky_scene_state.ubo.height_fog_capture_old_xform);
+	RendererRD::MaterialStorage::store_transform_3x3(next_capture_correction, sky_scene_state.ubo.height_fog_capture_next_xform);
 	sky_scene_state.ubo.height_fog_capture[3] = roughness_layers - 1;
 	sky_scene_state.ubo.height_fog_radiance[0] = sky ? sky->uv_border_size : 0.0f;
 	sky_scene_state.ubo.fog_enabled = RendererSceneRenderRD::get_singleton()->environment_get_fog_enabled(p_render_data->environment);
@@ -1842,6 +1851,11 @@ void SkyRD::sky_request_capture(RID p_sky, RID p_material, int64_t p_generation,
 	input.requested_at = double(OS::get_singleton()->get_ticks_usec()) * 1e-6;
 	input.brightness = renderer->environment_get_bg_energy_multiplier(p_environment) * renderer->environment_get_bg_intensity(p_environment);
 	input.scene_ubo.height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_environment);
+	// Radiance remains in artwork space, matching the existing inverse sky
+	// orientation lookup. Only captured physical air follows the world ray O*q.
+	// Without active height fog rotation stays a lookup-only, zero-work change.
+	input.fog_orientation = input.scene_ubo.height_fog.options[2] > 0.0f ? renderer->environment_get_sky_orientation(p_environment) : Basis();
+	RendererRD::MaterialStorage::store_transform(Transform3D(input.fog_orientation), input.scene_ubo.height_fog_sky_orientation);
 	input.scene_ubo.height_fog_view[1] = 1.0f;
 	input.scene_ubo.height_fog_view[3] = 1.0f;
 	input.scene_ubo.fog_enabled = renderer->environment_get_fog_enabled(p_environment);
@@ -1860,17 +1874,17 @@ void SkyRD::sky_request_capture(RID p_sky, RID p_material, int64_t p_generation,
 		sky->capture_error = "unsupported_directional_fog_snapshot";
 		return;
 	}
-	if (sky->active_input.generation == p_generation && sky->active_input.origin == p_origin) {
+	if (sky->active_input.generation == p_generation && sky->active_input.origin == p_origin && sky->active_input.fog_orientation == input.fog_orientation) {
 		sky->pending_input = CaptureInput();
 		sky->capture_error = String();
 		return;
 	}
-	if (!sky->active_input.generation && sky->published_complete && p_generation == sky->published_generation && p_origin == sky->published_origin) {
+	if (!sky->active_input.generation && sky->published_complete && p_generation == sky->published_generation && p_origin == sky->published_origin && sky->published_fog_orientation == input.fog_orientation) {
 		sky->pending_input = CaptureInput();
 		sky->capture_error = String();
 		return;
 	}
-	if (sky->pending_input.generation == p_generation && sky->pending_input.origin == p_origin) {
+	if (sky->pending_input.generation == p_generation && sky->pending_input.origin == p_origin && sky->pending_input.fog_orientation == input.fog_orientation) {
 		sky->capture_error = String();
 		return;
 	}
@@ -2081,6 +2095,8 @@ void SkyRD::process_captures() {
 		SWAP(sky->uv_border_size, work->uv_border_size);
 		sky->published_generation = sky->active_input.generation;
 		sky->published_origin = sky->active_input.origin;
+		sky->published_fog_orientation = sky->active_input.fog_orientation;
+		sky->published_has_height_fog = sky->active_input.scene_ubo.height_fog.options[2] > 0.0f;
 		sky->published_complete = true;
 		sky->baked_exposure = 1.0;
 		_release_capture_work(sky);
@@ -2169,6 +2185,11 @@ Dictionary SkyRD::sky_get_capture_status(RID p_sky) const {
 	result["active_generation"] = sky->active_input.generation;
 	result["pending_generation"] = sky->pending_input.generation;
 	result["published_generation"] = sky->published_generation;
+	result["active_fog_orientation"] = sky->active_input.fog_orientation;
+	result["pending_fog_orientation"] = sky->pending_input.fog_orientation;
+	result["published_fog_orientation"] = sky->published_fog_orientation;
+	result["published_has_height_fog"] = sky->published_has_height_fog;
+	result["active_has_height_fog"] = sky->active_input.scene_ubo.height_fog.options[2] > 0.0f;
 	result["capture_passes"] = sky->total_capture_passes;
 	result["filter_steps"] = sky->total_filter_steps;
 	result["active_material"] = sky->active_input.material;
@@ -2199,10 +2220,28 @@ bool SkyRD::sky_get_capture_sampling(RID p_sky, bool p_capture_view, float *r_da
 	r_data[0] = 1.0;
 	r_data[1] = p_capture_view ? 0.0 : sky->blend_weight;
 	r_data[2] = sky->published_complete ? 1.0 : 0.0;
-	r_data[3] = 0.0;
+	r_data[3] = (sky->published_complete && sky->published_has_height_fog ? 1.0f : 0.0f) + (!p_capture_view && sky->blend_started >= 0.0 && sky->active_input.scene_ubo.height_fog.options[2] > 0.0f ? 2.0f : 0.0f);
 	for (int i = 0; i < 3; i++) {
 		r_fallback[i] = sky->fallback[i];
 	}
 	r_fallback[3] = 0.0;
 	return true;
+}
+
+void SkyRD::sky_get_capture_orientation_corrections(RID p_sky, const Basis &p_live_orientation, Basis &r_old, Basis &r_next) const {
+	r_old = Basis();
+	r_next = Basis();
+	const Sky *sky = get_sky(p_sky);
+	if (!sky || !sky->managed_capture) {
+		return;
+	}
+	// Each complete fogged map has its own artwork basis. Undo the live lookup
+	// basis and enter that map's basis before octahedral encoding. Thus baked
+	// physical air stays world-fixed even while a newer orientation is pending.
+	if (sky->published_complete && sky->published_has_height_fog) {
+		r_old = sky->published_fog_orientation.inverse() * p_live_orientation;
+	}
+	if (sky->blend_started >= 0.0 && sky->active_input.scene_ubo.height_fog.options[2] > 0.0f) {
+		r_next = sky->active_input.fog_orientation.inverse() * p_live_orientation;
+	}
 }

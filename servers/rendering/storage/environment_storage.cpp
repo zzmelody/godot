@@ -31,8 +31,12 @@
 #include "environment_storage.h"
 
 #include "core/os/os.h"
+#include "servers/rendering/renderer_rd/environment/atmosphere_shader_library.h"
 
 #include <cfloat>
+#ifdef RD_ENABLED
+#include "servers/rendering/renderer_rd/environment/aerial_perspective.h"
+#endif
 
 // Storage
 
@@ -57,6 +61,11 @@ void RendererEnvironmentStorage::environment_initialize(RID p_rid) {
 }
 
 void RendererEnvironmentStorage::environment_free(RID p_rid) {
+#ifdef RD_ENABLED
+	if (RendererRD::AerialPerspective::get_singleton()) {
+		RendererRD::AerialPerspective::get_singleton()->free_environment(p_rid);
+	}
+#endif
 	environment_owner.free(p_rid);
 }
 
@@ -1132,4 +1141,57 @@ RID RendererEnvironmentStorage::environment_get_color_correction(RID p_env) cons
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, RID());
 	return env->color_correction;
+}
+
+void RendererEnvironmentStorage::environment_set_aerial_perspective_state(RID p_env, const Dictionary &p_state) {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL(env);
+	env->aerial_perspective_state = p_state.duplicate(true);
+#ifdef RD_ENABLED
+	if (RendererRD::AerialPerspective::get_singleton()) {
+		RendererRD::AerialPerspective::get_singleton()->set_state(p_env, p_state);
+	}
+#endif
+}
+Dictionary RendererEnvironmentStorage::environment_get_aerial_perspective_state(RID p_env) const {
+	const Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, Dictionary());
+#ifdef RD_ENABLED
+	if (RendererRD::AerialPerspective::get_singleton()) {
+		return RendererRD::AerialPerspective::get_singleton()->get_state(p_env);
+	}
+#endif
+	return env->aerial_perspective_state.duplicate(true);
+}
+Dictionary RendererEnvironmentStorage::environment_get_aerial_perspective_status(RID p_env) const {
+	const Environment *env = environment_owner.get_or_null(p_env);
+	Dictionary status = get_aerial_perspective_capabilities();
+	if (!env) {
+		status["state"] = "FAILED";
+		status["error"] = "RENDER-AP-FAILED";
+		status["reason"] = "invalid_environment";
+		return status;
+	}
+#ifdef RD_ENABLED
+	if (RendererRD::AerialPerspective::get_singleton()) {
+		return RendererRD::AerialPerspective::get_singleton()->get_status(p_env);
+	}
+#endif
+	status["state"] = "UNSUPPORTED";
+	status["reason"] = "mobile_renderer_required";
+	return status;
+}
+Dictionary RendererEnvironmentStorage::get_aerial_perspective_capabilities() const {
+#ifdef RD_ENABLED
+	return RendererRD::AerialPerspective::get_capabilities();
+#else
+	Dictionary status;
+	status["version"] = 1;
+	status["supported"] = false;
+	status["error"] = "RENDER-AP-UNSUPPORTED";
+	return status;
+#endif
+}
+String RendererEnvironmentStorage::get_atmosphere_shader_library() const {
+	return ATMOSPHERE_SHADER_LIBRARY;
 }

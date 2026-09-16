@@ -47,6 +47,16 @@
 			<return type="Dictionary" />
 			<description>Returns native analytic height fog support and execution status.</description>
 		</method>
+		<method name="set_aerial_perspective_state">
+			<return type="void" /><param index="0" name="state" type="Dictionary" />
+			<description>Sets the atomic native Mobile aerial-perspective payload; see [method RenderingServer.environment_set_aerial_perspective_state].</description>
+		</method>
+		<method name="get_aerial_perspective_state" qualifiers="const">
+			<return type="Dictionary" /><description>Returns the last accepted native aerial-perspective payload.</description>
+		</method>
+		<method name="get_aerial_perspective_status" qualifiers="const">
+			<return type="Dictionary" /><description>Returns effective native state, view readiness and resource counters.</description>
+		</method>
 	</methods>
 	<members>
 		<member name="adjustment_brightness" type="float" setter="set_adjustment_brightness" getter="get_adjustment_brightness" default="1.0">
@@ -396,6 +406,9 @@
 			Enables temporal reprojection in the volumetric fog. Temporal reprojection blends the current frame's volumetric fog with the last frame's volumetric fog to smooth out jagged edges. The performance cost is minimal; however, it leads to moving [FogVolume]s and [Light3D]s "ghosting" and leaving a trail behind them. When temporal reprojection is enabled, try to avoid moving [FogVolume]s or [Light3D]s too fast. Short-lived dynamic lighting effects should have [member Light3D.light_volumetric_fog_energy] set to [code]0.0[/code] to avoid ghosting.
 		</member>
 		<member name="height_fog_state" type="Dictionary" setter="set_height_fog_state" getter="get_height_fog_state" default="{}">Complete native analytic height fog transport. Stored on duplication for immutable capture snapshots.</member>
+		<member name="aerial_perspective_state" type="Dictionary" setter="set_aerial_perspective_state" getter="get_aerial_perspective_state" default="{}">
+			Serialized native Mobile finite-atmosphere snapshot. This transport is separate from device quality policy and height fog. Capturing the infinite sky does not allocate finite AP volumes.
+		</member>
 	</members>
 	<constants>
 		<constant name="BG_CLEAR_COLOR" value="0" enum="BGMode">

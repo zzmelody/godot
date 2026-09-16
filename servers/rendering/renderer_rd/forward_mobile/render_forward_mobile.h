@@ -32,6 +32,7 @@
 
 #include "core/templates/paged_allocator.h"
 #include "servers/rendering/multi_uma_buffer.h"
+#include "servers/rendering/renderer_rd/environment/aerial_perspective.h"
 #include "servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 
@@ -47,6 +48,7 @@ protected:
 
 private:
 	static RenderForwardMobile *singleton;
+	RendererRD::AerialPerspective aerial_perspective;
 
 	/* Scene Shader */
 

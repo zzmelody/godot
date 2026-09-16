@@ -882,6 +882,11 @@ public:
 	FUNC1RC(Dictionary, environment_get_height_fog_state, RID)
 	FUNC1RC(Dictionary, environment_get_height_fog_status, RID)
 	FUNC0RC(Dictionary, get_height_fog_capabilities)
+	FUNC2(environment_set_aerial_perspective_state, RID, const Dictionary &)
+	FUNC1RC(Dictionary, environment_get_aerial_perspective_state, RID)
+	FUNC1RC(Dictionary, environment_get_aerial_perspective_status, RID)
+	FUNC0RC(Dictionary, get_aerial_perspective_capabilities)
+	FUNC0RC(String, get_atmosphere_shader_library)
 
 	FUNC11(environment_set_fog, RID, bool, const Color &, float, float, float, float, float, float, float, RSE::EnvironmentFogMode)
 

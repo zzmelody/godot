@@ -53,6 +53,12 @@ public:
 	Dictionary environment_get_height_fog_state(RID p_env) const;
 	Dictionary environment_get_height_fog_status(RID p_env) const;
 	Dictionary get_height_fog_capabilities() const;
+	void environment_set_aerial_perspective_state(RID p_env, const Dictionary &p_state);
+	Dictionary environment_get_aerial_perspective_state(RID p_env) const;
+	Dictionary environment_get_aerial_perspective_status(RID p_env) const;
+	Dictionary get_aerial_perspective_capabilities() const;
+	String get_atmosphere_shader_library() const;
+
 	HeightFogData environment_get_height_fog_data(RID p_env) const;
 	void environment_fail_height_fog(RID p_env, const String &p_reason);
 
@@ -112,6 +118,7 @@ private:
 
 		// Fog
 		Dictionary height_fog_state;
+		Dictionary aerial_perspective_state;
 		HeightFogData height_fog_data;
 		String height_fog_error;
 		bool height_fog_configured = false;

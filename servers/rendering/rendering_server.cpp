@@ -3082,6 +3082,11 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_get_height_fog_state", "env"), &RenderingServer::environment_get_height_fog_state);
 	ClassDB::bind_method(D_METHOD("environment_get_height_fog_status", "env"), &RenderingServer::environment_get_height_fog_status);
 	ClassDB::bind_method(D_METHOD("get_height_fog_capabilities"), &RenderingServer::get_height_fog_capabilities);
+	ClassDB::bind_method(D_METHOD("environment_set_aerial_perspective_state", "environment", "state"), &RenderingServer::environment_set_aerial_perspective_state);
+	ClassDB::bind_method(D_METHOD("environment_get_aerial_perspective_state", "environment"), &RenderingServer::environment_get_aerial_perspective_state);
+	ClassDB::bind_method(D_METHOD("environment_get_aerial_perspective_status", "environment"), &RenderingServer::environment_get_aerial_perspective_status);
+	ClassDB::bind_method(D_METHOD("get_aerial_perspective_capabilities"), &RenderingServer::get_aerial_perspective_capabilities);
+	ClassDB::bind_method(D_METHOD("get_atmosphere_shader_library"), &RenderingServer::get_atmosphere_shader_library);
 	ClassDB::bind_method(D_METHOD("environment_set_fog", "env", "enable", "light_color", "light_energy", "sun_scatter", "density", "height", "height_density", "aerial_perspective", "sky_affect", "fog_mode"), &RenderingServer::environment_set_fog, DEFVAL(RSE::ENV_FOG_MODE_EXPONENTIAL));
 	ClassDB::bind_method(D_METHOD("environment_set_fog_depth", "env", "curve", "begin", "end"), &RenderingServer::environment_set_fog_depth);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi", "env", "enable", "cascades", "min_cell_size", "y_scale", "use_occlusion", "bounce_feedback", "read_sky", "energy", "normal_bias", "probe_bias"), &RenderingServer::environment_set_sdfgi);

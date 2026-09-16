@@ -449,3 +449,8 @@ layout(set = 1, binding = 26) uniform texture2DArray radiance_octmap_next;
 #else
 layout(set = 1, binding = 26) uniform texture2D radiance_octmap_next;
 #endif
+
+layout(set = 1, binding = 27) uniform texture3D aerial_perspective_volume;
+#ifdef USE_MULTIVIEW
+layout(set = 1, binding = 28) uniform texture3D aerial_perspective_volume_eye1;
+#endif

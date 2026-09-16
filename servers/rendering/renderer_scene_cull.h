@@ -1258,6 +1258,11 @@ public:
 	PASS1RC(Dictionary, environment_get_height_fog_state, RID)
 	PASS1RC(Dictionary, environment_get_height_fog_status, RID)
 	PASS0RC(Dictionary, get_height_fog_capabilities)
+	PASS2(environment_set_aerial_perspective_state, RID, const Dictionary &)
+	PASS1RC(Dictionary, environment_get_aerial_perspective_state, RID)
+	PASS1RC(Dictionary, environment_get_aerial_perspective_status, RID)
+	PASS0RC(Dictionary, get_aerial_perspective_capabilities)
+	PASS0RC(String, get_atmosphere_shader_library)
 
 	PASS11(environment_set_fog, RID, bool, const Color &, float, float, float, float, float, float, float, RSE::EnvironmentFogMode)
 

@@ -48,6 +48,7 @@ public:
 	float taa_frame_count = 0.0f;
 	uint32_t camera_visible_layers;
 	bool cam_orthogonal = false;
+	Vector4 aerial_perspective_parameters;
 	bool flip_y = false;
 
 	// For billboards to cast correct shadows.
@@ -181,10 +182,13 @@ private:
 		float IBL_exposure_normalization; // Adjusts for baked exposure.
 		uint32_t camera_visible_layers;
 		float pass_alpha_multiplier;
-		float sky_capture_data[4]; // enabled, transition weight, old complete, reserved
+		float sky_capture_data[4]; // enabled, transition weight, old complete, fogged-map bit flags
 		float sky_capture_fallback[4];
+		float sky_capture_old_xform[12];
+		float sky_capture_next_xform[12];
 		RendererEnvironmentStorage::HeightFogData height_fog;
 		float height_fog_view[4]; // orthographic, capture view, complete radiance source, reserved
+		float aerial_perspective[4];
 	};
 
 	struct UBODATA {

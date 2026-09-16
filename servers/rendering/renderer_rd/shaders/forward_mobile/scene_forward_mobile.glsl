@@ -1047,25 +1047,70 @@ layout(location = 0) out vec4 frag_color;
 */
 
 
+// Apply each completed map's capture orientation before octahedral encoding.
+// Layer, derivative LOD and border semantics remain identical to native sampling.
+vec4 sample_sky_radiance(vec3 direction, float layer, float lod) {
+	uint fogged_maps = uint(scene_data_block.data.sky_capture_data.w);
+	vec3 old_direction = (fogged_maps & 1u) != 0u ? scene_data_block.data.sky_capture_old_xform * direction : direction;
+	vec2 border = vec2(scene_data_block.data.radiance_border_size, 1.0 - 2.0 * scene_data_block.data.radiance_border_size);
+	vec2 old_uv = vec3_to_oct_with_border(old_direction, border);
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
-vec4 sample_sky_radiance(vec3 uv, float lod) {
-	vec4 old_sample = textureLod(sampler2DArray(radiance_octmap, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), uv, lod);
+	vec4 old_sample = textureLod(sampler2DArray(radiance_octmap, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(old_uv, layer), lod);
 #else
-vec4 sample_sky_radiance(vec2 uv, float lod) {
-	vec4 old_sample = textureLod(sampler2D(radiance_octmap, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), uv, lod);
+	vec4 old_sample = textureLod(sampler2D(radiance_octmap, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), old_uv, lod);
 #endif
 	if (scene_data_block.data.sky_capture_data.x == 0.0) { return old_sample; }
 	vec3 old_rgb = scene_data_block.data.sky_capture_data.z > 0.0 ? old_sample.rgb : scene_data_block.data.sky_capture_fallback.rgb;
 	vec3 result = old_rgb;
 	if (scene_data_block.data.sky_capture_data.y > 0.0) {
+		vec3 next_direction = (fogged_maps & 2u) != 0u ? scene_data_block.data.sky_capture_next_xform * direction : direction;
+		vec2 next_uv = vec3_to_oct_with_border(next_direction, border);
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
-		vec3 next_rgb = textureLod(sampler2DArray(radiance_octmap_next, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), uv, lod).rgb;
+		vec3 next_rgb = textureLod(sampler2DArray(radiance_octmap_next, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(next_uv, layer), lod).rgb;
 #else
-		vec3 next_rgb = textureLod(sampler2D(radiance_octmap_next, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), uv, lod).rgb;
+		vec3 next_rgb = textureLod(sampler2D(radiance_octmap_next, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), next_uv, lod).rgb;
 #endif
 		result = mix(old_rgb, next_rgb, scene_data_block.data.sky_capture_data.y);
 	}
 	return vec4(result, 1.0);
+}
+
+bool native_ap_enabled() {
+#ifdef USE_MULTIVIEW
+ return scene_data.aerial_perspective[ViewIndex] > 0.0;
+#else
+ return scene_data.aerial_perspective.x > 0.0;
+#endif
+}
+vec4 native_ap_process(vec3 vertex) {
+ vec3 origin_view=vec3(0.0);
+#ifdef USE_MULTIVIEW
+ origin_view=scene_data.eye_offset[ViewIndex].xyz;
+#endif
+ vec2 uv=gl_FragCoord.xy*scene_data.screen_pixel_size;
+ if(scene_data.height_fog_view.x>0.0) {
+  vec2 ndc=uv*2.0-1.0;
+  vec4 a=inv_projection_matrix*vec4(ndc,1.0,1.0);
+  vec4 b=inv_projection_matrix*vec4(ndc,0.5,1.0);
+  vec3 near_p=a.xyz/a.w;
+  vec3 ray=b.xyz/b.w-near_p;
+  origin_view+=near_p-ray*(near_p.z/ray.z);
+ }
+ float distance=length(vertex-origin_view);
+ if(distance<=100.0) return vec4(0.0,0.0,0.0,1.0);
+ // Sqrt locates the quadratic slice interval. Interpolate transport by
+ // actual path distance inside it, not sqrt(distance): the latter biases
+ // near-field radiance even when both cumulative slice integrals are exact.
+ float depth=clamp(distance,100.0,96000.0);
+ float slice=min(floor(sqrt((depth-100.0)/95900.0)*15.0),14.0);
+ float d0=100.0+95900.0*(slice/15.0)*(slice/15.0);
+ float d1=100.0+95900.0*((slice+1.0)/15.0)*((slice+1.0)/15.0);
+ float weight=clamp((depth-d0)/(d1-d0),0.0,1.0);
+ vec3 coord=vec3(clamp(uv,vec2(0.5/32.0),vec2(31.5/32.0)),(0.5+slice+weight)/16.0);
+#ifdef USE_MULTIVIEW
+ if(ViewIndex==1) return textureLod(sampler3D(aerial_perspective_volume_eye1,DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP),coord,0.0);
+#endif
+ return textureLod(sampler3D(aerial_perspective_volume,DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP),coord,0.0);
 }
 
 vec4 native_height_fog_process(vec3 vertex) {
@@ -1091,15 +1136,14 @@ vec4 native_height_fog_process(vec3 vertex) {
  vec3 capture_color = vec3(0.0);
  if (capture_ready && scene_data.height_fog.source.w > 0.0) {
   vec3 radiance_ray = scene_data.radiance_inverse_xform * view_ray;
-  vec2 oct_uv = vec3_to_oct_with_border(radiance_ray, vec2(scene_data.radiance_border_size, 1.0 - 2.0 * scene_data.radiance_border_size));
   float roughness_layer = scene_data.height_fog.options.x * MAX_ROUGHNESS_LOD;
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
   float low_layer = floor(roughness_layer);
-  vec3 low_color = sample_sky_radiance(vec3(oct_uv, low_layer), 0.0).rgb;
-  vec3 high_color = sample_sky_radiance(vec3(oct_uv, min(low_layer + 1.0, MAX_ROUGHNESS_LOD)), 0.0).rgb;
+  vec3 low_color = sample_sky_radiance(radiance_ray, low_layer, 0.0).rgb;
+  vec3 high_color = sample_sky_radiance(radiance_ray, min(low_layer + 1.0, MAX_ROUGHNESS_LOD), 0.0).rgb;
   capture_color = mix(low_color, high_color, fract(roughness_layer));
 #else
-  capture_color = sample_sky_radiance(oct_uv, roughness_layer).rgb;
+  capture_color = sample_sky_radiance(radiance_ray, 0.0, roughness_layer).rgb;
 #endif
  }
  return height_fog_integrate(scene_data.height_fog, origin, ray, distance_to_surface, false, capture_color, capture_ready);
@@ -1117,14 +1161,12 @@ hvec4 fog_process(vec3 vertex) {
 		float roughness_lod, blend;
 		blend = modf(mip_level * MAX_ROUGHNESS_LOD, roughness_lod);
 		float cube_lod = vec3_to_oct_lod(dFdx(cube_view), dFdy(cube_view), scene_data_block.data.radiance_pixel_size);
-		vec2 cube_uv = vec3_to_oct_with_border(cube_view, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
-		vec3 sky_sample_a = sample_sky_radiance(vec3(cube_uv, roughness_lod), cube_lod).rgb;
-		vec3 sky_sample_b = sample_sky_radiance(vec3(cube_uv, roughness_lod + 1), cube_lod).rgb;
+		vec3 sky_sample_a = sample_sky_radiance(cube_view, roughness_lod, cube_lod).rgb;
+		vec3 sky_sample_b = sample_sky_radiance(cube_view, roughness_lod + 1, cube_lod).rgb;
 		sky_fog_color = mix(sky_sample_a, sky_sample_b, blend);
 #else
 		float roughness_lod = mip_level * MAX_ROUGHNESS_LOD;
-		vec2 cube_uv = vec3_to_oct_with_border(cube_view, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
-		sky_fog_color = sample_sky_radiance(cube_uv, roughness_lod).rgb;
+		sky_fog_color = sample_sky_radiance(cube_view, 0.0, roughness_lod).rgb;
 #endif //USE_RADIANCE_OCTMAP_ARRAY
 		fog_color = mix(fog_color, sky_fog_color, scene_data_block.data.fog_aerial_perspective);
 	}
@@ -1533,6 +1575,18 @@ void main() {
 
 #endif //!CUSTOM_FOG_USED
 
+ if(native_ap_enabled()) {
+  vec4 ap=native_ap_process(vertex);
+  if(!use_native_height_fog) {
+   // Preserve the native depth/custom fog layer, when present. Its source
+   // is already exposed; the shared tail expects canonical scene radiance.
+   native_height_fog=vec4(vec3(fog.rgb)*float(fog.a)/max(scene_data.emissive_exposure_normalization,1e-8),1.0-float(fog.a));
+  }
+  native_height_fog=vec4(native_height_fog.rgb+native_height_fog.a*ap.rgb,native_height_fog.a*clamp(ap.a,0.0,1.0));
+  if(scene_data.aerial_perspective.z>0.0) native_height_fog=ap;
+  use_native_height_fog=true;
+ }
+
 #endif //!FOG_DISABLED
 #endif //!MODE_RENDER_DEPTH
 
@@ -1673,14 +1727,12 @@ void main() {
 		half blend = half(modf(float(sqrt(roughness) * MAX_ROUGHNESS_LOD), lod));
 
 		float ref_lod = vec3_to_oct_lod(dFdx(vec3(ref_vec)), dFdy(vec3(ref_vec)), scene_data_block.data.radiance_pixel_size);
-		vec2 ref_uv = vec3_to_oct_with_border(ref_vec, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
-		hvec3 indirect_sample_a = hvec3(sample_sky_radiance(vec3(ref_uv, float(lod)), ref_lod).rgb);
-		hvec3 indirect_sample_b = hvec3(sample_sky_radiance(vec3(ref_uv, float(lod) + 1.0), ref_lod).rgb);
+		hvec3 indirect_sample_a = hvec3(sample_sky_radiance(vec3(ref_vec), float(lod), ref_lod).rgb);
+		hvec3 indirect_sample_b = hvec3(sample_sky_radiance(vec3(ref_vec), float(lod) + 1.0, ref_lod).rgb);
 		indirect_specular_light = mix(indirect_sample_a, indirect_sample_b, blend);
 #else // USE_RADIANCE_OCTMAP_ARRAY
 		float lod = sqrt(roughness) * MAX_ROUGHNESS_LOD;
-		vec2 ref_uv = vec3_to_oct_with_border(ref_vec, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
-		indirect_specular_light = hvec3(sample_sky_radiance(ref_uv, lod).rgb);
+		indirect_specular_light = hvec3(sample_sky_radiance(vec3(ref_vec), 0.0, lod).rgb);
 #endif //USE_RADIANCE_OCTMAP_ARRAY
 		if (scene_data.sky_capture_data.x == 0.0) { indirect_specular_light *= REFLECTION_MULTIPLIER; }
 		indirect_specular_light *= half(scene_data.IBL_exposure_normalization);
@@ -1701,12 +1753,10 @@ void main() {
 			vec3 ambient_dir = scene_data.radiance_inverse_xform * indirect_normal;
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
 			float ambient_lod = vec3_to_oct_lod(dFdx(ambient_dir), dFdy(ambient_dir), scene_data_block.data.radiance_pixel_size);
-			vec2 ambient_uv = vec3_to_oct_with_border(ambient_dir, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
-			hvec3 octmap_ambient = hvec3(sample_sky_radiance(vec3(ambient_uv, MAX_ROUGHNESS_LOD), ambient_lod).rgb);
+			hvec3 octmap_ambient = hvec3(sample_sky_radiance(ambient_dir, MAX_ROUGHNESS_LOD, ambient_lod).rgb);
 #else
 			float roughness_lod = MAX_ROUGHNESS_LOD;
-			vec2 ambient_uv = vec3_to_oct_with_border(ambient_dir, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
-			hvec3 octmap_ambient = hvec3(sample_sky_radiance(ambient_uv, roughness_lod).rgb);
+			hvec3 octmap_ambient = hvec3(sample_sky_radiance(ambient_dir, 0.0, roughness_lod).rgb);
 #endif //USE_RADIANCE_OCTMAP_ARRAY
 			if (scene_data.sky_capture_data.x == 0.0) { octmap_ambient *= REFLECTION_MULTIPLIER; }
 			octmap_ambient *= half(scene_data.IBL_exposure_normalization);
@@ -1734,13 +1784,11 @@ void main() {
 		half blend = half(modf(roughness_lod, lod));
 
 		float ref_lod = vec3_to_oct_lod(dFdx(vec3(cc_radiance_ref_vec)), dFdy(vec3(cc_radiance_ref_vec)), scene_data_block.data.radiance_pixel_size);
-		vec2 ref_uv = vec3_to_oct_with_border(cc_radiance_ref_vec, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
-		hvec3 clearcoat_sample_a = hvec3(sample_sky_radiance(vec3(ref_uv, lod), ref_lod).rgb);
-		hvec3 clearcoat_sample_b = hvec3(sample_sky_radiance(vec3(ref_uv, lod + 1), ref_lod).rgb);
+		hvec3 clearcoat_sample_a = hvec3(sample_sky_radiance(vec3(cc_radiance_ref_vec), lod, ref_lod).rgb);
+		hvec3 clearcoat_sample_b = hvec3(sample_sky_radiance(vec3(cc_radiance_ref_vec), lod + 1, ref_lod).rgb);
 		hvec3 clearcoat_light = mix(clearcoat_sample_a, clearcoat_sample_b, blend);
 #else
-		vec2 ref_uv = vec3_to_oct_with_border(cc_radiance_ref_vec, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
-		hvec3 clearcoat_light = hvec3(sample_sky_radiance(ref_uv, roughness_lod).rgb);
+		hvec3 clearcoat_light = hvec3(sample_sky_radiance(vec3(cc_radiance_ref_vec), 0.0, roughness_lod).rgb);
 
 #endif //USE_RADIANCE_OCTMAP_ARRAY
 		cc_specular_light += clearcoat_light * half(scene_data.IBL_exposure_normalization) * half(scene_data.ambient_light_color_energy.a);
@@ -2447,9 +2495,10 @@ void main() {
 #endif
 #endif
 #endif
-  if (scene_data.height_fog.options.y == 1.0) {
+  float air_debug=scene_data.aerial_perspective.z>0.0?scene_data.aerial_perspective.z:scene_data.height_fog.options.y;
+  if (air_debug == 1.0) {
    out_color.rgb = hvec3(vec3(native_height_fog.a) / sc_luminance_multiplier());
-  } else if (scene_data.height_fog.options.y == 2.0) {
+  } else if (air_debug == 2.0) {
    out_color.rgb = hvec3(native_height_fog.rgb / sc_luminance_multiplier());
   }
  }

@@ -382,6 +382,9 @@ public:
 	void set_height_fog_state(const Dictionary &p_state);
 	Dictionary get_height_fog_state() const;
 	Dictionary get_height_fog_status() const;
+	void set_aerial_perspective_state(const Dictionary &p_state);
+	Dictionary get_aerial_perspective_state() const;
+	Dictionary get_aerial_perspective_status() const;
 
 	void set_fog_enabled(bool p_enabled);
 	bool is_fog_enabled() const;

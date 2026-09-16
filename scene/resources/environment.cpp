@@ -1497,6 +1497,10 @@ void Environment::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_height_fog_state"), &Environment::get_height_fog_state);
 	ClassDB::bind_method(D_METHOD("get_height_fog_status"), &Environment::get_height_fog_status);
 	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "height_fog_state", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE), "set_height_fog_state", "get_height_fog_state");
+	ClassDB::bind_method(D_METHOD("set_aerial_perspective_state", "state"), &Environment::set_aerial_perspective_state);
+	ClassDB::bind_method(D_METHOD("get_aerial_perspective_state"), &Environment::get_aerial_perspective_state);
+	ClassDB::bind_method(D_METHOD("get_aerial_perspective_status"), &Environment::get_aerial_perspective_status);
+	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "aerial_perspective_state", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE), "set_aerial_perspective_state", "get_aerial_perspective_state");
 	ClassDB::bind_method(D_METHOD("set_fog_enabled", "enabled"), &Environment::set_fog_enabled);
 	ClassDB::bind_method(D_METHOD("is_fog_enabled"), &Environment::is_fog_enabled);
 	ClassDB::bind_method(D_METHOD("set_fog_mode", "mode"), &Environment::set_fog_mode);
@@ -1680,4 +1684,14 @@ Environment::Environment() {
 Environment::~Environment() {
 	ERR_FAIL_NULL(RenderingServer::get_singleton());
 	RS::get_singleton()->free_rid(environment);
+}
+
+void Environment::set_aerial_perspective_state(const Dictionary &p_state) {
+	RS::get_singleton()->environment_set_aerial_perspective_state(environment, p_state);
+}
+Dictionary Environment::get_aerial_perspective_state() const {
+	return RS::get_singleton()->environment_get_aerial_perspective_state(environment);
+}
+Dictionary Environment::get_aerial_perspective_status() const {
+	return RS::get_singleton()->environment_get_aerial_perspective_status(environment);
 }

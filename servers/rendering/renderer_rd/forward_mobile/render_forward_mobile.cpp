@@ -498,6 +498,13 @@ RID RenderForwardMobile::_setup_render_pass_uniform_set(RenderListType p_render_
 
 	thread_local LocalVector<RD::Uniform> uniforms;
 	uniforms.clear();
+	for (int eye = 0; eye < 2; eye++) {
+		RD::Uniform ap_texture;
+		ap_texture.binding = 27 + eye;
+		ap_texture.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		ap_texture.append_id(p_render_data ? aerial_perspective.get_texture(eye) : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_BLACK));
+		uniforms.push_back(ap_texture);
+	}
 
 	{
 		RD::Uniform u;
@@ -1256,6 +1263,8 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 		// Shadow pass can change the base uniform set samplers.
 		_update_render_base_uniform_set();
 
+		aerial_perspective.prepare(p_render_data);
+		p_render_data->scene_data->aerial_perspective_parameters = aerial_perspective.get_parameters();
 		_setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, p_render_data->render_buffers.is_valid());
 
 		if (merge_transparent_pass && using_subpass_post_process) {
@@ -1385,6 +1394,7 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 
 				if (scene_state.used_depth_texture) {
 					// Copy depth texture to backbuffer so we can read from it.
+					aerial_perspective.record_scene_depth_copy(use_msaa && !supports_depth_resolve);
 					_render_buffers_copy_depth_texture(p_render_data, use_msaa && !supports_depth_resolve); // Note, once fallback for has_depth_texture_override works, we also don't need to do our resolve here.
 				}
 			}

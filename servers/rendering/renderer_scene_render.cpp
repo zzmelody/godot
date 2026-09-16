@@ -747,3 +747,19 @@ bool RendererSceneRender::environment_get_use_1d_color_correction(RID p_env) con
 RID RendererSceneRender::environment_get_color_correction(RID p_env) const {
 	return environment_storage.environment_get_color_correction(p_env);
 }
+
+void RendererSceneRender::environment_set_aerial_perspective_state(RID p_env, const Dictionary &p_state) {
+	environment_storage.environment_set_aerial_perspective_state(p_env, p_state);
+}
+Dictionary RendererSceneRender::environment_get_aerial_perspective_state(RID p_env) const {
+	return environment_storage.environment_get_aerial_perspective_state(p_env);
+}
+Dictionary RendererSceneRender::environment_get_aerial_perspective_status(RID p_env) const {
+	return environment_storage.environment_get_aerial_perspective_status(p_env);
+}
+Dictionary RendererSceneRender::get_aerial_perspective_capabilities() const {
+	return environment_storage.get_aerial_perspective_capabilities();
+}
+String RendererSceneRender::get_atmosphere_shader_library() const {
+	return environment_storage.get_atmosphere_shader_library();
+}

@@ -162,6 +162,9 @@ public:
 			uint32_t pad1; // 4 - 352
 			RendererEnvironmentStorage::HeightFogData height_fog;
 			float height_fog_world_from_view[16];
+			float height_fog_sky_orientation[16]; // artwork direction -> physical world ray in capture
+			float height_fog_capture_old_xform[12];
+			float height_fog_capture_next_xform[12];
 			float height_fog_inv_projection[16];
 			float height_fog_view[4]; // orthographic, capture view, complete source, exposure
 			float height_fog_capture[4]; // managed, shared blend, old complete, roughness layers
@@ -268,6 +271,7 @@ public:
 		RID material;
 		int64_t generation = 0;
 		Vector3 origin;
+		Basis fog_orientation; // identity without active height fog; otherwise a capture input
 		double time = 0.0;
 		double requested_at = 0.0;
 		Color fallback;
@@ -290,6 +294,8 @@ public:
 		int capture_filter = 1;
 		int64_t published_generation = 0;
 		Vector3 published_origin;
+		Basis published_fog_orientation;
+		bool published_has_height_fog = false;
 		uint64_t last_work_frame = UINT64_MAX;
 		double last_accept = -1.0;
 		double blend_started = -1.0;
@@ -334,6 +340,7 @@ public:
 		float prev_fog_light_energy = 0.0;
 		RendererEnvironmentStorage::HeightFogData prev_height_fog;
 		float prev_height_fog_origin_y = 0.0f;
+		Basis prev_height_fog_orientation;
 
 		void free_radiance();
 
@@ -371,6 +378,7 @@ public:
 	void process_captures();
 	RID sky_get_next_radiance_texture_rd(RID p_sky, bool p_capture_view) const;
 	bool sky_get_capture_sampling(RID p_sky, bool p_capture_view, float *r_data, float *r_fallback) const;
+	void sky_get_capture_orientation_corrections(RID p_sky, const Basis &p_live_orientation, Basis &r_old, Basis &r_next) const;
 	void _allocate_capture_radiance(Sky *p_sky);
 	void _release_capture_work(Sky *p_sky);
 	bool _capture_step(Sky *p_sky);

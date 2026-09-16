@@ -210,6 +210,9 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 		ubo.flags |= render_scene_render->environment_get_fog_enabled(p_env) ? SCENE_DATA_FLAGS_USE_FOG : 0;
 		ubo.height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_env);
 		ubo.height_fog_view[0] = cam_orthogonal ? 1.0f : 0.0f;
+		for (int i = 0; i < 4; i++) {
+			ubo.aerial_perspective[i] = aerial_perspective_parameters[i];
+		}
 		ubo.height_fog_view[1] = p_reflection_probe_instance.is_valid() ? 1.0f : 0.0f;
 
 		ubo.fog_density = render_scene_render->environment_get_fog_density(p_env);
@@ -245,6 +248,12 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 		ubo.sky_capture_data[i] = 0.0f;
 		ubo.sky_capture_fallback[i] = 0.0f;
 	}
+	Basis old_capture_correction, next_capture_correction;
+	if (p_env.is_valid()) {
+		render_scene_render->get_sky()->sky_get_capture_orientation_corrections(render_scene_render->environment_get_sky(p_env), render_scene_render->environment_get_sky_orientation(p_env), old_capture_correction, next_capture_correction);
+	}
+	RendererRD::MaterialStorage::store_transform_3x3(old_capture_correction, ubo.sky_capture_old_xform);
+	RendererRD::MaterialStorage::store_transform_3x3(next_capture_correction, ubo.sky_capture_next_xform);
 	if (p_camera_attributes.is_valid()) {
 		ubo.emissive_exposure_normalization = RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_camera_attributes);
 		ubo.IBL_exposure_normalization = 1.0;

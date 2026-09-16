@@ -83,6 +83,9 @@ layout(set = 0, binding = 2, std140) uniform SkySceneData {
 	uint pad1; // 4 - 64
 	HeightFogData height_fog;
 	mat4 height_fog_world_from_view;
+	mat4 height_fog_sky_orientation;
+	mat3 height_fog_capture_old_xform;
+	mat3 height_fog_capture_next_xform;
 	mat4 height_fog_inv_projection;
 	vec4 height_fog_view;
 	vec4 height_fog_capture;
@@ -177,18 +180,19 @@ vec4 volumetric_fog_process(vec2 screen_uv) {
 
 vec3 height_fog_capture_sample(vec3 lookup_ray) {
  float border = sky_scene_data.height_fog_radiance.x;
- vec2 oct_uv = vec3_to_oct_with_border(lookup_ray, vec2(border, 1.0 - 2.0 * border));
+ vec2 oct_uv = vec3_to_oct_with_border(sky_scene_data.height_fog_capture_old_xform * lookup_ray, vec2(border, 1.0 - 2.0 * border));
+ vec2 next_oct_uv = vec3_to_oct_with_border(sky_scene_data.height_fog_capture_next_xform * lookup_ray, vec2(border, 1.0 - 2.0 * border));
  float layer = sky_scene_data.height_fog.options.x * sky_scene_data.height_fog_capture.w;
 #ifdef HEIGHT_FOG_RADIANCE_ARRAY
  float low = floor(layer);
  float high = min(low + 1.0, sky_scene_data.height_fog_capture.w);
  vec3 old_color = mix(textureLod(sampler2DArray(height_fog_radiance, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(oct_uv, low), 0.0).rgb,
      textureLod(sampler2DArray(height_fog_radiance, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(oct_uv, high), 0.0).rgb, fract(layer));
- vec3 next_color = mix(textureLod(sampler2DArray(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(oct_uv, low), 0.0).rgb,
-     textureLod(sampler2DArray(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(oct_uv, high), 0.0).rgb, fract(layer));
+ vec3 next_color = mix(textureLod(sampler2DArray(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(next_oct_uv, low), 0.0).rgb,
+     textureLod(sampler2DArray(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(next_oct_uv, high), 0.0).rgb, fract(layer));
 #else
  vec3 old_color = textureLod(sampler2D(height_fog_radiance, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), oct_uv, layer).rgb;
- vec3 next_color = textureLod(sampler2D(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), oct_uv, layer).rgb;
+ vec3 next_color = textureLod(sampler2D(height_fog_radiance_next, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), next_oct_uv, layer).rgb;
 #endif
  return mix(old_color, next_color, sky_scene_data.height_fog_capture.y);
 }
@@ -242,7 +246,9 @@ void main() {
 	vec3 height_fog_origin = params.position;
 #ifdef USE_CUBEMAP_PASS
 	cube_normal = oct_to_vec3_with_border(uv, params.border_size.y);
-	height_fog_world_ray = cube_normal;
+	// Keep EYEDIR/artwork canonical. The consumer rotates its lookup by O^-1;
+	// physical height/directional fog must therefore be integrated along O*q.
+	height_fog_world_ray = normalize(mat3(sky_scene_data.height_fog_sky_orientation) * cube_normal);
 #else
 #ifdef USE_MULTIVIEW
 	// In multiview our projection matrices will contain positional and rotational offsets that we need to properly unproject.

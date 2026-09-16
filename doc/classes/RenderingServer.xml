@@ -3767,14 +3767,14 @@
 			<param index="6" name="snapshot_environment" type="RID" />
 			<description>
 				Requests managed sky IBL on Mobile and Forward+. This does not change local ReflectionProbe scheduling. The caller supplies a dedicated immutable sky material and holds that material, shader, and every sampled texture unchanged while its RID appears as active_material or pending_material in [method sky_get_capture_status]. Environment fog and brightness parameters are copied when the request executes; [param fallback] is canonical linear HDR. Origin and shader TIME are frozen. Builtin directional lights, global uniforms and directional fog are explicitly unsupported by this snapshot contract and report failure, rather than sampling changing scene state.
-				Requests coalesce, acceptance is at most once per 0.25 seconds per sky, and globally one sky capture pass or roughness-filter step runs per renderer frame. Two complete FP16 radiance resources blend over 0.2 seconds. Native local probe views sample the committed sky resource. No capture completion or budget APIs are added to local probes.
+				Requests coalesce, acceptance is at most once per 0.25 seconds per sky, and globally one sky capture pass or roughness-filter step runs per renderer frame. Two complete FP16 radiance resources blend over 0.2 seconds. With analytic height fog enabled, changes to the sky artwork orientation require a new capture under the same budget. Each complete resource retains its capture orientation, keeping physical fog world-fixed while a request is pending and during blending. Ordinary camera rotation does not request a capture. Native local probe views sample the committed sky resource. No capture completion or budget APIs are added to local probes.
 			</description>
 		</method>
 		<method name="sky_get_capture_status" qualifiers="const">
 			<return type="Dictionary" />
 			<param index="0" name="sky" type="RID" />
 			<description>
-				Returns managed sky state and failure reason, active/pending material RIDs, requested/active/pending/ready/published generations, capture/filter counters, last work frame, origin, age, exposure and resource counts. This query does not render or read pixels. The caller can release immutable source resources after their material RID is absent from both active_material and pending_material. Unsupported renderers return UNSUPPORTED.
+				Returns managed sky state and failure reason, active/pending material RIDs, requested/active/pending/ready/published generations, capture/filter counters, last work frame, origin, age, exposure and resource counts. The active_fog_orientation, pending_fog_orientation and published_fog_orientation fields identify the respective capture bases. This query does not render or read pixels. The caller can release immutable source resources after their material RID is absent from both active_material and pending_material. Unsupported renderers return UNSUPPORTED.
 			</description>
 		</method>
 		<method name="sky_cancel_capture">
@@ -4727,6 +4727,30 @@
 		<method name="get_height_fog_capabilities" qualifiers="const">
 			<return type="Dictionary" />
 			<description>Reports version 1 analytic finite/infinite height fog support. Mobile is supported; other rendering methods report RENDER-FOG-UNSUPPORTED.</description>
+		</method>
+		<method name="environment_set_aerial_perspective_state">
+			<return type="void" />
+			<param index="0" name="environment" type="RID" />
+			<param index="1" name="state" type="Dictionary" />
+			<description>
+				Atomically submits Mobile finite atmosphere inputs. Version 1 uses [code]version[/code], nonnegative [code]generation[/code], [code]enabled[/code], [code]source_ready[/code], [code]medium[/code] (32 floats in the shared SkyView layout), [code]transmittance[/code] and [code]multiscatter[/code] Texture2D resource RIDs, [code]radiance_scale[/code] (linear HDR Vector3), and [code]debug_view[/code] (0 normal, 1 transmittance, 2 inscattering). Optional [code]source_generation[/code] identifies immutable physical LUT contents, separately from lighting generation. Native copies source textures on the render thread and shares identical source pairs. Preserve input textures until an ordered status query returns. A minimal disabled payload consists of version, generation and enabled=false. Pending or failed inputs render identity. Invalid submissions retain the last accepted public payload for diagnostics; its getter is not the effective failure state.
+			 Generations are monotonic within a live Environment: payloads with older generations are ignored, including disabled and pending payloads. An empty dictionary explicitly releases the owner and resets its lifecycle.</description>
+		</method>
+		<method name="environment_get_aerial_perspective_state" qualifiers="const">
+			<return type="Dictionary" /><param index="0" name="environment" type="RID" />
+			<description>Returns the last accepted atmosphere input snapshot.</description>
+		</method>
+		<method name="environment_get_aerial_perspective_status" qualifiers="const">
+			<return type="Dictionary" /><param index="0" name="environment" type="RID" />
+			<description>Returns state, reason, generations, per-view records, volume bytes, unique source bytes, dispatch and source-copy counters. READY means the ordered GPU dependency is valid; it does not perform CPU readback. Each mono view owns two 32×32×16 RGBA16F textures (256 KiB); native probe faces share one serial pair. Sky IBL creates no AP volume. The scene_depth_copies and scene_depth_copy_resolves counters record renderer-global explicit Mobile depth-copy calls and the subset requiring an explicit resolve; they include frames with AP disabled and exclude automatic attachment resolves. They are diagnostic counters, not GPU timings.</description>
+		</method>
+		<method name="get_aerial_perspective_capabilities" qualifiers="const">
+			<return type="Dictionary" />
+			<description>Returns version, supported renderer/format, fixed dimensions and volume-pair byte count. Device performance acceptance remains an application policy, separate from API support.</description>
+		</method>
+		<method name="get_atmosphere_shader_library" qualifiers="const">
+			<return type="String" />
+			<description>Returns the canonical GLSL medium, phase, transmittance and dual-light source functions shared by SkyView and native aerial perspective. Requires the eight-vec4 SkyView params layout and transmittance_lut/multiscatter_lut sampler names. Contains no version directive, resource declarations or main entry point.</description>
 		</method>
 	</methods>
 	<members>

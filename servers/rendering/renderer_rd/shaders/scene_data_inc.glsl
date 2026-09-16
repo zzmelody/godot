@@ -85,6 +85,9 @@ struct SceneData {
 	float pass_alpha_multiplier;
 	vec4 sky_capture_data;
 	vec4 sky_capture_fallback;
+	mat3 sky_capture_old_xform;
+	mat3 sky_capture_next_xform;
 	HeightFogData height_fog;
 	vec4 height_fog_view;
+	vec4 aerial_perspective;
 };
