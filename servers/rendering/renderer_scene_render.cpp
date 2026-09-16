@@ -30,6 +30,9 @@
 
 #include "renderer_scene_render.h"
 
+#include "renderer_rd/environment/atmosphere_shader_library.h"
+#include "renderer_rd/environment/sky_view_shader_library.h"
+
 #include "core/variant/typed_array.h"
 
 /////////////////////////////////////////////////////////////////////////////
@@ -762,4 +765,21 @@ Dictionary RendererSceneRender::get_aerial_perspective_capabilities() const {
 }
 String RendererSceneRender::get_atmosphere_shader_library() const {
 	return environment_storage.get_atmosphere_shader_library();
+}
+
+Dictionary RendererSceneRender::sky_get_physical_source_status(RID p_sky) const {
+	Dictionary d;
+	d["state"] = "UNSUPPORTED";
+	d["reason"] = "mobile_rd_required";
+	return d;
+}
+Dictionary RendererSceneRender::get_physical_sky_capabilities() const {
+	Dictionary d;
+	d["supported"] = false;
+	d["version"] = 1;
+	d["reason"] = "mobile_rd_required";
+	return d;
+}
+String RendererSceneRender::get_sky_view_shader_source() const {
+	return String(SKY_VIEW_SHADER_DECLARATIONS) + ATMOSPHERE_SHADER_LIBRARY + SKY_VIEW_SHADER_BODY;
 }

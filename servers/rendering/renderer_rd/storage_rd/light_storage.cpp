@@ -33,6 +33,7 @@
 #include "core/config/project_settings.h"
 #include "core/math/geometry_3d.h"
 #include "core/os/os.h"
+#include "servers/rendering/renderer_rd/environment/physical_sky_view.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/rendering_server_globals.h"
@@ -1646,6 +1647,9 @@ bool LightStorage::reflection_probe_has_atlas_index(RID p_instance) {
 }
 
 void LightStorage::reflection_probe_release_atlas_index(RID p_instance) {
+	if (PhysicalSkyView::get_singleton()) {
+		PhysicalSkyView::get_singleton()->free_probe(p_instance);
+	}
 	ReflectionProbeInstance *rpi = reflection_probe_instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(rpi);
 

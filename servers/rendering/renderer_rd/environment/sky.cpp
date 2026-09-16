@@ -47,6 +47,33 @@
 
 using namespace RendererRD;
 
+namespace {
+bool sky_height_fog_is_active(const RendererEnvironmentStorage::HeightFogData &p_fog) {
+	// options[2] selects the new path and masks legacy fog even for identity.
+	// Only control[3] indicates actual scattering/extinction in that path.
+	return p_fog.options[2] > 0.0f && p_fog.control[3] > 0.0f;
+}
+
+double managed_sky_clock_seconds() {
+#ifdef DEBUG_ENABLED
+	// Process-local deterministic scheduler clock, never the shader TIME input.
+	const String value = OS::get_singleton()->get_environment("ANGE_TEST_SKY_CLOCK_SECONDS");
+	if (value.is_valid_float()) {
+		const double seconds = value.to_float();
+		if (Math::is_finite(seconds) && seconds >= 0.0) {
+			return seconds;
+		}
+	}
+#endif
+	return double(OS::get_singleton()->get_ticks_usec()) * 1e-6;
+}
+#ifdef DEBUG_ENABLED
+bool managed_sky_test_failure(const char *p_point) {
+	return OS::get_singleton()->get_environment("ANGE_TEST_SKY_FAILURE") == p_point;
+}
+#endif
+} // namespace
+
 #define RB_SCOPE_SKY SNAME("sky_buffers")
 #define RB_HALF_TEXTURE SNAME("half_texture")
 #define RB_QUARTER_TEXTURE SNAME("quarter_texture")
@@ -630,6 +657,14 @@ RID SkyRD::Sky::get_textures(SkyTextureSetVersion p_version, RID p_default_shade
 	bool use_array = RendererSceneRenderRD::get_singleton()->get_sky()->sky_use_octmap_array;
 	RID black = texture_storage->texture_rd_get_default(use_array ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
 	bool capture_pass = p_version >= SKY_TEXTURE_SET_OCTMAP;
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		u.binding = 5;
+		RID physical = !capture_pass ? RendererSceneRenderRD::get_singleton()->get_sky()->sky_scene_state.physical_sky_view_texture : RID();
+		u.append_id(physical.is_valid() ? physical : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK));
+		uniforms.push_back(u);
+	}
 	RID current = !capture_pass && managed_capture && published_complete ? radiance : black;
 	RID next = !capture_pass && managed_capture && blend_started >= 0.0 && capture_work ? capture_work->radiance : current;
 	for (int i = 0; i < 2; i++) {
@@ -816,6 +851,11 @@ void SkyRD::init() {
 		actions.renames["HALF_RES_COLOR"] = "half_res_color";
 		actions.renames["QUARTER_RES_COLOR"] = "quarter_res_color";
 		actions.renames["RADIANCE"] = "radiance";
+		actions.renames["PHYSICAL_SKY_VIEW_LUT"] = "physical_sky_view_lut";
+		actions.renames["PHYSICAL_SKY_VIEW_ACTIVE"] = "(!AT_CUBEMAP_PASS && sky_scene_data.physical_sky_view.x > 0.0)";
+		actions.renames["PHYSICAL_SKY_VIEW_READY"] = "(sky_scene_data.physical_sky_view.y > 0.0)";
+		actions.renames["PHYSICAL_SKY_VIEW_ALTITUDE"] = "sky_scene_data.physical_sky_view.z";
+		actions.custom_samplers["PHYSICAL_SKY_VIEW_LUT"] = "SAMPLER_LINEAR_CLAMP";
 		actions.renames["FOG"] = "custom_fog";
 		actions.renames["LIGHT0_ENABLED"] = "directional_lights.data[0].enabled";
 		actions.renames["LIGHT0_DIRECTION"] = "directional_lights.data[0].direction_energy.xyz";
@@ -988,6 +1028,13 @@ RID SkyRD::SkySceneState::get_fog_only_texture_uniform_set(RID p_default_shader_
 			u.append_id(texture_storage->texture_rd_get_default(use_array ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK));
 			uniforms.push_back(u);
 		}
+		{
+			RD::Uniform u;
+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+			u.binding = 5;
+			u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK));
+			uniforms.push_back(u);
+		}
 		uniform_set_rid = RD::get_singleton()->uniform_set_create(uniforms, p_default_shader_rd, SKY_SET_TEXTURES);
 	}
 
@@ -1094,7 +1141,7 @@ void SkyRD::setup_sky(const RenderDataRD *p_render_data, const Size2i p_screen_s
 		if (!sky->managed_capture) {
 			RendererEnvironmentStorage::HeightFogData height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_render_data->environment);
 			float origin_y = p_render_data->scene_data->cam_transform.origin.y;
-			Basis fog_orientation = height_fog.options[2] > 0.0f ? RendererSceneRenderRD::get_singleton()->environment_get_sky_orientation(p_render_data->environment) : Basis();
+			Basis fog_orientation = sky_height_fog_is_active(height_fog) ? RendererSceneRenderRD::get_singleton()->environment_get_sky_orientation(p_render_data->environment) : Basis();
 			if (memcmp(&height_fog, &sky->prev_height_fog, sizeof(height_fog)) != 0 || (height_fog.control[3] > 0.0f && origin_y != sky->prev_height_fog_origin_y) || fog_orientation != sky->prev_height_fog_orientation) {
 				sky->prev_height_fog = height_fog;
 				sky->prev_height_fog_origin_y = origin_y;
@@ -1323,6 +1370,11 @@ void SkyRD::setup_sky(const RenderDataRD *p_render_data, const Size2i p_screen_s
 	}
 
 	sky_scene_state.ubo.z_far = p_render_data->scene_data->view_projection[0].get_z_far(); // Should be the same for all projection.
+	Vector4 physical_view = physical_sky_view.get_parameters(p_render_data->reflection_probe);
+	for (int i = 0; i < 4; i++) {
+		sky_scene_state.ubo.physical_sky_view[i] = physical_view[i];
+	}
+	sky_scene_state.physical_sky_view_texture = physical_sky_view.get_texture(p_render_data->reflection_probe);
 	sky_scene_state.ubo.height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_render_data->environment);
 	RendererRD::MaterialStorage::store_transform(p_render_data->scene_data->cam_transform, sky_scene_state.ubo.height_fog_world_from_view);
 	RendererRD::MaterialStorage::store_transform(Transform3D(RendererSceneRenderRD::get_singleton()->environment_get_sky_orientation(p_render_data->environment)), sky_scene_state.ubo.height_fog_sky_orientation);
@@ -1753,6 +1805,7 @@ SkyRD::Sky *SkyRD::get_sky(RID p_sky) const {
 }
 
 void SkyRD::free_sky(RID p_sky) {
+	physical_sky_view.free_sky(p_sky);
 	capture_queue.erase(p_sky);
 	Sky *sky = get_sky(p_sky);
 	ERR_FAIL_NULL(sky);
@@ -1848,13 +1901,13 @@ void SkyRD::sky_request_capture(RID p_sky, RID p_material, int64_t p_generation,
 	input.origin = p_origin;
 	input.time = p_capture_time;
 	input.fallback = p_fallback;
-	input.requested_at = double(OS::get_singleton()->get_ticks_usec()) * 1e-6;
+	input.requested_at = managed_sky_clock_seconds();
 	input.brightness = renderer->environment_get_bg_energy_multiplier(p_environment) * renderer->environment_get_bg_intensity(p_environment);
 	input.scene_ubo.height_fog = RendererEnvironmentStorage::get_singleton()->environment_get_height_fog_data(p_environment);
 	// Radiance remains in artwork space, matching the existing inverse sky
 	// orientation lookup. Only captured physical air follows the world ray O*q.
 	// Without active height fog rotation stays a lookup-only, zero-work change.
-	input.fog_orientation = input.scene_ubo.height_fog.options[2] > 0.0f ? renderer->environment_get_sky_orientation(p_environment) : Basis();
+	input.fog_orientation = sky_height_fog_is_active(input.scene_ubo.height_fog) ? renderer->environment_get_sky_orientation(p_environment) : Basis();
 	RendererRD::MaterialStorage::store_transform(Transform3D(input.fog_orientation), input.scene_ubo.height_fog_sky_orientation);
 	input.scene_ubo.height_fog_view[1] = 1.0f;
 	input.scene_ubo.height_fog_view[3] = 1.0f;
@@ -1897,6 +1950,12 @@ void SkyRD::sky_request_capture(RID p_sky, RID p_material, int64_t p_generation,
 }
 
 void SkyRD::_allocate_capture_radiance(Sky *sky) {
+#ifdef DEBUG_ENABLED
+	if (managed_sky_test_failure("radiance")) {
+		// Simulate the allocator returning no RID; caller runs normal cleanup.
+		return;
+	}
+#endif
 	bool use_raster_effect = RendererRD::CopyEffects::get_singleton()->get_raster_effects().has_flag(CopyEffects::RASTER_EFFECT_OCTMAP);
 	int mipmaps = Image::get_image_required_mipmaps(sky->radiance_size, sky->radiance_size, Image::FORMAT_RGBAH) + 1;
 
@@ -1927,7 +1986,16 @@ void SkyRD::_allocate_capture_radiance(Sky *sky) {
 			tf.usage_bits |= RD::TEXTURE_USAGE_STORAGE_BIT;
 		}
 
+#ifdef DEBUG_ENABLED
+		if (OS::get_singleton()->get_environment("ANGE_TEST_SKY_READBACK") == "1") {
+			tf.usage_bits |= RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		}
+#endif
 		sky->radiance = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		if (sky->radiance.is_null()) {
+			// Do not create dependent views/filter resources after allocation fails.
+			return;
+		}
 
 		// Create view into the first layer slice for user shaders.
 		sky->radiance_first_layer_slice = RD::get_singleton()->texture_create_shared_from_slice(RD::TextureView(), sky->radiance, 0, 0, mipmaps, RD::TEXTURE_SLICE_2D, 1);
@@ -1951,7 +2019,16 @@ void SkyRD::_allocate_capture_radiance(Sky *sky) {
 			tf.usage_bits |= RD::TEXTURE_USAGE_STORAGE_BIT;
 		}
 
+#ifdef DEBUG_ENABLED
+		if (OS::get_singleton()->get_environment("ANGE_TEST_SKY_READBACK") == "1") {
+			tf.usage_bits |= RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		}
+#endif
 		sky->radiance = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		if (sky->radiance.is_null()) {
+			// Do not create dependent views/filter resources after allocation fails.
+			return;
+		}
 
 		DEV_ASSERT(sky->radiance_first_layer_slice.is_null());
 
@@ -2065,7 +2142,7 @@ bool SkyRD::_capture_step(Sky *sky) {
 	if (sky_use_octmap_array) {
 		work->reflection.update_reflection_mipmaps(0, 1);
 	}
-	sky->blend_started = double(OS::get_singleton()->get_ticks_usec()) * 1e-6;
+	sky->blend_started = managed_sky_clock_seconds();
 	sky->blend_weight = 0.0;
 	return true;
 }
@@ -2076,7 +2153,7 @@ void SkyRD::process_captures() {
 		return;
 	}
 	last_capture_frame = frame;
-	const double now = double(OS::get_singleton()->get_ticks_usec()) * 1e-6;
+	const double now = managed_sky_clock_seconds();
 	// Publication/CPU time advance is not capture work, and must reach every sky.
 	for (RID rid : capture_queue) {
 		Sky *sky = get_sky(rid);
@@ -2096,7 +2173,7 @@ void SkyRD::process_captures() {
 		sky->published_generation = sky->active_input.generation;
 		sky->published_origin = sky->active_input.origin;
 		sky->published_fog_orientation = sky->active_input.fog_orientation;
-		sky->published_has_height_fog = sky->active_input.scene_ubo.height_fog.options[2] > 0.0f;
+		sky->published_has_height_fog = sky_height_fog_is_active(sky->active_input.scene_ubo.height_fog);
 		sky->published_complete = true;
 		sky->baked_exposure = 1.0;
 		_release_capture_work(sky);
@@ -2132,11 +2209,21 @@ void SkyRD::process_captures() {
 				continue;
 			}
 			sky->capture_scene_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(SkySceneState::UBO), Vector<uint8_t>());
+			if (sky->capture_scene_buffer.is_null()) {
+				sky->capture_error = "snapshot_uniform_allocation_failed";
+				_release_capture_work(sky);
+				continue;
+			}
 			RD::get_singleton()->buffer_update(sky->capture_scene_buffer, 0, sizeof(SkySceneState::UBO), &sky->active_input.scene_ubo);
 			Vector<uint8_t> lights;
 			lights.resize(sizeof(SkyDirectionalLightData) * sky_scene_state.max_directional_lights);
 			lights.fill(0);
 			sky->capture_light_buffer = RD::get_singleton()->uniform_buffer_create(lights.size(), lights);
+			if (sky->capture_light_buffer.is_null()) {
+				sky->capture_error = "snapshot_uniform_allocation_failed";
+				_release_capture_work(sky);
+				continue;
+			}
 			Vector<RD::Uniform> uniforms;
 			RD::Uniform global;
 			global.binding = 1;
@@ -2154,7 +2241,12 @@ void SkyRD::process_captures() {
 			light.append_id(sky->capture_light_buffer);
 			uniforms.push_back(light);
 			MaterialStorage::get_singleton()->samplers_rd_get_default().append_uniforms(uniforms, SAMPLERS_BINDING_FIRST_INDEX);
-			sky->capture_scene_set = RD::get_singleton()->uniform_set_create(uniforms, sky_shader.default_shader_rd, SKY_SET_UNIFORMS);
+#ifdef DEBUG_ENABLED
+			if (!managed_sky_test_failure("uniform"))
+#endif
+			{
+				sky->capture_scene_set = RD::get_singleton()->uniform_set_create(uniforms, sky_shader.default_shader_rd, SKY_SET_UNIFORMS);
+			}
 			if (sky->capture_scene_buffer.is_null() || sky->capture_light_buffer.is_null() || sky->capture_scene_set.is_null()) {
 				sky->capture_error = "snapshot_uniform_allocation_failed";
 				_release_capture_work(sky);
@@ -2189,7 +2281,7 @@ Dictionary SkyRD::sky_get_capture_status(RID p_sky) const {
 	result["pending_fog_orientation"] = sky->pending_input.fog_orientation;
 	result["published_fog_orientation"] = sky->published_fog_orientation;
 	result["published_has_height_fog"] = sky->published_has_height_fog;
-	result["active_has_height_fog"] = sky->active_input.scene_ubo.height_fog.options[2] > 0.0f;
+	result["active_has_height_fog"] = sky_height_fog_is_active(sky->active_input.scene_ubo.height_fog);
 	result["capture_passes"] = sky->total_capture_passes;
 	result["filter_steps"] = sky->total_filter_steps;
 	result["active_material"] = sky->active_input.material;
@@ -2198,12 +2290,30 @@ Dictionary SkyRD::sky_get_capture_status(RID p_sky) const {
 	result["ready_generation"] = sky->blend_started >= 0.0 ? sky->active_input.generation : sky->published_generation;
 	result["last_work_frame"] = sky->last_work_frame;
 	const double requested_at = sky->active_input.generation ? sky->active_input.requested_at : sky->pending_input.requested_at;
-	result["age_seconds"] = requested_at > 0.0 ? double(OS::get_singleton()->get_ticks_usec()) * 1e-6 - requested_at : 0.0;
+	result["age_seconds"] = requested_at > 0.0 ? managed_sky_clock_seconds() - requested_at : 0.0;
 	result["blend_weight"] = sky->blend_started >= 0.0 ? sky->blend_weight : (sky->published_complete ? 1.0 : 0.0);
 	result["origin"] = sky->active_input.generation ? sky->active_input.origin : sky->published_origin;
 	result["baked_exposure"] = sky->baked_exposure;
 	result["complete_resources"] = int(sky->published_complete) + int(sky->blend_started >= 0.0);
 	result["retained_radiance_resources"] = int(sky->radiance.is_valid()) + int(sky->capture_work != nullptr);
+#ifdef DEBUG_ENABLED
+	result["debug_clock_seconds"] = managed_sky_clock_seconds();
+	result["debug_last_accept"] = sky->last_accept;
+	result["debug_blend_started"] = sky->blend_started;
+	result["debug_snapshot_resources"] = int(sky->capture_scene_buffer.is_valid()) + int(sky->capture_light_buffer.is_valid()) + int(sky->capture_scene_set.is_valid());
+	// Opt-in raw complete-map inspection for independent GPU test oracles.
+	// No readback or extra resource is created by this metadata query.
+	if (OS::get_singleton()->get_environment("ANGE_TEST_SKY_READBACK") == "1" && sky->published_complete && sky->radiance.is_valid()) {
+		const RD::TextureFormat format = RD::get_singleton()->texture_get_format(sky->radiance);
+		result["debug_published_radiance_rd"] = sky->radiance;
+		result["debug_radiance_width"] = format.width;
+		result["debug_radiance_height"] = format.height;
+		result["debug_radiance_array_layers"] = format.array_layers;
+		result["debug_radiance_mipmaps"] = format.mipmaps;
+		result["debug_radiance_border"] = sky->uv_border_size;
+		result["debug_roughness_layers"] = sky_use_octmap_array ? format.array_layers : format.mipmaps;
+	}
+#endif
 	return result;
 }
 
@@ -2220,7 +2330,7 @@ bool SkyRD::sky_get_capture_sampling(RID p_sky, bool p_capture_view, float *r_da
 	r_data[0] = 1.0;
 	r_data[1] = p_capture_view ? 0.0 : sky->blend_weight;
 	r_data[2] = sky->published_complete ? 1.0 : 0.0;
-	r_data[3] = (sky->published_complete && sky->published_has_height_fog ? 1.0f : 0.0f) + (!p_capture_view && sky->blend_started >= 0.0 && sky->active_input.scene_ubo.height_fog.options[2] > 0.0f ? 2.0f : 0.0f);
+	r_data[3] = (sky->published_complete && sky->published_has_height_fog ? 1.0f : 0.0f) + (!p_capture_view && sky->blend_started >= 0.0 && sky_height_fog_is_active(sky->active_input.scene_ubo.height_fog) ? 2.0f : 0.0f);
 	for (int i = 0; i < 3; i++) {
 		r_fallback[i] = sky->fallback[i];
 	}
@@ -2241,7 +2351,7 @@ void SkyRD::sky_get_capture_orientation_corrections(RID p_sky, const Basis &p_li
 	if (sky->published_complete && sky->published_has_height_fog) {
 		r_old = sky->published_fog_orientation.inverse() * p_live_orientation;
 	}
-	if (sky->blend_started >= 0.0 && sky->active_input.scene_ubo.height_fog.options[2] > 0.0f) {
+	if (sky->blend_started >= 0.0 && sky_height_fog_is_active(sky->active_input.scene_ubo.height_fog)) {
 		r_next = sky->active_input.fog_orientation.inverse() * p_live_orientation;
 	}
 }

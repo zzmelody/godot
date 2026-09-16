@@ -77,6 +77,22 @@ void RendererSceneRenderRD::sky_request_capture(RID p_sky, RID p_material, int64
 Dictionary RendererSceneRenderRD::sky_get_capture_status(RID p_sky) const {
 	return sky.sky_get_capture_status(p_sky);
 }
+void RendererSceneRenderRD::sky_set_physical_source(RID p_sky, const Dictionary &p_source) {
+	ERR_FAIL_NULL(sky.get_sky(p_sky));
+	sky.physical_sky_view.set_source(p_sky, p_source);
+}
+Dictionary RendererSceneRenderRD::sky_get_physical_source_status(RID p_sky) const {
+	return sky.physical_sky_view.get_status(p_sky);
+}
+Dictionary RendererSceneRenderRD::get_physical_sky_capabilities() const {
+	return RendererRD::PhysicalSkyView::get_capabilities();
+}
+bool RendererSceneRenderRD::prepare_reflection_probe_sky(RID p_environment, RID p_probe, const Vector3 &p_origin) {
+	return sky.physical_sky_view.prepare(p_environment.is_valid() ? environment_get_sky(p_environment) : RID(), p_probe, p_origin);
+}
+void RendererSceneRenderRD::finish_reflection_probe_sky(bool p_completed) {
+	sky.physical_sky_view.finish(p_completed);
+}
 void RendererSceneRenderRD::sky_cancel_capture(RID p_sky) {
 	sky.sky_cancel_capture(p_sky);
 }

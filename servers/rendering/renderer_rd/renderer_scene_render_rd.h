@@ -198,6 +198,11 @@ public:
 	virtual void sky_set_material(RID p_sky, RID p_material) override;
 	virtual void sky_request_capture(RID p_sky, RID p_material, int64_t p_generation, const Vector3 &p_origin, double p_capture_time, const Color &p_fallback, RID p_environment) override;
 	virtual Dictionary sky_get_capture_status(RID p_sky) const override;
+	virtual void sky_set_physical_source(RID p_sky, const Dictionary &p_source) override;
+	virtual Dictionary sky_get_physical_source_status(RID p_sky) const override;
+	virtual Dictionary get_physical_sky_capabilities() const override;
+	virtual bool prepare_reflection_probe_sky(RID p_environment, RID p_probe, const Vector3 &p_origin) override;
+	virtual void finish_reflection_probe_sky(bool p_completed = false) override;
 	virtual void sky_cancel_capture(RID p_sky) override;
 
 	virtual Ref<Image> sky_bake_panorama(RID p_sky, float p_energy, bool p_bake_irradiance, const Size2i &p_size) override;

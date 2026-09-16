@@ -3026,6 +3026,10 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("sky_set_material", "sky", "material"), &RenderingServer::sky_set_material);
 	ClassDB::bind_method(D_METHOD("sky_request_capture", "sky", "snapshot_material", "generation", "origin", "capture_time", "fallback", "snapshot_environment"), &RenderingServer::sky_request_capture);
 	ClassDB::bind_method(D_METHOD("sky_get_capture_status", "sky"), &RenderingServer::sky_get_capture_status);
+	ClassDB::bind_method(D_METHOD("sky_set_physical_source", "sky", "source"), &RenderingServer::sky_set_physical_source);
+	ClassDB::bind_method(D_METHOD("sky_get_physical_source_status", "sky"), &RenderingServer::sky_get_physical_source_status);
+	ClassDB::bind_method(D_METHOD("get_physical_sky_capabilities"), &RenderingServer::get_physical_sky_capabilities);
+	ClassDB::bind_method(D_METHOD("get_sky_view_shader_source"), &RenderingServer::get_sky_view_shader_source);
 	ClassDB::bind_method(D_METHOD("sky_cancel_capture", "sky"), &RenderingServer::sky_cancel_capture);
 	ClassDB::bind_method(D_METHOD("sky_bake_panorama", "sky", "energy", "bake_irradiance", "size"), &RenderingServer::sky_bake_panorama);
 

@@ -842,6 +842,10 @@ public:
 	FUNC2(sky_set_material, RID, RID)
 	FUNC7(sky_request_capture, RID, RID, int64_t, const Vector3 &, double, const Color &, RID)
 	FUNC1RC(Dictionary, sky_get_capture_status, RID)
+	FUNC2(sky_set_physical_source, RID, const Dictionary &)
+	FUNC1RC(Dictionary, sky_get_physical_source_status, RID)
+	FUNC0RC(Dictionary, get_physical_sky_capabilities)
+	FUNC0RC(String, get_sky_view_shader_source)
 	FUNC1(sky_cancel_capture, RID)
 	FUNC4R(Ref<Image>, sky_bake_panorama, RID, float, bool, const Size2i &)
 

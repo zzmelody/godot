@@ -3782,7 +3782,13 @@ bool RendererSceneCull::_render_reflection_probe_step(Instance *p_instance, int 
 	RenderingServerDefault::redraw_request(); //update, so it updates in editor
 
 	if (p_step == 0) {
+		RID environment = scenario->environment.is_valid() ? scenario->environment : scenario->fallback_environment;
+		Vector3 capture_origin = p_instance->transform.xform(RSG::light_storage->reflection_probe_get_origin_offset(p_instance->base));
+		if (!scene_render->prepare_reflection_probe_sky(environment, reflection_probe->instance, capture_origin)) {
+			return true; // Explicit provider failure: keep the previous complete atlas pixels.
+		}
 		if (!RSG::light_storage->reflection_probe_instance_begin_render(reflection_probe->instance, scenario->reflection_atlas)) {
+			scene_render->finish_reflection_probe_sky();
 			return true; // All full, no atlas entry to render to.
 		}
 	} else if (!RSG::light_storage->reflection_probe_has_atlas_index(reflection_probe->instance)) {
@@ -3841,6 +3847,7 @@ bool RendererSceneCull::_render_reflection_probe_step(Instance *p_instance, int 
 		}
 
 		RSG::light_storage->reflection_probe_instance_end_render(reflection_probe->instance, scenario->reflection_atlas);
+		scene_render->finish_reflection_probe_sky(true);
 	} else {
 		// Do roughness postprocess step until it believes it's done.
 		RENDER_TIMESTAMP("Post-Process ReflectionProbe, Step " + itos(p_step));

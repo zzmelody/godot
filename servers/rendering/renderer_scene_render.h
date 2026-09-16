@@ -87,6 +87,13 @@ public:
 		return d;
 	}
 	virtual void sky_cancel_capture(RID p_sky) {}
+	virtual void sky_set_physical_source(RID p_sky, const Dictionary &p_source) {}
+	virtual Dictionary sky_get_physical_source_status(RID p_sky) const;
+	virtual Dictionary get_physical_sky_capabilities() const;
+	String get_sky_view_shader_source() const;
+	// Internal native six-face lifecycle; no scheduling API is exposed.
+	virtual bool prepare_reflection_probe_sky(RID p_environment, RID p_probe, const Vector3 &p_origin) { return true; }
+	virtual void finish_reflection_probe_sky(bool p_completed = false) {}
 
 	virtual Ref<Image> sky_bake_panorama(RID p_sky, float p_energy, bool p_bake_irradiance, const Size2i &p_size) = 0;
 

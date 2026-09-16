@@ -1191,6 +1191,10 @@ public:
 	PASS2(sky_set_material, RID, RID)
 	PASS7(sky_request_capture, RID, RID, int64_t, const Vector3 &, double, const Color &, RID)
 	PASS1RC(Dictionary, sky_get_capture_status, RID)
+	PASS2(sky_set_physical_source, RID, const Dictionary &)
+	PASS1RC(Dictionary, sky_get_physical_source_status, RID)
+	PASS0RC(Dictionary, get_physical_sky_capabilities)
+	PASS0RC(String, get_sky_view_shader_source)
 	PASS1(sky_cancel_capture, RID)
 	PASS4R(Ref<Image>, sky_bake_panorama, RID, float, bool, const Size2i &)
 

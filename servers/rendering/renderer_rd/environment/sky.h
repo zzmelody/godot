@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "physical_sky_view.h"
+
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/renderer_rd/pipeline_cache_rd.h"
 #include "servers/rendering/renderer_rd/shaders/environment/sky.glsl.gen.h"
@@ -137,6 +139,7 @@ private:
 	void _render_sky(RD::DrawListID p_list, float p_time, RID p_fb, PipelineCacheRD *p_pipeline, RID p_uniform_set, RID p_texture_set, const Projection &p_projection, const Basis &p_orientation, const Vector3 &p_position, float p_luminance_multiplier, float p_brightness_modifier, float p_border_size = 0.0, RID p_scene_uniform_set = RID());
 
 public:
+	PhysicalSkyView physical_sky_view;
 	struct SkySceneState {
 		struct UBO {
 			float combined_reprojection[RendererSceneRender::MAX_RENDER_VIEWS][16]; // 2 x 64 - 128
@@ -170,9 +173,11 @@ public:
 			float height_fog_capture[4]; // managed, shared blend, old complete, roughness layers
 			float height_fog_fallback[4];
 			float height_fog_radiance[4]; // border, reserved
+			float physical_sky_view[4]; // active, ready, capture altitude km, reserved
 		};
 
 		UBO ubo;
+		RID physical_sky_view_texture;
 
 		uint32_t view_count = 1;
 		Transform3D cam_transform;

@@ -91,6 +91,7 @@ layout(set = 0, binding = 2, std140) uniform SkySceneData {
 	vec4 height_fog_capture;
 	vec4 height_fog_fallback;
 	vec4 height_fog_radiance;
+	vec4 physical_sky_view;
 
 }
 sky_scene_data;
@@ -115,6 +116,7 @@ layout(set = 1, binding = 0, std140) uniform MaterialUniforms {
 #endif
 
 layout(set = 2, binding = 0) uniform texture2D radiance;
+layout(set = 2, binding = 5) uniform texture2D physical_sky_view_lut;
 #ifdef USE_CUBEMAP_PASS
 layout(set = 2, binding = 1) uniform texture2D half_res;
 layout(set = 2, binding = 2) uniform texture2D quarter_res;

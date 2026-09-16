@@ -464,6 +464,10 @@ ShaderTypes::ShaderTypes() {
 	shader_modes[RSE::SHADER_SKY].functions["constants"].built_ins["E"] = constt(ShaderLanguage::TYPE_FLOAT);
 	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["POSITION"] = constt(ShaderLanguage::TYPE_VEC3);
 	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["RADIANCE"] = constt(ShaderLanguage::TYPE_SAMPLERCUBE);
+	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["PHYSICAL_SKY_VIEW_LUT"] = constt(ShaderLanguage::TYPE_SAMPLER2D);
+	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["PHYSICAL_SKY_VIEW_ACTIVE"] = constt(ShaderLanguage::TYPE_BOOL);
+	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["PHYSICAL_SKY_VIEW_READY"] = constt(ShaderLanguage::TYPE_BOOL);
+	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["PHYSICAL_SKY_VIEW_ALTITUDE"] = constt(ShaderLanguage::TYPE_FLOAT);
 	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["AT_HALF_RES_PASS"] = constt(ShaderLanguage::TYPE_BOOL);
 	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["AT_QUARTER_RES_PASS"] = constt(ShaderLanguage::TYPE_BOOL);
 	shader_modes[RSE::SHADER_SKY].functions["global"].built_ins["AT_CUBEMAP_PASS"] = constt(ShaderLanguage::TYPE_BOOL);

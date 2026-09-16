@@ -3784,6 +3784,31 @@
 				Cancels only queued/active managed sky work and releases its input references. Keeps the last complete published sky. Does not modify local ReflectionProbe modes or captures.
 			</description>
 		</method>
+		<method name="sky_set_physical_source">
+			<return type="void" />
+			<param index="0" name="sky" type="RID" />
+			<param index="1" name="source" type="Dictionary" />
+			<description>
+				Supplies the canonical physical atmosphere source for native Mobile ReflectionProbe sky captures, independently of aerial perspective quality. The dictionary contains version (1), enabled (bool), generation and source_generation (nonnegative integers), medium (32 finite floats), transmittance and multiscatter (Texture2D resource RIDs), and fallback (finite nonnegative linear HDR Color metadata). An empty dictionary releases the source and cached probe views. Older generations are ignored before parsing.
+				The medium block is the 128-byte push constant layout returned by [method get_sky_view_shader_source]. Entry 26 is observer altitude in kilometres; it is excluded from source identity and replaced with the native probe capture origin height, clamped into the atmosphere shell. Source textures are copied into immutable native storage when their RIDs or source_generation change. Callers keep source textures alive through this command and its subsequent status query.
+				Native ONCE and ALWAYS scheduling is unchanged. A cached 192 by 104 RGBA16F SkyView is prepared before the synchronous six-face capture and is bound only in that capture view. Source failure is explicit and prevents overwriting the previous complete probe; it never silently uses the main camera SkyView. Changing source inputs does not independently retrigger ONCE probes. Native atlas release, probe destruction, and source removal release cached views.
+			</description>
+		</method>
+		<method name="sky_get_physical_source_status" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="sky" type="RID" />
+			<description>
+				Returns source state, reason, generation and source_generation, plus per-sky probe_views with native probe RID, capture origin, clamped altitude and source generation. READY describes source availability or a computed SkyView, not completion of native probe roughness filtering. source_copies and dispatches are cumulative renderer-wide work counters. source_bytes, view_bytes, view_count and probe_count are current renderer-wide ownership counters, with shared textures counted once. No GPU readback is performed.
+			</description>
+		</method>
+		<method name="get_physical_sky_capabilities" qualifiers="const">
+			<return type="Dictionary" />
+			<description>Returns supported, version, renderer, reason, width, height, and view_bytes for native Mobile physical-sky probe views. Forward+ and Compatibility report unsupported.</description>
+		</method>
+		<method name="get_sky_view_shader_source" qualifiers="const">
+			<return type="String" />
+			<description>Returns the canonical GLSL compute source shared by the main-view SkyView provider and native physical probe views. The source includes sampler bindings 0/1, RGBA16F output image binding 2, and its exact 128-byte atmosphere push constant layout. Availability of this source does not imply renderer capability.</description>
+		</method>
 		<method name="sky_set_material">
 			<return type="void" />
 			<param index="0" name="sky" type="RID" />
