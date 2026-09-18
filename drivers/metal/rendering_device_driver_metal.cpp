@@ -52,6 +52,7 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/error/error_macros.h"
 #include "core/io/marshalls.h"
 #include "core/os/os.h"
 #include "core/string/ustring.h"

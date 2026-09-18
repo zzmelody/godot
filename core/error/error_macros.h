@@ -35,6 +35,13 @@
 class String;
 class ObjectID;
 
+#define RETURN_IF_ERROR(m_exp) \
+	if (Error _err_propagate_error = (m_exp); unlikely(_err_propagate_error != OK)) { \
+		static_assert(std::is_same_v<std::decay_t<decltype(m_exp)>, Error>, "RETURN_IF_ERROR expects an Error-returning expression"); \
+		return _err_propagate_error; \
+	} else \
+		((void)0)
+
 enum ErrorHandlerType {
 	ERR_HANDLER_ERROR,
 	ERR_HANDLER_WARNING,
