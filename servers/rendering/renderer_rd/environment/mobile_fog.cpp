@@ -18,7 +18,9 @@ void MobileFog::initialize() {
 			}
 		}
 	}
-	shader.initialize(modes);
+	Vector<uint64_t> dynamic_buffers;
+	dynamic_buffers.push_back(ShaderRD::DynamicBuffer::encode(0, 0));
+	shader.initialize(modes, String(), Vector<RD::PipelineImmutableSampler>(), dynamic_buffers);
 	version = shader.version_create();
 	RD::SamplerState state;
 	nearest_sampler = RD::get_singleton()->sampler_create(state);
