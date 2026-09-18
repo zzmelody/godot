@@ -69,6 +69,9 @@
 			}
 			[/codeblock]
 		</member>
+		<member name="needs_post_opaque_fog" type="bool" setter="set_needs_post_opaque_fog" getter="get_needs_post_opaque_fog" default="false">
+			On Mobile, requests deferred native height fog and aerial perspective for an enabled [constant EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT] effect. The effect may call [method RenderSceneBuffersRD.composite_mobile_ao] to combine AO and fog in one raster draw. If it does not, the renderer applies fog with unit visibility after the callbacks. Does not enable a depth prepass. Transparent surfaces and reflection captures retain material fog. Only the native height-fog/AP transport is supported; legacy Environment fog remains in the material path.
+		</member>
 		<member name="needs_separate_specular" type="bool" setter="set_needs_separate_specular" getter="get_needs_separate_specular">
 			If [code]true[/code] this triggers specular data being rendered to a separate buffer and combined after effects have been applied, only applicable for the Forward+ renderer.
 		</member>

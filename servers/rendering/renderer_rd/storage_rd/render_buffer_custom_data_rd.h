@@ -38,6 +38,7 @@ class RenderBufferCustomDataRD : public RefCounted {
 	GDCLASS(RenderBufferCustomDataRD, RefCounted);
 
 public:
+	virtual bool composite_mobile_ao(RID p_ao, RID p_guide, int p_algorithm, int p_view, float p_radius, float p_intensity, float p_max_distance) { return false; }
 	virtual void configure(RenderSceneBuffersRD *p_render_buffers) = 0;
 	virtual void free_data() = 0; // called on cleanup
 

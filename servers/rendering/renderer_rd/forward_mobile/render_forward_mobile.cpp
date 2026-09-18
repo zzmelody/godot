@@ -1276,6 +1276,10 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 		}
 
 		RID rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_OPAQUE, p_render_data, is_multiview, radiance_texture, samplers, true);
+		bool fog_requested = rb_data.is_valid() && (!copy_canvas || !is_multiview) && ce_has_pre_transparent && _compositor_effects_has_flag(p_render_data, RSE::COMPOSITOR_EFFECT_FLAG_NEEDS_POST_OPAQUE_FOG, RSE::COMPOSITOR_EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT);
+		RID next_radiance = p_render_data->environment.is_valid() ? sky.sky_get_next_radiance_texture_rd(environment_get_sky(p_render_data->environment), false) : RID();
+		bool defer_fog = rb_data.is_valid() && mobile_fog.prepare(p_render_data, fog_requested, radiance_texture, next_radiance, aerial_perspective.get_texture(0), aerial_perspective.get_texture(1), is_using_radiance_octmap_array(), get_roughness_layers(), 1.0f / inverse_luminance_multiplier);
+		RID opaque_framebuffer = defer_fog ? mobile_fog.get_framebuffer(rb, resolve_depth_buffer) : framebuffer;
 
 		// Set clear colors.
 		Vector<Color> c;
@@ -1296,8 +1300,22 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 			}
 		}
 
-		RD::DrawListID draw_list = RD::get_singleton()->draw_list_begin(framebuffer, load_color ? RD::DRAW_CLEAR_DEPTH : (RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH), c, 0.0f, 0, p_render_data->render_region, breadcrumb);
-		RD::FramebufferFormatID fb_format = RD::get_singleton()->framebuffer_get_format(framebuffer);
+		if (defer_fog && copy_canvas) {
+			RD::DrawListID canvas_list = RD::get_singleton()->draw_list_begin(framebuffer, RD::DRAW_DEFAULT_ALL);
+			RID canvas_texture = RendererRD::TextureStorage::get_singleton()->render_target_get_rd_texture(rb->get_render_target());
+			copy_effects->copy_to_drawlist(canvas_list, RD::get_singleton()->framebuffer_get_format(framebuffer), canvas_texture, !hdr_render_target, 2.0f);
+			RD::get_singleton()->draw_list_end();
+			copy_canvas = false;
+			load_color = true; // Preserve the canvas copied into the opaque color target.
+		}
+		uint32_t clear_flags = load_color ? RD::DRAW_CLEAR_DEPTH : (RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH);
+		if (defer_fog) {
+			c.resize(use_msaa ? 3 : 2);
+			c.write[1] = Color(0, 0, 0, 0);
+			clear_flags |= RD::DRAW_CLEAR_COLOR_1;
+		}
+		RD::DrawListID draw_list = RD::get_singleton()->draw_list_begin(opaque_framebuffer, clear_flags, c, 0.0f, 0, p_render_data->render_region, breadcrumb);
+		RD::FramebufferFormatID fb_format = RD::get_singleton()->framebuffer_get_format(opaque_framebuffer);
 
 		if (copy_canvas) {
 			if (p_render_data->scene_data->view_count > 1) {
@@ -1312,6 +1330,7 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 
 		if (render_list[RENDER_LIST_OPAQUE].elements.size() > 0) {
 			RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, PASS_MODE_COLOR, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, !is_reflection_probe);
+			render_list_params.defer_opaque_fog = defer_fog;
 			render_list_params.framebuffer_format = fb_format;
 			render_list_params.subpass = RD::get_singleton()->draw_list_get_current_pass(); // Should now always be 0.
 
@@ -1319,13 +1338,16 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 		}
 
 		RD::get_singleton()->draw_command_end_label(); //Render Opaque
+		if (defer_fog) {
+			RD::get_singleton()->draw_list_switch_to_next_pass();
+		}
 
 		if (draw_sky || draw_sky_fog_only) {
 			RD::get_singleton()->draw_command_begin_label("Draw Sky");
 
 			// Note, sky.setup should have been called up above and setup stuff we need.
 
-			sky.draw_sky(draw_list, rb, p_render_data->environment, framebuffer, time, inverse_luminance_multiplier, sky_brightness_multiplier);
+			sky.draw_sky(draw_list, rb, p_render_data->environment, opaque_framebuffer, time, inverse_luminance_multiplier, sky_brightness_multiplier);
 
 			RD::get_singleton()->draw_command_end_label(); // Draw Sky
 		}
@@ -1374,6 +1396,10 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 			if (ce_has_pre_transparent) {
 				_process_compositor_effects(RSE::COMPOSITOR_EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT, p_render_data);
 			}
+			if (defer_fog) {
+				mobile_fog.finish(rb);
+			}
+			fb_format = RD::get_singleton()->framebuffer_get_format(framebuffer);
 
 			if (scene_state.used_screen_texture || global_surface_data.screen_texture_used) {
 				_render_buffers_ensure_screen_texture(p_render_data);
@@ -2593,6 +2619,10 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 					pipeline_key.version = p_params->view_count > 1 ? SceneShaderForwardMobile::SHADER_VERSION_LIGHTMAP_COLOR_PASS_MULTIVIEW : SceneShaderForwardMobile::SHADER_VERSION_LIGHTMAP_COLOR_PASS;
 				} else {
 					pipeline_key.version = p_params->view_count > 1 ? SceneShaderForwardMobile::SHADER_VERSION_COLOR_PASS_MULTIVIEW : SceneShaderForwardMobile::SHADER_VERSION_COLOR_PASS;
+				}
+				if (p_params->defer_opaque_fog) {
+					bool lightmap = pipeline_key.version == SceneShaderForwardMobile::SHADER_VERSION_LIGHTMAP_COLOR_PASS || pipeline_key.version == SceneShaderForwardMobile::SHADER_VERSION_LIGHTMAP_COLOR_PASS_MULTIVIEW;
+					pipeline_key.version = p_params->view_count > 1 ? (lightmap ? SceneShaderForwardMobile::SHADER_VERSION_LIGHTMAP_FOG_MASK_MULTIVIEW : SceneShaderForwardMobile::SHADER_VERSION_COLOR_FOG_MASK_MULTIVIEW) : (lightmap ? SceneShaderForwardMobile::SHADER_VERSION_LIGHTMAP_FOG_MASK : SceneShaderForwardMobile::SHADER_VERSION_COLOR_FOG_MASK);
 				}
 			} break;
 			case PASS_MODE_SHADOW: {

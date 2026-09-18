@@ -12,6 +12,20 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="composite_mobile_ao">
+			<return type="bool" />
+			<param index="0" name="ao" type="RID" />
+			<param index="1" name="guide" type="RID" />
+			<param index="2" name="algorithm" type="int" />
+			<param index="3" name="view" type="int" />
+			<param index="4" name="radius" type="float" />
+			<param index="5" name="intensity" type="float" />
+			<param index="6" name="max_distance" type="float" />
+			<description>
+				Composes AO visibility, native height fog and aerial perspective on the render thread during a Mobile pre-transparent callback requesting [member CompositorEffect.needs_post_opaque_fog]. Returns [code]true[/code] if it consumed this view; do not also perform the effect's color blend. Returns [code]false[/code] when deferred native fog is inactive. Preserves destination alpha and applies fog only to eligible opaque samples, including MSAA. Each view may be consumed once per frame.
+				[code]algorithm = 1[/code] accepts half-resolution R16F visibility and an RG32UI guide whose R bits encode positive FP32 view depth, using 2x2 depth-aware upsampling. [code]algorithm = 2[/code] accepts full-resolution R8UI visibility (0..255) and an R32F positive view-depth guide; [param intensity] is its application exponent. Distances and [param radius] are in meters. [param ao] and [param guide] must be single-view, single-sample texture slices. This hook does not calculate AO or produce depth.
+			</description>
+		</method>
 		<method name="clear_context">
 			<return type="void" />
 			<param index="0" name="context" type="StringName" />

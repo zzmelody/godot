@@ -48,7 +48,14 @@ RenderSceneBuffersRD::~RenderSceneBuffersRD() {
 	RendererRD::MaterialStorage::get_singleton()->samplers_rd_free(samplers);
 }
 
+bool RenderSceneBuffersRD::composite_mobile_ao(RID p_ao, RID p_guide, int p_algorithm, int p_view, float p_radius, float p_intensity, float p_max_distance) {
+	if (!has_custom_data(SNAME("mobile_fog"))) {
+		return false;
+	}
+	return get_custom_data(SNAME("mobile_fog"))->composite_mobile_ao(p_ao, p_guide, p_algorithm, p_view, p_radius, p_intensity, p_max_distance);
+}
 void RenderSceneBuffersRD::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("composite_mobile_ao", "ao", "guide", "algorithm", "view", "radius", "intensity", "max_distance"), &RenderSceneBuffersRD::composite_mobile_ao);
 	ClassDB::bind_method(D_METHOD("has_texture", "context", "name"), &RenderSceneBuffersRD::has_texture);
 	ClassDB::bind_method(D_METHOD("create_texture", "context", "name", "data_format", "usage_bits", "texture_samples", "size", "layers", "mipmaps", "unique", "discardable"), &RenderSceneBuffersRD::create_texture);
 	ClassDB::bind_method(D_METHOD("create_texture_from_format", "context", "name", "format", "view", "unique"), &RenderSceneBuffersRD::_create_texture_from_format);

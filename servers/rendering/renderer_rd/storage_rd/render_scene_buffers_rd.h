@@ -182,6 +182,7 @@ protected:
 	static void _bind_methods();
 
 public:
+	bool composite_mobile_ao(RID p_ao, RID p_guide, int p_algorithm, int p_view, float p_radius, float p_intensity, float p_max_distance);
 	RenderSceneBuffersRD();
 	virtual ~RenderSceneBuffersRD();
 

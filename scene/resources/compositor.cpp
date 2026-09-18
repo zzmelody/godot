@@ -37,6 +37,9 @@
 /* Compositor Effect */
 
 void CompositorEffect::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_needs_post_opaque_fog", "enable"), &CompositorEffect::set_needs_post_opaque_fog);
+	ClassDB::bind_method(D_METHOD("get_needs_post_opaque_fog"), &CompositorEffect::get_needs_post_opaque_fog);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "needs_post_opaque_fog"), "set_needs_post_opaque_fog", "get_needs_post_opaque_fog");
 	ClassDB::bind_method(D_METHOD("set_enabled", "enabled"), &CompositorEffect::set_enabled);
 	ClassDB::bind_method(D_METHOD("get_enabled"), &CompositorEffect::get_enabled);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enabled"), "set_enabled", "get_enabled");
@@ -173,6 +176,14 @@ void CompositorEffect::set_needs_normal_roughness(bool p_enabled) {
 
 bool CompositorEffect::get_needs_normal_roughness() const {
 	return needs_normal_roughness;
+}
+
+void CompositorEffect::set_needs_post_opaque_fog(bool p_enabled) {
+	needs_post_opaque_fog = p_enabled;
+	RenderingServer::get_singleton()->compositor_effect_set_flag(rid, RSE::COMPOSITOR_EFFECT_FLAG_NEEDS_POST_OPAQUE_FOG, p_enabled);
+}
+bool CompositorEffect::get_needs_post_opaque_fog() const {
+	return needs_post_opaque_fog;
 }
 
 void CompositorEffect::set_needs_separate_specular(bool p_enabled) {
