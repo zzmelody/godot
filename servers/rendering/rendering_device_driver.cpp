@@ -63,4 +63,10 @@ uint64_t RenderingDeviceDriver::api_trait_get(ApiTrait p_trait) {
 
 /******************/
 
+void RenderingDeviceDriver::command_begin_compute_pass(CommandBufferID p_cmd_buffer) {
+}
+
+void RenderingDeviceDriver::command_end_compute_pass(CommandBufferID p_cmd_buffer) {
+}
+
 RenderingDeviceDriver::~RenderingDeviceDriver() {}

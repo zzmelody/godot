@@ -239,15 +239,10 @@ RID RenderForwardMobile::RenderBufferDataForwardMobile::get_color_fbs(Framebuffe
 
 	RID vrs_texture;
 #ifndef XR_DISABLED
-	RSE::ViewportVRSMode vrs_mode = render_buffers->get_vrs_mode();
-	if (vrs_mode == RSE::VIEWPORT_VRS_XR) {
-		Ref<XRInterface> xr_interface = XRServer::get_singleton()->get_primary_interface();
-		if (xr_interface.is_valid()) {
-			bool use_vrs_fragment_density_map = RD::get_singleton()->vrs_get_method() == RD::VRS_METHOD_FRAGMENT_DENSITY_MAP && xr_interface->get_vrs_texture_format() == XRInterface::XR_VRS_TEXTURE_FORMAT_FRAGMENT_DENSITY_MAP;
-			bool use_vrs_rasterization_rate_map = RD::get_singleton()->vrs_get_method() == RD::VRS_METHOD_RASTERIZATION_RATE_MAP && xr_interface->get_vrs_texture_format() == XRInterface::XR_VRS_TEXTURE_FORMAT_RASTERIZATION_RATE_MAP;
-			if (use_vrs_fragment_density_map || use_vrs_rasterization_rate_map) {
-				vrs_texture = xr_interface->get_vrs_texture();
-			}
+	if (render_buffers->get_vrs_mode() == RSE::VIEWPORT_VRS_XR) {
+		Ref<XRInterface> interface = XRServer::get_singleton()->get_primary_interface();
+		if (interface.is_valid() && RD::get_singleton()->vrs_get_method() == RD::VRS_METHOD_FRAGMENT_DENSITY_MAP && interface->get_vrs_texture_format() == XRInterface::XR_VRS_TEXTURE_FORMAT_FRAGMENT_DENSITY_MAP) {
+			vrs_texture = interface->get_vrs_texture();
 		}
 	}
 #endif // XR_DISABLED
@@ -759,7 +754,7 @@ RID RenderForwardMobile::_setup_render_pass_uniform_set(RenderListType p_render_
 	}
 #endif // MODULE_TEXTURE_STREAMING_ENABLED
 
-	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.get_default_shader_rd(is_multiview), RENDER_PASS_UNIFORM_SET, uniforms);
+	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.default_shader_rd, RENDER_PASS_UNIFORM_SET, uniforms);
 }
 
 void RenderForwardMobile::_setup_lightmaps(const RenderDataRD *p_render_data, const PagedArray<RID> &p_lightmaps, const Transform3D &p_cam_transform) {
@@ -796,9 +791,6 @@ void RenderForwardMobile::_setup_lightmaps(const RenderDataRD *p_render_data, co
 		scene_state.lightmap_ids[i] = p_lightmaps[i];
 		scene_state.lightmap_has_sh[i] = light_storage->lightmap_uses_spherical_harmonics(lightmap);
 
-		float &specular_intensity = scene_state.lightmaps[i].normal_xform_and_specular_intensity[3];
-		specular_intensity = light_storage->lightmap_get_specular_intensity(lightmap);
-		scene_state.lightmap_has_specular[i] = scene_state.lightmap_has_sh[i] && (specular_intensity > 0.0f);
 
 		scene_state.lightmaps_used++;
 	}
@@ -2539,7 +2531,6 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 		pipeline_specialization.multimesh_format_2d = bool(inst->flags_cache & INSTANCE_DATA_FLAG_MULTIMESH_FORMAT_2D);
 		pipeline_specialization.multimesh_has_color = bool(inst->flags_cache & INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR);
 		pipeline_specialization.multimesh_has_custom_data = bool(inst->flags_cache & INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA);
-		pipeline_specialization.material_feedback = p_params->use_material_feedback && surf->material->material_feedback_rid.is_valid();
 
 		SceneState::PushConstant push_constant;
 		push_constant.base_index = i + p_params->element_offset;
@@ -2564,7 +2555,6 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 			pipeline_specialization.area_lights = SceneShaderForwardMobile::shader_count_for(inst->area_light_count);
 			pipeline_specialization.reflection_probes = SceneShaderForwardMobile::shader_count_for(inst->reflection_probe_count);
 			pipeline_specialization.decals = inst->decals_count > 0;
-			pipeline_specialization.use_lightmap_specular = element_info.uses_lightmap_specular;
 
 #ifdef DEBUG_ENABLED
 			if (unlikely(get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_LIGHTING)) {
