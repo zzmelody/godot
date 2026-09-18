@@ -77,15 +77,6 @@ bool MobileFog::prepare(const RenderDataRD *p_data, bool p_requested, RID p_radi
 	view->active = true;
 	view->applied = 0;
 	view->scene = p_data->scene_data->get_uniform_buffer();
-	static bool dumped = false;
-	if (!dumped && !p_data->reflection_probe.is_valid()) {
-		dumped = true;
-		auto bytes = RD::get_singleton()->buffer_get_data(view->scene);
-		Vector<float> values; values.resize(bytes.size() / sizeof(float));
-		memcpy(values.ptrw(), bytes.ptr(), bytes.size());
-		print_line(Variant(values));
-	}
-
 	view->array = p_array;
 	view->luminance = p_luminance;
 	view->roughness_lod = p_roughness_layers - 1;
@@ -198,7 +189,9 @@ bool MobileFog::composite(MobileFogView *view, RID p_ao, RID p_guide, int p_algo
 		}
 		uniforms.push_back(u);
 	};
-	uniform(0, RD::UNIFORM_TYPE_UNIFORM_BUFFER, view->scene);
+	// Scene data is allocated by MultiUmaBuffer. Binding it as a static UBO
+	// ignores the current persistent-ring offset and can read empty/old fog state.
+	uniform(0, RD::UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC, view->scene);
 	uniform(1, RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, nearest_sampler, (msaa ? rb->get_depth_msaa(p_eye) : rb->get_depth_texture(p_eye)));
 	uniform(2, RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, nearest_sampler, rb->get_texture_slice(SNAME("mobile_fog"), SNAME("mask"), p_eye, 0, 1, 1));
 	if (p_algorithm) {

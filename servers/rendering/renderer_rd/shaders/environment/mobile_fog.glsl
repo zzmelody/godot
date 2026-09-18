@@ -100,7 +100,6 @@ void main() {
  vec4 h=pc.inv_proj*vec4(uv*2.0-1.0,raw,1.0);
  vec3 vertex=h.xyz/h.w;
  float visibility=ao_visibility(xy,uv,raw,vertex);
- color=vec4(scene_data.height_fog.options.z,scene_data.aerial_perspective.x,scene_data.height_fog.density.x*100.0,0);return;
  vec4 transport=vec4(0,0,0,1);
  if(eligible>0.5) {
   if(scene_data.height_fog.options.z>0.0) transport=native_height_fog_process(vertex);
