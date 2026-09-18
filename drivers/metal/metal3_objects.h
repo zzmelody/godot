@@ -324,8 +324,6 @@ private:
 #pragma mark - Synchronization
 
 	RDM::SyncMode sync_mode = RDM::SyncMode::Barriers;
-	NS::SharedPtr<MTL::Fence> incoming_submission_fence;
-	uint32_t initial_fence_level = 0;
 
 	void _fence_wait(MTL::RenderCommandEncoder *p_enc);
 	void _fence_wait(MTL::ComputeCommandEncoder *p_enc);
@@ -558,7 +556,6 @@ public:
 	void _begin() override;
 	void _commit() override;
 	void _end() override;
-	MTL::Fence *external_pass_fence() override;
 
 	void bind_pipeline(RDD::PipelineID p_pipeline) override;
 

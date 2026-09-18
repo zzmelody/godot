@@ -658,7 +658,7 @@ public:
 
 	/// Returns the fence an externally encoded pass (MetalFX) must wait for and
 	/// update, or nullptr under hazard tracking.
-	virtual MTL::Fence *external_pass_fence();
+	MTL::Fence *external_pass_fence();
 
 	virtual void bind_pipeline(RDD::PipelineID p_pipeline) = 0;
 	void encode_push_constant_data(RDD::ShaderID p_shader, VectorView<uint32_t> p_data);

@@ -66,10 +66,6 @@ MDCommandBuffer::MDCommandBuffer(MTL::CommandQueue *p_queue, ::RenderingDeviceDr
 	sync_mode = device_driver->sync_mode;
 	if (sync_mode != RDM::SyncMode::HazardTracking) {
 		_create_level_fences(p_device_driver->get_device());
-		incoming_submission_fence = NS::TransferPtr(p_device_driver->get_device()->newFence());
-#ifdef DEV_ENABLED
-		incoming_submission_fence->setLabel(MTLSTR("Command Buffer Entry Fence"));
-#endif
 	}
 }
 
@@ -106,9 +102,6 @@ static constexpr MTL::RenderStages RENDER_FENCE_STAGES = MTL::RenderStageVertex 
 
 void MDCommandBuffer::_fence_wait(MTL::RenderCommandEncoder *p_enc) {
 	MTL::Fence *fence = _fence_to_wait();
-	if (p_enc && incoming_submission_fence && _fence_level == initial_fence_level && incoming_submission_fence.get() != fence) {
-		p_enc->waitForFence(incoming_submission_fence.get(), RENDER_FENCE_STAGES);
-	}
 	if (p_enc && fence) {
 		p_enc->waitForFence(fence, RENDER_FENCE_STAGES);
 	}
@@ -116,9 +109,6 @@ void MDCommandBuffer::_fence_wait(MTL::RenderCommandEncoder *p_enc) {
 
 void MDCommandBuffer::_fence_wait(MTL::ComputeCommandEncoder *p_enc) {
 	MTL::Fence *fence = _fence_to_wait();
-	if (p_enc && incoming_submission_fence && _fence_level == initial_fence_level && incoming_submission_fence.get() != fence) {
-		p_enc->waitForFence(incoming_submission_fence.get());
-	}
 	if (p_enc && fence) {
 		p_enc->waitForFence(fence);
 	}
@@ -126,9 +116,6 @@ void MDCommandBuffer::_fence_wait(MTL::ComputeCommandEncoder *p_enc) {
 
 void MDCommandBuffer::_fence_wait(MTL::BlitCommandEncoder *p_enc) {
 	MTL::Fence *fence = _fence_to_wait();
-	if (p_enc && incoming_submission_fence && _fence_level == initial_fence_level && incoming_submission_fence.get() != fence) {
-		p_enc->waitForFence(incoming_submission_fence.get());
-	}
 	if (p_enc && fence) {
 		p_enc->waitForFence(fence);
 	}
@@ -243,7 +230,6 @@ void MDCommandBuffer::_pop_active_encoder_labels() {
 void MDCommandBuffer::_begin() {
 	DEV_ASSERT(!commandBuffer && !state_begin);
 	state_begin = true;
-	initial_fence_level = _fence_level;
 	binding_cache.clear();
 	_scratch.reset();
 	inline_render.reset();
@@ -271,48 +257,9 @@ void MDCommandBuffer::_end() {
 
 void MDCommandBuffer::_commit() {
 	end();
-	if (sync_mode != RDM::SyncMode::HazardTracking) {
-		MTL3::RenderingDeviceDriverMetal *metal_driver = static_cast<MTL3::RenderingDeviceDriverMetal *>(device_driver);
-		MutexLock lock(metal_driver->submission_fence_mutex);
-		// Recording order need not match submission order (transfer workers and
-		// pre-recorded command-buffer batches). Resolve the actual predecessor
-		// here, before submitting the already encoded consumer. Its first graph
-		// level waits on this buffer's entry fence, signaled by the GPU prelude.
-		MTL::CommandBuffer *prelude = queue->commandBuffer();
-#ifdef DEV_ENABLED
-		prelude->setLabel(MTLSTR("Command Buffer Dependency"));
-#endif
-		MTL::BlitCommandEncoder *bridge = prelude->blitCommandEncoder();
-		if (metal_driver->last_submitted_fence) {
-			bridge->waitForFence(metal_driver->last_submitted_fence.get());
-		}
-		bridge->updateFence(incoming_submission_fence.get());
-		bridge->endEncoding();
-		prelude->commit();
-		commandBuffer->commit();
-		// All encoders in the initial level waited on the incoming submission;
-		// subsequent levels inherit it through the existing alternating fences.
-		// Do not replace the queue's fence when this buffer encoded no work.
-		if (_fence_level != initial_fence_level || _fence_level_dirty) {
-			const uint32_t last_level = _fence_level_dirty ? _fence_level : _fence_level - 1;
-			metal_driver->last_submitted_fence = _fences[last_level & 1];
-		}
-	} else {
-		commandBuffer->commit();
-	}
+	commandBuffer->commit();
 	commandBuffer.reset();
 	state_begin = false;
-}
-
-MTL::Fence *MDCommandBuffer::external_pass_fence() {
-	// An external encoder such as MetalFX can be the first work in a recording.
-	// Its single wait/update fence cannot also wait the submission entry fence,
-	// so connect that entry to the current level before handing the fence off.
-	if (sync_mode != RDM::SyncMode::HazardTracking && _fence_level == initial_fence_level && !_fence_level_dirty) {
-		_ensure_blit_encoder();
-		_end_blit();
-	}
-	return MDCommandBufferBase::external_pass_fence();
 }
 
 MTL::CommandBuffer *MDCommandBuffer::command_buffer() {
