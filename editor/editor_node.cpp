@@ -43,6 +43,7 @@
 #include "core/io/resource_saver.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/object/message_queue.h"
 #include "core/os/keyboard.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
@@ -7911,7 +7912,9 @@ static Node *_resource_get_edited_scene() {
 
 void EditorNode::_print_handler(void *p_this, const String &p_string, bool p_error, bool p_rich) {
 	if (!Thread::is_main_thread()) {
-		callable_mp_static(&EditorNode::_print_handler_impl).call_deferred(p_string, p_error, p_rich);
+		// Resource loading can override the calling thread's message queue and
+		// flush it on that worker. Editor UI updates must use the main queue.
+		MessageQueue::get_main_singleton()->push_callable(callable_mp_static(&EditorNode::_print_handler_impl), p_string, p_error, p_rich);
 	} else {
 		_print_handler_impl(p_string, p_error, p_rich);
 	}
