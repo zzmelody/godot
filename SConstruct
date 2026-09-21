@@ -7,6 +7,7 @@ EnsurePythonVersion(3, 9)
 # System
 import glob
 import os
+import pathlib
 import pickle
 import sys
 from collections import OrderedDict
@@ -169,6 +170,10 @@ opts.Add(EnumVariable("arch", "CPU architecture", "auto", ["auto"] + architectur
 opts.Add(BoolVariable("veya_cooker", "Build the Veya native asset cooker", False))
 opts.Add("veya_luau_source", "Pinned Luau source checkout used only by Cooker", "../luau")
 # /*>>----- VEYA_COOKER */
+# /*<<----- VEYA_TRACY: project debug builds use the pinned Tracy client. */
+opts.Add(BoolVariable("veya_debug_tracy", "Enable Tracy for Veya editor and template_debug builds", True))
+opts.Add("veya_tracy_source", "Pinned Tracy source checkout used by Veya debug builds", "../tracy")
+# /*>>----- VEYA_TRACY */
 opts.Add(BoolVariable("dev_build", "Developer build with dev-only debugging code (DEV_ENABLED)", False))
 opts.Add(
     EnumVariable(
@@ -544,6 +549,25 @@ if env["veya_cooker"]:
 env.editor_build = env["target"] == "editor"
 env.dev_build = env["dev_build"]
 env.debug_features = env["target"] in ["editor", "template_debug"]
+
+# /*<<----- VEYA_TRACY: keep one engine-owned client and leave release/Cooker builds unchanged. */
+if env.debug_features and not env["veya_cooker"] and env["veya_debug_tracy"] and env["profiler"] == "none":
+    tracy_source = pathlib.Path(env["veya_tracy_source"]).resolve()
+    tracy_client = tracy_source / "public" / "TracyClient.cpp"
+    if not tracy_client.is_file():
+        print_error(
+            f"Veya debug Tracy source is missing: {tracy_client}. "
+            "Initialize native/third_party/tracy or build with veya_debug_tracy=no."
+        )
+        Exit(255)
+    env["profiler"] = "tracy"
+    env["profiler_path"] = str(tracy_source)
+    env["profiler_record_on_demand"] = True
+    # Tracy's application-wide callstack sampler is supported by the pinned
+    # client on Windows, but not on macOS. Instruments remains the macOS sampler.
+    if env["platform"] == "windows":
+        env["profiler_sample_callstack"] = True
+# /*>>----- VEYA_TRACY */
 
 if env["optimize"] == "auto":
     if env.dev_build:
