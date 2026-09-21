@@ -1769,7 +1769,7 @@ void main() {
 				lm_light_l1p1 = hvec3((textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw + vec3(0.0, 0.0, 3.0), 0.0).rgb - vec3(0.5)) * 2.0);
 			}
 
-			hvec3 n = hvec3(normalize(lightmaps.data[ofs].normal_xform * indirect_normal));
+			hvec3 n = hvec3(normalize(mat3(lightmaps.data[ofs].normal_xform_and_specular_intensity) * indirect_normal));
 			half exposure_normalization = half(lightmaps.data[ofs].exposure_normalization);
 
 			ambient_light += lm_light_l0 * exposure_normalization;

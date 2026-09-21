@@ -442,8 +442,6 @@ transforms;
 
 /* Set 3 User Material */
 
-#include "../directional_cloud_shadow_inc.glsl"
-
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
 layout(set = 1, binding = 26) uniform texture2DArray radiance_octmap_next;
 #else

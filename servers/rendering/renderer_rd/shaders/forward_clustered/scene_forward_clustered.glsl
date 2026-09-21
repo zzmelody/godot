@@ -1877,7 +1877,7 @@ void fragment_shader(in SceneData scene_data) {
 				lm_light_l1p1 = (textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw + vec3(0.0, 0.0, 3.0), 0.0).rgb - vec3(0.5)) * 2.0;
 			}
 
-			vec3 n = normalize(lightmaps.data[ofs].normal_xform * indirect_normal);
+			vec3 n = normalize(mat3(lightmaps.data[ofs].normal_xform_and_specular_intensity) * indirect_normal);
 			float en = lightmaps.data[ofs].exposure_normalization;
 
 			ambient_light += lm_light_l0 * en;
