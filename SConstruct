@@ -172,7 +172,7 @@ opts.Add("veya_luau_source", "Pinned Luau source checkout used only by Cooker", 
 # /*>>----- VEYA_COOKER */
 # /*<<----- VEYA_TRACY: project debug builds use the pinned Tracy client. */
 opts.Add(BoolVariable("veya_debug_tracy", "Enable Tracy for Veya editor and template_debug builds", True))
-opts.Add("veya_tracy_source", "Pinned Tracy source checkout used by Veya debug builds", "../tracy")
+opts.Add("veya_tracy_source", "Pinned Tracy source checkout used by Veya debug builds", "thirdparty/tracy")
 # /*>>----- VEYA_TRACY */
 opts.Add(BoolVariable("dev_build", "Developer build with dev-only debugging code (DEV_ENABLED)", False))
 opts.Add(
