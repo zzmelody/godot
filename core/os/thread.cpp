@@ -90,6 +90,12 @@ void Thread::wait_to_finish() {
 
 void Thread::make_main_thread() {
 	if (caller_id == MAIN_ID) {
+		// MSVC may initialize this thread-local ID before the counter's dynamic
+		// initialization when Tracy starts during process initialization.
+		// Restore the matching ownership marker before setup continues.
+		if (!is_main_thread_assigned.is_set()) {
+			is_main_thread_assigned.set();
+		}
 		return; // We're already the main thread
 	}
 	CRASH_COND_MSG(!is_main_thread_assigned.set_if_clear(), "A second thread attempted to become the main thread.");
