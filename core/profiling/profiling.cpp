@@ -30,6 +30,9 @@
 
 #include "profiling.h"
 
+#include <cstddef>
+#include <cstdint>
+
 #if defined(GODOT_USE_TRACY)
 // Use the tracy profiler.
 
@@ -193,6 +196,8 @@ void godot_cleanup_profiler() {
 
 	tracy::configured = false;
 }
+
+#include "core/profiling/veya_tracy_bridge.inc"
 
 #elif defined(GODOT_USE_PERFETTO)
 PERFETTO_TRACK_EVENT_STATIC_STORAGE();
