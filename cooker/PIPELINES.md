@@ -28,6 +28,13 @@ return {
 ```
 
 All native job operations listed in [the Cooker README](README.md) are supported.
+Humanoid animation production is described by project Lua as a `make-bone-map`
+step followed by one or more `retarget-animations` steps. The latter enumerates
+only `.fbx` files directly inside its declared `source_dir`, sorts them, rejects
+existing outputs, and writes one library for each file in `output_dir`. This
+allows hundreds of clips without exceeding the pipeline's 256-step limit.
+Optional `include` and `exclude` filename arrays make selection explicit.
+`animation_name`, `in_place`, and `loop` apply uniformly to that step's clips.
 Two pipeline-only metadata fields are removed before native dispatch:
 
 - `name`: optional report label.

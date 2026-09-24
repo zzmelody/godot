@@ -53,6 +53,12 @@
 #include "cooker/asset_files.h"
 #include "cooker/pipeline.h"
 #include "cooker/recipe.h"
+/*<<----- VEYA_COOKER: headless standard skeleton retarget jobs and processors. */
+#include "cooker/retarget.h"
+#include "editor/import/3d/post_import_plugin_skeleton_track_organizer.h"
+#include "editor/import/3d/post_import_plugin_skeleton_renamer.h"
+#include "editor/import/3d/post_import_plugin_skeleton_rest_fixer.h"
+/*>>----- VEYA_COOKER */
 
 namespace {
 Engine *engine = nullptr;
@@ -78,7 +84,7 @@ Dictionary capabilities() {
 	result["recipe_runtime"] = CookerRecipe::capabilities();
 	result["pipeline_runtime"] = CookerPipeline::capabilities();
 	Array operations;
-	for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack" }) {
+	for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview" }) {
 		operations.push_back(name);
 	}
 	result["operations"] = operations;
@@ -288,6 +294,20 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 	if (operation == "asset-manifest") {
 		return write_asset_manifest(job, r_result);
 	}
+	/*<<----- VEYA_COOKER: keep animation authoring in the native batch protocol. */
+	if (operation == "make-bone-map") {
+		return CookerRetarget::make_bone_map(job, r_result);
+	}
+	if (operation == "retarget-animations") {
+		return CookerRetarget::retarget_animations(job, r_result);
+	}
+	if (operation == "retarget-model") {
+		return CookerRetarget::retarget_model(job, r_result);
+	}
+	if (operation == "make-animation-preview") {
+		return CookerRetarget::make_animation_preview(job, r_result);
+	}
+	/*>>----- VEYA_COOKER */
 	for (const char *name : { "type", "compression", "collision_output" }) {
 		ERR_FAIL_COND_V(job.has(name) && job[name].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 	}
@@ -626,7 +646,7 @@ Error execute_pipeline(Dictionary &r_result) {
 		String operation = job["operation"];
 		ERR_FAIL_COND_V_MSG(operation == "run-pipeline", ERR_INVALID_PARAMETER, "Nested pipelines are not supported.");
 		bool known_operation = false;
-		for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack" }) {
+		for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview" }) {
 			known_operation |= operation == name;
 		}
 		ERR_FAIL_COND_V_MSG(!known_operation, ERR_INVALID_PARAMETER, "Unknown pipeline operation: " + operation);
@@ -720,6 +740,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	GDREGISTER_CLASS(EditorSceneFormatImporter);
 	GDREGISTER_CLASS(EditorScenePostImport);
 	GDREGISTER_CLASS(EditorScenePostImportPlugin);
+	/*<<----- VEYA_COOKER: the regular editor registers these through its bone-map UI plugin. */
+	GDREGISTER_CLASS(PostImportPluginSkeletonTrackOrganizer);
+	GDREGISTER_CLASS(PostImportPluginSkeletonRenamer);
+	GDREGISTER_CLASS(PostImportPluginSkeletonRestFixer);
+	/*>>----- VEYA_COOKER */
 	GDREGISTER_CLASS(ResourceImporterScene);
 	GDREGISTER_CLASS(EditorSceneFormatImporterGLTF);
 	GDREGISTER_CLASS(EditorSceneFormatImporterUFBX);
@@ -733,6 +758,17 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	Ref<EditorOBJImporter> obj;
 	obj.instantiate();
 	ResourceImporterScene::add_scene_importer(obj);
+	/*<<----- VEYA_COOKER: run Godot's track cleanup, renaming, then rest correction. */
+	Ref<PostImportPluginSkeletonTrackOrganizer> track_organizer;
+	track_organizer.instantiate();
+	ResourceImporterScene::add_post_importer_plugin(track_organizer);
+	Ref<PostImportPluginSkeletonRenamer> bone_renamer;
+	bone_renamer.instantiate();
+	ResourceImporterScene::add_post_importer_plugin(bone_renamer);
+	Ref<PostImportPluginSkeletonRestFixer> rest_fixer;
+	rest_fixer.instantiate();
+	ResourceImporterScene::add_post_importer_plugin(rest_fixer);
+	/*>>----- VEYA_COOKER */
 	register_platform_apis();
 	ClassDB::set_current_api(ClassDB::API_NONE);
 	initialized = true;

@@ -14,6 +14,11 @@ if env["veya_cooker"]:
     env.add_source_files(env.editor_sources, [
         "import/3d/resource_importer_scene.cpp",
         "import/3d/resource_importer_obj.cpp",
+        # /*<<----- VEYA_COOKER: retain Godot's CPU skeleton retarget processors without the editor UI. */
+        "import/3d/post_import_plugin_skeleton_track_organizer.cpp",
+        "import/3d/post_import_plugin_skeleton_renamer.cpp",
+        "import/3d/post_import_plugin_skeleton_rest_fixer.cpp",
+        # /*>>----- VEYA_COOKER */
     ])
     lib = env.add_library("editor", env.editor_sources)
     env.Prepend(LIBS=[lib])

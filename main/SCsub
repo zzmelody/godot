@@ -12,7 +12,7 @@ env_main = env.Clone()
 # /*<<----- VEYA_COOKER: native batch entry, no project manager, Script MainLoop or EditorNode. */
 if env["veya_cooker"]:
     SConscript("#cooker/SCsub")
-    env_main.add_source_files(env.main_sources, ["#cooker/main.cpp", "performance.cpp"])
+    env_main.add_source_files(env.main_sources, ["#cooker/main.cpp", "#cooker/retarget.cpp", "performance.cpp"])
 else:
     env_main.add_source_files(env.main_sources, "*.cpp")
 # /*>>----- VEYA_COOKER */

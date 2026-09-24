@@ -120,6 +120,16 @@ only as a low-level test/debug protocol. Jobs currently implemented in source:
 - `asset-manifest`: atomically publishes `asset.manifest.json` from identity,
   revision, provenance and cooked `.scn`/`.res` files declared by a Luau
   pipeline; Cooker supplies byte sizes and SHA-256 hashes.
+- `make-bone-map`: creates a Godot `BoneMap` `.res` from a Luau-declared
+  `SkeletonProfileHumanoid` mapping and checks required bones.
+- `retarget-animations`: imports a bounded FBX directory into one standard
+  `AnimationLibrary` `.res` per source, using a declared BoneMap. It supports
+  explicit include/exclude lists, one selected animation, optional horizontal
+  in-place conversion and looping. Tracks are named `%GeneralSkeleton:Bone`.
+- `retarget-model`: imports a skinned FBX as a `.scn` through the same Godot
+  skeleton mapping and rest correction path.
+- `make-animation-preview`: combines a cooked model and animation library into
+  a `.scn` for target-runtime visual checks.
 
 Images embedded in GLTF/FBX are currently embedded uncompressed in the cooked
 resource: the batch importer cannot schedule editor filesystem reimports.

@@ -1511,6 +1511,18 @@ Node *ResourceImporterScene::_post_fix_node(Node *p_node, Node *p_root, HashMap<
 		}
 	}
 
+	/*<<----- VEYA_COOKER: apply the declared BoneMap to imported skeletons in a headless batch. */
+#ifdef VEYA_COOKER
+	if (Object::cast_to<Skeleton3D>(p_node) && p_options.has("_cooker_retarget_bone_map")) {
+		node_settings["retarget/bone_map"] = p_options["_cooker_retarget_bone_map"];
+		// The upstream organizer also flags matched bones when this is true.
+		node_settings["retarget/remove_tracks/except_bone_transform"] = false;
+		node_settings["retarget/remove_tracks/unimportant_positions"] = true;
+		node_settings["retarget/remove_tracks/unmapped_bones"] = 1;
+	}
+#endif
+	/*>>----- VEYA_COOKER */
+
 	{
 		ObjectID node_id = p_node->get_instance_id();
 		for (int i = 0; i < post_importer_plugins.size(); i++) {

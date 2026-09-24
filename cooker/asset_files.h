@@ -15,7 +15,7 @@
 
 namespace CookerFiles {
 // This is a workspace boundary, not a sandbox for hostile native asset parsers.
-inline Error check_path(const String &p_path, bool p_output = false, bool p_pack = false) {
+inline Error check_path(const String &p_path, bool p_output = false, bool p_pack = false, bool p_require_exists = true) {
 	ERR_FAIL_COND_V_MSG(!p_path.begins_with("res://"), ERR_INVALID_PARAMETER, "Asset paths must start with res://.");
 	String relative = p_path.trim_prefix("res://");
 	ERR_FAIL_COND_V(relative.is_empty() || relative.contains(":") || relative.contains("\\") || relative.begins_with("/"), ERR_INVALID_PARAMETER);
@@ -32,7 +32,7 @@ inline Error check_path(const String &p_path, bool p_output = false, bool p_pack
 	ERR_FAIL_COND_V(bool(ec), ERR_FILE_BAD_PATH);
 	auto within = actual.lexically_relative(root);
 	ERR_FAIL_COND_V_MSG(within.empty() || *within.begin() == "..", ERR_UNAUTHORIZED, "Asset path escapes the workspace through a link.");
-	if (!p_output) {
+	if (!p_output && p_require_exists) {
 		ERR_FAIL_COND_V_MSG(!FileAccess::exists(p_path), ERR_FILE_NOT_FOUND, "Missing asset: " + p_path);
 	}
 	return OK;
