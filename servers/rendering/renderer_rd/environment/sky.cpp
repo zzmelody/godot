@@ -1876,12 +1876,6 @@ float SkyRD::sky_get_uv_border_size(RID p_sky) {
 void SkyRD::sky_request_capture(RID p_sky, RID p_material, int64_t p_generation, const Vector3 &p_origin, double p_capture_time, const Color &p_fallback, RID p_environment) {
 	Sky *sky = get_sky(p_sky);
 	ERR_FAIL_NULL(sky);
-	if (!sky->managed_capture) {
-		sky->free_radiance();
-		sky->reflection.clear_reflection_data();
-		sky->managed_capture = true;
-		capture_queue.push_back(p_sky);
-	}
 	if (p_generation <= 0 || !p_origin.is_finite() || !Math::is_finite(p_capture_time) || (!Math::is_finite(p_fallback.r) || !Math::is_finite(p_fallback.g) || !Math::is_finite(p_fallback.b))) {
 		sky->capture_error = "invalid_capture_input";
 		return;
@@ -1940,6 +1934,14 @@ void SkyRD::sky_request_capture(RID p_sky, RID p_material, int64_t p_generation,
 	if (sky->pending_input.generation == p_generation && sky->pending_input.origin == p_origin && sky->pending_input.fog_orientation == input.fog_orientation) {
 		sky->capture_error = String();
 		return;
+	}
+	// Reject invalid requests before replacing the native radiance or disabling
+	// its update path. A failed first request must leave the existing sky usable.
+	if (!sky->managed_capture) {
+		sky->free_radiance();
+		sky->reflection.clear_reflection_data();
+		sky->managed_capture = true;
+		capture_queue.push_back(p_sky);
 	}
 	sky->pending_input = input;
 	if (!sky->published_complete && !sky->active_input.generation) {
