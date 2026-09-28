@@ -65,6 +65,15 @@ base ID or duplicate ID in the same request is rejected. Retained animations are
 shared unchanged and the base library is never written. Verified cache receipts
 include this flag in their normal parameter hash.
 
+For a single-segment humanoid clip, `align_hips_to="move.idle"` rebases the
+sampled Hips position to the named semantic's first pelvis position. The
+reference must already exist in the base library; the source, all limb tracks
+and any vertical change not flattened by `flatten_vertical` remain intact.
+This is useful when an in-place source preserves a displaced initial pelvis.
+`rotation_offsets` may turn the Hips bone by up to 180 degrees around local Y;
+other bone/axis corrections remain limited to 90 degrees. Both settings are
+authored in the immutable Luau pipeline and recorded in clip provenance.
+
 `validate-character-actions` can additionally take `compare_base` and an
 `expected_changed` ID array. This cold check compares animation duration, loop,
 step, tracks, interpolation and every key against the prior library, bounded to

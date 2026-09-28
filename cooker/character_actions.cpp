@@ -98,7 +98,10 @@ Error apply_rotation_offsets(const Array &p_offsets, const Ref<Animation> &p_ani
 			Vector3 euler;
 			for (int axis = 0; axis < 3; ++axis) {
 				const double angle = degrees[axis];
-				ERR_FAIL_COND_V(!std::isfinite(angle) || std::abs(angle) > 90, ERR_PARAMETER_RANGE_ERROR);
+				// A source facing opposite the controller may need a full authored
+				// heading turn; limb and non-yaw corrections keep the tighter bound.
+				const double limit = bone == "Hips" && axis == 1 ? 180 : 90;
+				ERR_FAIL_COND_V(!std::isfinite(angle) || std::abs(angle) > limit, ERR_PARAMETER_RANGE_ERROR);
 				euler[axis] = Math::deg_to_rad(angle);
 			}
 			phases.push_back(phase); rotations.push_back(Quaternion::from_euler(euler));
@@ -167,6 +170,15 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(clip.get("segments", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
 		const Array segments = clip["segments"];
 		ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8, ERR_PARAMETER_RANGE_ERROR);
+		const String hips_reference_id = clip.get("align_hips_to", "");
+		Vector3 hips_reference;
+		if (!hips_reference_id.is_empty()) {
+			ERR_FAIL_COND_V(!identifier(hips_reference_id) || segments.size() != 1 || !library->has_animation(hips_reference_id), ERR_INVALID_PARAMETER);
+			const Ref<Animation> reference = library->get_animation(hips_reference_id);
+			const int track = reference->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
+			ERR_FAIL_COND_V(track < 0 || reference->track_get_key_count(track) == 0, ERR_INVALID_DATA);
+			hips_reference = reference->position_track_interpolate(track, 0);
+		}
 		Ref<Animation> composed;
 		composed.instantiate();
 		double cursor = 0;
@@ -213,7 +225,11 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 					const double blend_weight = cursor > 0 && previous_keys && blend > 0 ? MIN(1.0, phase * duration / blend) : 1.0;
 					if (type == Animation::TYPE_POSITION_3D) {
 						Vector3 position = source->position_track_interpolate(source_track, time);
-						if (hips) { position.x = origin.x; position.z = origin.z; if (flatten_vertical) position.y = origin.y; }
+						if (hips) {
+							position.x = origin.x; position.z = origin.z;
+							if (flatten_vertical) position.y = origin.y;
+							if (!hips_reference_id.is_empty()) position += hips_reference - origin;
+						}
 						if (blend_weight < 1) position = Vector3(previous).lerp(position, blend_weight);
 						composed->position_track_insert_key(target_track, at, position);
 					} else if (type == Animation::TYPE_ROTATION_3D) {
@@ -241,6 +257,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		composed->set_meta("character_semantic", id);
 		composed->set_meta("source_segments", sources);
 		composed->set_meta("rotation_offsets", offsets);
+		if (!hips_reference_id.is_empty()) composed->set_meta("align_hips_to", hips_reference_id);
 		composed->set_meta("visual_status", clip.get("visual_status", "unverified"));
 		if (replacing) library->remove_animation(id);
 		error = library->add_animation(id, composed);
@@ -248,6 +265,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		Dictionary record;
 		record["id"] = id; record["seconds"] = cursor; record["sources"] = sources;
 		record["rotation_offsets"] = offsets;
+		if (!hips_reference_id.is_empty()) record["align_hips_to"] = hips_reference_id;
 		record["visual_status"] = clip.get("visual_status", "unverified");
 		if (replacing) {
 			bool updated = false;
