@@ -82,8 +82,10 @@ class RecipeTests(unittest.TestCase):
         report = json.loads(next(line for line in run.stdout.splitlines() if line.startswith('{')))
         self.assertEqual(report["script_languages"], 0)
         self.assertEqual(report["recipe_runtime"]["version"], "0.738")
-        self.assertEqual(report["recipe_runtime"]["api_version"], 2)
+        self.assertEqual(report["recipe_runtime"]["api_version"], 3)
         self.assertIn("scene", report["recipe_runtime"]["apis"])
+        self.assertIn("procedural_texture", report["recipe_runtime"]["apis"])
+        self.assertIn("effect", report["recipe_runtime"]["apis"])
         self.assertEqual(report["pipeline_runtime"]["language"], "Luau")
         self.assertEqual(report["pipeline_runtime"]["api_version"], 1)
         # All recipe jobs below run with PATH pointing at an empty/nonexistent directory.
@@ -139,6 +141,79 @@ return {
                 result = self.recipe(code)
                 self.assertEqual(result["type"], kind)
                 self.job({"operation": "validate-resource", "source": result["output"], "type": kind})
+
+    def test_procedural_textures_are_seeded_and_effects_are_typed(self):
+        texture_code = '''return cooker.procedural_texture({kind="soft-noise",size=64,seed=17,
+ color={0.8,0.95,1,0.8},secondary={0.1,0.2,0.4,0},noise_scale=6})'''
+        first = self.recipe(texture_code, output="res://assets/generated/noise-a.res")
+        second = self.recipe(texture_code, output="res://assets/generated/noise-b.res")
+        self.assertEqual(first["type"], "PortableCompressedTexture2D")
+        self.assertEqual(second["type"], "PortableCompressedTexture2D")
+        self.assertEqual(first["seed"], second["seed"])
+
+        effect_code = '''local spark=cooker.procedural_texture({kind="spark",size=64,color={1,0.78,0.3,1}})
+local ring=cooker.procedural_texture({kind="ring",size=64,radius=0.31,width=0.08,color={0.3,0.9,1,0.9}})
+local mesh=cooker.primitive("sphere",{radius=0.12,segments=8,rings=4})
+return cooker.effect({name="TypedEffect",mode="one_shot",duration=1.2,layers={
+ {type="billboard_particles",name="Sparks",texture=spark,amount=96,lifetime=0.8,
+  size={0.12,0.3},direction={0,1,0},spread=48,velocity={0.6,2.4},gravity={0,-1.2,0},
+  damping={0.1,0.8},emission_shape="sphere_surface",emission_radius=0.3,
+  color_gradient={{0,{1,0.88,0.45,1}},{0.7,{0.3,0.9,1,0.8}},{1,{0.1,0.3,0.8,0}}},
+  alpha_curve={{0,0},{0.15,1},{1,0}},scale_curve={{0,0.2},{0.25,1.1},{1,0.1}},
+  visibility_aabb={position={-2,-1,-2},size={4,4,4}}},
+ {type="animated_sprite",name="Ring",texture=ring,size={1.6,1.6},blend="add",
+  start_scale=0.2,peak_scale=1,end_scale=1.5,start_alpha=0,peak_alpha=0.9,end_alpha=0},
+ {type="simple_mesh",name="Core",mesh=mesh,color={1,0.7,0.25,0.75},blend="add",scale={1,1,1}}
+}})'''
+        result = self.recipe(effect_code, seed=99, output="res://assets/generated/typed-effect.scn")
+        self.assertEqual(result["type"], "PackedScene")
+        self.assertEqual(result["effect"], {"layers": 3, "particle_systems": 1,
+                                            "declared_particles": 96, "textures": 2})
+        report = self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
+        self.assertEqual(report["node_count"], 5)
+        self.assertEqual(report["effect_texture_count"], 1)
+        self.assertGreater(report["effect_texture_bytes"], 0)
+        self.assertNotIn("effect_texture_missing", report)
+
+        # A repair round with identical Luau, parameters and seed must produce the
+        # exact same artifact bytes. Keep the source and output paths stable so
+        # this checks the Cooker rather than path-dependent serialization.
+        deterministic_source = self.project / "deterministic-effect.luau"
+        deterministic_source.write_text(effect_code)
+        deterministic_output = "res://assets/generated/deterministic-effect.scn"
+        deterministic_job = {
+            "operation": "run-recipe", "source": "res://deterministic-effect.luau",
+            "output": deterministic_output, "seed": 99,
+        }
+        deterministic_first = self.job(deterministic_job)
+        deterministic_path = self.project / deterministic_output.removeprefix("res://")
+        deterministic_bytes = deterministic_path.read_bytes()
+        deterministic_path.unlink()
+        deterministic_second = self.job(deterministic_job)
+        self.assertEqual(deterministic_first["sha256"], deterministic_second["sha256"])
+        self.assertEqual(deterministic_path.read_bytes(), deterministic_bytes)
+
+    def test_texture_inputs_and_effect_limits(self):
+        texture = self.recipe('return cooker.procedural_texture({kind="radial",size=32})',
+                              output="res://assets/generated/input-texture.res")
+        effect = self.recipe('''return cooker.effect({mode="loop",duration=4,layers={{
+ type="billboard_particles",texture=cooker.input("particle"),amount=32,lifetime=8,
+ emission_shape="box",emission_extents={2,0.5,2},velocity={0.1,0.4}}}})''',
+                             inputs={"particle": texture["output"]},
+                             output="res://assets/generated/input-effect.scn")
+        self.assertIn(texture["output"], effect["input_sha256"])
+        rejected = [
+            'return cooker.procedural_texture({kind="radial",size=48})',
+            'return cooker.procedural_texture({kind="shader",size=64})',
+            'local t=cooker.procedural_texture({kind="radial"}); return cooker.effect({layers={{type="billboard_particles",texture=t,amount=513}}})',
+            'local t=cooker.procedural_texture({kind="radial"}); return cooker.effect({layers={{type="billboard_particles",texture=t,amount=512},{type="billboard_particles",texture=t,amount=512},{type="billboard_particles",texture=t,amount=1}}})',
+            'local t=cooker.procedural_texture({kind="radial"}); return cooker.effect({mode="one_shot",layers={{type="billboard_particles",texture=t,lifetime=5.1}}})',
+            'local t=cooker.procedural_texture({kind="radial"}); return cooker.effect({layers={{type="script",texture=t}}})',
+            'local t=cooker.procedural_texture({kind="radial"}); return cooker.effect({layers={{type="animated_sprite",texture=t,shader="x"}}})',
+        ]
+        for code in rejected:
+            with self.subTest(code=code[:70]):
+                self.recipe(code, success=False, output=f"res://assets/generated/rejected-{self.index}.scn")
 
     def test_parameters_rng_bounds_and_independent_jobs(self):
         code = '''local b = cooker.primitive("box", {size=cooker.parameters.size})
@@ -376,6 +451,18 @@ func _initialize() -> void:
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("COOKER_RECIPE_PACK_OK", run.stdout)
         self.assertNotIn("ERROR:", run.stdout + run.stderr)
+
+    def test_nested_resource_bytes_repeat_with_identical_output_path(self):
+        source = self.project / "deterministic.luau"
+        source.write_text('local mesh=cooker.primitive("box",{}); return cooker.scene({{asset=mesh}})')
+        output = "res://assets/generated/deterministic.scn"
+        job = {"operation": "run-recipe", "source": "res://deterministic.luau", "output": output, "seed": 73}
+        target = self.project / "assets/generated/deterministic.scn"
+        self.job(job)
+        first = target.read_bytes()
+        target.unlink()  # Isolated test fixture only; the next run uses the same output path.
+        self.job(job)
+        self.assertEqual(first, target.read_bytes())
 
 
 if __name__ == "__main__":

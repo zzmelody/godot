@@ -1,4 +1,4 @@
-# Cooker Luau recipe API v2
+# Cooker Luau recipe API v3
 
 Each `run-recipe` job compiles UTF-8 source with the pinned Luau 0.738 compiler,
 runs one independent VM, and returns exactly one opaque asset handle. Native
@@ -43,11 +43,11 @@ asset, not game-world placement, an AI model call or a generated picture.
 - Source: 1..65536 bytes of UTF-8 without NUL, `.luau` extension. External bytecode
   is rejected. Type annotations are accepted; no static analyzer runs here.
 - Output: `res://assets/generated/.../*.scn` for PackedScene or `*.res` for a
-  Mesh/Material. Existing targets, traversal and symlink escapes fail.
+  Mesh/Material/Texture2D. Existing targets, traversal and symlink escapes fail.
 - Parameters: Lua table or low-level JSON object, <= 64 KiB serialized, depth <= 16 and <= 4096 entries
   per container. Values may be finite numbers, strings, booleans, arrays and
   objects, without nulls. Exposed recursively read-only as `cooker.parameters`.
-- Inputs: <= 32 named, already cooked Mesh, Material or PackedScene resources under
+- Inputs: <= 32 named, already cooked Mesh, Material, Texture2D, Shader or PackedScene resources under
   `assets/generated/`. Their resource dependency closure is checked before
   loading; shader includes are additionally resolved and checked during resource
   inspection. Combined declared dependency size is capped at 256 MiB on disk by
@@ -78,9 +78,11 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 | `primitive("cylinder", {height=1,radius=0.5,top_radius=0.5,segments=24})` | Height/radius >= 0.001; top radius may be zero; integer segments 3..128. |
 | `primitive("sphere", {radius=0.5,segments=24,rings=12})` | Radius >= 0.001; integer segments 4..128 and rings 2..64. |
 | `material({color={r,g,b,a},roughness=0.7,metallic=0})` | StandardMaterial3D; channels/scalars 0..1, alpha optional. No transparency-mode or shader-authoring API in v1. |
+| `procedural_texture({...})` | Deterministic CPU RGBA texture. `kind` is `radial`, `ring`, `spark`, `streak`, or `soft-noise`; `size` is a power of two from 32 through 1024. Bounded fields include color, secondary, seed, radius, width, softness, angle and noise scale. |
+| `effect({name=...,mode=...,duration=...,layers={...}})` | Script-free PackedScene with one to four `billboard_particles`, `animated_sprite`, or `simple_mesh` layers. It accepts only typed motion/material/curve/gradient fields; no shader source, Node pointer, method track, collision, audio, light, camera, environment, filesystem or network surface exists. |
 | `mesh({vertices=...,indices=...,normals=...,uvs=...})` | One indexed triangle surface. Vertices are `{x,y,z}`; indices are **1-based**, clockwise. Optional normals/UVs match vertex count. Without normals the host accumulates/normalizes triangle normals; split vertices for hard edges. No tangent-generation API. |
 | `scene({{asset=handle,material=material,name=...,remove=...,position=...,rotation=...,scale=...},...})` | Nonempty array of Mesh or PackedScene instances. Mesh/material pairs become MultiMesh batches. PackedScene roots must be Node3D; `name` sets the instance name and `remove` names bounded relative child paths to omit before packing. Material overrides are Mesh-only. Nodes remain opaque to Luau. |
-| `input("declared_name")` | Mesh/Material handle from the input allowlist. |
+| `input("declared_name")` | Mesh/Material/Texture2D/Shader/PackedScene handle from the input allowlist. Texture2D enables licensed cooked source textures in typed effects; Shader is accepted only by the separate typed atmosphere builder. |
 | `bounds(asset)` | Mesh-local or PackedScene-root-local `{min={x,y,z},max={x,y,z}}`. PackedScene bounds include transformed MeshInstance3D and MultiMeshInstance3D descendants. |
 | `random()` | Seeded xorshift32 value in `[0,1)`. |
 
@@ -100,6 +102,15 @@ for i = 1, cooker.parameters.count do
 end
 return cooker.scene(pieces)
 ```
+
+Effect recipes additionally enforce a hard ceiling of four layers, four particle
+systems, 32 nodes, 512 particles per system, 1024 declared particles total and
+four source textures. One-shot effects and particles are capped at five seconds;
+looping/ambient particles are capped at ten seconds. A particle layer supports
+point/sphere/sphere-surface/box/ring emission, direction/spread, velocity,
+gravity, damping, rotation, color gradients, alpha/scale curves, blend mode and
+an explicit visibility AABB. `animated_sprite` uses property tracks only.
+Every particle system receives a deterministic fixed seed and 30 Hz simulation.
 
 ## Limits and publication
 

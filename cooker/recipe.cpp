@@ -3,14 +3,30 @@
 #include "asset_files.h"
 
 #include "core/io/json.h"
+#include "core/io/image.h"
 #include "core/io/resource_saver.h"
 #include "core/os/os.h"
+#include "scene/animation/animation_player.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
+#include "scene/3d/gpu_particles_3d.h"
 #include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/animation.h"
+#include "scene/resources/animation_library.h"
+#include "scene/resources/curve.h"
+#include "scene/resources/curve_texture.h"
+#include "scene/resources/environment.h"
+#include "scene/resources/gradient.h"
+#include "scene/resources/gradient_texture.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/multimesh.h"
+#include "scene/resources/particle_process_material.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/portable_compressed_texture.h"
+#include "scene/resources/shader.h"
+#include "scene/resources/sky.h"
+#include "scene/resources/texture.h"
 
 #include "Luau/Compiler.h"
 #include "lua.h"
@@ -55,8 +71,9 @@ struct Recipe {
 	bool memory_failed = false;
 	size_t allocated = 0, peak_memory = 0;
 	int vertices = 0, instances = 0;
+	int effect_layers = 0, effect_particle_systems = 0, effect_particles = 0, effect_textures = 0;
 	uint64_t interrupts = 0;
-	uint32_t random_state = 1;
+	uint32_t random_state = 1, seed_value = 1;
 	std::chrono::steady_clock::time_point deadline;
 	std::vector<Ref<Resource>> resources;
 	Dictionary parameters;
@@ -145,6 +162,12 @@ struct Recipe {
 		double value = lua_isnil(L, -1) ? p_default : number(-1, p_min, p_max);
 		lua_pop(L, 1); return value;
 	}
+	bool boolean_field(int p_index, const char *p_name, bool p_default) {
+		field(p_index, p_name);
+		require(lua_isnil(L, -1) || lua_type(L, -1) == LUA_TBOOLEAN, "expected a boolean field");
+		bool value = lua_isnil(L, -1) ? p_default : bool(lua_toboolean(L, -1));
+		lua_pop(L, 1); return value;
+	}
 	Vector3 vector(int p_index) {
 		require(array(p_index, 3) == 3, "expected three vector components");
 		p_index = lua_absindex(L, p_index);
@@ -157,6 +180,37 @@ struct Recipe {
 		Vector3 value = lua_isnil(L, -1) ? p_default : vector(-1);
 		lua_pop(L, 1); return value;
 	}
+	Vector2 vector2(int p_index) {
+		require(array(p_index, 2) == 2, "expected two vector components");
+		p_index = lua_absindex(L, p_index); Vector2 value;
+		for (int i = 0; i < 2; ++i) { lua_rawgeti(L, p_index, i + 1); value[i] = number(-1); lua_pop(L, 1); }
+		return value;
+	}
+	Vector2 vector2_field(int p_index, const char *p_name, Vector2 p_default) {
+		field(p_index, p_name);
+		Vector2 value = lua_isnil(L, -1) ? p_default : vector2(-1);
+		lua_pop(L, 1); return value;
+	}
+	Color color_field(int p_index, const char *p_name, Color p_default) {
+		field(p_index, p_name);
+		Color value = p_default;
+		if (!lua_isnil(L, -1)) {
+			const int count = array(-1, 4); require(count == 3 || count == 4, "color needs three or four components");
+			for (int i = 0; i < count; ++i) { lua_rawgeti(L, -1, i + 1); value[i] = number(-1, 0, 1); lua_pop(L, 1); }
+		}
+		lua_pop(L, 1); return value;
+	}
+	Color color(int p_index) {
+		int count = array(p_index, 4); require(count == 3 || count == 4, "color needs three or four components");
+		p_index = lua_absindex(L, p_index); Color value(1, 1, 1, 1);
+		for (int i = 0; i < count; ++i) { lua_rawgeti(L, p_index, i + 1); value[i] = number(-1, 0, 1); lua_pop(L, 1); }
+		return value;
+	}
+	Color effect_color_field(int p_index, const char *p_name, Color p_default) {
+		field(p_index, p_name);
+		Color value = lua_isnil(L, -1) ? p_default : color(-1);
+		lua_pop(L, 1); return value;
+	}
 	String string(int p_index) {
 		require(lua_type(L, p_index) == LUA_TSTRING, "expected a string");
 		size_t length = 0;
@@ -165,6 +219,9 @@ struct Recipe {
 		String value;
 		require(value.append_utf8(text, length) == OK, "string must be UTF-8");
 		return value;
+	}
+	String string_field(int p_index, const char *p_name, const String &p_default = String()) {
+		field(p_index, p_name); String value = lua_isnil(L, -1) ? p_default : string(-1); lua_pop(L, 1); return value;
 	}
 	Ref<Resource> handle(int p_index) {
 		auto *id = static_cast<size_t *>(lua_touserdatatagged(L, p_index, HANDLE_TAG));
@@ -239,6 +296,17 @@ struct Recipe {
 			if (child->get_owner()) make_scene_local(child, p_owner);
 		}
 	}
+	static void assign_scene_ids(Node *p_node, Node *p_owner, int32_t &r_next_id) {
+		// PackedScene::pack otherwise asks ResourceUID for random node IDs. Assign
+		// stable preorder IDs to the nodes owned by this generated scene so an
+		// identical recipe/seed serializes byte-for-byte identically.
+		if (p_node == p_owner || p_node->get_owner() == p_owner) {
+			p_node->set_unique_scene_id(r_next_id++);
+		}
+		for (int i = 0; i < p_node->get_child_count(); ++i) {
+			assign_scene_ids(p_node->get_child(i), p_owner, r_next_id);
+		}
+	}
 	static int random(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(0);
 		uint32_t x = s.random_state; x ^= x << 13; x ^= x >> 17; x ^= x << 5; s.random_state = x;
@@ -259,6 +327,336 @@ struct Recipe {
 		material->set_roughness(s.number_field(1, "roughness", 0.7, 0, 1));
 		material->set_metallic(s.number_field(1, "metallic", 0, 0, 1));
 		return s.push_resource(material);
+	}
+	static uint32_t texture_hash(uint32_t p_seed, int p_x, int p_y) {
+		uint32_t value = p_seed ^ (uint32_t(p_x) * 0x9e3779b9U) ^ (uint32_t(p_y) * 0x85ebca6bU);
+		value ^= value >> 16; value *= 0x7feb352dU; value ^= value >> 15; value *= 0x846ca68bU; value ^= value >> 16;
+		return value;
+	}
+	static float texture_noise(uint32_t p_seed, float p_x, float p_y) {
+		const int x0 = int(std::floor(p_x)), y0 = int(std::floor(p_y));
+		const float tx0 = p_x - x0, ty0 = p_y - y0;
+		const float tx = tx0 * tx0 * (3.0f - 2.0f * tx0), ty = ty0 * ty0 * (3.0f - 2.0f * ty0);
+		auto value = [p_seed](int x, int y) { return float(texture_hash(p_seed, x, y) & 0xffffU) / 65535.0f; };
+		const float a = Math::lerp(value(x0, y0), value(x0 + 1, y0), tx);
+		const float b = Math::lerp(value(x0, y0 + 1), value(x0 + 1, y0 + 1), tx);
+		return Math::lerp(a, b, ty);
+	}
+	static int procedural_texture(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		s.fields(1, {"kind", "size", "seed", "color", "secondary", "radius", "width", "softness", "angle", "noise_scale"});
+		const String kind = s.string_field(1, "kind");
+		s.require(kind == "radial" || kind == "ring" || kind == "spark" || kind == "streak" || kind == "soft-noise", "unknown procedural texture kind");
+		const double size_number = s.number_field(1, "size", 128, 32, 1024);
+		const int size = int(size_number);
+		s.require(size_number == size && (size & (size - 1)) == 0, "texture size must be a power of two from 32 to 1024");
+		const double seed_number = s.number_field(1, "seed", s.seed_value, 0, UINT32_MAX);
+		s.require(seed_number == std::floor(seed_number), "texture seed must be a uint32");
+		const uint32_t seed = uint32_t(seed_number);
+		const Color primary = s.effect_color_field(1, "color", Color(1, 1, 1, 1));
+		const Color secondary = s.effect_color_field(1, "secondary", Color(primary.r, primary.g, primary.b, 0));
+		const float radius = s.number_field(1, "radius", kind == "ring" ? 0.32 : 0.0, 0, 0.7);
+		const float width = s.number_field(1, "width", kind == "streak" ? 0.08 : 0.12, 0.005, 1);
+		const float softness = s.number_field(1, "softness", 0.45, 0.01, 1);
+		const float angle = Math::deg_to_rad(s.number_field(1, "angle", 0, -360, 360));
+		const float noise_scale = s.number_field(1, "noise_scale", 5, 0.25, 32);
+		Ref<Image> image = Image::create_empty(size, size, false, Image::FORMAT_RGBA8);
+		s.require(image.is_valid(), "could not allocate procedural texture");
+		const float cs = std::cos(angle), sn = std::sin(angle);
+		for (int y = 0; y < size; ++y) {
+			for (int x = 0; x < size; ++x) {
+				const float nx = (float(x) + 0.5f) / size - 0.5f, ny = (float(y) + 0.5f) / size - 0.5f;
+				const float rx = nx * cs + ny * sn, ry = -nx * sn + ny * cs;
+				const float distance = std::sqrt(nx * nx + ny * ny);
+				float alpha = 0;
+				if (kind == "radial") alpha = 1.0f - Math::smoothstep(radius, MAX(radius + width, 0.001f), distance);
+				else if (kind == "ring") alpha = 1.0f - Math::smoothstep(width * (1.0f - softness), width, std::abs(distance - radius));
+				else if (kind == "spark") {
+					const float horizontal = 1.0f - Math::smoothstep(width * 0.25f, width, std::abs(ry));
+					const float vertical = 1.0f - Math::smoothstep(width * 0.12f, width * 0.55f, std::abs(rx));
+					alpha = MAX(horizontal * Math::smoothstep(0.55f, 0.0f, std::abs(rx)), vertical * Math::smoothstep(0.55f, 0.0f, std::abs(ry)));
+					alpha = MAX(alpha, 1.0f - Math::smoothstep(0.0f, width * 1.5f, distance));
+				} else if (kind == "streak") {
+					alpha = (1.0f - Math::smoothstep(width * (1.0f - softness), width, std::abs(ry))) * (1.0f - Math::smoothstep(0.28f, 0.5f, std::abs(rx)));
+				} else {
+					const float noise = texture_noise(seed, (nx + 0.5f) * noise_scale, (ny + 0.5f) * noise_scale);
+					const float envelope = 1.0f - Math::smoothstep(0.34f, 0.7f, distance);
+					alpha = Math::smoothstep(0.22f, 0.82f, noise) * envelope;
+				}
+				alpha = CLAMP(alpha, 0.0f, 1.0f);
+				Color pixel = secondary.lerp(primary, alpha);
+				pixel.a *= alpha;
+				image->set_pixel(x, y, pixel);
+			}
+		}
+		Ref<PortableCompressedTexture2D> texture; texture.instantiate();
+		// Packed effect scenes embed this resource. Preserve the compressed payload so
+		// ResourceSaver can serialize it into the .scn instead of retaining only the
+		// transient renderer texture created by create_from_image().
+		texture->set_keep_compressed_buffer(true);
+		texture->create_from_image(image, PortableCompressedTexture2D::COMPRESSION_MODE_LOSSLESS);
+		return s.push_resource(texture);
+	}
+	Ref<Texture2D> effect_texture_field(int p_index, const char *p_name, bool p_required) {
+		field(p_index, p_name);
+		Ref<Texture2D> texture;
+		if (!lua_isnil(L, -1)) texture = handle(-1);
+		lua_pop(L, 1);
+		require(!p_required || texture.is_valid(), "effect layer requires a Texture2D handle");
+		return texture;
+	}
+	Ref<GradientTexture1D> effect_gradient_field(int p_index, const char *p_name) {
+		field(p_index, p_name);
+		if (lua_isnil(L, -1)) { lua_pop(L, 1); return Ref<GradientTexture1D>(); }
+		const int field_index = lua_absindex(L, -1), count = array(field_index, 8);
+		require(count >= 2, "effect gradient requires two to eight stops");
+		Ref<Gradient> gradient; gradient.instantiate();
+		float previous = -1;
+		for (int i = 0; i < count; ++i) {
+			lua_rawgeti(L, field_index, i + 1); const int stop = lua_absindex(L, -1);
+			require(array(stop, 2) == 2, "gradient stop must be {offset, color}");
+			lua_rawgeti(L, stop, 1); const float offset = number(-1, 0, 1); lua_pop(L, 1);
+			lua_rawgeti(L, stop, 2); const Color value = color(-1); lua_pop(L, 1);
+			require(offset > previous, "gradient offsets must be strictly increasing"); previous = offset;
+			if (i < 2) { gradient->set_offset(i, offset); gradient->set_color(i, value); }
+			else gradient->add_point(offset, value);
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
+		Ref<GradientTexture1D> texture; texture.instantiate(); texture->set_width(128); texture->set_gradient(gradient);
+		return texture;
+	}
+	Ref<CurveTexture> effect_curve_field(int p_index, const char *p_name, float p_max_value) {
+		field(p_index, p_name);
+		if (lua_isnil(L, -1)) { lua_pop(L, 1); return Ref<CurveTexture>(); }
+		const int field_index = lua_absindex(L, -1), count = array(field_index, 8);
+		require(count >= 2, "effect curve requires two to eight points");
+		Ref<Curve> curve; curve.instantiate(); curve->set_min_value(0); curve->set_max_value(p_max_value);
+		float previous = -1;
+		for (int i = 0; i < count; ++i) {
+			lua_rawgeti(L, field_index, i + 1); const int point = lua_absindex(L, -1);
+			require(array(point, 2) == 2, "curve point must be {time, value}");
+			lua_rawgeti(L, point, 1); const float time = number(-1, 0, 1); lua_pop(L, 1);
+			lua_rawgeti(L, point, 2); const float value = number(-1, 0, p_max_value); lua_pop(L, 1);
+			require(time > previous, "curve times must be strictly increasing"); previous = time;
+			curve->add_point(Vector2(time, value)); lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
+		Ref<CurveTexture> texture; texture.instantiate(); texture->set_width(128); texture->set_curve(curve);
+		return texture;
+	}
+	Ref<StandardMaterial3D> effect_material(int p_index, const Ref<Texture2D> &p_texture, bool p_particle) {
+		Ref<StandardMaterial3D> material; material.instantiate();
+		const Color color_value = effect_color_field(p_index, "color", Color(1, 1, 1, 1));
+		const String blend = string_field(p_index, "blend", "add");
+		require(blend == "mix" || blend == "add" || blend == "multiply", "effect blend must be mix, add or multiply");
+		material->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+		material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+		material->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+		material->set_blend_mode(blend == "mix" ? BaseMaterial3D::BLEND_MODE_MIX : blend == "add" ? BaseMaterial3D::BLEND_MODE_ADD : BaseMaterial3D::BLEND_MODE_MUL);
+		material->set_albedo(color_value);
+		material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+		material->set_emission(Color(color_value.r, color_value.g, color_value.b));
+		material->set_emission_energy_multiplier(number_field(p_index, "emission", 1.6, 0, 8));
+		material->set_flag(BaseMaterial3D::FLAG_DONT_RECEIVE_SHADOWS, true);
+		material->set_flag(BaseMaterial3D::FLAG_DISABLE_AMBIENT_LIGHT, true);
+		material->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_LINEAR_WITH_MIPMAPS);
+		if (p_texture.is_valid()) material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, p_texture);
+		const String billboard = string_field(p_index, "billboard", p_particle ? "particles" : "camera");
+		require(billboard == "particles" || billboard == "camera" || billboard == "fixed_y" || billboard == "none", "unknown effect billboard mode");
+		material->set_billboard_mode(billboard == "particles" ? BaseMaterial3D::BILLBOARD_PARTICLES : billboard == "camera" ? BaseMaterial3D::BILLBOARD_ENABLED : billboard == "fixed_y" ? BaseMaterial3D::BILLBOARD_FIXED_Y : BaseMaterial3D::BILLBOARD_DISABLED);
+		material->set_flag(BaseMaterial3D::FLAG_BILLBOARD_KEEP_SCALE, billboard != "none");
+		return material;
+	}
+	static int effect(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		s.fields(1, {"name", "mode", "duration", "layers"});
+		const String name = s.string_field(1, "name", "CookedEffect");
+		s.require(!name.is_empty() && name.validate_node_name() == name, "effect name must be a valid Node name");
+		const String mode = s.string_field(1, "mode", "one_shot");
+		s.require(mode == "one_shot" || mode == "loop", "effect mode must be one_shot or loop");
+		const float duration = s.number_field(1, "duration", mode == "one_shot" ? 1.0 : 4.0, 0.05, mode == "one_shot" ? 5.0 : 10.0);
+		s.field(1, "layers"); const int layers_index = lua_absindex(p_state, -1), layer_count = s.array(layers_index, 4);
+		s.require(layer_count > 0, "effect requires one to four layers");
+		OwnedNode root(memnew(Node3D)); root->set_name(name);
+		Ref<Animation> animation;
+		std::vector<ObjectID> texture_ids;
+		auto register_texture = [&s, &texture_ids](const Ref<Texture2D> &p_texture) {
+			if (p_texture.is_null()) return;
+			const ObjectID id = p_texture->get_instance_id();
+			bool known = false; for (ObjectID current : texture_ids) known |= current == id;
+			if (!known) texture_ids.push_back(id);
+			s.require(texture_ids.size() <= 4, "effect uses more than four textures or curve maps");
+		};
+		int particle_systems = 0, particle_count = 0, node_count = 1;
+		for (int i = 0; i < layer_count; ++i) {
+			lua_rawgeti(p_state, layers_index, i + 1); const int layer = lua_absindex(p_state, -1);
+			s.fields(layer, {"type", "name", "texture", "mesh", "position", "rotation", "scale", "spin", "color", "blend", "emission", "billboard", "size", "amount", "lifetime", "preprocess", "explosiveness", "randomness", "local_coords", "visibility_aabb", "visibility_distance", "direction", "spread", "velocity", "gravity", "damping", "rotation_range", "emission_shape", "emission_radius", "emission_extents", "ring_inner_radius", "color_gradient", "alpha_curve", "scale_curve", "start_scale", "peak_scale", "end_scale", "start_alpha", "peak_alpha", "end_alpha"});
+			const String type = s.string_field(layer, "type");
+			s.require(type == "billboard_particles" || type == "animated_sprite" || type == "simple_mesh", "unknown effect layer type");
+			String layer_name = s.string_field(layer, "name", "Layer" + itos(i + 1));
+			s.require(!layer_name.is_empty() && layer_name.validate_node_name() == layer_name, "effect layer name must be a valid Node name");
+			Ref<Texture2D> texture = s.effect_texture_field(layer, "texture", type != "simple_mesh");
+			register_texture(texture);
+			const Vector3 position = s.vector_field(layer, "position", Vector3());
+			const Vector3 rotation = s.vector_field(layer, "rotation", Vector3());
+			const Vector3 scale = s.vector_field(layer, "scale", Vector3(1, 1, 1));
+			s.require(scale.x > 0 && scale.y > 0 && scale.z > 0, "effect layer scale must be positive");
+			const float visibility_distance = s.number_field(layer, "visibility_distance", 80, 0.1, 10000);
+			if (type == "billboard_particles") {
+				const double amount_number = s.number_field(layer, "amount", 32, 1, 512); const int amount = int(amount_number);
+				s.require(amount_number == amount, "particle amount must be an integer");
+				particle_count += amount; particle_systems += 1;
+				s.require(particle_count <= 1024 && particle_systems <= 4, "effect particle budget exceeded");
+				const float lifetime = s.number_field(layer, "lifetime", duration, 0.05, mode == "one_shot" ? 5.0 : 10.0);
+				Ref<ParticleProcessMaterial> process; process.instantiate();
+				Vector3 direction = s.vector_field(layer, "direction", Vector3(0, 1, 0));
+				s.require(direction.length_squared() > 0.000001, "particle direction must be nonzero"); process->set_direction(direction.normalized());
+				process->set_spread(s.number_field(layer, "spread", 45, 0, 180));
+				const Vector2 velocity = s.vector2_field(layer, "velocity", Vector2(0.2, 1));
+				s.require(velocity.x >= 0 && velocity.y >= velocity.x && velocity.y <= 100, "particle velocity range is invalid");
+				process->set_param_min(ParticleProcessMaterial::PARAM_INITIAL_LINEAR_VELOCITY, velocity.x); process->set_param_max(ParticleProcessMaterial::PARAM_INITIAL_LINEAR_VELOCITY, velocity.y);
+				process->set_gravity(s.vector_field(layer, "gravity", Vector3()));
+				const Vector2 damping = s.vector2_field(layer, "damping", Vector2());
+				s.require(damping.x >= 0 && damping.y >= damping.x && damping.y <= 100, "particle damping range is invalid");
+				process->set_param_min(ParticleProcessMaterial::PARAM_DAMPING, damping.x); process->set_param_max(ParticleProcessMaterial::PARAM_DAMPING, damping.y);
+				const Vector2 rotation_range = s.vector2_field(layer, "rotation_range", Vector2(-180, 180));
+				s.require(rotation_range.y >= rotation_range.x, "particle rotation range is invalid");
+				process->set_param_min(ParticleProcessMaterial::PARAM_ANGLE, rotation_range.x); process->set_param_max(ParticleProcessMaterial::PARAM_ANGLE, rotation_range.y);
+				const String shape = s.string_field(layer, "emission_shape", "point");
+				if (shape == "point") process->set_emission_shape(ParticleProcessMaterial::EMISSION_SHAPE_POINT);
+				else if (shape == "sphere") { process->set_emission_shape(ParticleProcessMaterial::EMISSION_SHAPE_SPHERE); process->set_emission_sphere_radius(s.number_field(layer, "emission_radius", 0.5, 0.001, 100)); }
+				else if (shape == "sphere_surface") { process->set_emission_shape(ParticleProcessMaterial::EMISSION_SHAPE_SPHERE_SURFACE); process->set_emission_sphere_radius(s.number_field(layer, "emission_radius", 0.5, 0.001, 100)); }
+				else if (shape == "box") { process->set_emission_shape(ParticleProcessMaterial::EMISSION_SHAPE_BOX); Vector3 extents = s.vector_field(layer, "emission_extents", Vector3(0.5, 0.5, 0.5)); s.require(extents.x > 0 && extents.y > 0 && extents.z > 0, "emission extents must be positive"); process->set_emission_box_extents(extents); }
+				else if (shape == "ring") { const float radius = s.number_field(layer, "emission_radius", 0.5, 0.001, 100); const float inner = s.number_field(layer, "ring_inner_radius", 0.35, 0, radius); process->set_emission_shape(ParticleProcessMaterial::EMISSION_SHAPE_RING); process->set_emission_ring_axis(Vector3(0, 1, 0)); process->set_emission_ring_radius(radius); process->set_emission_ring_inner_radius(inner); process->set_emission_ring_height(0); }
+				else s.require(false, "unknown particle emission shape");
+				Ref<GradientTexture1D> gradient = s.effect_gradient_field(layer, "color_gradient"); if (gradient.is_valid()) process->set_color_ramp(gradient);
+				Ref<CurveTexture> alpha = s.effect_curve_field(layer, "alpha_curve", 1); if (alpha.is_valid()) process->set_alpha_curve(alpha);
+				Ref<CurveTexture> scale_curve = s.effect_curve_field(layer, "scale_curve", 4); if (scale_curve.is_valid()) process->set_param_texture(ParticleProcessMaterial::PARAM_SCALE, scale_curve);
+				Ref<QuadMesh> quad; quad.instantiate(); quad->set_size(s.vector2_field(layer, "size", Vector2(0.15, 0.15))); quad->set_material(s.effect_material(layer, texture, true));
+				auto *particles = memnew(GPUParticles3D); particles->set_name(layer_name); particles->set_position(position); particles->set_rotation(rotation); particles->set_scale(scale);
+				particles->set_amount(amount); particles->set_lifetime(lifetime); particles->set_one_shot(mode == "one_shot"); particles->set_emitting(true);
+				particles->set_pre_process_time(s.number_field(layer, "preprocess", mode == "loop" ? MIN(lifetime, 2.0f) : 0, 0, 10)); particles->set_explosiveness_ratio(s.number_field(layer, "explosiveness", mode == "one_shot" ? 0.9 : 0, 0, 1)); particles->set_randomness_ratio(s.number_field(layer, "randomness", 0.35, 0, 1));
+				particles->set_use_local_coordinates(s.boolean_field(layer, "local_coords", false)); particles->set_process_material(process); particles->set_draw_passes(1); particles->set_draw_pass_mesh(0, quad); particles->set_fixed_fps(30); particles->set_fractional_delta(true); particles->set_use_fixed_seed(true); particles->set_seed(s.seed_value + uint32_t(i) * 2654435761U); particles->set_visibility_range_end(visibility_distance);
+				s.field(layer, "visibility_aabb");
+				if (!lua_isnil(p_state, -1)) { const int box = lua_absindex(p_state, -1); s.fields(box, {"position", "size"}); const Vector3 box_position = s.vector_field(box, "position", Vector3(-2, -2, -2)); const Vector3 box_size = s.vector_field(box, "size", Vector3(4, 4, 4)); s.require(box_size.x > 0 && box_size.y > 0 && box_size.z > 0, "visibility AABB size must be positive"); particles->set_visibility_aabb(AABB(box_position, box_size)); }
+				else particles->set_visibility_aabb(AABB(Vector3(-4, -4, -4), Vector3(8, 8, 8)));
+				lua_pop(p_state, 1); particles->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+				root->add_child(particles); particles->set_owner(root.get()); node_count += 1;
+			} else if (type == "animated_sprite") {
+				Ref<QuadMesh> quad; quad.instantiate(); quad->set_size(s.vector2_field(layer, "size", Vector2(0.5, 0.5))); quad->set_material(s.effect_material(layer, texture, false));
+				auto *sprite = memnew(MeshInstance3D); sprite->set_name(layer_name); sprite->set_mesh(quad); sprite->set_position(position); sprite->set_rotation(rotation); sprite->set_scale(scale); sprite->set_visibility_range_end(visibility_distance); sprite->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+				root->add_child(sprite); sprite->set_owner(root.get()); node_count += 1;
+				if (animation.is_null()) { animation.instantiate(); animation->set_length(duration); animation->set_loop_mode(mode == "loop" ? Animation::LOOP_LINEAR : Animation::LOOP_NONE); }
+				const float start_scale = s.number_field(layer, "start_scale", 0.05, 0, 8), peak_scale = s.number_field(layer, "peak_scale", 1, 0, 8), end_scale = s.number_field(layer, "end_scale", mode == "loop" ? start_scale : 1.25, 0, 8);
+				const float start_alpha = s.number_field(layer, "start_alpha", 0, 0, 1), peak_alpha = s.number_field(layer, "peak_alpha", 1, 0, 1), end_alpha = s.number_field(layer, "end_alpha", mode == "loop" ? start_alpha : 0, 0, 1);
+				int track = animation->add_track(Animation::TYPE_SCALE_3D); animation->track_set_path(track, NodePath(layer_name)); animation->track_set_interpolation_type(track, Animation::INTERPOLATION_CUBIC); animation->track_insert_key(track, 0, scale * start_scale); animation->track_insert_key(track, duration * 0.35, scale * peak_scale); animation->track_insert_key(track, duration, scale * end_scale);
+				track = animation->add_track(Animation::TYPE_VALUE); animation->track_set_path(track, NodePath(layer_name + ":transparency")); animation->track_set_interpolation_type(track, Animation::INTERPOLATION_CUBIC); animation->track_insert_key(track, 0, 1.0f - start_alpha); animation->track_insert_key(track, duration * 0.35, 1.0f - peak_alpha); animation->track_insert_key(track, duration, 1.0f - end_alpha);
+				const Vector3 spin = s.vector_field(layer, "spin", Vector3());
+				if (!spin.is_zero_approx()) { track = animation->add_track(Animation::TYPE_VALUE); animation->track_set_path(track, NodePath(layer_name + ":rotation")); animation->track_set_interpolation_type(track, Animation::INTERPOLATION_LINEAR_ANGLE); animation->track_insert_key(track, 0, rotation); animation->track_insert_key(track, duration, rotation + spin * Math::TAU); }
+			} else {
+				s.field(layer, "mesh"); Ref<Mesh> mesh = s.handle(-1); lua_pop(p_state, 1); s.require(mesh.is_valid(), "simple_mesh requires a Mesh handle");
+				auto *instance = memnew(MeshInstance3D); instance->set_name(layer_name); instance->set_mesh(mesh); instance->set_material_override(s.effect_material(layer, texture, false)); instance->set_position(position); instance->set_rotation(rotation); instance->set_scale(scale); instance->set_visibility_range_end(visibility_distance); instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+				root->add_child(instance); instance->set_owner(root.get()); node_count += 1;
+			}
+			lua_pop(p_state, 1);
+		}
+		lua_pop(p_state, 1);
+		if (animation.is_valid()) {
+			Ref<AnimationLibrary> library; library.instantiate(); s.require(library->add_animation("effect", animation) == OK, "could not create effect animation");
+			auto *player = memnew(AnimationPlayer); player->set_name("AnimationPlayer"); player->add_animation_library("", library); player->set_root_node(NodePath("..")); player->set_autoplay("effect"); root->add_child(player); player->set_owner(root.get()); node_count += 1;
+		}
+		s.require(node_count <= 32, "effect node budget exceeded");
+		int32_t next_scene_id = 1;
+		assign_scene_ids(root.get(), root.get(), next_scene_id);
+		Ref<PackedScene> packed; packed.instantiate(); s.require(packed->pack(root.get()) == OK, "could not pack effect scene");
+		s.effect_layers = MAX(s.effect_layers, layer_count); s.effect_particle_systems = MAX(s.effect_particle_systems, particle_systems); s.effect_particles = MAX(s.effect_particles, particle_count); s.effect_textures = MAX(s.effect_textures, int(texture_ids.size()));
+		return s.push_resource(packed);
+	}
+	static int atmosphere(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy"});
+		s.field(1, "preset_id"); const String preset_id = s.string(-1); lua_pop(p_state, 1);
+		s.require(!preset_id.is_empty() && preset_id.length() <= 48, "invalid atmosphere preset_id");
+		s.field(1, "shader"); Ref<Shader> shader = s.handle(-1); lua_pop(p_state, 1);
+		s.require(shader.is_valid() && shader->get_mode() == Shader::MODE_SKY, "atmosphere requires a sky Shader input");
+		Ref<Texture2D> cloud_texture;
+		s.field(1, "cloud_texture");
+		if (!lua_isnil(p_state, -1)) { cloud_texture = s.handle(-1); s.require(cloud_texture.is_valid(), "cloud_texture requires a Texture2D input"); }
+		lua_pop(p_state, 1);
+		const int family = int(s.number_field(1, "family", 0, 0, 3));
+		s.require(double(family) == s.number_field(1, "family", 0, 0, 3), "family must be an integer");
+		Vector3 sun_direction = s.vector_field(1, "sun_direction", Vector3(0.4, 0.7, 0.5));
+		s.require(sun_direction.length_squared() > 0.001, "sun_direction must be nonzero");
+		sun_direction.normalize();
+		Ref<ShaderMaterial> material; material.instantiate(); material->set_shader(shader);
+		material->set_shader_parameter("family", family);
+		material->set_shader_parameter("zenith", s.color_field(1, "zenith", Color(0.14, 0.39, 0.77)));
+		material->set_shader_parameter("horizon", s.color_field(1, "horizon", Color(0.73, 0.85, 0.98)));
+		material->set_shader_parameter("cloud_color", s.color_field(1, "cloud_color", Color(1, 1, 1)));
+		material->set_shader_parameter("cloud_shadow", s.color_field(1, "cloud_shadow", Color(0.51, 0.63, 0.77)));
+		const Color sun_color = s.color_field(1, "sun_color", Color(1, 0.9, 0.72));
+		const double sun_energy = s.number_field(1, "sun_energy", 0.5, 0, 8);
+		material->set_shader_parameter("sun_color", sun_color);
+		material->set_shader_parameter("sun_direction", sun_direction);
+		material->set_shader_parameter("cloud_coverage", s.number_field(1, "cloud_coverage", 0.4, 0, 1));
+		material->set_shader_parameter("cloud_scale", s.number_field(1, "cloud_scale", 2, 0.25, 8));
+		material->set_shader_parameter("cloud_softness", s.number_field(1, "cloud_softness", 0.25, 0.02, 1));
+		material->set_shader_parameter("cloud_seed", s.number_field(1, "cloud_seed", 1, 0, 10000));
+		material->set_shader_parameter("sun_size", s.number_field(1, "sun_size", 0.025, 0.001, 0.15));
+		material->set_shader_parameter("sun_energy", sun_energy);
+		material->set_shader_parameter("has_cloud_texture", cloud_texture.is_valid());
+		if (cloud_texture.is_valid()) material->set_shader_parameter("cloud_texture", cloud_texture);
+		Ref<Sky> sky; sky.instantiate(); sky->set_material(material); sky->set_process_mode(Sky::PROCESS_MODE_QUALITY); sky->set_radiance_size(Sky::RADIANCE_SIZE_256);
+		Ref<Environment> environment; environment.instantiate();
+		environment->set_background(Environment::BG_SKY); environment->set_sky(sky);
+		environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+		environment->set_reflection_source(Environment::REFLECTION_SOURCE_SKY);
+		environment->set_ambient_light_color(s.color_field(1, "ambient_color", Color(0.55, 0.65, 0.78)));
+		environment->set_ambient_light_energy(s.number_field(1, "ambient_energy", 1, 0, 8));
+		environment->set_ambient_light_sky_contribution(s.number_field(1, "sky_contribution", 0.6, 0, 0.95));
+		const double fog_density = s.number_field(1, "fog_density", 0, 0, 0.1);
+		environment->set_fog_enabled(fog_density > 0);
+		environment->set_fog_density(fog_density);
+		environment->set_fog_light_color(s.color_field(1, "fog_color", Color(0.73, 0.79, 0.87)));
+		environment->set_fog_sky_affect(s.number_field(1, "fog_sky_affect", 0.04, 0, 1));
+		environment->set_tonemapper(Environment::TONE_MAPPER_AGX);
+		environment->set_tonemap_exposure(s.number_field(1, "exposure", 1, 0.1, 4));
+		environment->set_meta("veya_atmosphere_preset", preset_id);
+		environment->set_meta("veya_atmosphere_sun_direction", sun_direction);
+		environment->set_meta("veya_atmosphere_sun_color", sun_color);
+		environment->set_meta("veya_atmosphere_sun_energy", sun_energy);
+		return s.push_resource(environment);
+	}
+	static int cloud_mask(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		Ref<Texture2D> texture = s.handle(1);
+		s.require(texture.is_valid(), "cloud_mask requires a Texture2D input");
+		Ref<Image> source = texture->get_image();
+		s.require(source.is_valid() && !source->is_empty() && source->get_width() == source->get_height() &&
+			source->get_width() >= 256 && source->get_width() <= 2048, "cloud_mask requires a bounded square image");
+		source->resize(1024, 1024, Image::INTERPOLATE_BILINEAR);
+		source->convert(Image::FORMAT_RGBA8);
+		constexpr int side = 1024;
+		std::vector<float> luminance(side * side);
+		for (int y = 0; y < side; ++y) for (int x = 0; x < side; ++x) {
+			const Color pixel = source->get_pixel(x, y);
+			luminance[y * side + x] = CLAMP(pixel.r * 0.2126f + pixel.g * 0.7152f + pixel.b * 0.0722f, 0.0f, 1.0f);
+		}
+		Ref<Image> output = Image::create_empty(side, side, false, Image::FORMAT_RGBA8);
+		for (int y = 0; y < side; ++y) for (int x = 0; x < side; ++x) {
+			const float x_edge = CLAMP(float(MIN(x, side - 1 - x)) / 64.0f, 0.0f, 1.0f);
+			const float y_edge = CLAMP(float(MIN(y, side - 1 - y)) / 64.0f, 0.0f, 1.0f);
+			const float horizontal = Math::lerp((luminance[y * side + x] + luminance[y * side + side - 1 - x]) * 0.5f,
+				luminance[y * side + x], x_edge);
+			const float opposite = Math::lerp((luminance[(side - 1 - y) * side + x] + luminance[(side - 1 - y) * side + side - 1 - x]) * 0.5f,
+				luminance[(side - 1 - y) * side + x], x_edge);
+			const float value = Math::lerp((horizontal + opposite) * 0.5f, horizontal, y_edge);
+			output->set_pixel(x, y, Color(value, value, value, 1));
+		}
+		output->generate_mipmaps();
+		Ref<ImageTexture> mask = ImageTexture::create_from_image(output);
+		return s.push_resource(mask);
 	}
 	static int primitive(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(2);
@@ -437,6 +835,8 @@ struct Recipe {
 			node->set_name("Batch" + itos(i)); node->set_multimesh(multi); node->set_material_override(batch.material);
 			root->add_child(node); node->set_owner(root.get());
 		}
+		int32_t next_scene_id = 1;
+		assign_scene_ids(root.get(), root.get(), next_scene_id);
 		Ref<PackedScene> scene; scene.instantiate();
 		s.require(scene->pack(root.get()) == OK, "could not pack recipe scene");
 		return s.push_resource(scene);
@@ -508,7 +908,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"mesh", mesh}, {"scene", scene}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -554,9 +954,9 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 2; result["operation"] = "run-recipe";
+	result["api_version"] = 3; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "material", "scene", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "cloud_mask", "scene", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }
@@ -582,6 +982,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	if ((seed.get_type() != Variant::INT && seed.get_type() != Variant::FLOAT) || !std::isfinite(double(seed)) || double(seed) < 0 || double(seed) > UINT32_MAX || double(seed) != std::floor(double(seed))) return reject(r_result, "seed must be a uint32");
 	recipe.random_state = uint32_t(int64_t(seed));
 	if (!recipe.random_state) recipe.random_state = 1;
+	recipe.seed_value = uint32_t(int64_t(seed));
 	Dictionary limits = p_job.get("limits", Dictionary());
 	for (const Variant *key = limits.next(); key; key = limits.next(key)) {
 		String name = *key; int *target = nullptr;
@@ -618,8 +1019,8 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			recipe.input_hashes[file] = FileAccess::get_sha256(file);
 		}
 		Ref<Resource> resource = ResourceLoader::load(path);
-		Ref<Mesh> mesh = resource; Ref<Material> material = resource; Ref<PackedScene> scene = resource;
-		if (mesh.is_null() && material.is_null() && scene.is_null()) return reject(r_result, "recipe inputs must be Mesh, Material or PackedScene resources");
+		Ref<Mesh> mesh = resource; Ref<Material> material = resource; Ref<PackedScene> scene = resource; Ref<Shader> shader = resource; Ref<Texture2D> texture = resource;
+		if (mesh.is_null() && material.is_null() && scene.is_null() && shader.is_null() && texture.is_null()) return reject(r_result, "recipe inputs must be Mesh, Material, PackedScene, Shader or Texture2D resources");
 		// Shader includes are not all exposed by ResourceLoader's dependency list.
 		// Resolve them through the same bounded collector used by pack jobs.
 		HashSet<ObjectID> visited;
@@ -649,7 +1050,9 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	// Supervisor owns this workspace exclusively; this is not a hostile-filesystem sandbox.
 	error = DirAccess::make_dir_recursive_absolute(output.get_base_dir());
 	if (error != OK) return reject(r_result, "cannot create output directory", error);
-	String temporary = output.get_basename() + ".recipe-" + itos(OS::get_singleton()->get_ticks_usec()) + "." + output.get_extension();
+	// Godot seeds built-in subresource IDs from the save path. Keep the private
+	// staging path stable so identical Luau inputs/seed produce identical bytes.
+	String temporary = output.get_basename() + ".recipe-tmp." + output.get_extension();
 	if (FileAccess::exists(temporary)) return reject(r_result, "temporary output collision", ERR_ALREADY_EXISTS);
 	error = ResourceSaver::save(recipe.result, temporary, ResourceSaver::FLAG_COMPRESS);
 	if (error == OK) {
@@ -673,6 +1076,10 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	r_result["runtime"] = capabilities();
 	r_result["resources"] = int64_t(recipe.resources.size()); r_result["vertices"] = recipe.vertices;
 	r_result["instances"] = recipe.instances; r_result["vm_peak_bytes"] = int64_t(recipe.peak_memory);
+	Dictionary effect_stats;
+	effect_stats["layers"] = recipe.effect_layers; effect_stats["particle_systems"] = recipe.effect_particle_systems;
+	effect_stats["declared_particles"] = recipe.effect_particles; effect_stats["textures"] = recipe.effect_textures;
+	r_result["effect"] = effect_stats;
 	return OK;
 }
 }

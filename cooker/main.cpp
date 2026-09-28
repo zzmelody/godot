@@ -162,6 +162,20 @@ void inspect_node(Node *p_node, Dictionary &r_result) {
 			Vector3 gravity = process->get_gravity();
 			properties["gravity"] = Array({ gravity.x, gravity.y, gravity.z });
 		}
+		Ref<Mesh> draw_mesh = particles->get_draw_pass_mesh(0);
+		if (draw_mesh.is_valid()) {
+			for (int i = 0; i < draw_mesh->get_surface_count(); ++i) {
+				Ref<BaseMaterial3D> material = draw_mesh->surface_get_material(i);
+				Ref<Texture2D> texture = material.is_valid() ? material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO) : Ref<Texture2D>();
+				Ref<Image> image = texture.is_valid() ? texture->get_image() : Ref<Image>();
+				if (image.is_valid() && !image->is_empty()) {
+					r_result["effect_texture_count"] = int64_t(r_result.get("effect_texture_count", 0)) + 1;
+					r_result["effect_texture_bytes"] = int64_t(r_result.get("effect_texture_bytes", 0)) + image->get_data().size();
+				} else {
+					r_result["effect_texture_missing"] = int64_t(r_result.get("effect_texture_missing", 0)) + 1;
+				}
+			}
+		}
 		r_result["particles"] = properties;
 	}
 	for (int i = 0; i < p_node->get_child_count(); i++) {
@@ -217,7 +231,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	String kind = p_job["kind"];
 	String entry = p_job["entry"];
 	ERR_FAIL_COND_V(!valid_asset_id(asset_id) || revision < 1, ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V(kind != "model" && kind != "texture" && kind != "material" && kind != "environment" && kind != "physics_material" && kind != "shader" && kind != "navigation", ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(kind != "model" && kind != "texture" && kind != "material" && kind != "environment" && kind != "physics_material" && kind != "shader" && kind != "navigation" && kind != "effect", ERR_INVALID_PARAMETER);
 	Error error = CookerFiles::check_path(output, true);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V(output.get_file() != "asset.manifest.json", ERR_INVALID_PARAMETER);
@@ -259,7 +273,16 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	manifest["pipeline"] = "veya-asset-cooker-luau";
 	manifest["files"] = records;
 	if (p_job.has("provenance")) {
-		manifest["provenance"] = p_job["provenance"];
+		Dictionary provenance = Dictionary(p_job["provenance"]).duplicate(true);
+		if (provenance.has("luau_source")) {
+			ERR_FAIL_COND_V(provenance["luau_source"].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+			String source_path = provenance["luau_source"];
+			ERR_FAIL_COND_V(source_path.get_extension().to_lower() != "luau", ERR_INVALID_PARAMETER);
+			error = CookerFiles::check_path(source_path);
+			ERR_FAIL_COND_V(error != OK, error);
+			provenance["luau_source_sha256"] = FileAccess::get_sha256(source_path);
+		}
+		manifest["provenance"] = provenance;
 	}
 	error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(base));
 	ERR_FAIL_COND_V(error != OK, error);

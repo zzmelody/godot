@@ -152,6 +152,17 @@ void ParticleProcessMaterial::init_shaders() {
 
 void ParticleProcessMaterial::finish_shaders() {
 	dirty_materials.clear();
+	/*<<----- VEYA_COOKER: recipes have no SceneTree frame to retire the final generated particle shader. */
+#ifdef VEYA_COOKER
+	MutexLock lock(shader_map_mutex);
+	for (const KeyValue<MaterialKey, ShaderData> &entry : shader_map) {
+		if (entry.value.shader.is_valid()) {
+			RS::get_singleton()->free_rid(entry.value.shader);
+		}
+	}
+	shader_map.clear();
+#endif
+	/*>>----- VEYA_COOKER */
 
 	memdelete(shader_names);
 	shader_names = nullptr;
