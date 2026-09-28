@@ -126,8 +126,12 @@ only as a low-level test/debug protocol. Jobs currently implemented in source:
   `AnimationLibrary` `.res` per source, using a declared BoneMap. It supports
   explicit include/exclude lists, one selected animation, optional horizontal
   in-place conversion and looping. Tracks are named `%GeneralSkeleton:Bone`.
-- `retarget-model`: imports a skinned FBX as a `.scn` through the same Godot
-  skeleton mapping and rest correction path.
+- `retarget-model`: imports a skinned FBX or GLB as a `.scn` through the same
+  Godot skeleton mapping and rest correction path. Embedded textures stay in
+  the cooked resource; GLB never depends on editor texture extraction.
+  Optional Luau `source_yaw_degrees` (-180..180) and `source_scale`
+  (0.001..1000) align facing and units before rest/skin correction. Defaults
+  preserve the source; rotating only a finished scene does not fix its rest axes.
 - `make-animation-preview`: combines a cooked model and animation library into
   a `.scn` for target-runtime visual checks.
 

@@ -159,6 +159,8 @@ shape = SubResource("Shape")
         if success:
             self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
             self.assertNotIn("ERROR:", process.stdout + process.stderr)
+            # Compressed subresources must be scanned through the decoded stream.
+            self.assertNotIn("Unicode parsing error", process.stdout + process.stderr)
             self.assertNotIn("leaked", process.stdout + process.stderr)
         else:
             self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
@@ -258,6 +260,25 @@ buffer = PackedFloat32Array(1,0,0,2,0,1,0,3,0,0,1,4,1,0,0,5,0,1,0,6,0,0,1,7)
                 result = self.job({"operation": "validate-resource", "source": result["output"]})
                 self.assertEqual(result["material_texture_count"], 1)
                 self.assertGreater(result["material_texture_bytes"], 0)
+
+    def test_compressed_scene_class_scan_after_large_embedded_texture(self):
+        # The small import fixtures fit in one block and did not expose seeking
+        # the original FileAccess after open() installed FileAccessCompressed.
+        scene = triangle_scene()
+        scene["images"] = [{"uri": "data:image/png;base64," + base64.b64encode(png(256, 256)).decode()}]
+        scene["textures"] = [{"source": 0}]
+        scene["materials"] = [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+        scene["meshes"][0]["primitives"][0]["material"] = 0
+        (self.project / "large_embedded.gltf").write_text(json.dumps(scene), encoding="utf-8")
+        result = self.job({"operation": "import-scene", "source": "res://large_embedded.gltf",
+                           "output": "res://assets/generated/large_embedded.scn"})
+        self.assertEqual((self.project / "assets/generated/large_embedded.scn").read_bytes()[:4], b"RSCC")
+        validated = self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
+        self.assertEqual(validated["material_texture_count"], 1)
+        self.assertGreaterEqual(validated["material_texture_bytes"], 256 * 256 * 3)
+        packed = self.job({"operation": "pack", "files": [result["output"]],
+                           "output": "res://content/releases/large_embedded.pck"})
+        self.assertIn(result["output"], packed["files"])
 
     def test_path_and_native_dependency_rejection(self):
         for path in ("res://../escape.res", "user://escape.res", "res://content/escape.res", "res://assets/generated/../../../escape.res"):

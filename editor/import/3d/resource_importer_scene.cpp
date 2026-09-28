@@ -3316,6 +3316,17 @@ Error ResourceImporterScene::import(ResourceUID::ID p_source_id, const String &p
 		}
 	}
 
+	/*<<----- VEYA_COOKER: apply Luau-declared source facing before the skeleton rest fixer bakes transforms. */
+#ifdef VEYA_COOKER
+	if (p_options.has("_cooker_retarget_source_yaw_degrees")) {
+		Node3D *source_root = Object::cast_to<Node3D>(scene);
+		if (source_root) {
+			const double yaw = p_options["_cooker_retarget_source_yaw_degrees"];
+			source_root->set_transform(Transform3D(Basis(Vector3(0, 1, 0), Math::deg_to_rad(yaw)), Vector3()) * source_root->get_transform());
+		}
+	}
+#endif
+	/*>>----- VEYA_COOKER */
 	_pre_fix_global(scene, p_options);
 
 	HashSet<Ref<ImporterMesh>> scanned_meshes;

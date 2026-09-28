@@ -5059,10 +5059,16 @@ bool Main::iteration() {
 	uint64_t process_begin = OS::get_singleton()->get_ticks_usec();
 
 	GodotProfileZoneGrouped(_profile_zone, "process");
-	if (OS::get_singleton()->get_main_loop()->process(process_step * time_scale)) {
-		exit = true;
+	{
+		GodotProfileZone("Main::process/main_loop");
+		if (OS::get_singleton()->get_main_loop()->process(process_step * time_scale)) {
+			exit = true;
+		}
 	}
-	message_queue->flush();
+	{
+		GodotProfileZone("Main::process/message_queue");
+		message_queue->flush();
+	}
 
 #ifndef NAVIGATION_2D_DISABLED
 	GodotProfileZoneGrouped(_profile_zone, "process 2D navigation");

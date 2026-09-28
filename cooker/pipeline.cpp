@@ -16,6 +16,8 @@
 #include <cstring>
 #include <exception>
 #include <initializer_list>
+#include <map>
+#include <set>
 #include <string>
 
 namespace CookerPipeline {
@@ -28,6 +30,7 @@ constexpr int TIME_MS = 1000;
 constexpr int MAX_STEPS = 256;
 constexpr int MAX_DEPTH = 16;
 constexpr int MAX_ENTRIES = 16384;
+constexpr int MAX_MODULES = 12;
 constexpr double MAX_EXACT_INTEGER = 9007199254740991.0;
 
 struct Pipeline {
@@ -39,6 +42,10 @@ struct Pipeline {
 	std::chrono::steady_clock::time_point deadline;
 	String fault;
 	std::string bytecode;
+	std::map<std::string, int> layout_cache;
+	std::set<std::string> importing;
+	size_t imported_bytes = 0;
+	Dictionary dependencies;
 
 	~Pipeline() {
 		if (L) {
@@ -103,6 +110,11 @@ struct Pipeline {
 			lua_setfield(p_state, -2, name);
 		}
 		lua_pop(p_state, 1);
+		lua_newtable(p_state);
+		lua_pushcfunction(p_state, import_layout, "pipeline.import");
+		lua_setfield(p_state, -2, "import");
+		lua_setreadonly(p_state, -1, true);
+		lua_setglobal(p_state, "pipeline");
 		luaL_sandbox(p_state);
 		luaL_sandboxthread(p_state);
 		return 0;
@@ -113,6 +125,84 @@ struct Pipeline {
 			fault = p_message;
 		}
 		return false;
+	}
+
+	// Imports share the existing bounded VM. Data-only layout exports and Cooker
+	// job arrays are copied; author/behavior callbacks are never exposed or called.
+	void push_data(const Variant &p_value) {
+		switch (p_value.get_type()) {
+			case Variant::NIL: lua_pushnil(L); break;
+			case Variant::BOOL: lua_pushboolean(L, bool(p_value)); break;
+			case Variant::INT: lua_pushnumber(L, int64_t(p_value)); break;
+			case Variant::FLOAT: lua_pushnumber(L, double(p_value)); break;
+			case Variant::STRING: { const CharString text = String(p_value).utf8(); lua_pushlstring(L, text.get_data(), text.length()); } break;
+			case Variant::ARRAY: {
+				const Array values = p_value; lua_createtable(L, values.size(), 0);
+				for (int i=0; i<values.size(); ++i) { push_data(values[i]); lua_rawseti(L, -2, i+1); }
+				lua_setreadonly(L, -1, true);
+			} break;
+			case Variant::DICTIONARY: {
+				const Dictionary values = p_value; lua_createtable(L, 0, values.size());
+				for (const Variant *key=values.next(nullptr); key; key=values.next(key)) {
+					const CharString name=String(*key).utf8(); push_data(values[*key]); lua_setfield(L, -2, name.get_data());
+				}
+				lua_setreadonly(L, -1, true);
+			} break;
+			default: lua_pushnil(L); break; // value() rejects every other type first.
+		}
+	}
+
+	bool load_layout() {
+		if (lua_gettop(L)<1 || lua_gettop(L)>2) return fail("pipeline.import expects a module path and optional export kind");
+		String path;
+		if (!string(1,path,512)) return false;
+		String kind;
+		if (lua_gettop(L)==2) {if(!string(2,kind,16))return false;} else kind="layout";
+		if (kind!="layout" && kind!="steps") return fail("pipeline.import export must be layout or steps");
+		if (!path.begins_with("res://content/scripts/") || !path.ends_with(".luau") || CookerFiles::check_path(path)!=OK)
+			return fail("layout module path rejected");
+		if (kind=="steps" && !path.begins_with("res://content/scripts/cooker/")) return fail("step imports require Cooker modules");
+		Ref<DirAccess> directory=DirAccess::open("res://");
+		String prefix="res://";
+		for (const String &part:path.trim_prefix("res://").split("/")) {
+			prefix=prefix.path_join(part);
+			if (directory.is_null() || directory->is_link(ProjectSettings::get_singleton()->globalize_path(prefix))) return fail("layout module links are forbidden");
+		}
+		const std::string key=(path+"#"+kind).utf8().get_data();
+		if (importing.count(key)) return fail("layout module import cycle");
+		const auto cached=layout_cache.find(key);
+		if (cached!=layout_cache.end()) { lua_getref(L,cached->second); return true; }
+		if (layout_cache.size()+importing.size()>=MAX_MODULES) return fail("pipeline module count exceeded");
+		Ref<FileAccess> file=FileAccess::open(path,FileAccess::READ);
+		if (file.is_null() || !file->get_length() || file->get_length()>SOURCE_BYTES || imported_bytes+file->get_length()>1024*1024)
+			return fail("layout module source budget exceeded");
+		const PackedByteArray bytes=file->get_buffer(file->get_length()); String text;
+		if (std::memchr(bytes.ptr(),0,bytes.size()) || text.append_utf8(reinterpret_cast<const char *>(bytes.ptr()),bytes.size())!=OK)
+			return fail("layout module must be UTF-8 source without NUL");
+		imported_bytes+=bytes.size(); importing.insert(key);
+		Luau::CompileOptions options; options.optimizationLevel=1; options.debugLevel=1;
+		const std::string compiled=Luau::compile(std::string(reinterpret_cast<const char *>(bytes.ptr()),bytes.size()),options);
+		int status=luau_load(L,key.c_str(),compiled.data(),compiled.size(),0);
+		if (status==LUA_OK) status=lua_pcall(L,0,1,0);
+		importing.erase(key);
+		if (status!=LUA_OK) return fail(lua_type(L,-1)==LUA_TSTRING?String::utf8(lua_tostring(L,-1)).left(1024):String("layout module failed"));
+		if (lua_type(L,-1)!=LUA_TTABLE) return fail("layout module must return a table");
+		if(kind=="layout") {
+			lua_getfield(L,-1,"layout");
+			if (lua_type(L,-1)!=LUA_TTABLE) return fail("layout module requires a data-only layout export");
+		}
+		Variant layout;
+		if (!value(-1,layout)) return false;
+		if(kind=="steps" && (layout.get_type()!=Variant::ARRAY || Array(layout).is_empty() || Array(layout).size()>MAX_STEPS)) return fail("step module requires 1..256 data-only jobs");
+		lua_settop(L,1); push_data(layout);
+		layout_cache.emplace(key,lua_ref(L,-1)); dependencies[path]=FileAccess::get_sha256(path);
+		return true;
+	}
+	static int import_layout(lua_State *p_state) {
+		auto &pipeline=self(p_state);
+		try { if (pipeline.load_layout()) return 1; }
+		catch (const std::exception &error) { pipeline.fail(String::utf8(error.what()).left(1024)); }
+		luaL_error(p_state,"%s",pipeline.fault.utf8().get_data()); return 0;
 	}
 
 	bool string(int p_index, String &r_value, int p_limit = 4096) {
@@ -296,6 +386,9 @@ Dictionary capabilities() {
 	result["api_version"] = 1;
 	result["operation"] = "run-pipeline";
 	result["max_steps"] = MAX_STEPS;
+	result["layout_import"] = true;
+	result["step_import"] = true;
+	result["max_layout_modules"] = MAX_MODULES;
 	return result;
 }
 
@@ -329,6 +422,7 @@ Error load(const String &p_source, Array &r_steps, Dictionary &r_result) {
 	r_result["source_sha256"] = FileAccess::get_sha256(p_source);
 	r_result["step_count"] = r_steps.size();
 	r_result["runtime"] = capabilities();
+	r_result["dependencies"] = pipeline.dependencies;
 	return OK;
 }
 } // namespace CookerPipeline

@@ -686,8 +686,10 @@ void SceneTree::iteration_end() {
 }
 
 bool SceneTree::process(double p_time) {
+	GodotProfileZone("SceneTree::process");
 	// First pass of scene tree fixed timestep interpolation.
 	if (get_scene_tree_fti().is_enabled()) {
+		GodotProfileZone("SceneTree::process/fti_prepare");
 		// Special, we need to ensure RenderingServer is up to date
 		// with *all* the pending xforms *before* updating it during
 		// the FTI update.
@@ -697,46 +699,67 @@ bool SceneTree::process(double p_time) {
 		get_scene_tree_fti().frame_update(get_root(), true);
 	}
 
-	if (MainLoop::process(p_time)) {
-		_quit = true;
+	{
+		GodotProfileZone("SceneTree::process/main_loop");
+		if (MainLoop::process(p_time)) {
+			_quit = true;
+		}
 	}
 
 	process_time = p_time;
 
 	if (multiplayer_poll) {
+		GodotProfileZone("SceneTree::process/multiplayer_poll");
 		multiplayer->poll();
 		for (KeyValue<NodePath, Ref<MultiplayerAPI>> &E : custom_multiplayers) {
 			E.value->poll();
 		}
 	}
 
-	emit_signal(SNAME("process_frame"));
+	{
+		GodotProfileZone("SceneTree::process/process_frame_signal");
+		emit_signal(SNAME("process_frame"));
+	}
 
-	MessageQueue::get_singleton()->flush(); //small little hack
+	{
+		GodotProfileZone("SceneTree::process/before_nodes_flush");
+		MessageQueue::get_singleton()->flush(); //small little hack
+		flush_transform_notifications();
+	}
 
-	flush_transform_notifications();
+	{
+		GodotProfileZone("SceneTree::process/idle_groups");
+		_process(false);
+	}
 
-	_process(false);
-
-	_flush_ugc();
-	MessageQueue::get_singleton()->flush(); //small little hack
-	flush_transform_notifications(); //transforms after world update, to avoid unnecessary enter/exit notifications
+	{
+		GodotProfileZone("SceneTree::process/after_nodes_flush");
+		_flush_ugc();
+		MessageQueue::get_singleton()->flush(); //small little hack
+		flush_transform_notifications(); //transforms after world update, to avoid unnecessary enter/exit notifications
+	}
 
 	if (unlikely(pending_new_scene_id.is_valid())) {
+		GodotProfileZone("SceneTree::process/scene_change");
 		_flush_scene_change();
 	}
 
-	process_timers(p_time, false); //go through timers
-	process_tweens(p_time, false);
+	{
+		GodotProfileZone("SceneTree::process/timers_tweens");
+		process_timers(p_time, false); //go through timers
+		process_tweens(p_time, false);
+	}
 
-	flush_transform_notifications(); // Additional transforms after timers update.
+	{
+		GodotProfileZone("SceneTree::process/cleanup");
+		flush_transform_notifications(); // Additional transforms after timers update.
+		// This should happen last because any processing that deletes something beforehand might expect the object to be removed in the same frame.
+		_flush_delete_queue();
 
-	// This should happen last because any processing that deletes something beforehand might expect the object to be removed in the same frame.
-	_flush_delete_queue();
+		_flush_accessibility_changes();
 
-	_flush_accessibility_changes();
-
-	_call_idle_callbacks();
+		_call_idle_callbacks();
+	}
 
 #ifdef TOOLS_ENABLED
 #ifndef _3D_DISABLED
@@ -781,9 +804,13 @@ bool SceneTree::process(double p_time) {
 	// Second pass of scene tree fixed timestep interpolation.
 	// ToDo: Possibly needs another flush_transform_notifications here
 	// depending on whether there are side effects to _call_idle_callbacks().
-	get_scene_tree_fti().frame_update(get_root(), false);
+	{
+		GodotProfileZone("SceneTree::process/fti_finish");
+		get_scene_tree_fti().frame_update(get_root(), false);
+	}
 
 	if (_physics_interpolation_enabled) {
+		GodotProfileZone("SceneTree::process/pre_draw");
 		RenderingServer::get_singleton()->pre_draw(true);
 	}
 
@@ -1186,7 +1213,10 @@ void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
 	// When reading this function, keep in mind that this code must work in a way where
 	// if any node is removed, this needs to continue working.
 
-	p_group->call_queue.flush(); // Flush messages before processing.
+	{
+		GodotProfileZone("SceneTree::process_group/queue_before");
+		p_group->call_queue.flush(); // Flush messages before processing.
+	}
 
 	Vector<Node *> &nodes = p_physics ? p_group->physics_nodes : p_group->nodes;
 	if (nodes.is_empty()) {
@@ -1211,36 +1241,42 @@ void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
 	uint32_t node_count = nodes_copy.size();
 	Node **nodes_ptr = (Node **)nodes_copy.ptr(); // Force cast, pointer will not change.
 
-	for (uint32_t i = 0; i < node_count; i++) {
-		Node *n = nodes_ptr[i];
-		if (nodes_removed_on_group_call.has(n)) {
-			// Node may have been removed during process, skip it.
-			// Keep in mind removals can only happen on the main thread.
-			continue;
-		}
+	{
+		GodotProfileZone("SceneTree::process_group/node_notifications");
+		for (uint32_t i = 0; i < node_count; i++) {
+			Node *n = nodes_ptr[i];
+			if (nodes_removed_on_group_call.has(n)) {
+				// Node may have been removed during process, skip it.
+				// Keep in mind removals can only happen on the main thread.
+				continue;
+			}
 
-		if (!n->can_process() || !n->is_inside_tree()) {
-			continue;
-		}
+			if (!n->can_process() || !n->is_inside_tree()) {
+				continue;
+			}
 
-		if (p_physics) {
-			if (n->is_physics_processing_internal()) {
-				n->notification(Node::NOTIFICATION_INTERNAL_PHYSICS_PROCESS);
-			}
-			if (n->is_physics_processing()) {
-				n->notification(Node::NOTIFICATION_PHYSICS_PROCESS);
-			}
-		} else {
-			if (n->is_processing_internal()) {
-				n->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
-			}
-			if (n->is_processing()) {
-				n->notification(Node::NOTIFICATION_PROCESS);
+			if (p_physics) {
+				if (n->is_physics_processing_internal()) {
+					n->notification(Node::NOTIFICATION_INTERNAL_PHYSICS_PROCESS);
+				}
+				if (n->is_physics_processing()) {
+					n->notification(Node::NOTIFICATION_PHYSICS_PROCESS);
+				}
+			} else {
+				if (n->is_processing_internal()) {
+					n->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
+				}
+				if (n->is_processing()) {
+					n->notification(Node::NOTIFICATION_PROCESS);
+				}
 			}
 		}
 	}
 
-	p_group->call_queue.flush(); // Flush messages also after processing (for potential deferred calls).
+	{
+		GodotProfileZone("SceneTree::process_group/queue_after");
+		p_group->call_queue.flush(); // Flush messages also after processing (for potential deferred calls).
+	}
 }
 
 void SceneTree::_process_groups_thread(uint32_t p_index, bool p_physics) {
@@ -1319,7 +1355,10 @@ void SceneTree::_process(bool p_physics) {
 
 				if (using_threads) {
 					WorkerThreadPool::GroupID id = WorkerThreadPool::get_singleton()->add_template_group_task(this, &SceneTree::_process_groups_thread, p_physics, local_process_group_cache.size(), -1, true);
-					WorkerThreadPool::get_singleton()->wait_for_group_task_completion(id);
+					{
+						GodotProfileZone("SceneTree::process_groups/worker_wait");
+						WorkerThreadPool::get_singleton()->wait_for_group_task_completion(id);
+					}
 				}
 			}
 

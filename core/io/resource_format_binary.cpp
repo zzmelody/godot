@@ -880,9 +880,17 @@ void ResourceLoaderBinary::get_classes_used(Ref<FileAccess> p_f, HashSet<StringN
 	}
 
 	for (const IntResource &res : internal_resources) {
+#ifdef VEYA_COOKER
+		/*<<----- VEYA_COOKER: open() wraps compressed resources; offsets address the decoded stream. */
+		f->seek(res.offset);
+		String t = get_unicode_string();
+		if (!f->get_error() && t != String() && ClassDB::class_exists(t)) {
+		/*>>----- VEYA_COOKER */
+#else
 		p_f->seek(res.offset);
 		String t = get_unicode_string();
 		if (!p_f->get_error() && t != String() && ClassDB::class_exists(t)) {
+#endif
 			p_classes->insert(t);
 		}
 	}

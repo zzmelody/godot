@@ -2,6 +2,7 @@
 #include "retarget.h"
 
 #include "cooker/asset_files.h"
+#include "cooker/pipeline_cache.h"
 #include "core/io/dir_access.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
@@ -22,8 +23,12 @@ static void apply_import_defaults(const Ref<ResourceImporterScene> &p_importer, 
 	for (const ResourceImporter::ImportOption &option : definitions) {
 		r_options[option.option.name] = option.default_value;
 	}
-	r_options["fbx/importer"] = EditorSceneFormatImporterUFBX::FBX_IMPORTER_UFBX;
-	r_options["fbx/embedded_image_handling"] = GLTFState::HANDLE_BINARY_IMAGE_MODE_EMBED_AS_UNCOMPRESSED;
+	if (p_source.get_extension().to_lower() == "fbx") {
+		r_options["fbx/importer"] = EditorSceneFormatImporterUFBX::FBX_IMPORTER_UFBX;
+		r_options["fbx/embedded_image_handling"] = GLTFState::HANDLE_BINARY_IMAGE_MODE_EMBED_AS_UNCOMPRESSED;
+	} else {
+		r_options["gltf/embedded_image_handling"] = GLTFState::HANDLE_BINARY_IMAGE_MODE_EMBED_AS_UNCOMPRESSED;
+	}
 	r_options["_cooker_retarget_bone_map"] = p_map;
 }
 
@@ -78,6 +83,8 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(p_job.has("animation_name") && p_job["animation_name"].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(p_job.has("in_place") && p_job["in_place"].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(p_job.has("loop") && p_job["loop"].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_job.has("skip_existing") && p_job["skip_existing"].get_type()!=Variant::BOOL,ERR_INVALID_PARAMETER);
+	const bool skip_existing=p_job.get("skip_existing",false);
 	bool in_place = p_job.get("in_place", false);
 	bool loop = p_job.get("loop", false);
 	Error error = CookerFiles::check_path(source_dir, false, false, false);
@@ -132,6 +139,13 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(error != OK, error);
 		error = CookerFiles::check_path(output, true);
 		ERR_FAIL_COND_V(error != OK, error);
+		CookerCache::Receipt receipt;bool cache_hit=false;
+		if(skip_existing) {
+			Dictionary request;request["operation"]="retarget-animations";request["source"]=source;request["output"]=output;
+			request["bone_map"]=map_path;request["animation_name"]=selected_animation;request["in_place"]=in_place;request["loop"]=loop;
+			error=CookerCache::prepare(request,output,receipt,cache_hit);ERR_FAIL_COND_V(error!=OK,error);
+			if(cache_hit) {Dictionary clip;clip["source"]=source;clip["output"]=output;clip["skipped"]=true;clips.push_back(clip);continue;}
+		}
 		ERR_FAIL_COND_V_MSG(FileAccess::exists(output), ERR_ALREADY_EXISTS, "Retarget output already exists: " + output);
 		Ref<ResourceImporterScene> importer;
 		importer.instantiate();
@@ -198,6 +212,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 		clip["source"] = source;
 		clip["output"] = output;
 		clip["animations"] = animations.size();
+		if(skip_existing) {error=CookerCache::commit(receipt);ERR_FAIL_COND_V(error!=OK,error);}
 		clips.push_back(clip);
 	}
 	r_result["source_dir"] = source_dir;
@@ -226,7 +241,8 @@ Error retarget_model(const Dictionary &p_job, Dictionary &r_result) {
 	String source = p_job["source"];
 	String output = p_job["output"];
 	String map_path = p_job["bone_map"];
-	ERR_FAIL_COND_V(source.get_extension().to_lower() != "fbx" || output.get_extension().to_lower() != "scn", ERR_INVALID_PARAMETER);
+	const String extension = source.get_extension().to_lower();
+	ERR_FAIL_COND_V((extension != "fbx" && extension != "glb") || output.get_extension().to_lower() != "scn", ERR_INVALID_PARAMETER);
 	Error error = CookerFiles::check_path(source);
 	ERR_FAIL_COND_V(error != OK, error);
 	error = CookerFiles::check_path(output, true);
@@ -241,6 +257,20 @@ Error retarget_model(const Dictionary &p_job, Dictionary &r_result) {
 	importer->set_scene_import_type("PackedScene");
 	HashMap<StringName, Variant> options;
 	apply_import_defaults(importer, source, map, options);
+	for (const char *name : { "source_yaw_degrees", "source_scale" }) {
+		if (p_job.has(name)) {
+			ERR_FAIL_COND_V(p_job[name].get_type() != Variant::FLOAT && p_job[name].get_type() != Variant::INT, ERR_INVALID_PARAMETER);
+			double value = p_job[name];
+			ERR_FAIL_COND_V(!Math::is_finite(value), ERR_INVALID_PARAMETER);
+			if (String(name) == "source_scale") {
+				ERR_FAIL_COND_V(value < 0.001 || value > 1000.0, ERR_INVALID_PARAMETER);
+				options["nodes/root_scale"] = value;
+			} else {
+				ERR_FAIL_COND_V(value < -180.0 || value > 180.0, ERR_INVALID_PARAMETER);
+				options["_cooker_retarget_source_yaw_degrees"] = value;
+			}
+		}
+	}
 	error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 	ERR_FAIL_COND_V(error != OK, error);
 	List<String> variants;

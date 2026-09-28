@@ -57,3 +57,17 @@ skipped or failed step.
 
 Standalone JSON `--job` remains available for low-level tests and diagnostics.
 It is not an allowed canonical production description.
+
+`compose-character-animation` normally rejects a clip ID already present in its
+`base_library`. A clip can declare `replace_existing=true` to replace that exact
+existing semantic in a new output revision. The flag must be Boolean; a missing
+base ID or duplicate ID in the same request is rejected. Retained animations are
+shared unchanged and the base library is never written. Verified cache receipts
+include this flag in their normal parameter hash.
+
+`validate-character-actions` can additionally take `compare_base` and an
+`expected_changed` ID array. This cold check compares animation duration, loop,
+step, tracks, interpolation and every key against the prior library, bounded to
+256 semantics and four million keys. The report lists `changed_ids`,
+`retained_ids`, `compared_keys` and the base SHA-256. Unexpected differences or
+missing IDs fail validation. This checks motion data, not visual contact quality.

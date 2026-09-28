@@ -124,10 +124,64 @@ inline Error collect_shader_includes(const Variant &p_value, HashSet<ObjectID> &
 	return OK;
 }
 
+// Directory roots are declared by Luau; enumeration only transports existing
+// cooked resources. It does not infer source art, import or generate content.
+inline Error collect_directory(const String &p_path, Array &r_roots, HashSet<String> &r_metadata, int &r_directories, int p_depth = 0) {
+	ERR_FAIL_COND_V(p_depth > 16 || ++r_directories > 1024, ERR_PARAMETER_RANGE_ERROR);
+	ERR_FAIL_COND_V(!p_path.begins_with("res://assets/generated/"), ERR_UNAUTHORIZED);
+	Error error = check_path(p_path, false, false, false);
+	ERR_FAIL_COND_V(error != OK, error);
+	Ref<DirAccess> directory = DirAccess::open(p_path, &error);
+	ERR_FAIL_COND_V(directory.is_null(), error == OK ? ERR_FILE_NOT_FOUND : error);
+	// Reject links even when they point back inside the project: no recursion
+	// cycles or publication dependent on another mutable directory's lifetime.
+	String prefix = "res://";
+	for (const String &part : p_path.trim_prefix("res://").split("/")) {
+		prefix = prefix.path_join(part);
+		ERR_FAIL_COND_V(directory->is_link(ProjectSettings::get_singleton()->globalize_path(prefix)), ERR_UNAUTHORIZED);
+	}
+	error = directory->list_dir_begin();
+	ERR_FAIL_COND_V(error != OK, error);
+	Vector<String> children;
+	for (String name = directory->get_next(); !name.is_empty(); name = directory->get_next()) {
+		if (name == "." || name == "..") continue;
+		if (children.size() >= 4096 || directory->is_link(name)) { directory->list_dir_end(); return ERR_PARAMETER_RANGE_ERROR; }
+		children.push_back(name);
+	}
+	directory->list_dir_end();
+	children.sort();
+	for (const String &name : children) {
+		const String path = p_path.path_join(name);
+		if (directory->dir_exists(name)) {
+			error = collect_directory(path, r_roots, r_metadata, r_directories, p_depth + 1);
+			ERR_FAIL_COND_V(error != OK, error);
+		} else if (name.ends_with(".scn") || name.ends_with(".res")) {
+			r_roots.push_back(path);
+		} else if (name == "asset.manifest.json") {
+			error = check_path(path);
+			ERR_FAIL_COND_V(error != OK, error);
+			ERR_FAIL_COND_V(FileAccess::get_file_as_bytes(path).size() > 1024 * 1024, ERR_PARAMETER_RANGE_ERROR);
+			r_metadata.insert(path);
+		}
+		ERR_FAIL_COND_V(r_roots.size() + r_metadata.size() > 4096, ERR_PARAMETER_RANGE_ERROR);
+	}
+	return OK;
+}
+
 inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
-	ERR_FAIL_COND_V(!p_job.has("files") || p_job["files"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
-	Array roots = p_job["files"];
-	ERR_FAIL_COND_V(roots.is_empty() || roots.size() > 4096, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_job.has("files") && p_job["files"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_job.has("directories") && p_job["directories"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	Array roots = Array(p_job.get("files", Array())).duplicate();
+	const Array directories = p_job.get("directories", Array());
+	ERR_FAIL_COND_V(roots.size() > 4096 || directories.size() > 32, ERR_PARAMETER_RANGE_ERROR);
+	HashSet<String> metadata;
+	int directory_count = 0;
+	for (const Variant &directory : directories) {
+		ERR_FAIL_COND_V(directory.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		Error error = collect_directory(directory, roots, metadata, directory_count);
+		ERR_FAIL_COND_V(error != OK, error);
+	}
+	ERR_FAIL_COND_V(roots.is_empty(), ERR_INVALID_PARAMETER);
 	String output = p_job.get("output", "");
 	Error error = check_path(output, true, true);
 	ERR_FAIL_COND_V(error != OK, error);
@@ -146,6 +200,26 @@ inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
 		error = collect_shader_includes(resource, visited_resources, closure);
 		ERR_FAIL_COND_V(error != OK, error);
 	}
+	for (const String &path : metadata) closure.insert(path);
+	// Test/preview declarations are opaque bytes and require a separate explicit
+	// debug gate. Normal asset releases cannot accidentally include test scripts.
+	ERR_FAIL_COND_V(p_job.has("debug_files") && p_job["debug_files"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	const Array debug_files = p_job.get("debug_files", Array());
+	ERR_FAIL_COND_V(debug_files.size() > 16, ERR_PARAMETER_RANGE_ERROR);
+	if (!debug_files.is_empty()) {
+		ERR_FAIL_COND_V(p_job.get("debug", Variant()).get_type() != Variant::BOOL || !bool(p_job["debug"]), ERR_UNAUTHORIZED);
+		for (const Variant &value : debug_files) {
+			ERR_FAIL_COND_V(value.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+			const String path = value;
+			ERR_FAIL_COND_V(!path.ends_with(".luau") || (!path.begins_with("res://tests/runtime/character/") && !path.begins_with("res://content/scripts/runtime/preview/")), ERR_UNAUTHORIZED);
+			error = check_path(path);
+			ERR_FAIL_COND_V(error != OK, error);
+			const Vector<uint8_t> bytes = FileAccess::get_file_as_bytes(path);
+			ERR_FAIL_COND_V(bytes.is_empty() || bytes.size() > 256 * 1024 || bytes.find(0) >= 0, ERR_INVALID_DATA);
+			closure.insert(path);
+		}
+	}
+	ERR_FAIL_COND_V(closure.size() > 4096, ERR_PARAMETER_RANGE_ERROR);
 	Vector<String> files;
 	for (const String &path : closure) {
 		files.push_back(path);
@@ -180,6 +254,7 @@ inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
 	r_result["files"] = hashes;
 	r_result["sha256"] = FileAccess::get_sha256(output);
 	r_result["signed"] = false;
+	r_result["debug_only"] = !debug_files.is_empty();
 	return OK;
 }
 } // namespace CookerFiles

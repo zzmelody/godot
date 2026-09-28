@@ -9,6 +9,7 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access_pack.h"
 #include "core/io/json.h"
+#include "pipeline_cache.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
@@ -55,6 +56,7 @@
 #include "cooker/recipe.h"
 /*<<----- VEYA_COOKER: headless standard skeleton retarget jobs and processors. */
 #include "cooker/retarget.h"
+#include "cooker/character_actions.h"
 #include "editor/import/3d/post_import_plugin_skeleton_track_organizer.h"
 #include "editor/import/3d/post_import_plugin_skeleton_renamer.h"
 #include "editor/import/3d/post_import_plugin_skeleton_rest_fixer.h"
@@ -84,7 +86,7 @@ Dictionary capabilities() {
 	result["recipe_runtime"] = CookerRecipe::capabilities();
 	result["pipeline_runtime"] = CookerPipeline::capabilities();
 	Array operations;
-	for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview" }) {
+	for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions" }) {
 		operations.push_back(name);
 	}
 	result["operations"] = operations;
@@ -215,7 +217,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	String kind = p_job["kind"];
 	String entry = p_job["entry"];
 	ERR_FAIL_COND_V(!valid_asset_id(asset_id) || revision < 1, ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V(kind != "model" && kind != "texture" && kind != "material" && kind != "environment" && kind != "physics_material" && kind != "shader", ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(kind != "model" && kind != "texture" && kind != "material" && kind != "environment" && kind != "physics_material" && kind != "shader" && kind != "navigation", ERR_INVALID_PARAMETER);
 	Error error = CookerFiles::check_path(output, true);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V(output.get_file() != "asset.manifest.json", ERR_INVALID_PARAMETER);
@@ -306,6 +308,15 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 	}
 	if (operation == "make-animation-preview") {
 		return CookerRetarget::make_animation_preview(job, r_result);
+	}
+	if (operation == "compose-character-animation") {
+		return CookerCharacter::compose_animation(job, r_result);
+	}
+	if (operation == "assemble-character") {
+		return CookerCharacter::assemble(job, r_result);
+	}
+	if (operation == "validate-character-actions") {
+		return CookerCharacter::validate(job, r_result);
 	}
 	/*>>----- VEYA_COOKER */
 	for (const char *name : { "type", "compression", "collision_output" }) {
@@ -399,20 +410,43 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 				ERR_FAIL_COND_V(!Math::is_finite(value) || value < 0.01 || value > 1000.0, ERR_INVALID_PARAMETER);
 			}
 		}
-		ERR_FAIL_COND_V(!job.has("vertices") || job["vertices"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
-		Array points = job["vertices"];
-		ERR_FAIL_COND_V(points.is_empty() || points.size() % 3 != 0, ERR_INVALID_PARAMETER);
 		PackedVector3Array faces;
-		for (const Variant &point : points) {
-			ERR_FAIL_COND_V(point.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
-			Array coordinates = point;
-			ERR_FAIL_COND_V(coordinates.size() != 3, ERR_INVALID_PARAMETER);
-			for (const Variant &coordinate : coordinates) {
-				ERR_FAIL_COND_V(coordinate.get_type() != Variant::FLOAT && coordinate.get_type() != Variant::INT, ERR_INVALID_PARAMETER);
+		ERR_FAIL_COND_V(job.has("source") == job.has("vertices"), ERR_INVALID_PARAMETER);
+		if (job.has("source")) {
+			String source = job["source"];
+			HashSet<String> dependencies;
+			error = CookerFiles::collect(source, dependencies);
+			ERR_FAIL_COND_V(error != OK, error);
+			Ref<Mesh> source_mesh = ResourceLoader::load(source);
+			ERR_FAIL_COND_V(source_mesh.is_null(), ERR_INVALID_DATA);
+			for (int surface = 0; surface < source_mesh->get_surface_count(); ++surface) {
+				ERR_FAIL_COND_V(source_mesh->surface_get_primitive_type(surface) != Mesh::PRIMITIVE_TRIANGLES, ERR_INVALID_DATA);
+				Array arrays = source_mesh->surface_get_arrays(surface);
+				PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+				PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
+				int count = indices.is_empty() ? vertices.size() : indices.size();
+				ERR_FAIL_COND_V(count == 0 || count % 3 != 0 || count > 1500000 || faces.size() + count > 1500000, ERR_INVALID_DATA);
+				for (int i = 0; i < count; ++i) {
+					int index = indices.is_empty() ? i : indices[i];
+					ERR_FAIL_COND_V(index < 0 || index >= vertices.size() || !vertices[index].is_finite(), ERR_INVALID_DATA);
+					faces.push_back(vertices[index]);
+				}
 			}
-			Vector3 vertex(coordinates[0], coordinates[1], coordinates[2]);
-			ERR_FAIL_COND_V(!vertex.is_finite(), ERR_INVALID_PARAMETER);
-			faces.push_back(vertex);
+		} else {
+			ERR_FAIL_COND_V(job["vertices"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+			Array points = job["vertices"];
+			ERR_FAIL_COND_V(points.is_empty() || points.size() % 3 != 0 || points.size() > 1500000, ERR_INVALID_PARAMETER);
+			for (const Variant &point : points) {
+				ERR_FAIL_COND_V(point.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+				Array coordinates = point;
+				ERR_FAIL_COND_V(coordinates.size() != 3, ERR_INVALID_PARAMETER);
+				for (const Variant &coordinate : coordinates) {
+					ERR_FAIL_COND_V(coordinate.get_type() != Variant::FLOAT && coordinate.get_type() != Variant::INT, ERR_INVALID_PARAMETER);
+				}
+				Vector3 vertex(coordinates[0], coordinates[1], coordinates[2]);
+				ERR_FAIL_COND_V(!vertex.is_finite(), ERR_INVALID_PARAMETER);
+				faces.push_back(vertex);
+			}
 		}
 		String output = job.get("output", "");
 		ERR_FAIL_COND_V(output.is_empty(), ERR_INVALID_PARAMETER);
@@ -627,6 +661,7 @@ Error execute_pipeline(Dictionary &r_result) {
 	Array steps;
 	Dictionary description;
 	Error error = CookerPipeline::load(pipeline_path, steps, description);
+	if(error!=OK)r_result=description;
 	ERR_FAIL_COND_V(error != OK, error);
 	Array reports;
 	for (int index = 0; index < steps.size(); ++index) {
@@ -640,17 +675,26 @@ Error execute_pipeline(Dictionary &r_result) {
 		}
 		Variant condition = job.get("if_missing", false);
 		ERR_FAIL_COND_V(condition.get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
+		Variant verification=job.get("verify_cache",false);
+		ERR_FAIL_COND_V(verification.get_type()!=Variant::BOOL,ERR_INVALID_PARAMETER);
 		job.erase("name");
 		job.erase("if_missing");
+		job.erase("verify_cache");
 		ERR_FAIL_COND_V(job.get("operation", Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 		String operation = job["operation"];
 		ERR_FAIL_COND_V_MSG(operation == "run-pipeline", ERR_INVALID_PARAMETER, "Nested pipelines are not supported.");
 		bool known_operation = false;
-		for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview" }) {
+		for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions" }) {
 			known_operation |= operation == name;
 		}
 		ERR_FAIL_COND_V_MSG(!known_operation, ERR_INVALID_PARAMETER, "Unknown pipeline operation: " + operation);
 		report["operation"] = operation;
+		CookerCache::Receipt receipt;bool verified_hit=false;
+		if(bool(verification)) {
+			ERR_FAIL_COND_V(!bool(condition) || job.get("output",Variant()).get_type()!=Variant::STRING,ERR_INVALID_PARAMETER);
+			error=CookerCache::prepare(job,job["output"],receipt,verified_hit);ERR_FAIL_COND_V(error!=OK,error);
+			report["request_sha256"]=receipt.fingerprint;
+		}
 		if (bool(condition)) {
 			ERR_FAIL_COND_V_MSG(job.get("output", Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER, "if_missing requires an output path.");
 			String output = job["output"];
@@ -666,6 +710,7 @@ Error execute_pipeline(Dictionary &r_result) {
 		}
 		Dictionary job_result;
 		error = execute_job(job, job_result);
+		if(error==OK && bool(verification))error=CookerCache::commit(receipt);
 		for (const Variant *key = job_result.next(); key; key = job_result.next(key)) {
 			report[*key] = job_result[*key];
 		}
