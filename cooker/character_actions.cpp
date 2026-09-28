@@ -120,6 +120,39 @@ Error apply_rotation_offsets(const Array &p_offsets, const Ref<Animation> &p_ani
 	}
 	return OK;
 }
+Error apply_hips_position_offsets(const Array &p_offsets, const Ref<Animation> &p_animation) {
+	if (p_offsets.is_empty()) return OK;
+	ERR_FAIL_COND_V(p_offsets.size() < 2 || p_offsets.size() > 8, ERR_PARAMETER_RANGE_ERROR);
+	const int track = p_animation->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
+	ERR_FAIL_COND_V(track < 0 || p_animation->track_get_key_count(track) == 0, ERR_INVALID_DATA);
+	Vector<double> phases;
+	Vector<Vector3> offsets;
+	for (const Variant &value : p_offsets) {
+		ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		const Dictionary key = value;
+		const double phase = key.get("phase", -1.0);
+		const Variant position_value = key.get("meters", Variant());
+		ERR_FAIL_COND_V(position_value.get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		const Dictionary meters = position_value;
+		const double x = meters.get("x", 0.0), y = meters.get("y", 0.0), z = meters.get("z", 0.0);
+		ERR_FAIL_COND_V(!std::isfinite(phase) || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)
+				|| phase < 0 || phase > 1 || std::abs(x) > 1.0 || std::abs(y) > 1.0 || std::abs(z) > 1.0
+				|| (!phases.is_empty() && phase <= phases[phases.size() - 1]), ERR_INVALID_PARAMETER);
+		phases.push_back(phase);
+		offsets.push_back(Vector3(x, y, z));
+	}
+	ERR_FAIL_COND_V(phases[0] != 0.0 || phases[phases.size() - 1] != 1.0, ERR_INVALID_PARAMETER);
+	int interval = 0;
+	for (int sample = 0; sample < p_animation->track_get_key_count(track); ++sample) {
+		const double phase = p_animation->track_get_key_time(track, sample) / p_animation->get_length();
+		while (interval + 2 < phases.size() && phase > phases[interval + 1]) ++interval;
+		const double weight = CLAMP((phase - phases[interval]) / (phases[interval + 1] - phases[interval]), 0.0, 1.0);
+		Vector3 position = p_animation->track_get_key_value(track, sample);
+		position += offsets[interval].lerp(offsets[interval + 1], weight);
+		p_animation->track_set_key_value(track, sample, position);
+	}
+	return OK;
+}
 }
 
 Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
@@ -253,10 +286,14 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		const Array offsets = clip.get("rotation_offsets", Array());
 		error = apply_rotation_offsets(offsets, composed);
 		ERR_FAIL_COND_V(error != OK, error);
+		const Array position_offsets = clip.get("hips_position_offsets", Array());
+		error = apply_hips_position_offsets(position_offsets, composed);
+		ERR_FAIL_COND_V(error != OK, error);
 		composed->set_loop_mode(bool(clip.get("loop", false)) ? Animation::LOOP_LINEAR : Animation::LOOP_NONE);
 		composed->set_meta("character_semantic", id);
 		composed->set_meta("source_segments", sources);
 		composed->set_meta("rotation_offsets", offsets);
+		composed->set_meta("hips_position_offsets", position_offsets);
 		if (!hips_reference_id.is_empty()) composed->set_meta("align_hips_to", hips_reference_id);
 		composed->set_meta("visual_status", clip.get("visual_status", "unverified"));
 		if (replacing) library->remove_animation(id);
@@ -265,6 +302,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		Dictionary record;
 		record["id"] = id; record["seconds"] = cursor; record["sources"] = sources;
 		record["rotation_offsets"] = offsets;
+		record["hips_position_offsets"] = position_offsets;
 		if (!hips_reference_id.is_empty()) record["align_hips_to"] = hips_reference_id;
 		record["visual_status"] = clip.get("visual_status", "unverified");
 		if (replacing) {
@@ -362,6 +400,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		row["seconds"] = animation->get_length(); row["loop"] = animation->get_loop_mode() != Animation::LOOP_NONE;
 		row["sources"] = animation->get_meta("source_segments", Array());
 		row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
+		row["hips_position_offsets"] = animation->get_meta("hips_position_offsets", Array());
 		if (String(row["status"]) != "verified") unverified.push_back(id);
 		rows.push_back(row);
 	}
