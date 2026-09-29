@@ -39,6 +39,7 @@
 #include "scene/animation/animation_player.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/resources/portable_compressed_texture.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/particle_process_material.h"
 #include "scene/resources/3d/height_map_shape_3d.h"
@@ -181,6 +182,93 @@ void inspect_node(Node *p_node, Dictionary &r_result) {
 	for (int i = 0; i < p_node->get_child_count(); i++) {
 		inspect_node(p_node->get_child(i), r_result);
 	}
+}
+
+Error resize_scene_material_textures(const Ref<Material> &p_material, int p_max_dimension, HashMap<ObjectID, Ref<Texture2D>> &r_textures, HashSet<ObjectID> &r_materials, int &r_count) {
+	Ref<BaseMaterial3D> material = p_material;
+	ERR_FAIL_COND_V(p_material.is_valid() && material.is_null(), ERR_UNAVAILABLE);
+	if (material.is_null() || r_materials.has(material->get_instance_id())) {
+		return OK;
+	}
+	r_materials.insert(material->get_instance_id());
+	for (int parameter = 0; parameter < BaseMaterial3D::TEXTURE_MAX; ++parameter) {
+		const auto slot = static_cast<BaseMaterial3D::TextureParam>(parameter);
+		Ref<Texture2D> source = material->get_texture(slot);
+		if (source.is_null() || (source->get_width() <= p_max_dimension && source->get_height() <= p_max_dimension)) {
+			continue;
+		}
+		Ref<Texture2D> replacement;
+		if (Ref<Texture2D> *known = r_textures.getptr(source->get_instance_id())) {
+			replacement = *known;
+		} else {
+			Ref<Image> image = source->get_image();
+			ERR_FAIL_COND_V(image.is_null() || image->is_empty(), ERR_INVALID_DATA);
+			image = image->duplicate();
+			const double ratio = double(p_max_dimension) / double(MAX(source->get_width(), source->get_height()));
+			const int width = MAX(1, int(Math::round(source->get_width() * ratio)));
+			const int height = MAX(1, int(Math::round(source->get_height() * ratio)));
+			image->resize(width, height, Image::INTERPOLATE_LANCZOS);
+			Error error = image->generate_mipmaps(slot == BaseMaterial3D::TEXTURE_NORMAL);
+			ERR_FAIL_COND_V(error != OK, error);
+			replacement = ImageTexture::create_from_image(image);
+			ERR_FAIL_COND_V(replacement.is_null() || replacement->get_width() != width || replacement->get_height() != height, ERR_CANT_CREATE);
+			r_textures.insert(source->get_instance_id(), replacement);
+			++r_count;
+		}
+		material->set_texture(slot, replacement);
+	}
+	return OK;
+}
+
+void inspect_scene_material_textures(const Ref<Material> &p_material, HashSet<ObjectID> &r_seen, int &r_count, int &r_max_dimension) {
+	Ref<BaseMaterial3D> material = p_material;
+	if (material.is_null()) return;
+	for (int parameter = 0; parameter < BaseMaterial3D::TEXTURE_MAX; ++parameter) {
+		Ref<Texture2D> texture = material->get_texture(static_cast<BaseMaterial3D::TextureParam>(parameter));
+		if (texture.is_null() || r_seen.has(texture->get_instance_id())) continue;
+		r_seen.insert(texture->get_instance_id());
+		++r_count;
+		r_max_dimension = MAX(r_max_dimension, MAX(texture->get_width(), texture->get_height()));
+	}
+}
+
+void inspect_scene_textures(Node *p_node, HashSet<ObjectID> &r_seen, int &r_count, int &r_max_dimension) {
+	if (MeshInstance3D *instance = Object::cast_to<MeshInstance3D>(p_node)) {
+		Ref<Mesh> mesh = instance->get_mesh();
+		if (mesh.is_valid()) for (int surface = 0; surface < mesh->get_surface_count(); ++surface)
+			inspect_scene_material_textures(mesh->surface_get_material(surface), r_seen, r_count, r_max_dimension);
+		for (int surface = 0; surface < instance->get_surface_override_material_count(); ++surface)
+			inspect_scene_material_textures(instance->get_surface_override_material(surface), r_seen, r_count, r_max_dimension);
+		inspect_scene_material_textures(instance->get_material_override(), r_seen, r_count, r_max_dimension);
+		inspect_scene_material_textures(instance->get_material_overlay(), r_seen, r_count, r_max_dimension);
+	}
+	for (int child = 0; child < p_node->get_child_count(); ++child)
+		inspect_scene_textures(p_node->get_child(child), r_seen, r_count, r_max_dimension);
+}
+
+Error resize_scene_textures(Node *p_node, int p_max_dimension, HashMap<ObjectID, Ref<Texture2D>> &r_textures, HashSet<ObjectID> &r_materials, int &r_count) {
+	if (MeshInstance3D *instance = Object::cast_to<MeshInstance3D>(p_node)) {
+		Ref<Mesh> mesh = instance->get_mesh();
+		if (mesh.is_valid()) {
+			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
+				Error error = resize_scene_material_textures(mesh->surface_get_material(surface), p_max_dimension, r_textures, r_materials, r_count);
+				ERR_FAIL_COND_V(error != OK, error);
+			}
+		}
+		for (int surface = 0; surface < instance->get_surface_override_material_count(); ++surface) {
+			Error error = resize_scene_material_textures(instance->get_surface_override_material(surface), p_max_dimension, r_textures, r_materials, r_count);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
+		for (const Ref<Material> &material : { instance->get_material_override(), instance->get_material_overlay() }) {
+			Error error = resize_scene_material_textures(material, p_max_dimension, r_textures, r_materials, r_count);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
+	}
+	for (int child = 0; child < p_node->get_child_count(); ++child) {
+		Error error = resize_scene_textures(p_node->get_child(child), p_max_dimension, r_textures, r_materials, r_count);
+		ERR_FAIL_COND_V(error != OK, error);
+	}
+	return OK;
 }
 
 Error check_scene_types(const Ref<PackedScene> &p_scene, int p_depth = 0) {
@@ -546,6 +634,15 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		String extension = source.get_extension().to_lower();
 		ERR_FAIL_COND_V(extension != "gltf" && extension != "glb" && extension != "fbx" && extension != "obj", ERR_UNAVAILABLE);
 		ERR_FAIL_COND_V(type != "PackedScene" && type != "ArrayMesh" && type != "AnimationLibrary" && type != "MeshLibrary", ERR_INVALID_PARAMETER);
+		int maximum_texture_dimension = 0;
+		if (job.has("max_texture_dimension")) {
+			const Variant dimension = job["max_texture_dimension"];
+			ERR_FAIL_COND_V(type != "PackedScene" || (dimension.get_type() != Variant::INT && dimension.get_type() != Variant::FLOAT), ERR_INVALID_PARAMETER);
+			const double number = dimension;
+			ERR_FAIL_COND_V(!Math::is_finite(number) || number != Math::floor(number) || number < 256 || number > 2048, ERR_INVALID_PARAMETER);
+			maximum_texture_dimension = int(number);
+			ERR_FAIL_COND_V((maximum_texture_dimension & (maximum_texture_dimension - 1)) != 0, ERR_INVALID_PARAMETER);
+		}
 		Ref<ResourceImporterScene> importer;
 		importer.instantiate();
 		importer->set_scene_import_type(type);
@@ -578,7 +675,31 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		Variant metadata;
 		error = importer->import(ResourceUID::INVALID_ID, source, base, options, &variants, &generated, &metadata);
 		ERR_FAIL_COND_V(error != OK, error);
-		r_result["output"] = base + "." + importer->get_save_extension();
+		String imported_path = base + "." + importer->get_save_extension();
+		if (maximum_texture_dimension > 0) {
+			Ref<PackedScene> imported = ResourceLoader::load(imported_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
+			ERR_FAIL_COND_V(imported.is_null() || error != OK, ERR_INVALID_DATA);
+			Node *root = imported->instantiate();
+			ERR_FAIL_NULL_V(root, ERR_CANT_CREATE);
+			HashMap<ObjectID, Ref<Texture2D>> textures;
+			HashSet<ObjectID> materials;
+			int resized_count = 0;
+			error = resize_scene_textures(root, maximum_texture_dimension, textures, materials, resized_count);
+			if (error == OK) {
+				Ref<PackedScene> resized;
+				resized.instantiate();
+				error = resized->pack(root);
+				if (error == OK) error = ResourceSaver::save(resized, imported_path, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
+			}
+			memdelete(root);
+			if (error != OK) {
+				DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(imported_path));
+				return error;
+			}
+			r_result["textures_resized"] = resized_count;
+			r_result["max_texture_dimension"] = maximum_texture_dimension;
+		}
+		r_result["output"] = imported_path;
 		return OK;
 	}
 	if (operation == "validate-resource" || operation == "save-resource") {
@@ -651,13 +772,28 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		}
 		Ref<PackedScene> scene = resource;
 		if (scene.is_valid()) {
+			if (job.has("max_texture_dimension")) {
+				const Variant dimension = job["max_texture_dimension"];
+				ERR_FAIL_COND_V(dimension.get_type() != Variant::INT && dimension.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
+				const double number = dimension;
+				ERR_FAIL_COND_V(!Math::is_finite(number) || number != Math::floor(number) || number < 256 || number > 2048, ERR_INVALID_PARAMETER);
+			}
 			error = check_scene_types(scene);
 			ERR_FAIL_COND_V(error != OK, error);
 			Node *root = scene->instantiate();
 			ERR_FAIL_NULL_V(root, ERR_CANT_CREATE);
 			r_result["root_type"] = root->get_class();
 			inspect_node(root, r_result);
+			if (job.has("max_texture_dimension")) {
+				HashSet<ObjectID> textures;
+				int count = 0, maximum = 0;
+				inspect_scene_textures(root, textures, count, maximum);
+				r_result["texture_count"] = count;
+				r_result["max_texture_dimension"] = maximum;
+				if (maximum > int(job["max_texture_dimension"])) error = ERR_INVALID_DATA;
+			}
 			memdelete(root);
+			ERR_FAIL_COND_V(error != OK, error);
 		}
 		if (operation == "save-resource") {
 			String output = job.get("output", "");
