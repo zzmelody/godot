@@ -32,6 +32,14 @@ bool bone_track(const Ref<Animation> &p_animation, int p_track) {
 	return (type == Animation::TYPE_POSITION_3D || type == Animation::TYPE_ROTATION_3D || type == Animation::TYPE_SCALE_3D) &&
 		String(p_animation->track_get_path(p_track)).begins_with("%GeneralSkeleton:");
 }
+NodePath mirrored_bone_path(const NodePath &p_path) {
+	const String path = String(p_path);
+	const String prefix = "%GeneralSkeleton:";
+	const String bone = path.trim_prefix(prefix);
+	if (bone.begins_with("Left")) return NodePath(prefix + "Right" + bone.substr(4));
+	if (bone.begins_with("Right")) return NodePath(prefix + "Left" + bone.substr(5));
+	return p_path;
+}
 bool same_motion(const Ref<Animation> &p_a, const Ref<Animation> &p_b, uint64_t &r_keys) {
 	if (p_a->get_length() != p_b->get_length() || p_a->get_loop_mode() != p_b->get_loop_mode() ||
 		p_a->get_step() != p_b->get_step() || p_a->get_track_count() != p_b->get_track_count()) return false;
@@ -203,6 +211,9 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(clip.get("segments", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
 		const Array segments = clip["segments"];
 		ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8, ERR_PARAMETER_RANGE_ERROR);
+		const Variant mirror_value = clip.get("mirror_x", false);
+		ERR_FAIL_COND_V(mirror_value.get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
+		const bool mirror_x = mirror_value;
 		const String hips_reference_id = clip.get("align_hips_to", "");
 		Vector3 hips_reference;
 		if (!hips_reference_id.is_empty()) {
@@ -239,7 +250,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 				// Method, audio, property and non-skeleton tracks are never executable content.
 				ERR_FAIL_COND_V(!bone_track(source, source_track), ERR_INVALID_DATA);
 				const auto type = source->track_get_type(source_track);
-				const NodePath path = source->track_get_path(source_track);
+				const NodePath path = mirror_x ? mirrored_bone_path(source->track_get_path(source_track)) : source->track_get_path(source_track);
 				int target_track = composed->find_track(path, type);
 				if (target_track < 0) { target_track = composed->add_track(type); composed->track_set_path(target_track, path); }
 				if (type == Animation::TYPE_ROTATION_3D) ++rotations;
@@ -248,7 +259,10 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 				ERR_FAIL_COND_V(total_keys > 4000000, ERR_OUT_OF_MEMORY);
 				const bool hips = String(path) == "%GeneralSkeleton:Hips";
 				Vector3 origin;
-				if (type == Animation::TYPE_POSITION_3D) origin = source->position_track_interpolate(source_track, 0);
+				if (type == Animation::TYPE_POSITION_3D) {
+					origin = source->position_track_interpolate(source_track, 0);
+					if (mirror_x) origin.x = -origin.x;
+				}
 				const int previous_keys = composed->track_get_key_count(target_track);
 				const Variant previous = previous_keys ? composed->track_get_key_value(target_track, previous_keys - 1) : Variant();
 				for (int sample = 0; sample <= samples; ++sample) {
@@ -258,6 +272,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 					const double blend_weight = cursor > 0 && previous_keys && blend > 0 ? MIN(1.0, phase * duration / blend) : 1.0;
 					if (type == Animation::TYPE_POSITION_3D) {
 						Vector3 position = source->position_track_interpolate(source_track, time);
+						if (mirror_x) position.x = -position.x;
 						if (hips) {
 							position.x = origin.x; position.z = origin.z;
 							if (flatten_vertical) position.y = origin.y;
@@ -267,6 +282,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 						composed->position_track_insert_key(target_track, at, position);
 					} else if (type == Animation::TYPE_ROTATION_3D) {
 						Quaternion rotation = source->rotation_track_interpolate(source_track, time);
+						if (mirror_x) rotation = Quaternion(rotation.x, -rotation.y, -rotation.z, rotation.w);
 						if (blend_weight < 1) rotation = Quaternion(previous).slerp(rotation, blend_weight);
 						composed->rotation_track_insert_key(target_track, at, rotation);
 					} else {
@@ -292,6 +308,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		composed->set_loop_mode(bool(clip.get("loop", false)) ? Animation::LOOP_LINEAR : Animation::LOOP_NONE);
 		composed->set_meta("character_semantic", id);
 		composed->set_meta("source_segments", sources);
+		composed->set_meta("mirror_x", mirror_x);
 		composed->set_meta("rotation_offsets", offsets);
 		composed->set_meta("hips_position_offsets", position_offsets);
 		if (!hips_reference_id.is_empty()) composed->set_meta("align_hips_to", hips_reference_id);
@@ -301,6 +318,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(error != OK, error);
 		Dictionary record;
 		record["id"] = id; record["seconds"] = cursor; record["sources"] = sources;
+		record["mirror_x"] = mirror_x;
 		record["rotation_offsets"] = offsets;
 		record["hips_position_offsets"] = position_offsets;
 		if (!hips_reference_id.is_empty()) record["align_hips_to"] = hips_reference_id;
@@ -399,6 +417,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		row["status"] = animation->get_meta("visual_status", "unverified");
 		row["seconds"] = animation->get_length(); row["loop"] = animation->get_loop_mode() != Animation::LOOP_NONE;
 		row["sources"] = animation->get_meta("source_segments", Array());
+		row["mirror_x"] = animation->get_meta("mirror_x", false);
 		row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
 		row["hips_position_offsets"] = animation->get_meta("hips_position_offsets", Array());
 		if (String(row["status"]) != "verified") unverified.push_back(id);
@@ -413,8 +432,9 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		Ref<AnimationLibrary> base;
 		error = load_library(compare_path, base);
 		ERR_FAIL_COND_V(error != OK, error);
-		ERR_FAIL_COND_V(p_job.get("expected_changed", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
-		const Array expected = p_job["expected_changed"];
+		const Variant changed_value = p_job.get("expected_changed", Array());
+		ERR_FAIL_COND_V(changed_value.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+		const Array expected = changed_value;
 		ERR_FAIL_COND_V(expected.size() > 256, ERR_PARAMETER_RANGE_ERROR);
 		HashSet<String> expected_ids;
 		for (const Variant &value : expected) {
@@ -423,8 +443,19 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 			ERR_FAIL_COND_V(!identifier(id) || expected_ids.has(id) || !base->has_animation(id), ERR_INVALID_PARAMETER);
 			expected_ids.insert(id);
 		}
+		const Variant added_value = p_job.get("expected_added", Array());
+		ERR_FAIL_COND_V(added_value.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+		const Array added = added_value;
+		ERR_FAIL_COND_V(added.size() > 256, ERR_PARAMETER_RANGE_ERROR);
+		HashSet<String> added_ids;
+		for (const Variant &value : added) {
+			ERR_FAIL_COND_V(value.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+			const String id = value;
+			ERR_FAIL_COND_V(!identifier(id) || added_ids.has(id) || base->has_animation(id) || !library->has_animation(id), ERR_INVALID_PARAMETER);
+			added_ids.insert(id);
+		}
 		LocalVector<StringName> names; base->get_animation_list(&names);
-		ERR_FAIL_COND_V(names.size() > 256 || library->get_animation_list_size() != int(names.size()), ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(names.size() > 256 || library->get_animation_list_size() != int(names.size() + added.size()), ERR_INVALID_DATA);
 		Array changed, retained;
 		uint64_t compared_keys = 0;
 		for (const StringName &name : names) {
@@ -437,6 +468,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		report["compared_base"] = compare_path;
 		report["base_sha256"] = FileAccess::get_sha256(compare_path);
 		report["changed_ids"] = changed; report["retained_ids"] = retained;
+		report["added_ids"] = added;
 		report["compared_keys"] = compared_keys;
 	}
 	Ref<FileAccess> file = FileAccess::open(output, FileAccess::WRITE, &error);
