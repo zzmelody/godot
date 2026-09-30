@@ -70,9 +70,20 @@ sampled Hips position to the named semantic's first pelvis position. The
 reference must already exist in the base library; the source, all limb tracks
 and any vertical change not flattened by `flatten_vertical` remain intact.
 This is useful when an in-place source preserves a displaced initial pelvis.
-`rotation_offsets` may turn the Hips bone by up to 180 degrees around local Y;
-other bone/axis corrections remain limited to 90 degrees. Both settings are
-authored in the immutable Luau pipeline and recorded in clip provenance.
+The optional `align_hips_axes="xz"` aligns only the horizontal origin, preserving
+the source's authored vertical pose. The default `"xyz"` retains the existing
+full-origin alignment. The option requires `align_hips_to` and rejects other axes
+or types. Rest/stand clips can therefore share one horizontal origin without
+lifting a lying pose to the standing pelvis height. Provenance records the axes.
+`validate-character-actions` can explicitly request `include_hips_positions=true`
+for finite first/last Hips track values in its cold JSON report. This is diagnostic
+data and does not alter the AnimationLibrary or claim visual acceptance.
+`rotation_offsets` may turn the Hips bone by up to 180 degrees around Y;
+other bone/axis corrections remain limited to 90 degrees. Each offset defaults
+to `space="local"` (postmultiply) and may specify `space="parent"`
+(premultiply) when a supine or tilted Hips axis makes a local heading change
+roll the body. Invalid spaces are rejected. Both settings are authored in the
+immutable Luau pipeline and recorded in clip provenance.
 
 `validate-character-actions` can additionally take `compare_base` and an
 `expected_changed` ID array. This cold check compares animation duration, loop,

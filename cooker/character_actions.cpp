@@ -89,6 +89,8 @@ Error apply_rotation_offsets(const Array &p_offsets, const Ref<Animation> &p_ani
 		const String bone = offset.get("bone", "");
 		ERR_FAIL_COND_V(bone.is_empty() || bone.length() > 64 || bone.contains(":") || bone.contains("/") || bones.has(bone), ERR_INVALID_PARAMETER);
 		bones.insert(bone);
+		const String space = offset.get("space", "local");
+		ERR_FAIL_COND_V(space != "local" && space != "parent", ERR_INVALID_PARAMETER);
 		const int track = p_animation->find_track(NodePath("%GeneralSkeleton:" + bone), Animation::TYPE_ROTATION_3D);
 		ERR_FAIL_COND_V(track < 0 || offset.get("keys", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_DATA);
 		const Array keys = offset["keys"];
@@ -123,7 +125,10 @@ Error apply_rotation_offsets(const Array &p_offsets, const Ref<Animation> &p_ani
 			const double weight = CLAMP((phase - phases[interval]) / (phases[interval + 1] - phases[interval]), 0.0, 1.0);
 			const Quaternion correction = rotations[interval].slerp(rotations[interval + 1], weight);
 			const Quaternion original = p_animation->track_get_key_value(track, sample);
-			p_animation->track_set_key_value(track, sample, (original * correction).normalized());
+			// A prone Hips-local Y axis is horizontal. Parent-space correction
+			// changes heading about the skeleton parent's Y without rolling the body.
+			p_animation->track_set_key_value(track, sample,
+				(space == "parent" ? correction * original : original * correction).normalized());
 		}
 	}
 	return OK;
@@ -215,6 +220,11 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(mirror_value.get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
 		const bool mirror_x = mirror_value;
 		const String hips_reference_id = clip.get("align_hips_to", "");
+		const Variant hips_axes_value = clip.get("align_hips_axes", "xyz");
+		ERR_FAIL_COND_V(hips_axes_value.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		const String hips_axes = hips_axes_value;
+		ERR_FAIL_COND_V((hips_axes != "xyz" && hips_axes != "xz") ||
+				(clip.has("align_hips_axes") && hips_reference_id.is_empty()), ERR_INVALID_PARAMETER);
 		Vector3 hips_reference;
 		if (!hips_reference_id.is_empty()) {
 			ERR_FAIL_COND_V(!identifier(hips_reference_id) || segments.size() != 1 || !library->has_animation(hips_reference_id), ERR_INVALID_PARAMETER);
@@ -276,7 +286,11 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 						if (hips) {
 							position.x = origin.x; position.z = origin.z;
 							if (flatten_vertical) position.y = origin.y;
-							if (!hips_reference_id.is_empty()) position += hips_reference - origin;
+							if (!hips_reference_id.is_empty()) {
+								Vector3 offset = hips_reference - origin;
+								if (hips_axes == "xz") offset.y = 0;
+								position += offset;
+							}
 						}
 						if (blend_weight < 1) position = Vector3(previous).lerp(position, blend_weight);
 						composed->position_track_insert_key(target_track, at, position);
@@ -312,6 +326,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		composed->set_meta("rotation_offsets", offsets);
 		composed->set_meta("hips_position_offsets", position_offsets);
 		if (!hips_reference_id.is_empty()) composed->set_meta("align_hips_to", hips_reference_id);
+		if (clip.has("align_hips_axes")) composed->set_meta("align_hips_axes", hips_axes);
 		composed->set_meta("visual_status", clip.get("visual_status", "unverified"));
 		if (replacing) library->remove_animation(id);
 		error = library->add_animation(id, composed);
@@ -322,6 +337,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		record["rotation_offsets"] = offsets;
 		record["hips_position_offsets"] = position_offsets;
 		if (!hips_reference_id.is_empty()) record["align_hips_to"] = hips_reference_id;
+		if (clip.has("align_hips_axes")) record["align_hips_axes"] = hips_axes;
 		record["visual_status"] = clip.get("visual_status", "unverified");
 		if (replacing) {
 			bool updated = false;
@@ -420,6 +436,20 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		row["mirror_x"] = animation->get_meta("mirror_x", false);
 		row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
 		row["hips_position_offsets"] = animation->get_meta("hips_position_offsets", Array());
+		if (animation->has_meta("align_hips_axes")) row["align_hips_axes"] = animation->get_meta("align_hips_axes");
+		if (bool(p_job.get("include_hips_positions", false))) {
+			const int hips = animation->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
+			ERR_FAIL_COND_V(hips < 0 || animation->track_get_key_count(hips) == 0, ERR_INVALID_DATA);
+			const Vector3 first = animation->position_track_interpolate(hips, 0);
+			const Vector3 last = animation->position_track_interpolate(hips, animation->get_length());
+			ERR_FAIL_COND_V(!first.is_finite() || !last.is_finite(), ERR_INVALID_DATA);
+			Array first_position, last_position;
+			for (int axis = 0; axis < 3; ++axis) {
+				first_position.push_back(first[axis]); last_position.push_back(last[axis]);
+			}
+			row["hips_first_position_m"] = first_position;
+			row["hips_last_position_m"] = last_position;
+		}
 		if (String(row["status"]) != "verified") unverified.push_back(id);
 		rows.push_back(row);
 	}
