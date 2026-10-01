@@ -370,6 +370,11 @@ void DisplayServerWindows::_register_raw_input_devices(DisplayServerEnums::Windo
 	rid[1].usUsagePage = 0x01; // HID_USAGE_PAGE_GENERIC
 	rid[1].usUsage = 0x06; // HID_USAGE_GENERIC_KEYBOARD
 	rid[1].dwFlags = 0;
+	if (wallpaper_input) {
+		// A single registration owner: an extension must never replace this sink.
+		p_target_window = DisplayServerEnums::MAIN_WINDOW_ID;
+		rid[0].dwFlags = RIDEV_INPUTSINK;
+	}
 
 	if (p_target_window != DisplayServerEnums::INVALID_WINDOW_ID && windows.has(p_target_window)) {
 		// Follow the defined window
@@ -2043,6 +2048,184 @@ void DisplayServerWindows::gl_window_make_current(DisplayServerEnums::WindowID p
 #endif
 }
 
+Error DisplayServerWindows::window_set_wallpaper_parent(int64_t p_parent, int64_t p_after, const Rect2i &p_rect, bool p_layered, DisplayServerEnums::WindowID p_window) {
+	_THREAD_SAFE_METHOD_
+	ERR_FAIL_COND_V(!windows.has(p_window), ERR_INVALID_PARAMETER);
+	HWND parent = (HWND)p_parent;
+	ERR_FAIL_COND_V(!IsWindow(parent) || p_rect.size.x <= 0 || p_rect.size.y <= 0, ERR_INVALID_PARAMETER);
+	WindowData &wd = windows[p_window];
+	ERR_FAIL_COND_V(!IsWindow(wd.hWnd), ERR_UNAVAILABLE);
+	if (!wd.wallpaper) {
+		wd.wallpaper_enabled = IsWindowEnabled(wd.hWnd);
+		wd.wallpaper_style = GetWindowLongPtrW(wd.hWnd, GWL_STYLE);
+		wd.wallpaper_ex_style = GetWindowLongPtrW(wd.hWnd, GWL_EXSTYLE);
+		GetWindowRect(wd.hWnd, &wd.wallpaper_rect);
+		wd.wallpaper_parent = wd.parent_hwnd;
+		wd.wallpaper_owner = GetWindow(wd.hWnd, GW_OWNER);
+		wd.wallpaper_placement.length = sizeof(WINDOWPLACEMENT);
+		if (!GetWindowPlacement(wd.hWnd, &wd.wallpaper_placement)) wd.wallpaper_placement.length = 0;
+		wd.wallpaper_mode = window_get_mode(p_window);
+		wd.wallpaper_flags = 0;
+		for (int i = 0; i < DisplayServerEnums::WINDOW_FLAG_MAX; ++i) {
+			if (window_get_flag(DisplayServerEnums::WindowFlags(i), p_window)) wd.wallpaper_flags |= 1u << i;
+		}
+	}
+	const LONG_PTR old_style = GetWindowLongPtrW(wd.hWnd, GWL_STYLE);
+	const LONG_PTR old_ex_style = GetWindowLongPtrW(wd.hWnd, GWL_EXSTYLE);
+	SetWindowLongPtrW(wd.hWnd, GWL_STYLE, (old_style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE)) | WS_CHILD | WS_VISIBLE);
+	SetWindowLongPtrW(wd.hWnd, GWL_EXSTYLE, (old_ex_style & ~(WS_EX_APPWINDOW | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | (p_layered ? WS_EX_NOREDIRECTIONBITMAP : 0))) | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | (p_layered ? WS_EX_LAYERED : 0));
+	// Raised-desktop composition must be initialized before cross-process SetParent.
+	// Godot HWNDs can fail to establish layered redirection after being attached.
+	if (p_layered && !SetLayeredWindowAttributes(wd.hWnd, 0, 255, LWA_ALPHA)) {
+		SetWindowLongPtrW(wd.hWnd, GWL_STYLE, old_style);
+		SetWindowLongPtrW(wd.hWnd, GWL_EXSTYLE, old_ex_style);
+		return ERR_CANT_CREATE;
+	}
+	// Match the shell's coordinate context while reparenting; never change process DPI policy.
+	DPI_AWARENESS_CONTEXT previous_dpi = SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(parent));
+	SetLastError(ERROR_SUCCESS);
+	HWND previous_parent = SetParent(wd.hWnd, parent);
+	DWORD error = GetLastError();
+	if (previous_dpi) SetThreadDpiAwarenessContext(previous_dpi);
+	if (!previous_parent && error != ERROR_SUCCESS) {
+		SetWindowLongPtrW(wd.hWnd, GWL_STYLE, old_style);
+		SetWindowLongPtrW(wd.hWnd, GWL_EXSTYLE, old_ex_style);
+		return ERR_CANT_CREATE;
+	}
+	wd.parent_hwnd = parent;
+	wd.wallpaper = true;
+	// The handbook may request attachment between WM_LBUTTONDOWN and WM_LBUTTONUP.
+	// Wallpaper windows skip legacy button messages, so that final up cannot release
+	// an earlier engine capture. Release only this window's capture before mounting.
+	if (GetCapture() == wd.hWnd) {
+		ReleaseCapture();
+	}
+	pressrc = 0;
+	// The skipped button-up must not leave Input/CEF believing a button is held.
+	for (int index = int(MouseButton::LEFT); index <= int(MouseButton::MB_XBUTTON2); ++index) {
+		if (Input::get_singleton()->is_mouse_button_pressed(MouseButton(index))) {
+			Ref<InputEventMouseButton> release;
+			release.instantiate();
+			release->set_window_id(p_window);
+			release->set_button_index(MouseButton(index));
+			release->set_pressed(false);
+			release->set_position(Input::get_singleton()->get_mouse_position());
+			release->set_global_position(release->get_position());
+			Input::get_singleton()->parse_input_event(release);
+		}
+	}
+	// Explorer must own native hit testing in both wallpaper modes. Full play uses
+	// the host's explicit hooks and the engine's Raw Input sink, never HWND focus.
+	// WS_EX_TRANSPARENT / HTTRANSPARENT alone do not cover cross-thread windows.
+	EnableWindow(wd.hWnd, FALSE);
+	wd.fullscreen = wd.maximized = wd.minimized = wd.multiwindow_fs = false;
+	POINT origin = {p_rect.position.x, p_rect.position.y};
+	ScreenToClient(parent, &origin);
+	if (!SetWindowPos(wd.hWnd, p_after ? (HWND)p_after : HWND_BOTTOM, origin.x, origin.y, p_rect.size.x, p_rect.size.y, SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW)) {
+		window_restore_wallpaper(p_window);
+		return ERR_CANT_CREATE;
+	}
+	// Reparenting an active top-level window does not relinquish foreground status.
+	// Disabled child HWNDs can otherwise remain the foreground Engine window and
+	// swallow Explorer's first activation click. Transfer only our own foreground;
+	// attaching in the background must never steal another application's focus.
+	if (GetForegroundWindow() == wd.hWnd) {
+		HWND shell = GetShellWindow();
+		if (IsWindow(shell)) SetForegroundWindow(shell);
+	}
+	return OK;
+}
+
+Error DisplayServerWindows::window_restore_wallpaper(DisplayServerEnums::WindowID p_window) {
+	_THREAD_SAFE_METHOD_
+	ERR_FAIL_COND_V(!windows.has(p_window), ERR_INVALID_PARAMETER);
+	window_set_wallpaper_input(false, p_window);
+	WindowData previous = windows[p_window];
+	if (!previous.wallpaper) return OK;
+	HWND restored_parent = IsWindow(previous.wallpaper_parent) ? previous.wallpaper_parent : nullptr;
+	if (!IsWindow(previous.hWnd)) {
+		// Explorer may destroy a cross-process child. Recreate only the engine surface,
+		// preserving the Window instance, SceneTree, extension, world and CEF browser.
+#ifdef RD_ENABLED
+		if (rendering_device) rendering_device->screen_free(p_window);
+		if (rendering_context && previous.rendering_context_window_created) rendering_context->window_destroy(p_window);
+#endif
+#ifdef GLES3_ENABLED
+		if (gl_manager_native && previous.gl_native_window_created) gl_manager_native->window_destroy(p_window);
+#ifdef ANGLE_ENABLED
+		if (gl_manager_angle && previous.gl_angle_window_created) gl_manager_angle->window_destroy(p_window);
+#endif
+#endif
+		if (previous.drop_target) previous.drop_target->Release();
+		windows.erase(p_window);
+		Rect2i rect(previous.wallpaper_rect.left, previous.wallpaper_rect.top, previous.wallpaper_rect.right - previous.wallpaper_rect.left, previous.wallpaper_rect.bottom - previous.wallpaper_rect.top);
+		Error result = _create_window(p_window, previous.wallpaper_mode, previous.wallpaper_flags, rect, previous.exclusive, previous.transient_parent, restored_parent, previous.no_redirection_bitmap);
+		if (result != OK) return result;
+		WindowData &created = windows[p_window];
+		created.instance_id = previous.instance_id;
+		created.rect_changed_callback = previous.rect_changed_callback;
+		created.event_callback = previous.event_callback;
+		created.input_event_callback = previous.input_event_callback;
+		created.input_text_callback = previous.input_text_callback;
+		created.drop_files_callback = previous.drop_files_callback;
+#ifdef RD_ENABLED
+		if (rendering_context) {
+			result = _create_rendering_context_window(p_window, rendering_driver);
+			if (result != OK) return result;
+			if (rendering_device) rendering_device->screen_create(p_window);
+		}
+#endif
+#ifdef GLES3_ENABLED
+		if (gl_manager_native) { result = _create_gl_window(p_window); if (result != OK) return result; }
+#endif
+	} else {
+		SetLastError(ERROR_SUCCESS);
+		DPI_AWARENESS_CONTEXT old_dpi = restored_parent ? SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(restored_parent)) : nullptr;
+		SetParent(previous.hWnd, restored_parent);
+		const DWORD error = GetLastError();
+		if (old_dpi) SetThreadDpiAwarenessContext(old_dpi);
+		if (error != ERROR_SUCCESS) return ERR_CANT_CREATE;
+	}
+	WindowData &wd = windows[p_window];
+	wd.parent_hwnd = restored_parent;
+	wd.wallpaper = false;
+	SetWindowLongPtrW(wd.hWnd, GWL_STYLE, previous.wallpaper_style);
+	SetWindowLongPtrW(wd.hWnd, GWL_EXSTYLE, previous.wallpaper_ex_style);
+	EnableWindow(wd.hWnd, previous.wallpaper_enabled);
+	const RECT &r = previous.wallpaper_rect;
+	POINT origin = {r.left, r.top};
+	if (restored_parent) ScreenToClient(restored_parent, &origin);
+	else if (IsWindow(previous.wallpaper_owner)) SetWindowLongPtrW(wd.hWnd, GWLP_HWNDPARENT, (LONG_PTR)previous.wallpaper_owner);
+	if (!SetWindowPos(wd.hWnd, previous.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST, origin.x, origin.y, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE)) return ERR_CANT_CREATE;
+	if (!restored_parent && previous.wallpaper_placement.length == sizeof(WINDOWPLACEMENT)) {
+		WINDOWPLACEMENT placement = previous.wallpaper_placement;
+		if (placement.showCmd == SW_SHOWNORMAL) placement.showCmd = SW_SHOWNOACTIVATE;
+		if (!SetWindowPlacement(wd.hWnd, &placement)) return ERR_CANT_CREATE;
+	}
+	wd.fullscreen = previous.wallpaper_mode == DisplayServerEnums::WINDOW_MODE_FULLSCREEN || previous.wallpaper_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN;
+	wd.multiwindow_fs = previous.wallpaper_mode == DisplayServerEnums::WINDOW_MODE_FULLSCREEN;
+	wd.maximized = previous.wallpaper_mode == DisplayServerEnums::WINDOW_MODE_MAXIMIZED;
+	wd.minimized = previous.wallpaper_mode == DisplayServerEnums::WINDOW_MODE_MINIMIZED;
+	wd.pre_fs_rect = previous.pre_fs_rect;
+	wd.pre_fs_valid = previous.pre_fs_valid;
+	wd.was_maximized_pre_fs = previous.was_maximized_pre_fs;
+	return OK;
+}
+
+void DisplayServerWindows::window_set_wallpaper_input(bool p_enabled, DisplayServerEnums::WindowID p_window) {
+	_THREAD_SAFE_METHOD_
+	wallpaper_input = p_enabled;
+	wallpaper_mouse_motion = Vector2();
+	_register_raw_input_devices(p_enabled ? p_window : DisplayServerEnums::INVALID_WINDOW_ID);
+}
+
+Vector2 DisplayServerWindows::window_take_wallpaper_mouse_motion(DisplayServerEnums::WindowID p_window) {
+	_THREAD_SAFE_METHOD_
+	Vector2 result = wallpaper_mouse_motion;
+	wallpaper_mouse_motion = Vector2();
+	return result;
+}
+
 int64_t DisplayServerWindows::window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window) const {
 	ERR_FAIL_COND_V(!windows.has(p_window), 0);
 	switch (p_handle_type) {
@@ -2645,6 +2828,7 @@ void DisplayServerWindows::_update_window_style(DisplayServerEnums::WindowID p_w
 
 	ERR_FAIL_COND(!windows.has(p_window));
 	WindowData &wd = windows[p_window];
+	if (wd.wallpaper) return; // The shell attachment owns native styles until restored.
 
 	DWORD style = 0;
 	DWORD style_ex = 0;
@@ -4281,6 +4465,10 @@ Vector2 DisplayServerWindows::_get_raw_mouse_motion(const RAWINPUT &p_raw, Displ
 }
 
 void DisplayServerWindows::_process_raw_mouse_motion(const Vector2 &p_relative, bool p_left_button_down, DisplayServerEnums::WindowID p_window_id) {
+	if (wallpaper_input) {
+		wallpaper_mouse_motion += p_relative;
+		return;
+	}
 	if (p_relative == Vector2()) {
 		return;
 	}
@@ -4318,6 +4506,12 @@ void DisplayServerWindows::_process_raw_mouse_motion(const Vector2 &p_relative, 
 }
 
 void DisplayServerWindows::_process_raw_input_event(const RAWINPUT &p_raw, DisplayServerEnums::WindowID p_window_id) {
+	if (wallpaper_input) {
+		if (p_raw.header.dwType == RIM_TYPEMOUSE) {
+			wallpaper_mouse_motion += _get_raw_mouse_motion(p_raw, p_window_id);
+		}
+		return;
+	}
 	if (p_raw.header.dwType == RIM_TYPEKEYBOARD) {
 		if (p_raw.data.keyboard.VKey == VK_SHIFT) {
 			// If multiple Shifts are held down at the same time,
@@ -5654,6 +5848,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 
 	// Process window messages.
 	switch (uMsg) {
+		case WM_POWERBROADCAST: {
+			if (windows[window_id].wallpaper && (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND)) Main::reset_frame_time();
+		} break;
 		case WM_GETOBJECT: {
 			get_object_received = true;
 		} break;
@@ -5673,11 +5870,12 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			}
 		} break;
 		case WM_NCHITTEST: {
-			if (windows[window_id].mpass) {
+			if (windows[window_id].wallpaper || windows[window_id].mpass) {
 				return HTTRANSPARENT;
 			}
 		} break;
 		case WM_MOUSEACTIVATE: {
+			if (windows[window_id].wallpaper) return MA_NOACTIVATE;
 			if (windows[window_id].no_focus || windows[window_id].is_popup) {
 				return MA_NOACTIVATE; // Do not activate, but process mouse messages.
 			}
@@ -6273,6 +6471,7 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			return 0; // Pointer event handled return 0 to avoid duplicate WM_MOUSEMOVE event.
 		} break;
 		case WM_MOUSEMOVE: {
+			if (windows[window_id].wallpaper) break; // The wallpaper host forwards a single scoped input stream.
 			if (windows[window_id].block_mm) {
 				break;
 			}
@@ -6425,6 +6624,7 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 		case WM_XBUTTONDBLCLK:
 		case WM_XBUTTONDOWN:
 		case WM_XBUTTONUP: {
+			if (windows[window_id].wallpaper) break;
 			Ref<InputEventMouseButton> mb;
 			mb.instantiate();
 			mb->set_window_id(window_id);
@@ -6634,7 +6834,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				window.minimized = false;
 				window.fullscreen = false;
 
-				if (IsIconic(hWnd)) {
+				if (window.wallpaper) {
+					window.multiwindow_fs = false;
+				} else if (IsIconic(hWnd)) {
 					window.minimized = true;
 				} else if (IsZoomed(hWnd)) {
 					window.maximized = true;

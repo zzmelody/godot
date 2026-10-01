@@ -1491,6 +1491,10 @@ void DisplayServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_window_at_screen_position", "position"), &DisplayServer::get_window_at_screen_position);
 
 	ClassDB::bind_method(D_METHOD("window_get_native_handle", "handle_type", "window_id"), &DisplayServer::window_get_native_handle, DEFVAL(DisplayServerEnums::MAIN_WINDOW_ID));
+	ClassDB::bind_method(D_METHOD("window_set_wallpaper_parent", "parent", "after", "rect", "layered", "window_id"), &DisplayServer::window_set_wallpaper_parent, DEFVAL(DisplayServerEnums::MAIN_WINDOW_ID));
+	ClassDB::bind_method(D_METHOD("window_restore_wallpaper", "window_id"), &DisplayServer::window_restore_wallpaper, DEFVAL(DisplayServerEnums::MAIN_WINDOW_ID));
+	ClassDB::bind_method(D_METHOD("window_set_wallpaper_input", "enabled", "window_id"), &DisplayServer::window_set_wallpaper_input, DEFVAL(DisplayServerEnums::MAIN_WINDOW_ID));
+	ClassDB::bind_method(D_METHOD("window_take_wallpaper_mouse_motion", "window_id"), &DisplayServer::window_take_wallpaper_mouse_motion, DEFVAL(DisplayServerEnums::MAIN_WINDOW_ID));
 	ClassDB::bind_method(D_METHOD("window_get_active_popup"), &DisplayServer::window_get_active_popup);
 	ClassDB::bind_method(D_METHOD("window_set_popup_safe_rect", "window", "rect"), &DisplayServer::window_set_popup_safe_rect);
 	ClassDB::bind_method(D_METHOD("window_get_popup_safe_rect", "window"), &DisplayServer::window_get_popup_safe_rect);

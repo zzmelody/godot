@@ -79,6 +79,7 @@ public:
 
 	static bool iteration();
 	static void force_redraw();
+	static void reset_frame_time();
 
 	static bool is_iterating();
 

@@ -382,6 +382,11 @@ public:
 	virtual Rect2i window_get_popup_safe_rect(DisplayServerEnums::WindowID p_window) const { return Rect2i(); }
 
 	virtual int64_t window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const;
+	// Veya: native presentation only. Unsupported backends fail without changing a window.
+	virtual Error window_set_wallpaper_parent(int64_t p_parent, int64_t p_after, const Rect2i &p_rect, bool p_layered, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) { return ERR_UNAVAILABLE; }
+	virtual Error window_restore_wallpaper(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) { return ERR_UNAVAILABLE; }
+	virtual void window_set_wallpaper_input(bool p_enabled, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) {}
+	virtual Vector2 window_take_wallpaper_mouse_motion(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) { return Vector2(); }
 
 	virtual DisplayServerEnums::WindowID get_window_at_screen_position(const Point2i &p_position) const = 0;
 

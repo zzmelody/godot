@@ -4918,12 +4918,20 @@ static uint64_t navigation_process_max = 0;
 // Return false means iterating further, returning true means `OS::run`
 // will terminate the program. In case of failure, the OS exit code needs
 // to be set explicitly here (defaults to EXIT_SUCCESS).
+static bool reset_frame_time_pending = false;
+void Main::reset_frame_time() { reset_frame_time_pending = true; }
+
 bool Main::iteration() {
 	GodotProfileZone("Main::iteration");
 	GodotProfileZoneGroupedFirst(_profile_zone, "prepare");
 	iterating++;
 
 	const uint64_t ticks = OS::get_singleton()->get_ticks_usec();
+	if (reset_frame_time_pending) {
+		main_timer_sync.init(ticks);
+		last_ticks = ticks;
+		reset_frame_time_pending = false;
+	}
 	Engine::get_singleton()->_frame_ticks = ticks;
 	main_timer_sync.set_cpu_ticks_usec(ticks);
 	main_timer_sync.set_fixed_fps(fixed_fps);

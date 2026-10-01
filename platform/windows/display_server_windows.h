@@ -393,6 +393,14 @@ class DisplayServerWindows : public DisplayServer {
 		bool initialized = false;
 
 		HWND parent_hwnd = nullptr;
+		bool wallpaper = false;
+		bool wallpaper_enabled = true;
+		LONG_PTR wallpaper_style = 0, wallpaper_ex_style = 0;
+		RECT wallpaper_rect = {};
+		HWND wallpaper_parent = nullptr, wallpaper_owner = nullptr;
+		WINDOWPLACEMENT wallpaper_placement = {};
+		DisplayServerEnums::WindowMode wallpaper_mode = DisplayServerEnums::WINDOW_MODE_WINDOWED;
+		uint32_t wallpaper_flags = 0;
 
 		bool no_redirection_bitmap = false;
 	};
@@ -401,6 +409,8 @@ class DisplayServerWindows : public DisplayServer {
 	JoypadSDL *joypad_sdl = nullptr;
 #endif
 	HHOOK mouse_monitor = nullptr;
+	bool wallpaper_input = false;
+	Vector2 wallpaper_mouse_motion;
 	List<DisplayServerEnums::WindowID> popup_list;
 	uint64_t time_since_popup = 0;
 
@@ -643,6 +653,10 @@ public:
 	virtual Rect2i window_get_popup_safe_rect(DisplayServerEnums::WindowID p_window) const override;
 
 	virtual int64_t window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
+	virtual Error window_set_wallpaper_parent(int64_t p_parent, int64_t p_after, const Rect2i &p_rect, bool p_layered, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
+	virtual Error window_restore_wallpaper(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
+	virtual void window_set_wallpaper_input(bool p_enabled, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
+	virtual Vector2 window_take_wallpaper_mouse_motion(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 
 	virtual DisplayServerEnums::WindowID get_window_at_screen_position(const Point2i &p_position) const override;
 
