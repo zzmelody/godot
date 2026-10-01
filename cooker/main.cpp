@@ -421,7 +421,10 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		return CookerRetarget::make_animation_preview(job, r_result);
 	}
 	if (operation == "compose-character-animation") {
-		return CookerCharacter::compose_animation(job, r_result);
+		Dictionary expanded = job.duplicate(true);
+		const Error error = CookerCharacter::prepare_compose_job(expanded);
+		ERR_FAIL_COND_V(error != OK, error);
+		return CookerCharacter::compose_animation(expanded, r_result);
 	}
 	if (operation == "assemble-character") {
 		return CookerCharacter::assemble(job, r_result);
@@ -848,6 +851,10 @@ Error execute_pipeline(Dictionary &r_result) {
 		}
 		ERR_FAIL_COND_V_MSG(!known_operation, ERR_INVALID_PARAMETER, "Unknown pipeline operation: " + operation);
 		report["operation"] = operation;
+		if (operation == "compose-character-animation") {
+			error = CookerCharacter::prepare_compose_job(job);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
 		CookerCache::Receipt receipt;bool verified_hit=false;
 		if(bool(verification)) {
 			ERR_FAIL_COND_V(!bool(condition) || job.get("output",Variant()).get_type()!=Variant::STRING,ERR_INVALID_PARAMETER);

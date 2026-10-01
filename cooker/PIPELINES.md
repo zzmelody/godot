@@ -35,6 +35,15 @@ existing outputs, and writes one library for each file in `output_dir`. This
 allows hundreds of clips without exceeding the pipeline's 256-step limit.
 Optional `include` and `exclude` filename arrays make selection explicit.
 `animation_name`, `in_place`, and `loop` apply uniformly to that step's clips.
+`baked_target=true` accepts a body-specific offline bake. After the normal
+Humanoid axis/name import, it retains skeleton rotation tracks and Root/Hips
+translation, removes object/scale/non-skeleton tracks, and requires a Hips
+rotation plus at least ten joint rotations. A stationary Hips position track
+may be absent after importer optimization. The flag is Boolean and participates
+in verified clip cache fingerprints when enabled; existing requests with the
+default `false` keep their prior fingerprints. This does not add foot contact
+correction or replace skin weights. The Veya source-art workflow is documented
+in [Blender retargeting](../../../../docs/blender-retarget.md).
 Two pipeline-only metadata fields are removed before native dispatch:
 
 - `name`: optional report label.
@@ -64,6 +73,37 @@ existing semantic in a new output revision. The flag must be Boolean; a missing
 base ID or duplicate ID in the same request is rejected. Retained animations are
 shared unchanged and the base library is never written. Verified cache receipts
 include this flag in their normal parameter hash.
+
+To substitute a body bake into an existing compiled semantic catalog, the
+same composer accepts `source_remap={{from="res://.../",to="res://.../"}}`
+instead of `clips`. This bounded native expansion reads the base animation's
+compiled source segments and mirrors/rotation offsets; it does not execute
+provenance JSON. Declare `expected_clips`, `expected_replaced`, an explicit
+`retained` semantic array, and `preserve_base_hips=true`. Every segment of a
+replaced semantic must match a prefix. Ambiguous prefixes, partial substitution,
+missing resources and unexpected retained semantics fail before composition.
+Segment speed compensates for differing import endpoints to retain duration.
+The original Hips position track, playback length, loop and step are preserved
+exactly; body rotations come from the new baked source. Position flattening,
+alignment and contact offsets already compiled in the base therefore survive.
+Expanded old/new source paths enter the normal verified cache dependency hash.
+`validate-character-actions` with `expected_changed_from_composition=true` and
+`compare_base` checks the recorded replaced IDs, exact playback/loop values and
+every Hips position key, plus the normal unchanged-clip comparison. These gates
+verify resource data; packaged Veya rendering remains a separate check.
+
+A composed looping clip can declare `gait={model="res://.../body.scn",
+direction={0,0,1}, nominal_speed=1.5, planted_height=0.025,
+release_height=0.075}`. Native Cooker samples target-body FK at 60 Hz, finds
+low feet moving backwards along the declared direction, and stores the median
+stance speed, left/right contact curves and left-foot phase origin in
+`locomotion_gait` metadata. Sampling is bounded to 128 bones and 1800 poses; missing
+feet, invalid direction/speeds or insufficient stance motion reject the clip.
+`direction` uses the assembled model's local coordinates. This metadata is an
+offline measurement, not Root Motion or a runtime movement command. Runtime
+uses the nominal/measured speed ratio and its own collision velocity to drive
+the loop; support anchors remain presentation caches. The project example is
+`content/scripts/cooker/avatars/actions/r78/pipeline.luau`.
 
 For a single-segment humanoid clip, `align_hips_to="move.idle"` rebases the
 sampled Hips position to the named semantic's first pelvis position. The

@@ -83,6 +83,8 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(p_job.has("animation_name") && p_job["animation_name"].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(p_job.has("in_place") && p_job["in_place"].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(p_job.has("loop") && p_job["loop"].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_job.has("baked_target") && p_job["baked_target"].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
+	const bool baked_target = p_job.get("baked_target", false);
 	ERR_FAIL_COND_V(p_job.has("skip_existing") && p_job["skip_existing"].get_type()!=Variant::BOOL,ERR_INVALID_PARAMETER);
 	const bool skip_existing=p_job.get("skip_existing",false);
 	bool in_place = p_job.get("in_place", false);
@@ -143,6 +145,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 		if(skip_existing) {
 			Dictionary request;request["operation"]="retarget-animations";request["source"]=source;request["output"]=output;
 			request["bone_map"]=map_path;request["animation_name"]=selected_animation;request["in_place"]=in_place;request["loop"]=loop;
+			if (baked_target) request["baked_target"] = true;
 			error=CookerCache::prepare(request,output,receipt,cache_hit);ERR_FAIL_COND_V(error!=OK,error);
 			if(cache_hit) {Dictionary clip;clip["source"]=source;clip["output"]=output;clip["skipped"]=true;clips.push_back(clip);continue;}
 		}
@@ -176,6 +179,20 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 		}
 		for (const StringName &animation_name : animations) {
 			Ref<Animation> animation = library->get_animation(animation_name);
+			// Offline target bakes may contain FBX object axes/centimeter scale.
+			// Those must never become executable character tracks. Preserve only
+			// joint rotations and Root/Hips translation, with authored bone lengths.
+			if (baked_target) {
+				for (int track = animation->get_track_count() - 1; track >= 0; --track) {
+					const String path = String(animation->track_get_path(track));
+					const auto type = animation->track_get_type(track);
+					const bool rotation = type == Animation::TYPE_ROTATION_3D && path.begins_with("%GeneralSkeleton:");
+					const bool position = type == Animation::TYPE_POSITION_3D && (path == "%GeneralSkeleton:Hips" || path == "%GeneralSkeleton:Root");
+					if (!rotation && !position) { animation->remove_track(track); modified = true; }
+				}
+				ERR_FAIL_COND_V_MSG(animation->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_ROTATION_3D) < 0,
+					ERR_INVALID_DATA, "Baked target animation has no Hips rotation.");
+			}
 			if (loop) {
 				animation->set_loop_mode(Animation::LOOP_LINEAR);
 				modified = true;
@@ -202,7 +219,9 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 				}
 			}
 			ERR_FAIL_COND_V_MSG(rotations < 10, ERR_INVALID_DATA, "Retarget lost humanoid rotation tracks: " + source);
-			ERR_FAIL_COND_V_MSG(in_place && !found_hips, ERR_INVALID_DATA, "In-place animation has no Hips position track: " + source);
+			// Import optimization can remove a target's stationary rest-position
+			// track. A validated baked Hips rotation makes that omission explicit.
+			ERR_FAIL_COND_V_MSG(in_place && !found_hips && !baked_target, ERR_INVALID_DATA, "In-place animation has no Hips position track: " + source);
 		}
 		if (modified) {
 			error = ResourceSaver::save(library, output, ResourceSaver::FLAG_COMPRESS);
@@ -218,6 +237,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 	r_result["source_dir"] = source_dir;
 	r_result["output_dir"] = output_dir;
 	r_result["count"] = clips.size();
+	if (baked_target) r_result["baked_target"] = true;
 	r_result["clips"] = clips;
 	return OK;
 }

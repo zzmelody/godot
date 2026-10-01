@@ -9,6 +9,7 @@
 #include "scene/resources/animation_library.h"
 #include "scene/resources/packed_scene.h"
 #include <cmath>
+#include <algorithm>
 
 namespace CookerCharacter {
 namespace {
@@ -79,6 +80,88 @@ Error load_library(const String &p_path, Ref<AnimationLibrary> &r_library) {
 	ERR_FAIL_COND_V(error != OK, error);
 	r_library = ResourceLoader::load(p_path, "AnimationLibrary", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
 	return r_library.is_valid() ? OK : (error == OK ? ERR_INVALID_DATA : error);
+}
+// Offline FK sampling of the actual target body. The authored Luau graph
+// selects clips/thresholds; the native cook stores bounded contact curves and
+// the measured stance cadence alongside immutable bone tracks.
+Error calibrate_gait(const Dictionary &p_config, const Ref<Animation> &p_animation) {
+	const String model_path = p_config.get("model", "");
+	ERR_FAIL_COND_V(CookerFiles::check_path(model_path) != OK, ERR_INVALID_PARAMETER);
+	const Ref<PackedScene> model = ResourceLoader::load(model_path, "PackedScene");
+	ERR_FAIL_COND_V(model.is_null(), ERR_INVALID_DATA);
+	Tree tree; tree.root = model->instantiate();
+	Skeleton3D *skeleton = tree.root ? skeleton_in(tree.root) : nullptr;
+	ERR_FAIL_COND_V(!skeleton || skeleton->get_bone_count() > 128, ERR_INVALID_DATA);
+	const Array direction_value = p_config.get("direction", Array());
+	ERR_FAIL_COND_V(direction_value.size() != 3, ERR_INVALID_PARAMETER);
+	Vector3 direction(double(direction_value[0]), 0, double(direction_value[2]));
+	ERR_FAIL_COND_V(!direction.is_finite() || direction.length() < 0.9, ERR_INVALID_PARAMETER);
+	direction.normalize();
+	const double planted_height = p_config.get("planted_height", 0.025);
+	const double release_height = p_config.get("release_height", 0.08);
+	const double nominal_speed = p_config.get("nominal_speed", 1.5);
+	ERR_FAIL_COND_V(!std::isfinite(planted_height) || !std::isfinite(release_height) || planted_height < 0 || release_height <= planted_height || release_height > .3 || !std::isfinite(nominal_speed) || nominal_speed <= 0 || nominal_speed > 10, ERR_INVALID_PARAMETER);
+	const int count = skeleton->get_bone_count();
+	const int feet[2] = { skeleton->find_bone("LeftFoot"), skeleton->find_bone("RightFoot") };
+	ERR_FAIL_COND_V(feet[0] < 0 || feet[1] < 0 || p_animation->get_loop_mode() == Animation::LOOP_NONE, ERR_INVALID_DATA);
+	const int samples = int(std::ceil(p_animation->get_length() * 60));
+	ERR_FAIL_COND_V(samples < 8 || samples > 1800, ERR_PARAMETER_RANGE_ERROR);
+	Vector<int> positions, rotations, parents; positions.resize(count); rotations.resize(count); parents.resize(count);
+	Vector<Transform3D> globals; globals.resize(count);
+	Vector<Vector3> points[2]; points[0].resize(samples + 1); points[1].resize(samples + 1);
+	for (int bone = 0; bone < count; ++bone) {
+		const NodePath path("%GeneralSkeleton:" + String(skeleton->get_bone_name(bone)));
+		positions.write[bone] = p_animation->find_track(path, Animation::TYPE_POSITION_3D);
+		rotations.write[bone] = p_animation->find_track(path, Animation::TYPE_ROTATION_3D);
+		parents.write[bone] = skeleton->get_bone_parent(bone);
+		ERR_FAIL_COND_V(parents[bone] >= bone, ERR_INVALID_DATA);
+	}
+	double minimum[2] = { 1e9, 1e9 }, maximum[2] = { -1e9, -1e9 };
+	for (int sample = 0; sample <= samples; ++sample) {
+		const double time = sample * p_animation->get_length() / samples;
+		for (int bone = 0; bone < count; ++bone) {
+			const Transform3D rest = skeleton->get_bone_rest(bone);
+			const Vector3 position = positions[bone] >= 0 ? p_animation->position_track_interpolate(positions[bone], time) : rest.origin;
+			const Quaternion rotation = rotations[bone] >= 0 ? p_animation->rotation_track_interpolate(rotations[bone], time) : rest.basis.get_rotation_quaternion();
+			const Transform3D local(Basis(rotation).scaled(rest.basis.get_scale()), position);
+			globals.write[bone] = parents[bone] >= 0 ? globals[parents[bone]] * local : local;
+		}
+		for (int side = 0; side < 2; ++side) {
+			const Vector3 point = globals[feet[side]].origin;
+			ERR_FAIL_COND_V(!point.is_finite(), ERR_INVALID_DATA);
+			points[side].write[sample] = point;
+			minimum[side] = MIN(minimum[side], point.y); maximum[side] = MAX(maximum[side], point.y);
+		}
+	}
+	Vector<double> velocities;
+	PackedFloat32Array weights[2];
+	int origin = 0;
+	for (int sample = 0; sample < samples; ++sample) {
+		if (points[0][sample].dot(direction) > points[0][origin].dot(direction)) origin = sample;
+		for (int side = 0; side < 2; ++side) {
+			const double lift = points[side][sample].y - minimum[side];
+			const double backward = -(points[side][sample + 1] - points[side][sample]).dot(direction) * samples / p_animation->get_length();
+			const double release = CLAMP((lift - planted_height) / (release_height - planted_height), 0.0, 1.0);
+			// Contact requires the foot to travel backwards relative to the body.
+			// This releases the low swing foot before its forward sweep/landing.
+			const double contact = backward > .05 ? 1 - release * release * (3 - 2 * release) : 0;
+			weights[side].push_back(contact);
+			if (contact > .9 && backward > .1) velocities.push_back(backward);
+		}
+	}
+	ERR_FAIL_COND_V_MSG(velocities.size() < 4, ERR_INVALID_DATA, "Gait has insufficient stance samples; check direction: " + model_path);
+	std::sort(velocities.ptrw(), velocities.ptrw() + velocities.size());
+	const double reference_speed = velocities[velocities.size() / 2];
+	ERR_FAIL_COND_V(reference_speed < .1 || reference_speed > 10, ERR_INVALID_DATA);
+	Dictionary gait;
+	gait["schema_version"] = 1; gait["nominal_speed"] = nominal_speed;
+	gait["reference_speed"] = reference_speed; gait["phase_origin"] = double(origin) / samples;
+	gait["left_contact"] = weights[0]; gait["right_contact"] = weights[1];
+	gait["left_min_height"] = minimum[0]; gait["right_min_height"] = minimum[1];
+	gait["left_lift"] = maximum[0] - minimum[0]; gait["right_lift"] = maximum[1] - minimum[1];
+	gait["stance_samples"] = velocities.size(); gait["model"] = model_path;
+	p_animation->set_meta("locomotion_gait", gait);
+	return OK;
 }
 Error apply_rotation_offsets(const Array &p_offsets, const Ref<Animation> &p_animation) {
 	ERR_FAIL_COND_V(p_offsets.size() > 16, ERR_PARAMETER_RANGE_ERROR);
@@ -168,6 +251,89 @@ Error apply_hips_position_offsets(const Array &p_offsets, const Ref<Animation> &
 }
 }
 
+Error prepare_compose_job(Dictionary &r_job) {
+	if (!r_job.has("source_remap")) return OK;
+	ERR_FAIL_COND_V(r_job.has("clips") || r_job.get("source_remap", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(r_job.get("preserve_base_hips", Variant()).get_type() != Variant::BOOL || !bool(r_job["preserve_base_hips"]), ERR_INVALID_PARAMETER);
+	const Array mappings = r_job["source_remap"];
+	ERR_FAIL_COND_V(mappings.is_empty() || mappings.size() > 8, ERR_PARAMETER_RANGE_ERROR);
+	Vector<String> from, to;
+	for (const Variant &value : mappings) {
+		ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		const Dictionary mapping = value;
+		ERR_FAIL_COND_V(mapping.get("from", Variant()).get_type() != Variant::STRING || mapping.get("to", Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		const String old_root = mapping["from"], new_root = mapping["to"];
+		ERR_FAIL_COND_V(!old_root.ends_with("/") || !new_root.ends_with("/") || old_root == new_root, ERR_INVALID_PARAMETER);
+		ERR_FAIL_COND_V(CookerFiles::check_path(old_root.trim_suffix("/"), false, false, false) != OK ||
+				CookerFiles::check_path(new_root.trim_suffix("/"), false, false, false) != OK, ERR_INVALID_PARAMETER);
+		for (const String &previous : from) ERR_FAIL_COND_V(old_root.begins_with(previous) || previous.begins_with(old_root), ERR_INVALID_PARAMETER);
+		from.push_back(old_root); to.push_back(new_root);
+	}
+	Ref<AnimationLibrary> base;
+	Error error = load_library(r_job.get("base_library", ""), base);
+	ERR_FAIL_COND_V(error != OK, error);
+	LocalVector<StringName> names; base->get_animation_list(&names);
+	ERR_FAIL_COND_V(names.size() > 256 || int(names.size()) != int(r_job.get("expected_clips", 0)), ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(r_job.get("retained", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	const Array retained = r_job["retained"];
+	HashSet<String> keep;
+	for (const Variant &value : retained) {
+		ERR_FAIL_COND_V(value.get_type() != Variant::STRING || !identifier(value) || keep.has(value) || !base->has_animation(value), ERR_INVALID_PARAMETER);
+		keep.insert(value);
+	}
+	Array clips;
+	for (const StringName &name : names) {
+		const Ref<Animation> original = base->get_animation(name);
+		ERR_FAIL_COND_V(original->get_meta("source_segments", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_DATA);
+		const Array sources = original->get_meta("source_segments");
+		ERR_FAIL_COND_V(sources.is_empty() || sources.size() > 8, ERR_INVALID_DATA);
+		Array segments;
+		int mapped = 0;
+		for (const Variant &source_value : sources) {
+			ERR_FAIL_COND_V(source_value.get_type() != Variant::DICTIONARY, ERR_INVALID_DATA);
+			Dictionary segment = Dictionary(source_value).duplicate(true);
+			const String old_path = segment.get("source", "");
+			for (int index = 0; index < from.size(); ++index) {
+				if (!old_path.begins_with(from[index])) continue;
+				const String new_path = to[index] + old_path.substr(from[index].length());
+				Ref<AnimationLibrary> old_source, new_source;
+				error = load_library(old_path, old_source); ERR_FAIL_COND_V(error != OK, error);
+				error = load_library(new_path, new_source); ERR_FAIL_COND_V(error != OK, error);
+				const String animation = segment.get("animation", "mixamo_com");
+				ERR_FAIL_COND_V(!old_source->has_animation(animation) || !new_source->has_animation(animation), ERR_INVALID_DATA);
+				const double old_length = old_source->get_animation(animation)->get_length();
+				const double new_length = new_source->get_animation(animation)->get_length();
+				ERR_FAIL_COND_V(old_length <= 0 || new_length <= 0, ERR_INVALID_DATA);
+				// Preserve the compiled segment duration if FBX sampling endpoints differ.
+				segment["speed"] = double(segment.get("speed", 1.0)) * new_length / old_length;
+				segment["source"] = new_path;
+				segment.erase("sha256");
+				++mapped;
+				break;
+			}
+			segments.push_back(segment);
+		}
+		ERR_FAIL_COND_V_MSG((mapped == 0) != keep.has(name) || (mapped != 0 && mapped != sources.size()), ERR_INVALID_DATA,
+				"Source substitution must cover every segment, or explicitly retain the semantic: " + String(name));
+		if (mapped == 0) continue;
+		Dictionary clip;
+		clip["id"] = String(name); clip["replace_existing"] = true;
+		clip["segments"] = segments; clip["reference_segments"] = sources;
+		clip["loop"] = original->get_loop_mode() != Animation::LOOP_NONE;
+		clip["mirror_x"] = original->get_meta("mirror_x", false);
+		clip["rotation_offsets"] = original->get_meta("rotation_offsets", Array());
+		clip["hips_position_offsets"] = original->get_meta("hips_position_offsets", Array());
+		if (original->has_meta("align_hips_to")) clip["align_hips_to"] = original->get_meta("align_hips_to");
+		if (original->has_meta("align_hips_axes")) clip["align_hips_axes"] = original->get_meta("align_hips_axes");
+		clip["visual_status"] = "body_baked_requires_runtime_review";
+		clips.push_back(clip);
+	}
+	ERR_FAIL_COND_V(clips.is_empty() || clips.size() != int(r_job.get("expected_replaced", 0)), ERR_INVALID_DATA);
+	r_job["clips"] = clips;
+	r_job.erase("source_remap"); // Expanded paths and old provenance are now cache dependencies.
+	return OK;
+}
+
 Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(p_job.get("clips", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
 	const Array clips = p_job["clips"];
@@ -209,6 +375,9 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		const Variant replace_value = clip.get("replace_existing", false);
 		ERR_FAIL_COND_V(replace_value.get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
 		const bool replacing = replace_value;
+		const Variant preserve_value = p_job.get("preserve_base_hips", false);
+		ERR_FAIL_COND_V(preserve_value.get_type() != Variant::BOOL || (bool(preserve_value) && !replacing), ERR_INVALID_PARAMETER);
+		const Ref<Animation> original = replacing ? library->get_animation(id) : Ref<Animation>();
 		// Replacing must be explicit and refer to an existing base semantic.
 		// A typo must not silently become a new animation in an override job.
 		ERR_FAIL_COND_V(replacing != library->has_animation(id), ERR_INVALID_PARAMETER);
@@ -317,9 +486,28 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		error = apply_rotation_offsets(offsets, composed);
 		ERR_FAIL_COND_V(error != OK, error);
 		const Array position_offsets = clip.get("hips_position_offsets", Array());
-		error = apply_hips_position_offsets(position_offsets, composed);
-		ERR_FAIL_COND_V(error != OK, error);
+		if (!bool(preserve_value)) {
+			error = apply_hips_position_offsets(position_offsets, composed);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
+		if (bool(preserve_value)) {
+			ERR_FAIL_COND_V_MSG(Math::abs(cursor - original->get_length()) > 0.00001, ERR_INVALID_DATA, "Substitution changed playback duration: " + id);
+			const int old_hips = original->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
+			ERR_FAIL_COND_V(old_hips < 0, ERR_INVALID_DATA);
+			const int new_hips = composed->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
+			if (new_hips >= 0) composed->remove_track(new_hips);
+			original->copy_track(old_hips, composed);
+			composed->set_length(original->get_length());
+			composed->set_step(original->get_step());
+			composed->set_meta("preserved_hips_from", base_path);
+			composed->set_meta("reference_segments", clip.get("reference_segments", Array()));
+		}
 		composed->set_loop_mode(bool(clip.get("loop", false)) ? Animation::LOOP_LINEAR : Animation::LOOP_NONE);
+		if (clip.has("gait")) {
+			ERR_FAIL_COND_V(clip["gait"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+			error = calibrate_gait(clip["gait"], composed);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
 		composed->set_meta("character_semantic", id);
 		composed->set_meta("source_segments", sources);
 		composed->set_meta("mirror_x", mirror_x);
@@ -351,6 +539,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	library->set_meta("character_catalog_revision", p_job.get("revision", 1));
 	library->set_meta("character_catalog", provenance);
+	if (bool(p_job.get("preserve_base_hips", false))) library->set_meta("source_replaced_ids", replaced_ids);
 	error = ResourceSaver::save(library, output, ResourceSaver::FLAG_COMPRESS);
 	ERR_FAIL_COND_V(error != OK, error);
 	LocalVector<StringName> composed_names; library->get_animation_list(&composed_names);
@@ -436,6 +625,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		row["mirror_x"] = animation->get_meta("mirror_x", false);
 		row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
 		row["hips_position_offsets"] = animation->get_meta("hips_position_offsets", Array());
+		if (animation->has_meta("locomotion_gait")) row["locomotion_gait"] = animation->get_meta("locomotion_gait");
 		if (animation->has_meta("align_hips_axes")) row["align_hips_axes"] = animation->get_meta("align_hips_axes");
 		if (bool(p_job.get("include_hips_positions", false))) {
 			const int hips = animation->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
@@ -462,7 +652,9 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		Ref<AnimationLibrary> base;
 		error = load_library(compare_path, base);
 		ERR_FAIL_COND_V(error != OK, error);
-		const Variant changed_value = p_job.get("expected_changed", Array());
+		const Variant from_composition = p_job.get("expected_changed_from_composition", false);
+		ERR_FAIL_COND_V(from_composition.get_type() != Variant::BOOL || (bool(from_composition) && p_job.has("expected_changed")), ERR_INVALID_PARAMETER);
+		const Variant changed_value = bool(from_composition) ? library->get_meta("source_replaced_ids", Variant()) : p_job.get("expected_changed", Array());
 		ERR_FAIL_COND_V(changed_value.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
 		const Array expected = changed_value;
 		ERR_FAIL_COND_V(expected.size() > 256, ERR_PARAMETER_RANGE_ERROR);
@@ -490,6 +682,16 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		uint64_t compared_keys = 0;
 		for (const StringName &name : names) {
 			ERR_FAIL_COND_V(!library->has_animation(name), ERR_INVALID_DATA);
+			if (bool(from_composition)) {
+				const Ref<Animation> before = base->get_animation(name), after = library->get_animation(name);
+				ERR_FAIL_COND_V(before->get_length() != after->get_length() || before->get_loop_mode() != after->get_loop_mode(), ERR_INVALID_DATA);
+				const int old_hips = before->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
+				const int new_hips = after->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
+				ERR_FAIL_COND_V(old_hips < 0 || new_hips < 0, ERR_INVALID_DATA);
+				Ref<Animation> old_position, new_position; old_position.instantiate(); new_position.instantiate();
+				before->copy_track(old_hips, old_position); after->copy_track(new_hips, new_position);
+				ERR_FAIL_COND_V(!same_motion(old_position, new_position, compared_keys), ERR_INVALID_DATA);
+			}
 			const bool same = same_motion(base->get_animation(name), library->get_animation(name), compared_keys);
 			ERR_FAIL_COND_V(compared_keys > 4000000, ERR_OUT_OF_MEMORY);
 			ERR_FAIL_COND_V_MSG(same == expected_ids.has(name), ERR_INVALID_DATA, "Animation replacement comparison differs: " + String(name));
@@ -500,6 +702,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		report["changed_ids"] = changed; report["retained_ids"] = retained;
 		report["added_ids"] = added;
 		report["compared_keys"] = compared_keys;
+		if (bool(from_composition)) report["playback_and_hips_preserved"] = true;
 	}
 	Ref<FileAccess> file = FileAccess::open(output, FileAccess::WRITE, &error);
 	ERR_FAIL_COND_V(file.is_null(), error);
