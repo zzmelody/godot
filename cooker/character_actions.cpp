@@ -540,7 +540,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 	library->set_meta("character_catalog_revision", p_job.get("revision", 1));
 	library->set_meta("character_catalog", provenance);
 	if (bool(p_job.get("preserve_base_hips", false))) library->set_meta("source_replaced_ids", replaced_ids);
-	error = ResourceSaver::save(library, output, ResourceSaver::FLAG_COMPRESS);
+	error = ResourceSaver::save(library, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	LocalVector<StringName> composed_names; library->get_animation_list(&composed_names);
 	r_result["output"] = output; r_result["clips"] = composed_names.size(); r_result["keys"] = total_keys;
@@ -588,7 +588,7 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 	Ref<PackedScene> assembled; assembled.instantiate();
 	error = assembled->pack(tree.root);
 	ERR_FAIL_COND_V(error != OK, error);
-	error = ResourceSaver::save(assembled, output, ResourceSaver::FLAG_COMPRESS);
+	error = ResourceSaver::save(assembled, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output; r_result["sockets"] = sockets.size(); r_result["bone_count"] = skeleton->get_bone_count();
 	return OK;

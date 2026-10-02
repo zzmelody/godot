@@ -191,7 +191,7 @@ shape = SubResource("Shape")
             self.assertTrue(report["classes"][name], name)
 
     def test_import_mesh_roundtrip(self):
-        result = self.job({"operation": "import-scene", "source": "res://triangle.gltf", "output": "res://assets/generated/triangle.scn"})
+        result = self.job({"operation": "import-scene", "source": "res://triangle.gltf", "output": "res://content/worlds/fixture/generated/triangle.scn"})
         result = self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
         self.assertEqual(result["mesh_count"], 1)
         self.assertEqual(result["surface_count"], 1)
@@ -200,7 +200,7 @@ shape = SubResource("Shape")
     def test_texture_roundtrip(self):
         for compression in ("lossless", "basisu", "s3tc", "bptc", "etc2", "astc"):
             with self.subTest(compression=compression):
-                result = self.job({"operation": "import-texture", "source": "res://color.png", "output": f"res://assets/generated/{compression}.res", "compression": compression})
+                result = self.job({"operation": "import-texture", "source": "res://color.png", "output": f"res://content/worlds/fixture/generated/{compression}.res", "compression": compression})
                 self.assertEqual(result["mipmap_count"], 3)
                 result = self.job({"operation": "validate-resource", "source": result["output"], "type": "PortableCompressedTexture2D"})
                 self.assertEqual((result["width"], result["height"]), (8, 8))
@@ -209,7 +209,7 @@ shape = SubResource("Shape")
     def test_fbx_and_obj_import(self):
         for extension in ("fbx", "obj"):
             with self.subTest(extension=extension):
-                result = self.job({"operation": "import-scene", "source": f"res://triangle.{extension}", "output": f"res://assets/generated/{extension}.scn"})
+                result = self.job({"operation": "import-scene", "source": f"res://triangle.{extension}", "output": f"res://content/worlds/fixture/generated/{extension}.scn"})
                 result = self.job({"operation": "validate-resource", "source": result["output"]})
                 self.assertEqual(result["vertex_count"], 3)
 
@@ -221,7 +221,7 @@ height = 2.0
 radial_segments = 32
 rings = 16
 ''', encoding="utf-8")
-        result = self.job({"operation": "process-mesh", "source": "res://sphere.tres", "output": "res://assets/generated/sphere.res", "lightmap_uv": True, "collision_output": "res://assets/generated/sphere_collision.scn"})
+        result = self.job({"operation": "process-mesh", "source": "res://sphere.tres", "output": "res://content/worlds/fixture/generated/sphere.res", "lightmap_uv": True, "collision_output": "res://content/worlds/fixture/generated/sphere_collision.scn"})
         self.assertGreater(result["lod_count"], 0)
         self.assertGreater(result["hull_count"], 0)
         saved = self.job({"operation": "validate-resource", "source": result["output"], "type": "ArrayMesh"})
@@ -240,23 +240,23 @@ instance_count = 2
 mesh = SubResource("Mesh")
 buffer = PackedFloat32Array(1,0,0,2,0,1,0,3,0,0,1,4,1,0,0,5,0,1,0,6,0,0,1,7)
 ''', encoding="utf-8")
-        result = self.job({"operation": "save-resource", "source": "res://instances.tres", "output": "res://assets/generated/instances.res"})
+        result = self.job({"operation": "save-resource", "source": "res://instances.tres", "output": "res://content/worlds/fixture/generated/instances.res"})
         result = self.job({"operation": "validate-resource", "source": result["output"]})
         self.assertEqual(result["instance_count"], 2)
         self.assertEqual(result["positions"], [[2, 3, 4], [5, 6, 7]])
 
     def test_shader_include_pack(self):
-        directory = self.project / "assets/generated"
+        directory = self.project / "content/worlds/fixture/generated"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "common.gdshaderinc").write_text("const float VALUE = 0.3;\n", encoding="utf-8")
-        (directory / "include.gdshader").write_text('shader_type spatial;\n#include "res://assets/generated/common.gdshaderinc"\nvoid fragment() { ALBEDO = vec3(VALUE); }\n', encoding="utf-8")
-        result = self.job({"operation": "pack", "files": ["res://assets/generated/include.gdshader"], "output": "res://content/releases/shader.pck"})
-        self.assertEqual(set(result["files"]), {"res://assets/generated/include.gdshader", "res://assets/generated/common.gdshaderinc"})
+        (directory / "include.gdshader").write_text('shader_type spatial;\n#include "res://content/worlds/fixture/generated/common.gdshaderinc"\nvoid fragment() { ALBEDO = vec3(VALUE); }\n', encoding="utf-8")
+        result = self.job({"operation": "pack", "files": ["res://content/worlds/fixture/generated/include.gdshader"], "output": "res://content/releases/shader.pck"})
+        self.assertEqual(set(result["files"]), {"res://content/worlds/fixture/generated/include.gdshader", "res://content/worlds/fixture/generated/common.gdshaderinc"})
 
     def test_embedded_and_external_textures(self):
         for name in ("textured", "external"):
             with self.subTest(name=name):
-                result = self.job({"operation": "import-scene", "source": f"res://{name}.gltf", "output": f"res://assets/generated/{name}.scn"})
+                result = self.job({"operation": "import-scene", "source": f"res://{name}.gltf", "output": f"res://content/worlds/fixture/generated/{name}.scn"})
                 result = self.job({"operation": "validate-resource", "source": result["output"]})
                 self.assertEqual(result["material_texture_count"], 1)
                 self.assertGreater(result["material_texture_bytes"], 0)
@@ -271,8 +271,8 @@ buffer = PackedFloat32Array(1,0,0,2,0,1,0,3,0,0,1,4,1,0,0,5,0,1,0,6,0,0,1,7)
         scene["meshes"][0]["primitives"][0]["material"] = 0
         (self.project / "large_embedded.gltf").write_text(json.dumps(scene), encoding="utf-8")
         result = self.job({"operation": "import-scene", "source": "res://large_embedded.gltf",
-                           "output": "res://assets/generated/large_embedded.scn"})
-        self.assertEqual((self.project / "assets/generated/large_embedded.scn").read_bytes()[:4], b"RSCC")
+                           "output": "res://content/worlds/fixture/generated/large_embedded.scn"})
+        self.assertEqual((self.project / "content/worlds/fixture/generated/large_embedded.scn").read_bytes()[:4], b"RSCC")
         validated = self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
         self.assertEqual(validated["material_texture_count"], 1)
         self.assertGreaterEqual(validated["material_texture_bytes"], 256 * 256 * 3)
@@ -281,9 +281,12 @@ buffer = PackedFloat32Array(1,0,0,2,0,1,0,3,0,0,1,4,1,0,0,5,0,1,0,6,0,0,1,7)
         self.assertIn(result["output"], packed["files"])
 
     def test_path_and_native_dependency_rejection(self):
-        for path in ("res://../escape.res", "user://escape.res", "res://content/escape.res", "res://assets/generated/../../../escape.res"):
+        for path in ("res://../escape.res", "user://escape.res", "res://content/escape.res", "res://content/worlds/fixture/escape.res", "res://content/worlds/generated/escape.res", "res://content/shared/escape.res", "res://content/worlds/fixture/generated/../../../../escape.res"):
             with self.subTest(path=path):
                 self.job({"operation": "save-resource", "source": "res://terrain.tres", "output": path}, success=False)
+        for path in ("res://content/mod-worlds/fixture/generated/terrain.res", "res://content/shared/generated/terrain.res"):
+            with self.subTest(path=path):
+                self.job({"operation": "save-resource", "source": "res://terrain.tres", "output": path})
         (self.project / "native.gdextension").write_text('[configuration]\nentry_symbol="forbidden"\n', encoding="utf-8")
         (self.project / "native.tres").write_text('''[gd_resource type="Resource" load_steps=2 format=3]
 [ext_resource type="GDExtension" path="res://native.gdextension" id="1"]
@@ -293,11 +296,11 @@ metadata/native = ExtResource("1")
         self.job({"operation": "validate-resource", "source": "res://native.tres"}, success=False)
 
     def test_pack_dependency_closure(self):
-        material = "res://assets/generated/pack_material.res"
+        material = "res://content/worlds/fixture/generated/pack_material.res"
         self.job({"operation": "save-resource", "source": "res://shader_material.tres", "output": material})
-        scene = "res://assets/generated/pack_scene.tscn"
+        scene = "res://content/worlds/fixture/generated/pack_scene.tscn"
         (self.project / scene.removeprefix("res://")).write_text('''[gd_scene load_steps=3 format=3]
-[ext_resource type="Material" path="res://assets/generated/pack_material.res" id="Material"]
+[ext_resource type="Material" path="res://content/worlds/fixture/generated/pack_material.res" id="Material"]
 [sub_resource type="BoxMesh" id="Mesh"]
 [node name="Box" type="MeshInstance3D"]
 mesh = SubResource("Mesh")
@@ -316,7 +319,7 @@ material_override = ExtResource("Material")
     def test_reference_engine_pack_load(self):
         resources = []
         for name, source, operation, extension in (("model", "res://textured.gltf", "import-scene", "scn"), ("particles", "res://particles.tscn", "save-resource", "scn"), ("terrain", "res://terrain.tres", "save-resource", "res"), ("shader", "res://shader_material.tres", "save-resource", "res")):
-            result = self.job({"operation": operation, "source": source, "output": f"res://assets/generated/reference_{name}.{extension}"})
+            result = self.job({"operation": operation, "source": source, "output": f"res://content/worlds/fixture/generated/reference_{name}.{extension}"})
             resources.append(result["output"])
         pack = self.job({"operation": "pack", "files": resources, "output": "res://content/releases/reference.pck"})
         with tempfile.TemporaryDirectory(prefix="veya-cooker-reference-") as directory:
@@ -327,7 +330,7 @@ material_override = ExtResource("Material")
             script.write_text('''extends SceneTree
 func _initialize():
     assert(ProjectSettings.load_resource_pack(OS.get_cmdline_user_args()[0]))
-    var model = load("res://assets/generated/reference_model.scn").instantiate()
+    var model = load("res://content/worlds/fixture/generated/reference_model.scn").instantiate()
     var meshes = model.find_children("*", "MeshInstance3D", true, false)
     assert(meshes.size() == 1)
     assert(meshes[0].mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX].size() == 3)
@@ -335,13 +338,13 @@ func _initialize():
     assert(pixels.get_width() == 8 and pixels.get_height() == 8)
     assert(pixels.get_pixel(0, 0).is_equal_approx(Color8(128, 64, 32, 255)))
     model.free()
-    var particles = load("res://assets/generated/reference_particles.scn").instantiate()
+    var particles = load("res://content/worlds/fixture/generated/reference_particles.scn").instantiate()
     assert(particles.amount == 128 and particles.lifetime == 2.0)
     assert(particles.process_material.gravity == Vector3(0, 2, 0))
     particles.free()
-    var heights = load("res://assets/generated/reference_terrain.res")
+    var heights = load("res://content/worlds/fixture/generated/reference_terrain.res")
     assert(heights.map_data[10] == 3.0)
-    var material = load("res://assets/generated/reference_shader.res")
+    var material = load("res://content/worlds/fixture/generated/reference_shader.res")
     assert(material.get_shader_parameter("strength") == 0.75)
     print("REFERENCE_PACK_LOAD_OK")
     quit(0)
@@ -353,31 +356,31 @@ func _initialize():
             self.assertNotIn("ERROR:", process.stdout + process.stderr)
 
     def test_skin_animation_import(self):
-        result = self.job({"operation": "import-scene", "source": "res://skinned.gltf", "output": "res://assets/generated/skinned.scn"})
+        result = self.job({"operation": "import-scene", "source": "res://skinned.gltf", "output": "res://content/worlds/fixture/generated/skinned.scn"})
         result = self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
         self.assertEqual(result["vertex_count"], 3)
         self.assertGreaterEqual(result["bone_count"], 1)
         self.assertGreaterEqual(result["animation_count"], 1)
 
     def test_heightmap_shape_roundtrip(self):
-        result = self.job({"operation": "save-resource", "source": "res://terrain.tres", "output": "res://assets/generated/terrain.res"})
+        result = self.job({"operation": "save-resource", "source": "res://terrain.tres", "output": "res://content/worlds/fixture/generated/terrain.res"})
         result = self.job({"operation": "validate-resource", "source": result["output"], "type": "HeightMapShape3D"})
         self.assertEqual((result["width"], result["depth"], result["sample_count"]), (4, 4, 16))
 
     def test_shader_parameter_roundtrip(self):
-        result = self.job({"operation": "save-resource", "source": "res://shader_material.tres", "output": "res://assets/generated/shader_material.res"})
+        result = self.job({"operation": "save-resource", "source": "res://shader_material.tres", "output": "res://content/worlds/fixture/generated/shader_material.res"})
         result = self.job({"operation": "validate-resource", "source": result["output"], "type": "ShaderMaterial"})
         self.assertEqual(result["shader_parameters"]["strength"], 0.75)
 
     def test_collider_roundtrip(self):
-        result = self.job({"operation": "save-resource", "source": "res://collider.tscn", "output": "res://assets/generated/collider.scn"})
+        result = self.job({"operation": "save-resource", "source": "res://collider.tscn", "output": "res://content/worlds/fixture/generated/collider.scn"})
         result = self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
         self.assertEqual(result["collider_count"], 1)
 
     def test_navigation_bake(self):
         # Godot faces are clockwise; add_faces reverses indices for Recast internally.
         faces = [[-5, 0, -5], [5, 0, 5], [-5, 0, 5], [-5, 0, -5], [5, 0, -5], [5, 0, 5]]
-        result = self.job({"operation": "bake-navigation", "vertices": faces, "output": "res://assets/generated/navigation.res"})
+        result = self.job({"operation": "bake-navigation", "vertices": faces, "output": "res://content/worlds/fixture/generated/navigation.res"})
         result = self.job({"operation": "validate-resource", "source": result["output"], "type": "NavigationMesh"})
         self.assertGreater(result["polygon_count"], 0)
         self.assertGreater(result["vertex_count"], 0)
@@ -389,7 +392,7 @@ func _initialize():
         self.job({"operation": "validate-resource", "source": "res://forbidden_ui.tscn"}, success=False)
 
     def test_particle_asset_roundtrip(self):
-        result = self.job({"operation": "save-resource", "source": "res://particles.tscn", "output": "res://assets/generated/particles.scn", "type": "PackedScene"})
+        result = self.job({"operation": "save-resource", "source": "res://particles.tscn", "output": "res://content/worlds/fixture/generated/particles.scn", "type": "PackedScene"})
         result = self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
         self.assertEqual(result["root_type"], "GPUParticles3D")
         self.assertEqual(result["particles"], {"amount": 128, "lifetime": 2.0, "gravity": [0, 2, 0]})

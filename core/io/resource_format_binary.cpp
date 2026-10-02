@@ -632,7 +632,9 @@ Error ResourceLoaderBinary::load() {
 
 		if (!path.contains("://") && path.is_relative_path()) {
 			// path is relative to file being loaded, so convert to a resource path
-			path = ProjectSettings::get_singleton()->localize_path(path.get_base_dir().path_join(external_resources[i].path));
+			/*<<----- VEYA: resolve against the loaded file, matching the text loader and OBJECT_EXTERNAL_RESOURCE above. */
+			path = ProjectSettings::get_singleton()->localize_path(res_path.get_base_dir().path_join(external_resources[i].path));
+			/*>>----- VEYA */
 		}
 
 		external_resources.write[i].path = path; //remap happens here, not on load because on load it can actually be used for filesystem dock resource remap

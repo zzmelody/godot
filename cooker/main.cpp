@@ -502,7 +502,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			ERR_FAIL_COND_V(error != OK, error);
 			error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(collision_output.get_base_dir()));
 			ERR_FAIL_COND_V(error != OK, error);
-			error = ResourceSaver::save(scene, collision_output, ResourceSaver::FLAG_COMPRESS);
+			error = ResourceSaver::save(scene, collision_output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 			ERR_FAIL_COND_V(error != OK, error);
 			r_result["collision_output"] = collision_output;
 			r_result["hull_count"] = hulls.size();
@@ -511,7 +511,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(error != OK, error);
 		error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(output.get_base_dir()));
 		ERR_FAIL_COND_V(error != OK, error);
-		error = ResourceSaver::save(result, output, ResourceSaver::FLAG_COMPRESS);
+		error = ResourceSaver::save(result, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 		ERR_FAIL_COND_V(error != OK, error);
 		r_result["output"] = output;
 		return OK;
@@ -578,7 +578,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		ERR_FAIL_COND_V_MSG(mesh->get_polygon_count() == 0, ERR_CANT_CREATE, "Navigation bake produced no polygons.");
 		error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(output.get_base_dir()));
 		ERR_FAIL_COND_V(error != OK, error);
-		error = ResourceSaver::save(mesh, output, ResourceSaver::FLAG_COMPRESS);
+		error = ResourceSaver::save(mesh, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 		ERR_FAIL_COND_V(error != OK, error);
 		r_result["output"] = output;
 		r_result["polygon_count"] = mesh->get_polygon_count();
@@ -621,7 +621,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(texture->get_width() != image->get_width() || texture->get_height() != image->get_height(), ERR_CANT_CREATE);
 		error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(output.get_base_dir()));
 		ERR_FAIL_COND_V(error != OK, error);
-		error = ResourceSaver::save(texture, output, ResourceSaver::FLAG_COMPRESS);
+		error = ResourceSaver::save(texture, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 		ERR_FAIL_COND_V(error != OK, error);
 		r_result["output"] = output;
 		r_result["width"] = image->get_width();
@@ -692,7 +692,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 				Ref<PackedScene> resized;
 				resized.instantiate();
 				error = resized->pack(root);
-				if (error == OK) error = ResourceSaver::save(resized, imported_path, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
+				if (error == OK) error = ResourceSaver::save(resized, imported_path, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
 			}
 			memdelete(root);
 			if (error != OK) {
@@ -803,7 +803,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			ERR_FAIL_COND_V(output.is_empty(), ERR_INVALID_PARAMETER);
 			error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(output.get_base_dir()));
 			ERR_FAIL_COND_V(error != OK, error);
-			error = ResourceSaver::save(resource, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_OMIT_EDITOR_PROPERTIES);
+			error = ResourceSaver::save(resource, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_OMIT_EDITOR_PROPERTIES);
 			ERR_FAIL_COND_V(error != OK, error);
 			r_result["output"] = output;
 		}

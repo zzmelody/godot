@@ -143,9 +143,13 @@ by the profile; model import accepts GLTF/GLB, FBX via ufbx and OBJ. Blender and
 external FBX converters are not started.
 
 All asset paths use `res://` inside the specified workspace. Resource outputs
-belong under `assets/generated/`; PCK outputs under `content/releases/` and may
-not overwrite an existing pack. Pack dependencies must already be cooked under
-`assets/generated/`; raw image/model import sources are not packed. Native
+belong to the world that owns them, `content/worlds/<id>/generated/` or
+`content/mod-worlds/<id>/generated/`, or to the engine-wide
+`content/shared/generated/`. Outputs are saved with relative external paths so
+a world directory loads from `user://` as well as `res://`. PCK outputs go under
+`content/releases/` and may not overwrite an existing pack. Pack dependencies
+must already be cooked into one of those `generated/` roots; raw image/model
+import sources are not packed. Native
 extensions and post-import scripts are rejected. External `_subresources`
 overrides are not exposed by this first protocol; they require a declared output
 manifest. Raw data resources can still be authored as `.tres`/`.tscn`.

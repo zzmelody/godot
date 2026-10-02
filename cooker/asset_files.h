@@ -14,6 +14,26 @@
 #include <filesystem>
 
 namespace CookerFiles {
+// Cooked outputs live inside the world that owns them, or in the engine-wide
+// shared tree: content/{worlds,mod-worlds}/<id>/generated/ or content/shared/generated/.
+inline bool is_generated_relative(const String &p_relative) {
+	if (p_relative.begins_with("content/shared/generated/")) {
+		return true;
+	}
+	for (const char *root : { "content/worlds/", "content/mod-worlds/" }) {
+		if (!p_relative.begins_with(root)) {
+			continue;
+		}
+		Vector<String> parts = p_relative.trim_prefix(root).split("/");
+		return parts.size() >= 3 && !parts[0].is_empty() && parts[1] == "generated";
+	}
+	return false;
+}
+
+inline bool is_generated(const String &p_path) {
+	return p_path.begins_with("res://") && is_generated_relative(p_path.trim_prefix("res://"));
+}
+
 // This is a workspace boundary, not a sandbox for hostile native asset parsers.
 inline Error check_path(const String &p_path, bool p_output = false, bool p_pack = false, bool p_require_exists = true) {
 	ERR_FAIL_COND_V_MSG(!p_path.begins_with("res://"), ERR_INVALID_PARAMETER, "Asset paths must start with res://.");
@@ -23,7 +43,7 @@ inline Error check_path(const String &p_path, bool p_output = false, bool p_pack
 		ERR_FAIL_COND_V(part.is_empty() || part == "." || part == ".." || part.ends_with(".") || part.ends_with(" "), ERR_INVALID_PARAMETER);
 	}
 	if (p_output) {
-		ERR_FAIL_COND_V_MSG(!relative.begins_with(p_pack ? "content/releases/" : "assets/generated/"), ERR_UNAUTHORIZED, "Output is outside the generated asset namespace.");
+		ERR_FAIL_COND_V_MSG(p_pack ? !relative.begins_with("content/releases/") : !is_generated_relative(relative), ERR_UNAUTHORIZED, "Output is outside the generated asset namespace.");
 	}
 	std::error_code ec;
 	auto root = std::filesystem::weakly_canonical(std::filesystem::u8path(ProjectSettings::get_singleton()->globalize_path("res://").utf8().get_data()), ec);
@@ -48,7 +68,7 @@ inline Error collect(const String &p_path, HashSet<String> &r_files, bool p_pack
 	Error error = check_path(p_path);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V_MSG(!is_resource(p_path), ERR_UNAVAILABLE, "Only cooked or declarative resource dependencies are supported: " + p_path);
-	ERR_FAIL_COND_V_MSG(p_pack && !p_path.begins_with("res://assets/generated/"), ERR_UNAUTHORIZED, "Pack dependencies must be cooked into assets/generated/ first: " + p_path);
+	ERR_FAIL_COND_V_MSG(p_pack && !is_generated(p_path), ERR_UNAUTHORIZED, "Pack dependencies must be cooked into a generated/ directory first: " + p_path);
 	if (r_files.has(p_path)) {
 		return OK;
 	}
@@ -128,7 +148,7 @@ inline Error collect_shader_includes(const Variant &p_value, HashSet<ObjectID> &
 // cooked resources. It does not infer source art, import or generate content.
 inline Error collect_directory(const String &p_path, Array &r_roots, HashSet<String> &r_metadata, int &r_directories, int p_depth = 0) {
 	ERR_FAIL_COND_V(p_depth > 16 || ++r_directories > 1024, ERR_PARAMETER_RANGE_ERROR);
-	ERR_FAIL_COND_V(!p_path.begins_with("res://assets/generated/"), ERR_UNAUTHORIZED);
+	ERR_FAIL_COND_V(!is_generated(p_path), ERR_UNAUTHORIZED);
 	Error error = check_path(p_path, false, false, false);
 	ERR_FAIL_COND_V(error != OK, error);
 	Ref<DirAccess> directory = DirAccess::open(p_path, &error);

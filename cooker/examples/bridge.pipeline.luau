@@ -1,5 +1,5 @@
 -- Canonical production entry for the bridge example.
-local asset = "res://assets/generated/bridge/r1/bridge.scn"
+local asset = "res://content/worlds/example/generated/bridge/bridge.scn"
 return {
     {
         name = "generate_bridge",
@@ -15,7 +15,7 @@ return {
     {
         name = "manifest_bridge",
         operation = "asset-manifest",
-        output = "res://assets/generated/bridge/r1/asset.manifest.json",
+        output = "res://content/worlds/example/generated/bridge/asset.manifest.json",
         asset_id = "bridge",
         revision = 1,
         kind = "model",

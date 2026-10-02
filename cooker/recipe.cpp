@@ -1049,7 +1049,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	for (const Variant *key = inputs.next(); key; key = inputs.next(key)) {
 		if (key->get_type() != Variant::STRING || String(*key).utf8().length() > 256 || inputs[*key].get_type() != Variant::STRING) return reject(r_result, "input names and paths must be bounded strings");
 		String path = inputs[*key];
-		if (!path.begins_with("res://assets/generated/")) return reject(r_result, "inputs must already be cooked assets");
+		if (!CookerFiles::is_generated(path)) return reject(r_result, "inputs must already be cooked assets");
 		HashSet<String> files;
 		error = CookerFiles::collect(path, files);
 		if (error != OK) return reject(r_result, "input dependency validation failed", error);
@@ -1098,7 +1098,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	// staging path stable so identical Luau inputs/seed produce identical bytes.
 	String temporary = output.get_basename() + ".recipe-tmp." + output.get_extension();
 	if (FileAccess::exists(temporary)) return reject(r_result, "temporary output collision", ERR_ALREADY_EXISTS);
-	error = ResourceSaver::save(recipe.result, temporary, ResourceSaver::FLAG_COMPRESS);
+	error = ResourceSaver::save(recipe.result, temporary, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	if (error == OK) {
 		Ref<FileAccess> saved = FileAccess::open(temporary, FileAccess::READ);
 		if (saved.is_null() || saved->get_length() > uint64_t(recipe.limits.output_mb) * 1024 * 1024) error = ERR_OUT_OF_MEMORY;

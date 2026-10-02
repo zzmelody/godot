@@ -64,7 +64,7 @@ Error make_bone_map(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 	ERR_FAIL_COND_V(error != OK, error);
-	error = ResourceSaver::save(map, output, ResourceSaver::FLAG_COMPRESS);
+	error = ResourceSaver::save(map, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["profile"] = "SkeletonProfileHumanoid";
@@ -224,7 +224,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 			ERR_FAIL_COND_V_MSG(in_place && !found_hips && !baked_target, ERR_INVALID_DATA, "In-place animation has no Hips position track: " + source);
 		}
 		if (modified) {
-			error = ResourceSaver::save(library, output, ResourceSaver::FLAG_COMPRESS);
+			error = ResourceSaver::save(library, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 			ERR_FAIL_COND_V(error != OK, error);
 		}
 		Dictionary clip;
@@ -356,7 +356,7 @@ Error make_animation_preview(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(error != OK, error);
 	error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 	ERR_FAIL_COND_V(error != OK, error);
-	error = ResourceSaver::save(preview, output, ResourceSaver::FLAG_COMPRESS);
+	error = ResourceSaver::save(preview, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["animation"] = animation_path;

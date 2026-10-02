@@ -15,13 +15,13 @@ to 16 MiB, 1 second, 256 steps, depth 16 and 16,384 converted values. Cooker
 converts the returned tables to native jobs and executes them sequentially.
 
 ```luau
-local asset = "res://assets/generated/example/r1/example.scn"
+local asset = "res://content/worlds/example/generated/example/example.scn"
 return {
     {name="import", operation="import-scene", source="res://assets/source/example.glb",
         output=asset, type="PackedScene"},
     {name="validate", operation="validate-resource", source=asset, type="PackedScene"},
     {name="manifest", operation="asset-manifest",
-        output="res://assets/generated/example/r1/asset.manifest.json",
+        output="res://content/worlds/example/generated/example/asset.manifest.json",
         asset_id="example", revision=1, kind="model", entry="example.scn",
         files={"example.scn"}, source="ai-task-id", generator="model-service"},
 }
