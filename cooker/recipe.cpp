@@ -312,9 +312,20 @@ struct Recipe {
 		uint32_t x = s.random_state; x ^= x << 13; x ^= x >> 17; x ^= x << 5; s.random_state = x;
 		lua_pushnumber(p_state, double(x) / 4294967296.0); return 1;
 	}
+	Ref<Texture2D> texture_field(int p_index, const char *p_name) {
+		field(p_index, p_name);
+		Ref<Texture2D> texture;
+		if (!lua_isnil(L, -1)) {
+			texture = handle(-1);
+			require(texture.is_valid(), "material texture must be a Texture2D handle");
+		}
+		lua_pop(L, 1);
+		return texture;
+	}
 	static int material(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
-		s.fields(1, {"color", "roughness", "metallic"});
+		s.fields(1, {"color", "roughness", "metallic", "albedo_texture", "normal_texture", "orm_texture",
+				"emission_texture", "heightmap_texture", "uv_scale", "triplanar", "normal_scale", "heightmap_scale", "transparency"});
 		Ref<StandardMaterial3D> material; material.instantiate();
 		s.field(1, "color");
 		if (!lua_isnil(p_state, -1)) {
@@ -326,6 +337,39 @@ struct Recipe {
 		lua_pop(p_state, 1);
 		material->set_roughness(s.number_field(1, "roughness", 0.7, 0, 1));
 		material->set_metallic(s.number_field(1, "metallic", 0, 0, 1));
+		if (const Ref<Texture2D> albedo = s.texture_field(1, "albedo_texture"); albedo.is_valid()) {
+			material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, albedo);
+		}
+		if (const Ref<Texture2D> normal = s.texture_field(1, "normal_texture"); normal.is_valid()) {
+			material->set_feature(BaseMaterial3D::FEATURE_NORMAL_MAPPING, true);
+			material->set_texture(BaseMaterial3D::TEXTURE_NORMAL, normal);
+			material->set_normal_scale(s.number_field(1, "normal_scale", 1, 0, 4));
+		}
+		if (const Ref<Texture2D> orm = s.texture_field(1, "orm_texture"); orm.is_valid()) {
+			material->set_feature(BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION, true);
+			material->set_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION, orm);
+			material->set_texture(BaseMaterial3D::TEXTURE_ROUGHNESS, orm);
+			material->set_texture(BaseMaterial3D::TEXTURE_METALLIC, orm);
+			material->set_ao_texture_channel(BaseMaterial3D::TEXTURE_CHANNEL_RED);
+			material->set_roughness_texture_channel(BaseMaterial3D::TEXTURE_CHANNEL_GREEN);
+			material->set_metallic_texture_channel(BaseMaterial3D::TEXTURE_CHANNEL_BLUE);
+			material->set_ao_light_affect(1);
+		}
+		if (const Ref<Texture2D> emission = s.texture_field(1, "emission_texture"); emission.is_valid()) {
+			material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+			material->set_texture(BaseMaterial3D::TEXTURE_EMISSION, emission);
+		}
+		if (const Ref<Texture2D> height = s.texture_field(1, "heightmap_texture"); height.is_valid()) {
+			material->set_feature(BaseMaterial3D::FEATURE_HEIGHT_MAPPING, true);
+			material->set_texture(BaseMaterial3D::TEXTURE_HEIGHTMAP, height);
+			material->set_heightmap_scale(s.number_field(1, "heightmap_scale", 1, 0, 16));
+		}
+		const float uv_scale = s.number_field(1, "uv_scale", 1, 0.1, 64);
+		material->set_uv1_scale(Vector3(uv_scale, uv_scale, uv_scale));
+		material->set_flag(BaseMaterial3D::FLAG_UV1_USE_TRIPLANAR, s.boolean_field(1, "triplanar", false));
+		const String transparency = s.string_field(1, "transparency", "disabled");
+		s.require(transparency == "disabled" || transparency == "alpha", "transparency must be disabled or alpha");
+		material->set_transparency(transparency == "alpha" ? BaseMaterial3D::TRANSPARENCY_ALPHA : BaseMaterial3D::TRANSPARENCY_DISABLED);
 		return s.push_resource(material);
 	}
 	static uint32_t texture_hash(uint32_t p_seed, int p_x, int p_y) {
@@ -954,7 +998,7 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 3; result["operation"] = "run-recipe";
+	result["api_version"] = 4; result["operation"] = "run-recipe";
 	Array apis;
 	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "cloud_mask", "scene", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;

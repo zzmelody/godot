@@ -1,4 +1,4 @@
-# Cooker Luau recipe API v3
+# Cooker Luau recipe API v4
 
 Each `run-recipe` job compiles UTF-8 source with the pinned Luau 0.738 compiler,
 runs one independent VM, and returns exactly one opaque asset handle. Native
@@ -77,12 +77,12 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 | `primitive("box", {size={x,y,z}})` | Positive dimensions, default `{1,1,1}`. |
 | `primitive("cylinder", {height=1,radius=0.5,top_radius=0.5,segments=24})` | Height/radius >= 0.001; top radius may be zero; integer segments 3..128. |
 | `primitive("sphere", {radius=0.5,segments=24,rings=12})` | Radius >= 0.001; integer segments 4..128 and rings 2..64. |
-| `material({color={r,g,b,a},roughness=0.7,metallic=0})` | StandardMaterial3D; channels/scalars 0..1, alpha optional. No transparency-mode or shader-authoring API in v1. |
+| `material({color={r,g,b,a},roughness=0.7,metallic=0,albedo_texture=t,...})` | StandardMaterial3D. Color/scalar channels 0..1, alpha optional. Optional Texture2D handles from `input()` or `procedural_texture`: `albedo_texture`, `normal_texture` (enables normal mapping; `normal_scale` 0..4, default 1), `orm_texture` (AO/roughness/metallic on R/G/B), `emission_texture`, `heightmap_texture` (`heightmap_scale` 0..16, default 1). `uv_scale` 0.1..64 (default 1), `triplanar` boolean, `transparency` `disabled` or `alpha`. Omitted texture slots keep the v3 scalar-only material. No shader-authoring API. |
 | `procedural_texture({...})` | Deterministic CPU RGBA texture. `kind` is `radial`, `ring`, `spark`, `streak`, or `soft-noise`; `size` is a power of two from 32 through 1024. Bounded fields include color, secondary, seed, radius, width, softness, angle and noise scale. |
 | `effect({name=...,mode=...,duration=...,layers={...}})` | Script-free PackedScene with one to four `billboard_particles`, `animated_sprite`, or `simple_mesh` layers. It accepts only typed motion/material/curve/gradient fields; no shader source, Node pointer, method track, collision, audio, light, camera, environment, filesystem or network surface exists. |
 | `mesh({vertices=...,indices=...,normals=...,uvs=...})` | One indexed triangle surface. Vertices are `{x,y,z}`; indices are **1-based**, clockwise. Optional normals/UVs match vertex count. Without normals the host accumulates/normalizes triangle normals; split vertices for hard edges. No tangent-generation API. |
 | `scene({{asset=handle,material=material,name=...,remove=...,position=...,rotation=...,scale=...},...})` | Nonempty array of Mesh or PackedScene instances. Mesh/material pairs become MultiMesh batches. PackedScene roots must be Node3D; `name` sets the instance name and `remove` names bounded relative child paths to omit before packing. Material overrides are Mesh-only. Nodes remain opaque to Luau. |
-| `input("declared_name")` | Mesh/Material/Texture2D/Shader/PackedScene handle from the input allowlist. Texture2D enables licensed cooked source textures in typed effects; Shader is accepted only by the separate typed atmosphere builder. |
+| `input("declared_name")` | Mesh/Material/Texture2D/Shader/PackedScene handle from the input allowlist. Texture2D enables licensed cooked source textures in typed effects and PBR `material()` slots; Shader is accepted only by the separate typed atmosphere builder. |
 | `bounds(asset)` | Mesh-local or PackedScene-root-local `{min={x,y,z},max={x,y,z}}`. PackedScene bounds include transformed MeshInstance3D and MultiMeshInstance3D descendants. |
 | `random()` | Seeded xorshift32 value in `[0,1)`. |
 

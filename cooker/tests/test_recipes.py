@@ -82,7 +82,7 @@ class RecipeTests(unittest.TestCase):
         report = json.loads(next(line for line in run.stdout.splitlines() if line.startswith('{')))
         self.assertEqual(report["script_languages"], 0)
         self.assertEqual(report["recipe_runtime"]["version"], "0.738")
-        self.assertEqual(report["recipe_runtime"]["api_version"], 3)
+        self.assertEqual(report["recipe_runtime"]["api_version"], 4)
         self.assertIn("scene", report["recipe_runtime"]["apis"])
         self.assertIn("procedural_texture", report["recipe_runtime"]["apis"])
         self.assertIn("effect", report["recipe_runtime"]["apis"])
@@ -214,6 +214,27 @@ return cooker.effect({name="TypedEffect",mode="one_shot",duration=1.2,layers={
         for code in rejected:
             with self.subTest(code=code[:70]):
                 self.recipe(code, success=False, output=f"res://assets/generated/rejected-{self.index}.scn")
+
+    def test_material_texture_slots_and_rejects(self):
+        albedo = self.recipe('return cooker.procedural_texture({kind="radial",size=32,color={0.8,0.4,0.2,1}})',
+                             output="res://assets/generated/mat-albedo.res")
+        orm = self.recipe('return cooker.procedural_texture({kind="soft-noise",size=32,seed=3})',
+                          output="res://assets/generated/mat-orm.res")
+        result = self.recipe('''return cooker.material({color={1,1,1},roughness=1,metallic=1,
+ albedo_texture=cooker.input("albedo"),orm_texture=cooker.input("orm"),uv_scale=2,triplanar=true})''',
+                             inputs={"albedo": albedo["output"], "orm": orm["output"]},
+                             output="res://assets/generated/pbr-material.res")
+        self.assertEqual(result["type"], "StandardMaterial3D")
+        self.assertIn(albedo["output"], result["input_sha256"])
+        self.assertIn(orm["output"], result["input_sha256"])
+        scalar = self.recipe('return cooker.material({color={0.3,0.4,0.5},metallic=0.8,roughness=0.4})')
+        self.assertEqual(scalar["type"], "StandardMaterial3D")
+        self.recipe('return cooker.material({albedo_texture=cooker.primitive("box",{})})', success=False,
+                    output="res://assets/generated/bad-material-mesh.res")
+        self.recipe('return cooker.material({transparency="shader"})', success=False,
+                    output="res://assets/generated/bad-material-mode.res")
+        self.recipe('return cooker.material({uv_scale=0})', success=False,
+                    output="res://assets/generated/bad-material-uv.res")
 
     def test_parameters_rng_bounds_and_independent_jobs(self):
         code = '''local b = cooker.primitive("box", {size=cooker.parameters.size})
