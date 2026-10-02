@@ -42,13 +42,14 @@ asset, not game-world placement, an AI model call or a generated picture.
 
 - Source: 1..65536 bytes of UTF-8 without NUL, `.luau` extension. External bytecode
   is rejected. Type annotations are accepted; no static analyzer runs here.
-- Output: `res://content/worlds/example/generated/.../*.scn` for PackedScene or `*.res` for a
+- Output: `res://content/worlds/<id>/generated/.../*.scn` (or the `mod-worlds` and
+  `content/shared/generated/` roots) for PackedScene or `*.res` for a
   Mesh/Material/Texture2D. Existing targets, traversal and symlink escapes fail.
 - Parameters: Lua table or low-level JSON object, <= 64 KiB serialized, depth <= 16 and <= 4096 entries
   per container. Values may be finite numbers, strings, booleans, arrays and
   objects, without nulls. Exposed recursively read-only as `cooker.parameters`.
 - Inputs: <= 32 named, already cooked Mesh, Material, Texture2D, Shader or PackedScene resources under
-  `content/worlds/example/generated/`. Their resource dependency closure is checked before
+  one of those `generated/` roots. Their resource dependency closure is checked before
   loading; shader includes are additionally resolved and checked during resource
   inspection. Combined declared dependency size is capped at 256 MiB on disk by
   default and can be lowered per job.
