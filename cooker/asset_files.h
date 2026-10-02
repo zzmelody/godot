@@ -211,7 +211,7 @@ inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
 		for (const Variant &value : debug_files) {
 			ERR_FAIL_COND_V(value.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 			const String path = value;
-			ERR_FAIL_COND_V(!path.ends_with(".luau") || (!path.begins_with("res://tests/runtime/character/") && !path.begins_with("res://content/scripts/runtime/preview/")), ERR_UNAUTHORIZED);
+			ERR_FAIL_COND_V(!path.ends_with(".luau") || (!path.begins_with("res://tests/runtime/character/") && !path.begins_with("res://content/runtime/preview/")), ERR_UNAUTHORIZED);
 			error = check_path(path);
 			ERR_FAIL_COND_V(error != OK, error);
 			const Vector<uint8_t> bytes = FileAccess::get_file_as_bytes(path);

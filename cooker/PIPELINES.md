@@ -103,7 +103,7 @@ feet, invalid direction/speeds or insufficient stance motion reject the clip.
 offline measurement, not Root Motion or a runtime movement command. Runtime
 uses the nominal/measured speed ratio and its own collision velocity to drive
 the loop; support anchors remain presentation caches. The project example is
-`content/scripts/cooker/avatars/actions/r78/pipeline.luau`.
+`content/cooker/avatars/actions/r78/pipeline.luau`.
 
 For a single-segment humanoid clip, `align_hips_to="move.idle"` rebases the
 sampled Hips position to the named semantic's first pelvis position. The

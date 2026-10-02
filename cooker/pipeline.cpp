@@ -159,9 +159,10 @@ struct Pipeline {
 		String kind;
 		if (lua_gettop(L)==2) {if(!string(2,kind,16))return false;} else kind="layout";
 		if (kind!="layout" && kind!="steps") return fail("pipeline.import export must be layout or steps");
-		if (!path.begins_with("res://content/scripts/") || !path.ends_with(".luau") || CookerFiles::check_path(path)!=OK)
+		const bool content_module=path.begins_with("res://content/cooker/") || path.begins_with("res://content/runtime/") || path.begins_with("res://content/worlds/");
+		if (!content_module || !path.ends_with(".luau") || CookerFiles::check_path(path)!=OK)
 			return fail("layout module path rejected");
-		if (kind=="steps" && !path.begins_with("res://content/scripts/cooker/")) return fail("step imports require Cooker modules");
+		if (kind=="steps" && !path.begins_with("res://content/cooker/")) return fail("step imports require Cooker modules");
 		Ref<DirAccess> directory=DirAccess::open("res://");
 		String prefix="res://";
 		for (const String &part:path.trim_prefix("res://").split("/")) {
