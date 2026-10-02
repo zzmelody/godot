@@ -103,9 +103,9 @@ feet, invalid direction/speeds or insufficient stance motion reject the clip.
 offline measurement, not Root Motion or a runtime movement command. Runtime
 uses the nominal/measured speed ratio and its own collision velocity to drive
 the loop; support anchors remain presentation caches. The project example is
-`content/cooker/avatars/actions/r78/pipeline.luau`.
+`content/shared/cooker/avatars/actions/pipeline.luau`.
 
-For a single-segment humanoid clip, `align_hips_to="move.idle"` rebases the
+For a humanoid clip, `align_hips_to="move.idle"` rebases each segment's
 sampled Hips position to the named semantic's first pelvis position. The
 reference must already exist in the base library; the source, all limb tracks
 and any vertical change not flattened by `flatten_vertical` remain intact.
@@ -133,6 +133,23 @@ exist. All sources are read from a snapshot so swaps are order independent.
 Rest translations, scale and unlisted rotations stay unchanged. Mirroring
 precedes `rotation_offsets`, and the selected bones enter composition and
 coverage provenance. This is an offline FK operation, not a runtime IK solver.
+
+A composed clip can declare `socket_motion={model="res://.../body.scn",
+socket="carry",bone="Chest",upright=true,
+offsets={{phase=0,position={0,.30,.24}}}}`. Cooker samples the final target-body
+FK at 60 Hz and stores a typed two-track Animation in `socket_motion` metadata.
+The position is the average LeftHand/RightHand position plus the declared offset
+in skeleton coordinates, transformed into the reference bone's local space.
+`upright=true` counter-rotates the reference bone; it does not edit any bone track.
+`left` and `right` may name other hand bones. The offset curve allows up to eight
+strictly increasing phases from 0 to 1, smoothstep interpolation, and offsets of
+at most two metres. A single phase-zero offset is constant. Model FK is bounded
+to 128 bones and 1800 samples, and resulting local positions to three metres.
+The runtime samples this private presentation channel on the existing socket;
+it is not an IK constraint, ECS gameplay transform, or executable property track.
+JSON provenance includes its configuration and sample count, not Resource objects.
+Segment `blend` accepts 0..2 seconds and is clamped to the segment duration;
+it blends from the preceding segment's final pose without adding clip time.
 
 `validate-character-actions` can additionally take `compare_base` and an
 `expected_changed` ID array. This cold check compares animation duration, loop,

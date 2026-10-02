@@ -195,6 +195,91 @@ Error mirror_bone_rotations(const Array &p_bones, const Ref<Animation> &p_animat
 	}
 	return OK;
 }
+// A carried prop follows the cooked grip without modifying the actor's bones.
+// Store one bounded socket-local pose channel alongside the ordinary FK clip.
+Error bake_socket_motion(const Dictionary &p_config, const Ref<Animation> &p_animation) {
+	const String model_path = p_config.get("model", ""), socket = p_config.get("socket", "");
+	const String bone = p_config.get("bone", "Chest"), left = p_config.get("left", "LeftHand"), right = p_config.get("right", "RightHand");
+	ERR_FAIL_COND_V(!identifier(socket) || CookerFiles::check_path(model_path) != OK, ERR_INVALID_PARAMETER);
+	const Variant offsets_value = p_config.get("offsets", Variant());
+	ERR_FAIL_COND_V(offsets_value.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	const Array offsets = offsets_value;
+	ERR_FAIL_COND_V(offsets.is_empty() || offsets.size() > 8, ERR_PARAMETER_RANGE_ERROR);
+	Vector<double> phases; Vector<Vector3> values;
+	for (const Variant &value : offsets) {
+		ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		const Dictionary key = value;
+		const double phase = key.get("phase", -1.0);
+		const Variant position_value = key.get("position", Variant());
+		ERR_FAIL_COND_V(position_value.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+		const Array position = position_value;
+		ERR_FAIL_COND_V(position.size() != 3 || !std::isfinite(phase) || phase < 0 || phase > 1 ||
+				(!phases.is_empty() && phase <= phases[phases.size() - 1]), ERR_INVALID_PARAMETER);
+		const Vector3 offset(double(position[0]), double(position[1]), double(position[2]));
+		ERR_FAIL_COND_V(!offset.is_finite() || offset.length() > 2, ERR_PARAMETER_RANGE_ERROR);
+		phases.push_back(phase); values.push_back(offset);
+	}
+	ERR_FAIL_COND_V(phases[0] != 0 || (phases.size() > 1 && phases[phases.size() - 1] != 1), ERR_INVALID_PARAMETER);
+	const Variant upright_value = p_config.get("upright", true);
+	ERR_FAIL_COND_V(upright_value.get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
+	const bool upright = upright_value;
+	const Ref<PackedScene> model = ResourceLoader::load(model_path, "PackedScene");
+	ERR_FAIL_COND_V(model.is_null(), ERR_INVALID_DATA);
+	Tree tree; tree.root = model->instantiate();
+	Skeleton3D *skeleton = tree.root ? skeleton_in(tree.root) : nullptr;
+	ERR_FAIL_COND_V(!skeleton || skeleton->get_bone_count() > 128, ERR_INVALID_DATA);
+	const int reference = skeleton->find_bone(bone), hands[2] = { skeleton->find_bone(left), skeleton->find_bone(right) };
+	ERR_FAIL_COND_V(reference < 0 || hands[0] < 0 || hands[1] < 0 || hands[0] == hands[1], ERR_INVALID_DATA);
+	const int count = skeleton->get_bone_count(), samples = int(std::ceil(p_animation->get_length() * 60));
+	ERR_FAIL_COND_V(samples < 2 || samples > 1800, ERR_PARAMETER_RANGE_ERROR);
+	Vector<int> positions, rotations, scales, parents;
+	positions.resize(count); rotations.resize(count); scales.resize(count); parents.resize(count);
+	Vector<Transform3D> globals; globals.resize(count);
+	for (int index = 0; index < count; ++index) {
+		const NodePath path("%GeneralSkeleton:" + String(skeleton->get_bone_name(index)));
+		positions.write[index] = p_animation->find_track(path, Animation::TYPE_POSITION_3D);
+		rotations.write[index] = p_animation->find_track(path, Animation::TYPE_ROTATION_3D);
+		scales.write[index] = p_animation->find_track(path, Animation::TYPE_SCALE_3D);
+		parents.write[index] = skeleton->get_bone_parent(index);
+		ERR_FAIL_COND_V(parents[index] >= index, ERR_INVALID_DATA);
+	}
+	Ref<Animation> pose; pose.instantiate();
+	pose->add_track(Animation::TYPE_POSITION_3D); pose->track_set_path(0, NodePath(socket));
+	pose->add_track(Animation::TYPE_ROTATION_3D); pose->track_set_path(1, NodePath(socket));
+	int interval = 0;
+	for (int sample = 0; sample <= samples; ++sample) {
+		const double phase = double(sample) / samples, time = phase * p_animation->get_length();
+		for (int index = 0; index < count; ++index) {
+			const Transform3D rest = skeleton->get_bone_rest(index);
+			const Vector3 position = positions[index] >= 0 ? p_animation->position_track_interpolate(positions[index], time) : rest.origin;
+			const Quaternion rotation = rotations[index] >= 0 ? p_animation->rotation_track_interpolate(rotations[index], time) : rest.basis.get_rotation_quaternion();
+			const Vector3 scale = scales[index] >= 0 ? p_animation->scale_track_interpolate(scales[index], time) : rest.basis.get_scale();
+			const Transform3D local(Basis(rotation).scaled_local(scale), position);
+			globals.write[index] = parents[index] >= 0 ? globals[parents[index]] * local : local;
+		}
+		while (interval + 1 < phases.size() && phase > phases[interval + 1]) ++interval;
+		Vector3 offset = values[interval];
+		if (interval + 1 < phases.size()) {
+			double weight = CLAMP((phase - phases[interval]) / (phases[interval + 1] - phases[interval]), 0.0, 1.0);
+			weight = weight * weight * (3 - 2 * weight);
+			offset = offset.lerp(values[interval + 1], weight);
+		}
+		const Transform3D &parent = globals[reference];
+		ERR_FAIL_COND_V(Math::abs(parent.basis.determinant()) < 1e-8, ERR_INVALID_DATA);
+		const Vector3 center = (globals[hands[0]].origin + globals[hands[1]].origin) * .5 + offset;
+		const Vector3 local_center = parent.affine_inverse().xform(center);
+		const Quaternion local_rotation = upright ? parent.basis.orthonormalized().get_rotation_quaternion().inverse() : Quaternion();
+		ERR_FAIL_COND_V(!local_center.is_finite() || local_center.length() > 3 || !local_rotation.is_finite(), ERR_INVALID_DATA);
+		pose->position_track_insert_key(0, time, local_center);
+		pose->rotation_track_insert_key(1, time, local_rotation);
+	}
+	pose->set_length(p_animation->get_length()); pose->set_loop_mode(p_animation->get_loop_mode());
+	Dictionary motion; motion["socket"] = socket; motion["bone"] = bone; motion["pose"] = pose;
+	p_animation->set_meta("socket_motion", motion);
+	Dictionary provenance = p_config.duplicate(true); provenance["pose_samples"] = samples + 1;
+	p_animation->set_meta("socket_motion_provenance", provenance);
+	return OK;
+}
 Error apply_rotation_offsets(const Array &p_offsets, const Ref<Animation> &p_animation) {
 	ERR_FAIL_COND_V(p_offsets.size() > 16, ERR_PARAMETER_RANGE_ERROR);
 	HashSet<String> bones;
@@ -354,6 +439,7 @@ Error prepare_compose_job(Dictionary &r_job) {
 		clip["loop"] = original->get_loop_mode() != Animation::LOOP_NONE;
 		clip["mirror_x"] = original->get_meta("mirror_x", false);
 		clip["mirror_bones"] = original->get_meta("mirror_bones", Array());
+		if (original->has_meta("socket_motion_provenance")) clip["socket_motion"] = original->get_meta("socket_motion_provenance");
 		clip["rotation_offsets"] = original->get_meta("rotation_offsets", Array());
 		clip["hips_position_offsets"] = original->get_meta("hips_position_offsets", Array());
 		if (original->has_meta("align_hips_to")) clip["align_hips_to"] = original->get_meta("align_hips_to");
@@ -429,7 +515,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 				(clip.has("align_hips_axes") && hips_reference_id.is_empty()), ERR_INVALID_PARAMETER);
 		Vector3 hips_reference;
 		if (!hips_reference_id.is_empty()) {
-			ERR_FAIL_COND_V(!identifier(hips_reference_id) || segments.size() != 1 || !library->has_animation(hips_reference_id), ERR_INVALID_PARAMETER);
+			ERR_FAIL_COND_V(!identifier(hips_reference_id) || !library->has_animation(hips_reference_id), ERR_INVALID_PARAMETER);
 			const Ref<Animation> reference = library->get_animation(hips_reference_id);
 			const int track = reference->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
 			ERR_FAIL_COND_V(track < 0 || reference->track_get_key_count(track) == 0, ERR_INVALID_DATA);
@@ -455,7 +541,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 			const double start = begin * source->get_length(), finish = end * source->get_length();
 			const double duration = (finish - start) / speed;
 			const double blend = segment.get("blend", 0.08);
-			ERR_FAIL_COND_V(!std::isfinite(blend) || blend < 0 || blend > 0.25, ERR_PARAMETER_RANGE_ERROR);
+			ERR_FAIL_COND_V(!std::isfinite(blend) || blend < 0 || blend > 2, ERR_PARAMETER_RANGE_ERROR);
 			ERR_FAIL_COND_V(duration < 0.01 || duration > 60 || cursor + duration > 120, ERR_PARAMETER_RANGE_ERROR);
 			int rotations = 0;
 			for (int source_track = 0; source_track < source->get_track_count(); ++source_track) {
@@ -481,7 +567,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 					const double phase = double(sample) / samples;
 					const double time = reverse ? finish - phase * (finish - start) : start + phase * (finish - start);
 					const double at = cursor + phase * duration;
-					const double blend_weight = cursor > 0 && previous_keys && blend > 0 ? MIN(1.0, phase * duration / blend) : 1.0;
+					const double blend_weight = cursor > 0 && previous_keys && blend > 0 ? MIN(1.0, phase * duration / MIN(blend, duration)) : 1.0;
 					if (type == Animation::TYPE_POSITION_3D) {
 						Vector3 position = source->position_track_interpolate(source_track, time);
 						if (mirror_x) position.x = -position.x;
@@ -541,6 +627,13 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 			composed->set_meta("reference_segments", clip.get("reference_segments", Array()));
 		}
 		composed->set_loop_mode(bool(clip.get("loop", false)) ? Animation::LOOP_LINEAR : Animation::LOOP_NONE);
+		Dictionary socket_motion;
+		if (clip.has("socket_motion")) {
+			ERR_FAIL_COND_V(clip["socket_motion"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+			socket_motion = clip["socket_motion"];
+			error = bake_socket_motion(socket_motion, composed);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
 		if (clip.has("gait")) {
 			ERR_FAIL_COND_V(clip["gait"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
 			error = calibrate_gait(clip["gait"], composed);
@@ -562,6 +655,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		record["id"] = id; record["seconds"] = cursor; record["sources"] = sources;
 		record["mirror_x"] = mirror_x;
 		record["mirror_bones"] = mirror_bones;
+		if (!socket_motion.is_empty()) record["socket_motion"] = composed->get_meta("socket_motion_provenance");
 		record["rotation_offsets"] = offsets;
 		record["hips_position_offsets"] = position_offsets;
 		if (!hips_reference_id.is_empty()) record["align_hips_to"] = hips_reference_id;
@@ -664,6 +758,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		row["sources"] = animation->get_meta("source_segments", Array());
 		row["mirror_x"] = animation->get_meta("mirror_x", false);
 		row["mirror_bones"] = animation->get_meta("mirror_bones", Array());
+		if (animation->has_meta("socket_motion_provenance")) row["socket_motion"] = animation->get_meta("socket_motion_provenance");
 		row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
 		row["hips_position_offsets"] = animation->get_meta("hips_position_offsets", Array());
 		if (animation->has_meta("locomotion_gait")) row["locomotion_gait"] = animation->get_meta("locomotion_gait");
