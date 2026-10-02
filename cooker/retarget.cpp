@@ -87,6 +87,9 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 	const bool baked_target = p_job.get("baked_target", false);
 	ERR_FAIL_COND_V(p_job.has("skip_existing") && p_job["skip_existing"].get_type()!=Variant::BOOL,ERR_INVALID_PARAMETER);
 	const bool skip_existing=p_job.get("skip_existing",false);
+	ERR_FAIL_COND_V(p_job.has("rebuild_unverified") && p_job["rebuild_unverified"].get_type()!=Variant::BOOL,ERR_INVALID_PARAMETER);
+	const bool rebuild_unverified=p_job.get("rebuild_unverified",false);
+	ERR_FAIL_COND_V(rebuild_unverified && !skip_existing,ERR_INVALID_PARAMETER);
 	bool in_place = p_job.get("in_place", false);
 	bool loop = p_job.get("loop", false);
 	Error error = CookerFiles::check_path(source_dir, false, false, false);
@@ -143,6 +146,12 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(error != OK, error);
 		CookerCache::Receipt receipt;bool cache_hit=false;
 		if(skip_existing) {
+			// Legacy generated batches predate per-file receipts. The authored
+			// migration may regenerate those exact declared outputs from source;
+			// never admit their existing bytes as a verified cache hit.
+			if(rebuild_unverified && FileAccess::exists(output) && !FileAccess::exists(output+".cook.json")) {
+				error=DirAccess::remove_absolute(output);ERR_FAIL_COND_V(error!=OK,error);
+			}
 			Dictionary request;request["operation"]="retarget-animations";request["source"]=source;request["output"]=output;
 			request["bone_map"]=map_path;request["animation_name"]=selected_animation;request["in_place"]=in_place;request["loop"]=loop;
 			if (baked_target) request["baked_target"] = true;
