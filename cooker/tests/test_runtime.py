@@ -295,6 +295,29 @@ metadata/native = ExtResource("1")
 ''', encoding="utf-8")
         self.job({"operation": "validate-resource", "source": "res://native.tres"}, success=False)
 
+    def test_relative_paths_stay_inside_one_package(self):
+        shared = "res://content/shared/generated/material/rel/material.res"
+        local = "res://content/worlds/fixture/generated/material/rel/material.res"
+        for path in (shared, local):
+            self.job({"operation": "save-resource", "source": "res://shader_material.tres", "output": path})
+        for name, dependency in (("shared", shared), ("local", local)):
+            scene = self.project / f"content/worlds/fixture/source/rel_{name}.tscn"
+            scene.parent.mkdir(parents=True, exist_ok=True)
+            scene.write_text(f'''[gd_scene load_steps=3 format=3]
+[ext_resource type="Material" path="{dependency}" id="Material"]
+[sub_resource type="BoxMesh" id="Mesh"]
+[node name="Box" type="MeshInstance3D"]
+mesh = SubResource("Mesh")
+material_override = ExtResource("Material")
+''', encoding="utf-8")
+            output = f"content/worlds/fixture/generated/model/rel_{name}/scene.scn"
+            self.job({"operation": "save-resource", "source": f"res://content/worlds/fixture/source/rel_{name}.tscn", "output": "res://" + output, "type": "PackedScene"})
+            data = (self.project / output).read_bytes()
+            if name == "shared":
+                self.assertNotIn(b"../", data)
+            else:
+                self.assertNotIn(b"res://content/worlds/fixture/generated/material", data)
+
     def test_pack_dependency_closure(self):
         material = "res://content/worlds/fixture/generated/pack_material.res"
         self.job({"operation": "save-resource", "source": "res://shader_material.tres", "output": material})

@@ -2269,7 +2269,22 @@ Error ResourceFormatSaverBinaryInstance::save(const String &p_path, const Ref<Re
 	for (int i = 0; i < save_order.size(); i++) {
 		save_unicode_string(f, save_order[i]->get_save_class());
 		String res_path = save_order[i]->get_path();
-		res_path = relative_paths ? local_path.path_to_file(res_path) : res_path;
+		/*<<----- VEYA_COOKER: relative only within one content package, so a package directory can move between res:// and user:// while references into content/shared/ stay absolute. */
+		const auto package_root = [](const String &p_path) -> String {
+			if (p_path.begins_with("res://content/shared/")) {
+				return "res://content/shared/";
+			}
+			for (const char *root : { "res://content/worlds/", "res://content/mod-worlds/" }) {
+				if (p_path.begins_with(root)) {
+					const String id = p_path.trim_prefix(root).get_slicec('/', 0);
+					return id.is_empty() ? String() : String(root) + id + "/";
+				}
+			}
+			return String();
+		};
+		const String package = package_root(res_path);
+		res_path = relative_paths && !package.is_empty() && package == package_root(local_path + "/") ? local_path.path_to_file(res_path) : res_path;
+		/*>>----- VEYA_COOKER */
 		save_unicode_string(f, res_path);
 		ResourceUID::ID ruid = ResourceSaver::get_resource_id_for_path(save_order[i]->get_path(), false);
 		f->store_64(uint64_t(ruid));
