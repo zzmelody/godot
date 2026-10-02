@@ -10,13 +10,22 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 	if(field=="output" || field=="output_dir") return OK;
 	if(value.get_type()==Variant::STRING) {
 		const String path=value;
-		if(!path.begins_with("res://") || !FileAccess::exists(path)) return OK;
+		if(!path.begins_with("res://")) return OK;
+		if(CookerFiles::is_generated(path) && DirAccess::dir_exists_absolute(path)) {
+			Array roots;HashSet<String> metadata;int directories=0;
+			Error error=CookerFiles::collect_directory(path,roots,metadata,directories);ERR_FAIL_COND_V(error!=OK,error);
+			for(const String &entry:metadata)result[entry]=FileAccess::get_sha256(entry);
+			for(const Variant &entry:roots) {error=dependencies(entry,result,depth+1);ERR_FAIL_COND_V(error!=OK,error);}
+			ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);
+			return OK;
+		}
+		if(!FileAccess::exists(path))return OK;
 		Error error=CookerFiles::check_path(path);ERR_FAIL_COND_V(error!=OK,error);
 		HashSet<String> closure;
 		if(path.ends_with(".res") || path.ends_with(".scn")) {error=CookerFiles::collect(path,closure);ERR_FAIL_COND_V(error!=OK,error);}
 		else closure.insert(path);
-		ERR_FAIL_COND_V(result.size()+closure.size()>4096,ERR_OUT_OF_MEMORY);
 		for(const String &source:closure)result[source]=FileAccess::get_sha256(source);
+		ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);
 	} else if(value.get_type()==Variant::ARRAY) {
 		const Array values=value;ERR_FAIL_COND_V(values.size()>16384,ERR_OUT_OF_MEMORY);
 		for(const Variant &entry:values) {const Error error=dependencies(entry,result,depth+1);ERR_FAIL_COND_V(error!=OK,error);}
@@ -52,13 +61,18 @@ inline Error validate_manifest_files(const String &path) {
 	}
 	return OK;
 }
-inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt,bool &hit) {
+inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt,bool &hit,bool rebuild_unverified=false) {
 	hit=false;receipt={};receipt.output=output;receipt.path=output+".cook.json";
-	Error error=CookerFiles::check_path(output,true);ERR_FAIL_COND_V(error!=OK,error);
+	Error error=CookerFiles::check_path(output,true,String(job.get("operation",""))=="pack");ERR_FAIL_COND_V(error!=OK,error);
 	error=dependencies(job,receipt.dependencies);ERR_FAIL_COND_V(error!=OK,error);
 	Dictionary request;request["schema_version"]=1;request["job"]=job;request["dependencies"]=receipt.dependencies;
 	receipt.fingerprint=JSON::stringify(request,"",true).sha256_text();
 	if(!FileAccess::exists(output))return OK;
+	if(!FileAccess::exists(receipt.path) && rebuild_unverified) {
+		// Regenerate legacy bytes from this declared step; do not reuse them.
+		error=DirAccess::remove_absolute(output);ERR_FAIL_COND_V(error!=OK,error);
+		return OK;
+	}
 	ERR_FAIL_COND_V_MSG(!FileAccess::exists(receipt.path),ERR_INVALID_DATA,"Existing output has no verified provenance; choose a new immutable revision: "+output);
 	Dictionary prior;error=read(receipt.path,prior);ERR_FAIL_COND_V(error!=OK,error);
 	// Generated assets have stable current paths. A changed Luau request or

@@ -835,9 +835,11 @@ Error execute_pipeline(Dictionary &r_result) {
 		if (label.get_type() == Variant::STRING) {
 			report["name"] = label;
 		}
-		Variant condition = job.get("if_missing", false);
+		// Current generated paths are rebuilt when their declared request or
+		// dependencies change. Explicit pipeline cache choices remain honored.
+		Variant condition = job.get("if_missing", job.has("output"));
 		ERR_FAIL_COND_V(condition.get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
-		Variant verification=job.get("verify_cache",false);
+		Variant verification=job.get("verify_cache",bool(condition));
 		ERR_FAIL_COND_V(verification.get_type()!=Variant::BOOL,ERR_INVALID_PARAMETER);
 		job.erase("name");
 		job.erase("if_missing");
@@ -858,7 +860,7 @@ Error execute_pipeline(Dictionary &r_result) {
 		CookerCache::Receipt receipt;bool verified_hit=false;
 		if(bool(verification)) {
 			ERR_FAIL_COND_V(!bool(condition) || job.get("output",Variant()).get_type()!=Variant::STRING,ERR_INVALID_PARAMETER);
-			error=CookerCache::prepare(job,job["output"],receipt,verified_hit);ERR_FAIL_COND_V(error!=OK,error);
+			error=CookerCache::prepare(job,job["output"],receipt,verified_hit,true);ERR_FAIL_COND_V(error!=OK,error);
 			report["request_sha256"]=receipt.fingerprint;
 		}
 		if (bool(condition)) {
