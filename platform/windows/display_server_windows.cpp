@@ -253,6 +253,16 @@ Vector2i DisplayServerWindows::_get_screen_expand_offset(int p_screen) const {
 }
 
 void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_mode) {
+	if (windows.has(DisplayServerEnums::MAIN_WINDOW_ID) && windows[DisplayServerEnums::MAIN_WINDOW_ID].wallpaper) {
+		// The wallpaper host owns pointer confinement on its input thread. A
+		// focus/mode update must never capture the disabled Explorer child HWND.
+		if (GetCapture() == windows[DisplayServerEnums::MAIN_WINDOW_ID].hWnd) {
+			ReleaseCapture();
+		}
+		pressrc = 0;
+		_register_raw_input_devices(DisplayServerEnums::INVALID_WINDOW_ID);
+		return;
+	}
 	if (p_mode == DisplayServerEnums::MOUSE_MODE_HIDDEN || p_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED || p_mode == DisplayServerEnums::MOUSE_MODE_CONFINED_HIDDEN) {
 		// Hide cursor before moving.
 		if (hCursor == nullptr) {
@@ -374,6 +384,12 @@ void DisplayServerWindows::_register_raw_input_devices(DisplayServerEnums::Windo
 		// A single registration owner: an extension must never replace this sink.
 		p_target_window = DisplayServerEnums::MAIN_WINDOW_ID;
 		rid[0].dwFlags = RIDEV_INPUTSINK;
+	} else if (windows.has(DisplayServerEnums::MAIN_WINDOW_ID) && windows[DisplayServerEnums::MAIN_WINDOW_ID].wallpaper) {
+		// Retargeting a former shell-child sink to keyboard focus leaves a mouse
+		// registration alive. Passive wallpaper has no native mouse receiver:
+		// remove it entirely; non-consuming hooks provide passive observation.
+		p_target_window = DisplayServerEnums::INVALID_WINDOW_ID;
+		rid[0].dwFlags = RIDEV_REMOVE;
 	}
 
 	if (p_target_window != DisplayServerEnums::INVALID_WINDOW_ID && windows.has(p_target_window)) {
@@ -2209,11 +2225,23 @@ Error DisplayServerWindows::window_restore_wallpaper(DisplayServerEnums::WindowI
 	wd.pre_fs_rect = previous.pre_fs_rect;
 	wd.pre_fs_valid = previous.pre_fs_valid;
 	wd.was_maximized_pre_fs = previous.was_maximized_pre_fs;
+	// The passive wallpaper removed the mouse collection. Restore ordinary
+	// focus-based registration only after this HWND is a normal window again.
+	_register_raw_input_devices(DisplayServerEnums::INVALID_WINDOW_ID);
 	return OK;
 }
 
 void DisplayServerWindows::window_set_wallpaper_input(bool p_enabled, DisplayServerEnums::WindowID p_window) {
 	_THREAD_SAFE_METHOD_
+	ERR_FAIL_COND(!windows.has(p_window));
+	if (!p_enabled && windows[p_window].wallpaper) {
+		// Mouse mode can already be VISIBLE, so mouse_set_mode(VISIBLE) alone
+		// need not execute its native release path. Release our HWND explicitly.
+		if (GetCapture() == windows[p_window].hWnd) {
+			ReleaseCapture();
+		}
+		pressrc = 0;
+	}
 	wallpaper_input = p_enabled;
 	wallpaper_mouse_motion = Vector2();
 	_register_raw_input_devices(p_enabled ? p_window : DisplayServerEnums::INVALID_WINDOW_ID);
