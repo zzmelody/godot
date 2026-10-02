@@ -218,7 +218,7 @@ Error bake_socket_motion(const Dictionary &p_config, const Ref<Animation> &p_ani
 		for (const Variant &coordinate : position) {
 			ERR_FAIL_COND_V(coordinate.get_type() != Variant::INT && coordinate.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
 		}
-		const Vector3 offset{ double(position[0]), double(position[1]), double(position[2]) };
+		const Vector3 offset{ real_t(double(position[0])), real_t(double(position[1])), real_t(double(position[2])) };
 		ERR_FAIL_COND_V(!offset.is_finite() || offset.length() > 2, ERR_PARAMETER_RANGE_ERROR);
 		phases.push_back(phase); values.push_back(offset);
 	}
