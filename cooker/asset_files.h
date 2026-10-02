@@ -14,11 +14,13 @@
 #include <filesystem>
 
 namespace CookerFiles {
-// Cooked outputs live inside the world that owns them, or in the engine-wide
-// shared tree: content/{worlds,mod-worlds}/<id>/generated/ or content/shared/generated/.
+// Veya's current release pipelines use the unversioned assets/generated/ tree.
+// Standalone world workspaces may use content/{worlds,mod-worlds}/<id>/generated/
+// or content/shared/generated/. All roots retain the same path/dependency checks.
 inline bool is_generated_relative(const String &p_relative) {
 	// Directory roots (pack "directories") may name generated/ itself, without a trailing slash.
-	if (p_relative == "content/shared/generated" || p_relative.begins_with("content/shared/generated/")) {
+	if (p_relative == "assets/generated" || p_relative.begins_with("assets/generated/") ||
+			p_relative == "content/shared/generated" || p_relative.begins_with("content/shared/generated/")) {
 		return true;
 	}
 	for (const char *root : { "content/worlds/", "content/mod-worlds/" }) {

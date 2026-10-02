@@ -42,8 +42,9 @@ asset, not game-world placement, an AI model call or a generated picture.
 
 - Source: 1..65536 bytes of UTF-8 without NUL, `.luau` extension. External bytecode
   is rejected. Type annotations are accepted; no static analyzer runs here.
-- Output: `res://content/worlds/<id>/generated/.../*.scn` (or the `mod-worlds` and
-  `content/shared/generated/` roots) for PackedScene or `*.res` for a
+- Output: Veya's current release root `res://assets/generated/.../*.scn`, or
+  `res://content/worlds/<id>/generated/.../*.scn` (including the `mod-worlds` and
+  `content/shared/generated/` roots), for PackedScene or `*.res` for a
   Mesh/Material/Texture2D. Existing targets, traversal and symlink escapes fail.
 - Parameters: Lua table or low-level JSON object, <= 64 KiB serialized, depth <= 16 and <= 4096 entries
   per container. Values may be finite numbers, strings, booleans, arrays and
