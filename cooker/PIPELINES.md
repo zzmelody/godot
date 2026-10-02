@@ -17,7 +17,7 @@ converts the returned tables to native jobs and executes them sequentially.
 ```luau
 local asset = "res://content/worlds/example/generated/example/example.scn"
 return {
-    {name="import", operation="import-scene", source="res://assets/source/example.glb",
+    {name="import", operation="import-scene", source="res://content/worlds/example/source/example.glb",
         output=asset, type="PackedScene"},
     {name="validate", operation="validate-resource", source=asset, type="PackedScene"},
     {name="manifest", operation="asset-manifest",

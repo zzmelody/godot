@@ -314,6 +314,10 @@ material_override = ExtResource("Material")
         self.assertEqual(result["sha256"], duplicate["sha256"])
         self.job({"operation": "pack", "files": [scene], "output": "res://content/releases/closure.pck"}, success=False)
         self.job({"operation": "pack", "files": ["res://shader_material.tres"], "output": "res://content/releases/forbidden.pck"}, success=False)
+        # A whole generated/ directory is a valid pack root; its parent world directory is not.
+        tree = self.job({"operation": "pack", "directories": ["res://content/worlds/fixture/generated"], "output": "res://content/releases/tree.pck"})
+        self.assertIn(material, tree["files"])
+        self.job({"operation": "pack", "directories": ["res://content/worlds/fixture"], "output": "res://content/releases/tree2.pck"}, success=False)
 
     @unittest.skipUnless(REFERENCE, "Pass --reference-godot for independent engine/PCK verification")
     def test_reference_engine_pack_load(self):

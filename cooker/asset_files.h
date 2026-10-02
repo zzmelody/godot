@@ -17,7 +17,8 @@ namespace CookerFiles {
 // Cooked outputs live inside the world that owns them, or in the engine-wide
 // shared tree: content/{worlds,mod-worlds}/<id>/generated/ or content/shared/generated/.
 inline bool is_generated_relative(const String &p_relative) {
-	if (p_relative.begins_with("content/shared/generated/")) {
+	// Directory roots (pack "directories") may name generated/ itself, without a trailing slash.
+	if (p_relative == "content/shared/generated" || p_relative.begins_with("content/shared/generated/")) {
 		return true;
 	}
 	for (const char *root : { "content/worlds/", "content/mod-worlds/" }) {
@@ -25,7 +26,7 @@ inline bool is_generated_relative(const String &p_relative) {
 			continue;
 		}
 		Vector<String> parts = p_relative.trim_prefix(root).split("/");
-		return parts.size() >= 3 && !parts[0].is_empty() && parts[1] == "generated";
+		return parts.size() >= 2 && !parts[0].is_empty() && parts[1] == "generated";
 	}
 	return false;
 }
