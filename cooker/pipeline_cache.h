@@ -61,7 +61,15 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	if(!FileAccess::exists(output))return OK;
 	ERR_FAIL_COND_V_MSG(!FileAccess::exists(receipt.path),ERR_INVALID_DATA,"Existing output has no verified provenance; choose a new immutable revision: "+output);
 	Dictionary prior;error=read(receipt.path,prior);ERR_FAIL_COND_V(error!=OK,error);
-	ERR_FAIL_COND_V_MSG(String(prior.get("request_sha256",""))!=receipt.fingerprint || String(prior.get("output_sha256",""))!=FileAccess::get_sha256(output),ERR_INVALID_DATA,"Cook cache source, parameters or output changed; choose a new immutable revision: "+output);
+	// Generated assets have stable current paths. A changed Luau request or
+	// source invalidates its cache, but a modified output is still rejected.
+	// Only remove the exact verified output/receipt owned by this step.
+	ERR_FAIL_COND_V_MSG(String(prior.get("output_sha256",""))!=FileAccess::get_sha256(output),ERR_INVALID_DATA,"Cook cache output integrity failed: "+output);
+	if(String(prior.get("request_sha256",""))!=receipt.fingerprint) {
+		error=DirAccess::remove_absolute(output);ERR_FAIL_COND_V(error!=OK,error);
+		error=DirAccess::remove_absolute(receipt.path);ERR_FAIL_COND_V(error!=OK,error);
+		return OK;
+	}
 	// Manifest file names are relative to their generated directory, so they
 	// do not appear in the generic res:// dependency walk. Preserve existing
 	// receipts and validate their recorded bytes/hashes before accepting a hit.
