@@ -65,6 +65,17 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	hit=false;receipt={};receipt.output=output;receipt.path=output+".cook.json";
 	Error error=CookerFiles::check_path(output,true,String(job.get("operation",""))=="pack");ERR_FAIL_COND_V(error!=OK,error);
 	error=dependencies(job,receipt.dependencies);ERR_FAIL_COND_V(error!=OK,error);
+	if(String(job.get("operation",""))=="asset-manifest") {
+		ERR_FAIL_COND_V(job.get("files",Variant()).get_type()!=Variant::ARRAY,ERR_INVALID_PARAMETER);
+		const Array files=job["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>256,ERR_INVALID_PARAMETER);
+		for(const Variant &entry:files) {
+			ERR_FAIL_COND_V(entry.get_type()!=Variant::STRING,ERR_INVALID_PARAMETER);
+			const String relative=entry;ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.contains(":"),ERR_INVALID_PARAMETER);
+			const String path=output.get_base_dir().path_join(relative);
+			error=CookerFiles::check_path(path);ERR_FAIL_COND_V(error!=OK,error);
+			error=dependencies(path,receipt.dependencies);ERR_FAIL_COND_V(error!=OK,error);
+		}
+	}
 	Dictionary request;request["schema_version"]=1;request["job"]=job;request["dependencies"]=receipt.dependencies;
 	receipt.fingerprint=JSON::stringify(request,"",true).sha256_text();
 	if(!FileAccess::exists(output))return OK;
