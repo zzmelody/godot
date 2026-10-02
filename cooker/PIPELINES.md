@@ -125,6 +125,15 @@ to `space="local"` (postmultiply) and may specify `space="parent"`
 roll the body. Invalid spaces are rejected. Both settings are authored in the
 immutable Luau pipeline and recorded in clip provenance.
 
+A clip can declare `mirror_bones={"LeftShoulder","LeftUpperArm",
+"LeftLowerArm","LeftHand"}` to copy those rotation tracks onto their opposite
+humanoid side, reflecting the rotation across local X. The array is bounded to
+16 unique Left/Right bone names; both source and opposite rotation tracks must
+exist. All sources are read from a snapshot so swaps are order independent.
+Rest translations, scale and unlisted rotations stay unchanged. Mirroring
+precedes `rotation_offsets`, and the selected bones enter composition and
+coverage provenance. This is an offline FK operation, not a runtime IK solver.
+
 `validate-character-actions` can additionally take `compare_base` and an
 `expected_changed` ID array. This cold check compares animation duration, loop,
 step, tracks, interpolation and every key against the prior library, bounded to

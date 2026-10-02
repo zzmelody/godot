@@ -163,6 +163,38 @@ Error calibrate_gait(const Dictionary &p_config, const Ref<Animation> &p_animati
 	p_animation->set_meta("locomotion_gait", gait);
 	return OK;
 }
+Error mirror_bone_rotations(const Array &p_bones, const Ref<Animation> &p_animation) {
+	ERR_FAIL_COND_V(p_bones.size() > 16, ERR_PARAMETER_RANGE_ERROR);
+	HashSet<String> names;
+	for (const Variant &value : p_bones) {
+		ERR_FAIL_COND_V(value.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		const String bone = value;
+		ERR_FAIL_COND_V(bone.length() > 64 || bone.contains(":") || bone.contains("/") || names.has(bone) ||
+				(!bone.begins_with("Left") && !bone.begins_with("Right")), ERR_INVALID_PARAMETER);
+		names.insert(bone);
+		const NodePath path("%GeneralSkeleton:" + bone), target = mirrored_bone_path(path);
+		const int source_track = p_animation->find_track(path, Animation::TYPE_ROTATION_3D);
+		ERR_FAIL_COND_V(source_track < 0 || p_animation->find_track(target, Animation::TYPE_ROTATION_3D) < 0 ||
+				p_animation->track_get_key_count(source_track) == 0, ERR_INVALID_DATA);
+	}
+	if (p_bones.is_empty()) return OK;
+	// Read every source from one snapshot, so mirrored swaps never depend on
+	// declaration order. Rest translations and all other bone tracks stay intact.
+	const Ref<Animation> source = p_animation->duplicate(true);
+	for (const Variant &value : p_bones) {
+		const NodePath path("%GeneralSkeleton:" + String(value)), target = mirrored_bone_path(path);
+		const int source_track = source->find_track(path, Animation::TYPE_ROTATION_3D);
+		p_animation->remove_track(p_animation->find_track(target, Animation::TYPE_ROTATION_3D));
+		source->copy_track(source_track, p_animation);
+		const int track = p_animation->get_track_count() - 1;
+		p_animation->track_set_path(track, target);
+		for (int key = 0; key < p_animation->track_get_key_count(track); ++key) {
+			const Quaternion rotation = p_animation->track_get_key_value(track, key);
+			p_animation->track_set_key_value(track, key, Quaternion(rotation.x, -rotation.y, -rotation.z, rotation.w));
+		}
+	}
+	return OK;
+}
 Error apply_rotation_offsets(const Array &p_offsets, const Ref<Animation> &p_animation) {
 	ERR_FAIL_COND_V(p_offsets.size() > 16, ERR_PARAMETER_RANGE_ERROR);
 	HashSet<String> bones;
@@ -321,6 +353,7 @@ Error prepare_compose_job(Dictionary &r_job) {
 		clip["segments"] = segments; clip["reference_segments"] = sources;
 		clip["loop"] = original->get_loop_mode() != Animation::LOOP_NONE;
 		clip["mirror_x"] = original->get_meta("mirror_x", false);
+		clip["mirror_bones"] = original->get_meta("mirror_bones", Array());
 		clip["rotation_offsets"] = original->get_meta("rotation_offsets", Array());
 		clip["hips_position_offsets"] = original->get_meta("hips_position_offsets", Array());
 		if (original->has_meta("align_hips_to")) clip["align_hips_to"] = original->get_meta("align_hips_to");
@@ -482,6 +515,11 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 			sources.push_back(evidence);
 		}
 		composed->set_length(cursor);
+		const Variant mirror_bones_value = clip.get("mirror_bones", Array());
+		ERR_FAIL_COND_V(mirror_bones_value.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+		const Array mirror_bones = mirror_bones_value;
+		error = mirror_bone_rotations(mirror_bones, composed);
+		ERR_FAIL_COND_V(error != OK, error);
 		const Array offsets = clip.get("rotation_offsets", Array());
 		error = apply_rotation_offsets(offsets, composed);
 		ERR_FAIL_COND_V(error != OK, error);
@@ -511,6 +549,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		composed->set_meta("character_semantic", id);
 		composed->set_meta("source_segments", sources);
 		composed->set_meta("mirror_x", mirror_x);
+		composed->set_meta("mirror_bones", mirror_bones);
 		composed->set_meta("rotation_offsets", offsets);
 		composed->set_meta("hips_position_offsets", position_offsets);
 		if (!hips_reference_id.is_empty()) composed->set_meta("align_hips_to", hips_reference_id);
@@ -522,6 +561,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		Dictionary record;
 		record["id"] = id; record["seconds"] = cursor; record["sources"] = sources;
 		record["mirror_x"] = mirror_x;
+		record["mirror_bones"] = mirror_bones;
 		record["rotation_offsets"] = offsets;
 		record["hips_position_offsets"] = position_offsets;
 		if (!hips_reference_id.is_empty()) record["align_hips_to"] = hips_reference_id;
@@ -623,6 +663,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		row["seconds"] = animation->get_length(); row["loop"] = animation->get_loop_mode() != Animation::LOOP_NONE;
 		row["sources"] = animation->get_meta("source_segments", Array());
 		row["mirror_x"] = animation->get_meta("mirror_x", false);
+		row["mirror_bones"] = animation->get_meta("mirror_bones", Array());
 		row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
 		row["hips_position_offsets"] = animation->get_meta("hips_position_offsets", Array());
 		if (animation->has_meta("locomotion_gait")) row["locomotion_gait"] = animation->get_meta("locomotion_gait");
