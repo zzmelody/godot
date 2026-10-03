@@ -16,6 +16,7 @@
 #include "scene/resources/curve.h"
 #include "scene/resources/curve_texture.h"
 #include "scene/resources/environment.h"
+#include "scene/resources/camera_attributes.h"
 #include "scene/resources/gradient.h"
 #include "scene/resources/gradient_texture.h"
 #include "scene/resources/image_texture.h"
@@ -619,7 +620,7 @@ struct Recipe {
 	}
 	static int atmosphere(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
-		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy", "fog_height", "fog_height_density", "fog_aerial_perspective", "fog_sun_scatter", "volumetric_density", "volumetric_length", "volumetric_albedo", "volumetric_anisotropy", "volumetric_ambient_inject", "ssao_intensity", "ssao_radius", "ssil_intensity", "ssil_radius", "glow_intensity", "glow_threshold"});
+		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy", "fog_height", "fog_height_density", "fog_aerial_perspective", "fog_sun_scatter", "volumetric_density", "volumetric_length", "volumetric_albedo", "volumetric_anisotropy", "volumetric_ambient_inject", "ssao_intensity", "ssao_radius", "ssil_intensity", "ssil_radius", "glow_intensity", "glow_threshold", "contrast", "saturation", "brightness", "ssr_enabled"});
 		s.field(1, "preset_id"); const String preset_id = s.string(-1); lua_pop(p_state, 1);
 		s.require(!preset_id.is_empty() && preset_id.length() <= 48, "invalid atmosphere preset_id");
 		s.field(1, "shader"); Ref<Shader> shader = s.handle(-1); lua_pop(p_state, 1);
@@ -696,11 +697,51 @@ struct Recipe {
 		environment->set_glow_hdr_bleed_threshold(s.number_field(1, "glow_threshold", 1, 1, 8));
 		environment->set_tonemapper(Environment::TONE_MAPPER_AGX);
 		environment->set_tonemap_exposure(s.number_field(1, "exposure", 1, 0.1, 4));
+		const double contrast = s.number_field(1, "contrast", 1, .8, 1.25);
+		const double saturation = s.number_field(1, "saturation", 1, .6, 1.3);
+		const double brightness = s.number_field(1, "brightness", 1, .8, 1.2);
+		environment->set_adjustment_enabled(contrast != 1 || saturation != 1 || brightness != 1);
+		environment->set_adjustment_contrast(contrast);
+		environment->set_adjustment_saturation(saturation);
+		environment->set_adjustment_brightness(brightness);
+		environment->set_ssr_enabled(s.boolean_field(1, "ssr_enabled", false));
 		environment->set_meta("veya_atmosphere_preset", preset_id);
 		environment->set_meta("veya_atmosphere_sun_direction", sun_direction);
 		environment->set_meta("veya_atmosphere_sun_color", sun_color);
 		environment->set_meta("veya_atmosphere_sun_energy", sun_energy);
 		return s.push_resource(environment);
+	}
+	static int camera_attributes(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		s.fields(1, {"preset_id", "distance", "shoulder_offset", "target_height", "zoom_smoothing", "fov", "run_fov", "fov_smoothing", "follow_smoothing", "shoulder_smoothing", "clip_near", "clip_far", "exposure_multiplier", "dof_far_enabled", "dof_far_distance", "dof_far_transition", "dof_near_enabled", "dof_near_distance", "dof_near_transition", "dof_amount"});
+		const String id = s.string_field(1, "preset_id", "");
+		s.require(!id.is_empty() && id.length() <= 48, "invalid camera preset_id");
+		Dictionary profile;
+		profile["distance"] = s.number_field(1, "distance", 4.8, 2.3, 8);
+		profile["shoulder_offset"] = s.number_field(1, "shoulder_offset", .34, -1.2, 1.2);
+		profile["target_height"] = s.number_field(1, "target_height", 1.48, .8, 2.2);
+		profile["zoom_smoothing"] = s.number_field(1, "zoom_smoothing", 9, 1, 30);
+		profile["fov"] = s.number_field(1, "fov", 62, 25, 100);
+		profile["run_fov"] = s.number_field(1, "run_fov", 68, 25, 110);
+		profile["fov_smoothing"] = s.number_field(1, "fov_smoothing", 5, .1, 30);
+		profile["follow_smoothing"] = s.number_field(1, "follow_smoothing", 16, .1, 30);
+		profile["shoulder_smoothing"] = s.number_field(1, "shoulder_smoothing", 12, .1, 30);
+		profile["clip_near"] = s.number_field(1, "clip_near", .08, .02, 1);
+		profile["clip_far"] = s.number_field(1, "clip_far", 1600, 16, 4000);
+		Ref<CameraAttributesPractical> attributes;
+		attributes.instantiate();
+		attributes->set_exposure_multiplier(s.number_field(1, "exposure_multiplier", 1, .25, 4));
+		attributes->set_auto_exposure_enabled(false);
+		attributes->set_dof_blur_far_enabled(s.boolean_field(1, "dof_far_enabled", false));
+		attributes->set_dof_blur_far_distance(s.number_field(1, "dof_far_distance", 10, .1, 256));
+		attributes->set_dof_blur_far_transition(s.number_field(1, "dof_far_transition", 5, .1, 128));
+		attributes->set_dof_blur_near_enabled(s.boolean_field(1, "dof_near_enabled", false));
+		attributes->set_dof_blur_near_distance(s.number_field(1, "dof_near_distance", 1, .1, 16));
+		attributes->set_dof_blur_near_transition(s.number_field(1, "dof_near_transition", 1, .1, 16));
+		attributes->set_dof_blur_amount(s.number_field(1, "dof_amount", .1, 0, .3));
+		attributes->set_meta("veya_camera_preset", id);
+		attributes->set_meta("veya_camera_profile", profile);
+		return s.push_resource(attributes);
 	}
 	static int cloud_mask(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
@@ -982,7 +1023,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -1028,9 +1069,9 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 4; result["operation"] = "run-recipe";
+	result["api_version"] = 5; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "cloud_mask", "scene", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }

@@ -84,6 +84,7 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 | `mesh({vertices=...,indices=...,normals=...,uvs=...})` | One indexed triangle surface. Vertices are `{x,y,z}`; indices are **1-based**, clockwise. Optional normals/UVs match vertex count. Without normals the host accumulates/normalizes triangle normals; split vertices for hard edges. No tangent-generation API. |
 | `scene({{asset=handle,material=material,name=...,remove=...,position=...,rotation=...,scale=...},...})` | Nonempty array of Mesh or PackedScene instances. Mesh/material pairs become MultiMesh batches. PackedScene roots must be Node3D; `name` sets the instance name and `remove` names bounded relative child paths to omit before packing. Material overrides are Mesh-only. Nodes remain opaque to Luau. |
 | `input("declared_name")` | Mesh/Material/Texture2D/Shader/PackedScene handle from the input allowlist. Texture2D enables licensed cooked source textures in typed effects and PBR `material()` slots; Shader is accepted only by the separate typed atmosphere builder. |
+| `camera_attributes({...})` | CameraAttributesPractical with bounded fixed exposure, near/far DOF and typed Veya camera-profile metadata. Configuration is authored in Luau; there are no Nodes or frame callbacks. |
 | `bounds(asset)` | Mesh-local or PackedScene-root-local `{min={x,y,z},max={x,y,z}}`. PackedScene bounds include transformed MeshInstance3D and MultiMeshInstance3D descendants. |
 | `random()` | Seeded xorshift32 value in `[0,1)`. |
 
@@ -119,6 +120,19 @@ Every particle system receives a deterministic fixed seed and 30 Hz simulation.
 fields keep the original atmosphere profiles' effects disabled. All parameters
 and preset choices are authored in project Luau; this builder only validates and
 serializes an `Environment` and its sky/sun metadata.
+
+Atmosphere v5 adds `contrast` [0.8,1.25], `saturation` [0.6,1.3], `brightness`
+[0.8,1.2] (all default 1), and `ssr_enabled` (default false). Adjustments remain
+off when all three color controls equal 1; AgX remains the tone mapper.
+
+`camera_attributes` requires a bounded `preset_id`. It stores `distance` [2.3,8],
+`shoulder_offset` [-1.2,1.2], `target_height` [0.8,2.2], `zoom_smoothing` [1,30],
+`fov` [25,100], `run_fov` [25,110], three smoothing rates [0.1,30], `clip_near`
+[0.02,1] and `clip_far` [16,4000] as `veya_camera_profile` metadata. Orientation
+belongs to ECS and is preserved on selection. Fixed `exposure_multiplier`
+is [0.25,4]; automatic exposure stays disabled. DOF fields are `dof_far_enabled`,
+`dof_far_distance` [0.1,256], `dof_far_transition` [0.1,128], `dof_near_enabled`,
+`dof_near_distance`/`dof_near_transition` [0.1,16], and `dof_amount` [0,0.3].
 
 | Fields | Bounds |
 | --- | --- |
