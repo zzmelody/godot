@@ -147,7 +147,9 @@ Images embedded in GLTF/FBX are currently embedded uncompressed in the cooked
 resource: the batch importer cannot schedule editor filesystem reimports.
 Texture compression jobs use `PortableCompressedTexture2D` and retain their
 compressed data for saving. Direct image jobs accept the image formats retained
-by the profile; model import accepts GLTF/GLB, FBX via ufbx and OBJ. Blender and
+by the profile, including SVG for native UI icon pipelines; decoding SVG is an
+offline image operation and supplies no rendered preview. Model import accepts
+GLTF/GLB, FBX via ufbx and OBJ. Blender and
 external FBX converters are not started.
 
 All asset paths use `res://` inside the specified workspace. Resource outputs

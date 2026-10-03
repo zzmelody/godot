@@ -51,7 +51,6 @@ module_theora_enabled = False
 module_text_server_adv_enabled = False
 module_text_server_fb_enabled = False
 module_freetype_enabled = False
-module_svg_enabled = False
 module_msdfgen_enabled = False
 module_lightmapper_rd_enabled = False
 module_glslang_enabled = False
@@ -82,5 +81,8 @@ module_jpg_enabled = True
 module_webp_enabled = True
 module_tinyexr_enabled = True
 module_hdr_enabled = True
+# Native UI pipelines import immutable SVG icons as textures. This is an
+# offline image decoder; it does not enable a viewport or visual acceptance.
+module_svg_enabled = True
 module_mbedtls_enabled = True
 # /*>>----- VEYA_COOKER */
