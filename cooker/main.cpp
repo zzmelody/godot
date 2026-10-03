@@ -76,6 +76,7 @@ PhysicsServer3D *physics = nullptr;
 String command;
 String job_path;
 String pipeline_path;
+bool skip_pipeline_packs = false;
 bool initialized = false;
 
 Dictionary capabilities() {
@@ -850,6 +851,13 @@ Error execute_pipeline(Dictionary &r_result) {
 		job.erase("verify_cache");
 		ERR_FAIL_COND_V(job.get("operation", Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 		String operation = job["operation"];
+		if (skip_pipeline_packs && operation == "pack") {
+			report["ok"] = true;
+			report["skipped"] = true;
+			report["reason"] = "development_no_pack";
+			reports.push_back(report);
+			continue;
+		}
 		ERR_FAIL_COND_V_MSG(operation == "run-pipeline", ERR_INVALID_PARAMETER, "Nested pipelines are not supported.");
 		bool known_operation = false;
 		for (const char *name : { "import-scene", "import-texture", "stage-source", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions" }) {
@@ -995,6 +1003,10 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		String arg = String::utf8(argv[i]);
 		if (arg == "--capabilities") {
 			command = "capabilities";
+		} else if (arg == "--no-pack") {
+			skip_pipeline_packs = true;
+		} else if (arg == "--force") {
+			CookerCache::force_rebuild = true;
 		} else if ((arg == "--path" || arg == "--job" || arg == "--pipeline") && i + 1 < argc) {
 			String value = String::utf8(argv[++i]);
 			if (arg == "--path") {
@@ -1014,6 +1026,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		}
 	}
 	if (command == "job" || command == "pipeline") {
+		if (command != "pipeline" && skip_pipeline_packs) {
+			command = "invalid";
+			ERR_PRINT("--no-pack requires --pipeline.");
+			return OK;
+		}
 		Error error = settings->setup(project_path, "", false, true);
 		if (error != OK) {
 			command = "invalid";

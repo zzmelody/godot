@@ -3,8 +3,10 @@
 #include "asset_files.h"
 #include "stage_source.h"
 #include "core/io/json.h"
+#include "core/os/os.h"
 
 namespace CookerCache {
+inline bool force_rebuild = false;
 struct Receipt { String path, output, fingerprint; Dictionary dependencies; };
 inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,const String &field="") {
 	ERR_FAIL_COND_V(depth>16,ERR_INVALID_DATA);
@@ -77,7 +79,10 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 			error=dependencies(path,receipt.dependencies);ERR_FAIL_COND_V(error!=OK,error);
 		}
 	}
-	Dictionary request;request["schema_version"]=1;request["job"]=job;request["dependencies"]=receipt.dependencies;
+	// A different Cooker executable must not reuse bytes produced by old code.
+	static const String toolchain = FileAccess::get_sha256(OS::get_singleton()->get_executable_path());
+	ERR_FAIL_COND_V(toolchain.length()!=64,ERR_FILE_CORRUPT);
+	Dictionary request;request["schema_version"]=2;request["toolchain_sha256"]=toolchain;request["job"]=job;request["dependencies"]=receipt.dependencies;
 	receipt.fingerprint=JSON::stringify(request,"",true).sha256_text();
 	if(!FileAccess::exists(output))return OK;
 	if(!FileAccess::exists(receipt.path) && rebuild_unverified) {
@@ -91,7 +96,7 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	// source invalidates its cache, but a modified output is still rejected.
 	// Only remove the exact verified output/receipt owned by this step.
 	ERR_FAIL_COND_V_MSG(String(prior.get("output_sha256",""))!=FileAccess::get_sha256(output),ERR_INVALID_DATA,"Cook cache output integrity failed: "+output);
-	if(String(prior.get("request_sha256",""))!=receipt.fingerprint) {
+	if(force_rebuild || String(prior.get("request_sha256",""))!=receipt.fingerprint) {
 		error=DirAccess::remove_absolute(output);ERR_FAIL_COND_V(error!=OK,error);
 		error=DirAccess::remove_absolute(receipt.path);ERR_FAIL_COND_V(error!=OK,error);
 		return OK;

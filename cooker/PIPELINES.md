@@ -8,6 +8,13 @@ native/third_party/godot/bin/veya_cooke --path . \
   --pipeline res://native/third_party/godot/cooker/examples/bridge.pipeline.luau
 ```
 
+Development may add `--no-pack` to omit pipeline `pack` steps while keeping
+resource generation and manifests unchanged. `--force` rebuilds verified cached
+outputs, including per-source retarget clips. Cache fingerprints include the
+Cooker executable SHA-256, request parameters and transitive resource inputs;
+a toolchain change invalidates prior receipts. Production descriptions remain
+the same Luau pipelines in either mode.
+
 The script returns one dense array of job tables. It may use deterministic Luau
 control flow to reduce repetition, but has no filesystem, process, network,
 clock, random, `require`, bytecode-loading or engine-object API. The VM is limited
