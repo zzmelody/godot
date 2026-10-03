@@ -619,7 +619,7 @@ struct Recipe {
 	}
 	static int atmosphere(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
-		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy"});
+		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy", "fog_height", "fog_height_density", "fog_aerial_perspective", "fog_sun_scatter", "volumetric_density", "volumetric_length", "volumetric_albedo", "volumetric_anisotropy", "volumetric_ambient_inject", "ssao_intensity", "ssao_radius", "ssil_intensity", "ssil_radius", "glow_intensity", "glow_threshold"});
 		s.field(1, "preset_id"); const String preset_id = s.string(-1); lua_pop(p_state, 1);
 		s.require(!preset_id.is_empty() && preset_id.length() <= 48, "invalid atmosphere preset_id");
 		s.field(1, "shader"); Ref<Shader> shader = s.handle(-1); lua_pop(p_state, 1);
@@ -664,6 +664,36 @@ struct Recipe {
 		environment->set_fog_density(fog_density);
 		environment->set_fog_light_color(s.color_field(1, "fog_color", Color(0.73, 0.79, 0.87)));
 		environment->set_fog_sky_affect(s.number_field(1, "fog_sky_affect", 0.04, 0, 1));
+		// Optional authored scene treatment. Defaults preserve existing profiles;
+		// all visual decisions remain in the bounded project-local Luau recipe.
+		environment->set_fog_height(s.number_field(1, "fog_height", 0, -1000, 1000));
+		environment->set_fog_height_density(s.number_field(1, "fog_height_density", 0, 0, 1));
+		environment->set_fog_aerial_perspective(s.number_field(1, "fog_aerial_perspective", 0, 0, 1));
+		environment->set_fog_sun_scatter(s.number_field(1, "fog_sun_scatter", 0, 0, 1));
+		const double volumetric_density = s.number_field(1, "volumetric_density", 0, 0, 0.05);
+		environment->set_volumetric_fog_enabled(volumetric_density > 0);
+		environment->set_volumetric_fog_density(volumetric_density);
+		environment->set_volumetric_fog_length(s.number_field(1, "volumetric_length", 64, 16, 512));
+		environment->set_volumetric_fog_albedo(s.color_field(1, "volumetric_albedo", Color(1, 1, 1)));
+		environment->set_volumetric_fog_anisotropy(s.number_field(1, "volumetric_anisotropy", 0.2, -0.9, 0.9));
+		environment->set_volumetric_fog_ambient_inject(s.number_field(1, "volumetric_ambient_inject", 0, 0, 1));
+		environment->set_volumetric_fog_sky_affect(0);
+		const double ssao_intensity = s.number_field(1, "ssao_intensity", 0, 0, 2);
+		environment->set_ssao_enabled(ssao_intensity > 0);
+		if (ssao_intensity > 0) {
+			environment->set_ssao_intensity(ssao_intensity);
+			environment->set_ssao_radius(s.number_field(1, "ssao_radius", 1, 0.1, 4));
+		} else { s.number_field(1, "ssao_radius", 1, 0.1, 4); }
+		const double ssil_intensity = s.number_field(1, "ssil_intensity", 0, 0, 2);
+		environment->set_ssil_enabled(ssil_intensity > 0);
+		if (ssil_intensity > 0) {
+			environment->set_ssil_intensity(ssil_intensity);
+			environment->set_ssil_radius(s.number_field(1, "ssil_radius", 4, 0.5, 16));
+		} else { s.number_field(1, "ssil_radius", 4, 0.5, 16); }
+		const double glow_intensity = s.number_field(1, "glow_intensity", 0, 0, 1);
+		environment->set_glow_enabled(glow_intensity > 0);
+		if (glow_intensity > 0) environment->set_glow_intensity(glow_intensity);
+		environment->set_glow_hdr_bleed_threshold(s.number_field(1, "glow_threshold", 1, 1, 8));
 		environment->set_tonemapper(Environment::TONE_MAPPER_AGX);
 		environment->set_tonemap_exposure(s.number_field(1, "exposure", 1, 0.1, 4));
 		environment->set_meta("veya_atmosphere_preset", preset_id);

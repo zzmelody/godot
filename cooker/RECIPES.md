@@ -113,6 +113,29 @@ gravity, damping, rotation, color gradients, alpha/scale curves, blend mode and
 an explicit visibility AABB. `animated_sprite` uses property tracks only.
 Every particle system receives a deterministic fixed seed and 30 Hz simulation.
 
+## Authored atmosphere treatment
+
+`cooker.atmosphere` also accepts optional bounded scene treatment fields. Omitted
+fields keep the original atmosphere profiles' effects disabled. All parameters
+and preset choices are authored in project Luau; this builder only validates and
+serializes an `Environment` and its sky/sun metadata.
+
+| Fields | Bounds |
+| --- | --- |
+| `fog_height`, `fog_height_density` | -1000..1000 metres, 0..1 |
+| `fog_aerial_perspective`, `fog_sun_scatter` | 0..1 |
+| `volumetric_density`, `volumetric_length` | 0..0.05, 16..512 metres |
+| `volumetric_albedo` | RGB channels 0..1 |
+| `volumetric_anisotropy`, `volumetric_ambient_inject` | -0.9..0.9, 0..1 |
+| `ssao_intensity`, `ssao_radius` | 0..2, 0.1..4 metres |
+| `ssil_intensity`, `ssil_radius` | 0..2, 0.5..16 metres |
+| `glow_intensity`, `glow_threshold` | 0..1, 1..8 |
+
+Zero density/intensity disables the corresponding effect. Volumetric fog never
+obscures the sky. These effects require validation in packaged Veya's target
+renderer; Cooker does not render them. Atmosphere recipes do not create or own
+lights: the authored world must use the matching sun metadata.
+
 ## Limits and publication
 
 Job limits may only **lower** these positive integer defaults:
