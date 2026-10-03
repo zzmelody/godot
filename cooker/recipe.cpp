@@ -991,7 +991,7 @@ struct Recipe {
 	}
 	static int lightmap_scene(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
-		s.fields(1, {"scene", "lights", "quality", "bounces", "directional", "interior", "probes", "max_texture_size", "texel_size"});
+		s.fields(1, {"scene", "lights", "quality", "bounces", "directional", "interior", "probes", "max_texture_size", "texel_size", "indirect_only"});
 		s.field(1, "scene"); Ref<PackedScene> source = s.handle(-1); lua_pop(p_state, 1);
 		s.require(source.is_valid(), "lightmap_scene requires a PackedScene");
 		OwnedNode root(source->instantiate());
@@ -1006,6 +1006,8 @@ struct Recipe {
 		gi->set_directional(s.boolean_field(1,"directional",true)); gi->set_interior(s.boolean_field(1,"interior",true));
 		gi->set_generate_probes(LightmapGI::GenerateProbes(int(probes))); gi->set_max_texture_size(int(size));
 		gi->set_environment_mode(LightmapGI::ENVIRONMENT_MODE_DISABLED);
+		const bool indirect_only=s.boolean_field(1,"indirect_only",true);
+		gi->set_meta("veya_lightmap_indirect_only",indirect_only);
 		gi->set_meta("_veya_cooker_texel_size",s.number_field(1,"texel_size",.15,.025,1));
 		root->add_child(gi); gi->set_owner(root.get());
 		s.field(1,"lights"); const int count=s.array(-1,32);
@@ -1018,7 +1020,7 @@ struct Recipe {
 			light->set_param(Light3D::PARAM_ENERGY,s.number_field(item,"energy",2,0,16));
 			light->set_param(Light3D::PARAM_RANGE,s.number_field(item,"range",10,.1,128));
 			light->set_param(Light3D::PARAM_SIZE,s.number_field(item,"size",.15,0,2));
-			light->set_bake_mode(Light3D::BAKE_STATIC); light->set_shadow(true);
+			light->set_bake_mode(indirect_only?Light3D::BAKE_DYNAMIC:Light3D::BAKE_STATIC); light->set_shadow(true);
 			light->set_meta("_veya_cooker_bake_only",true);
 			root->add_child(light); light->set_owner(root.get()); lua_pop(p_state,1);
 		}

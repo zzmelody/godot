@@ -52,7 +52,7 @@ class BakeTree : public SceneTree {
 					valid = vertices <= 500000;
 				}
 			} else if (auto *light = Object::cast_to<OmniLight3D>(node)) {
-				valid = valid && light->has_meta("_veya_cooker_bake_only") && light->get_bake_mode() == Light3D::BAKE_STATIC;
+				valid = valid && light->has_meta("_veya_cooker_bake_only") && light->get_bake_mode() != Light3D::BAKE_DISABLED;
 				bake_lights.push_back(light);
 			} else valid = valid && node->get_class() == "Node3D";
 			for (int child = 0; child < node->get_child_count(); child++) nodes.push_back(node->get_child(child));
@@ -87,6 +87,7 @@ class BakeTree : public SceneTree {
 			const Ref<LightmapGIData> data = gi->get_light_data();
 			report["meshes"] = meshes.size(); report["users"] = data->get_user_count();
 			report["texture_arrays"] = data->get_lightmap_textures().size(); report["probes"] = data->get_capture_points().size();
+			report["indirect_only"] = gi->get_meta("veya_lightmap_indirect_only",true);
 			data->set_path(String()); gi->remove_meta("_veya_cooker_portable_bake"); gi->remove_meta("_veya_cooker_texel_size");
 			for (Node *light : bake_lights) { light->get_parent()->remove_child(light); memdelete(light); }
 			// Flatten external scene ownership so new UV2 meshes and bindings are

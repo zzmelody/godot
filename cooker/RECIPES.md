@@ -9,13 +9,16 @@ Defaults leave GI disabled. Keep the same cascade layout across day presets.
 instead of MultiMesh batching. Other entries retain the existing batching.
 `lightmap_scene({scene=handle, lights={...}, quality=2, bounces=3,
 directional=true, interior=true, probes=2, max_texture_size=2048,
-texel_size=.15})` returns an unbaked PackedScene for `bake-lightmap`.
+texel_size=.15, indirect_only=true})` returns an unbaked PackedScene for `bake-lightmap`.
 Quality is 0..3; probes is 1..3 (4/8/16 subdivisions); atlas size is a power of
 two from 256..4096. Each of at most 32 fixed omni lamps has `position`, `color`,
 `energy` (0..16), `range` (.1..128), `size` (0..2). Environment light is disabled
 during this bake; changing sun/moon belongs to runtime SDFGI. The native baker
 creates UV2 using each mesh's full transform, removes bake-only lamps and embeds
 HDR texture arrays and dynamic-object probes in the output scene.
+With the default `indirect_only=true`, author matching runtime ECS lamps for
+direct light and moving-character shadows. Set it false for fully fixed baked
+lighting and omit those runtime lamps to avoid doubling direct light.
 
 Each `run-recipe` job compiles UTF-8 source with the pinned Luau 0.738 compiler,
 runs one independent VM, and returns exactly one opaque asset handle. Native
