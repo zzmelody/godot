@@ -1,5 +1,15 @@
 # Cooker Luau pipeline API v1
 
+`bake-lightmap` takes `source` (a generated `.scn` from `lightmap_scene`) and
+`output` (a different generated `.scn`). Cooker invokes only its sibling Veya
+editor binary, verifies matching engine revision, and requests the private
+native GPU bake loop. Windows uses Vulkan Forward+; macOS uses Metal Forward+.
+No script, EditorNode or gameplay main scene runs. The output is self-contained:
+no EXR import, `.godot` cache or external lightmap file is required at runtime.
+Ordinary Cooker operations still use the Dummy renderer. A GPU and the matching
+editor binary are required only for this operation. Baking remains a cook-time
+operation and is absent from exported template engines.
+
 A production asset build is a project-local UTF-8 `.pipeline.luau` file executed
 directly by Cooker:
 

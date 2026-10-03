@@ -840,6 +840,23 @@ LightmapGI::BakeError LightmapGI::_save_and_reimport_atlas_textures(const Ref<Li
 	}
 
 	const int slice_count = images.size();
+	// Veya Cooker saves self-contained HDR texture arrays. This private native
+	// bake mode needs no EditorFileSystem, EXR importer or .godot cache.
+	if (has_meta("_veya_cooker_portable_bake")) {
+		ERR_FAIL_COND_V(slice_count == 0 || slice_count > 256, BAKE_ERROR_CANT_CREATE_IMAGE);
+		for (int i = 0; i < images.size(); i++) {
+			ERR_FAIL_COND_V(images[i].is_null() || images[i]->is_empty(), BAKE_ERROR_CANT_CREATE_IMAGE);
+			if (supersampling_enabled) {
+				Ref<Image> resized = images[i]->duplicate();
+				resized->resize(resized->get_width() / supersampling_factor, resized->get_height() / supersampling_factor, Image::INTERPOLATE_TRILINEAR);
+				images.set(i, resized);
+			}
+		}
+		Ref<Texture2DArray> texture; texture.instantiate();
+		ERR_FAIL_COND_V(texture->create_from_images(images) != OK, BAKE_ERROR_CANT_CREATE_IMAGE);
+		r_textures.resize(1); r_textures[0] = texture;
+		return BAKE_ERROR_OK;
+	}
 	const int slice_width = images[0]->get_width();
 	const int slice_height = images[0]->get_height();
 

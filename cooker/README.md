@@ -15,6 +15,13 @@ CameraServer/capture, text/theme, movie writing/playback and real rendering
 backends are disabled. Camera3D, Area3D and LightmapGI remain serializable scene
 data; they do not restore live camera capture, audio, display or GPU baking.
 
+The explicit `bake-lightmap` operation now delegates GPU work to the matching
+sibling Veya editor binary's private native bake loop. It does not run
+EditorNode, GDScript or a product scene. Cooker itself retains its Dummy
+renderer and all other operations remain asset-only. The result embeds UV2,
+HDR lightmaps and dynamic-object probes in a portable PackedScene; see
+[recipes](RECIPES.md) and [pipelines](PIPELINES.md).
+
 `run-recipe` embeds a separate, statically linked Luau 0.738 compiler/VM for
 asset computation. It is not a Godot ScriptLanguage or Veya's ECS behavior VM;
 `script_languages` remains zero. Jobs need no external Python/Lua interpreter.

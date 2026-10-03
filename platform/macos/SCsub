@@ -57,16 +57,17 @@ else:
         files += ["libgodot_macos.mm"]
 # /*>>----- VEYA_COOKER */
 
+veya_binary_root = env["veya_bin_dir"].rstrip("/\\")
 if env["library_type"] == "static_library":
     prog = env.add_library("#bin/godot", files)
 elif env["library_type"] == "shared_library":
     prog = env.add_shared_library("#bin/godot", files)
 # /*<<----- VEYA_COOKER: match the short command-line artifact name used by the Windows cooker. */
 elif env["veya_cooker"]:
-    prog = env.add_program("#bin/veya_cooke", files, PROGSUFFIX="")
+    prog = env.add_program(veya_binary_root + "/veya_cooke", files, PROGSUFFIX="")
 # /*>>----- VEYA_COOKER */
 else:
-    prog = env.add_program("#bin/godot", files)
+    prog = env.add_program(veya_binary_root + "/godot", files)
 
 if env["debug_symbols"] and env["separate_debug_symbols"]:
     env.AddPostAction(prog, env.Run(platform_macos_builders.make_debug_macos))

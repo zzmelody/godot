@@ -8,6 +8,8 @@
 #include "core/os/os.h"
 #include "scene/animation/animation_player.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/lightmap_gi.h"
+#include "scene/3d/light_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/gpu_particles_3d.h"
 #include "scene/resources/3d/primitive_meshes.h"
@@ -620,7 +622,7 @@ struct Recipe {
 	}
 	static int atmosphere(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
-		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "cloud_speed", "cloud_wind", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy", "fog_height", "fog_height_density", "fog_aerial_perspective", "fog_sun_scatter", "volumetric_density", "volumetric_length", "volumetric_albedo", "volumetric_anisotropy", "volumetric_ambient_inject", "ssao_intensity", "ssao_radius", "ssil_intensity", "ssil_radius", "glow_intensity", "glow_threshold", "contrast", "saturation", "brightness", "ssr_enabled"});
+		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "cloud_speed", "cloud_wind", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy", "fog_height", "fog_height_density", "fog_aerial_perspective", "fog_sun_scatter", "volumetric_density", "volumetric_length", "volumetric_albedo", "volumetric_anisotropy", "volumetric_ambient_inject", "ssao_intensity", "ssao_radius", "ssil_intensity", "ssil_radius", "glow_intensity", "glow_threshold", "contrast", "saturation", "brightness", "ssr_enabled", "sdfgi_enabled", "sdfgi_cascades", "sdfgi_cell_size", "sdfgi_occlusion", "sdfgi_read_sky", "sdfgi_bounce", "sdfgi_energy", "sdfgi_normal_bias", "sdfgi_probe_bias"});
 		s.field(1, "preset_id"); const String preset_id = s.string(-1); lua_pop(p_state, 1);
 		s.require(!preset_id.is_empty() && preset_id.length() <= 48, "invalid atmosphere preset_id");
 		s.field(1, "shader"); Ref<Shader> shader = s.handle(-1); lua_pop(p_state, 1);
@@ -698,6 +700,18 @@ struct Recipe {
 			environment->set_ssil_intensity(ssil_intensity);
 			environment->set_ssil_radius(s.number_field(1, "ssil_radius", 4, 0.5, 16));
 		} else { s.number_field(1, "ssil_radius", 4, 0.5, 16); }
+		// SDFGI geometry is authored/static; dynamic light energy follows the clock.
+		const double cascades = s.number_field(1, "sdfgi_cascades", 4, 4, 8);
+		s.require(cascades == 4 || cascades == 6 || cascades == 8, "SDFGI cascades must be 4, 6 or 8");
+		environment->set_sdfgi_cascades(int(cascades));
+		environment->set_sdfgi_min_cell_size(s.number_field(1, "sdfgi_cell_size", 1, .25, 8));
+		environment->set_sdfgi_use_occlusion(s.boolean_field(1, "sdfgi_occlusion", true));
+		environment->set_sdfgi_read_sky_light(s.boolean_field(1, "sdfgi_read_sky", true));
+		environment->set_sdfgi_bounce_feedback(s.number_field(1, "sdfgi_bounce", .3, 0, .5));
+		environment->set_sdfgi_energy(s.number_field(1, "sdfgi_energy", 1, 0, 2));
+		environment->set_sdfgi_normal_bias(s.number_field(1, "sdfgi_normal_bias", 1.1, .1, 4));
+		environment->set_sdfgi_probe_bias(s.number_field(1, "sdfgi_probe_bias", 1.1, .1, 4));
+		environment->set_sdfgi_enabled(s.boolean_field(1, "sdfgi_enabled", false));
 		const double glow_intensity = s.number_field(1, "glow_intensity", 0, 0, 1);
 		environment->set_glow_enabled(glow_intensity > 0);
 		if (glow_intensity > 0) environment->set_glow_intensity(glow_intensity);
@@ -894,7 +908,7 @@ struct Recipe {
 		OwnedNode root(memnew(Node3D)); root->set_name("RecipeAsset");
 		for (int i = 0; i < count; ++i) {
 			lua_rawgeti(p_state, 1, i + 1); int item = lua_absindex(p_state, -1);
-			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove"});
+			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "lightmap"});
 			s.field(item, "asset"); Ref<Resource> asset = s.handle(-1); lua_pop(p_state, 1);
 			s.field(item, "material"); Ref<Material> material;
 			if (!lua_isnil(p_state, -1)) { material = s.handle(-1); s.require(material.is_valid(), "material requires a Material handle"); }
@@ -902,6 +916,15 @@ struct Recipe {
 			Transform3D transform = s.transform(item);
 			Ref<Mesh> mesh = asset;
 			if (mesh.is_valid()) {
+				if (s.boolean_field(item, "lightmap", false)) {
+					auto *node = memnew(MeshInstance3D);
+					node->set_name(s.string_field(item, "name", "Mesh" + itos(i)));
+					s.require(!node->get_name().is_empty(), "lightmap mesh requires a name");
+					node->set_mesh(mesh); node->set_material_override(material); node->set_transform(transform);
+					node->set_gi_mode(GeometryInstance3D::GI_MODE_STATIC);
+					root->add_child(node); node->set_owner(root.get());
+					lua_pop(p_state, 1); continue;
+				}
 				s.field(item, "name"); s.require(lua_isnil(p_state, -1), "name is only valid for PackedScene instances"); lua_pop(p_state, 1);
 				s.field(item, "remove"); s.require(lua_isnil(p_state, -1), "remove is only valid for PackedScene instances"); lua_pop(p_state, 1);
 				size_t batch = 0;
@@ -965,6 +988,44 @@ struct Recipe {
 		Ref<PackedScene> scene; scene.instantiate();
 		s.require(scene->pack(root.get()) == OK, "could not pack recipe scene");
 		return s.push_resource(scene);
+	}
+	static int lightmap_scene(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		s.fields(1, {"scene", "lights", "quality", "bounces", "directional", "interior", "probes", "max_texture_size", "texel_size"});
+		s.field(1, "scene"); Ref<PackedScene> source = s.handle(-1); lua_pop(p_state, 1);
+		s.require(source.is_valid(), "lightmap_scene requires a PackedScene");
+		OwnedNode root(source->instantiate());
+		s.require(Object::cast_to<Node3D>(root.get()) != nullptr, "lightmap root must be Node3D");
+		root->set_scene_file_path(String());
+		for(int i=0;i<root->get_child_count();++i)make_scene_local(root->get_child(i),root.get());
+		auto *gi = memnew(LightmapGI); gi->set_name("BakedGI");
+		const double quality=s.number_field(1,"quality",2,0,3), probes=s.number_field(1,"probes",2,1,3);
+		const double bounces=s.number_field(1,"bounces",3,1,8), size=s.number_field(1,"max_texture_size",2048,256,4096);
+		s.require(quality==std::floor(quality) && probes==std::floor(probes) && bounces==std::floor(bounces) && size==std::floor(size) && (int(size)&(int(size)-1))==0,"lightmap settings require bounded integers and a power-of-two atlas");
+		gi->set_bake_quality(LightmapGI::BakeQuality(int(quality))); gi->set_bounces(int(bounces));
+		gi->set_directional(s.boolean_field(1,"directional",true)); gi->set_interior(s.boolean_field(1,"interior",true));
+		gi->set_generate_probes(LightmapGI::GenerateProbes(int(probes))); gi->set_max_texture_size(int(size));
+		gi->set_environment_mode(LightmapGI::ENVIRONMENT_MODE_DISABLED);
+		gi->set_meta("_veya_cooker_texel_size",s.number_field(1,"texel_size",.15,.025,1));
+		root->add_child(gi); gi->set_owner(root.get());
+		s.field(1,"lights"); const int count=s.array(-1,32);
+		for(int i=0;i<count;++i) {
+			lua_rawgeti(p_state,-1,i+1); const int item=lua_gettop(p_state);
+			s.fields(item,{"position","color","energy","range","size"});
+			auto *light=memnew(OmniLight3D); light->set_name("BakeLamp"+itos(i));
+			light->set_position(s.vector_field(item,"position",Vector3()));
+			light->set_color(s.color_field(item,"color",Color(1,.82,.6)));
+			light->set_param(Light3D::PARAM_ENERGY,s.number_field(item,"energy",2,0,16));
+			light->set_param(Light3D::PARAM_RANGE,s.number_field(item,"range",10,.1,128));
+			light->set_param(Light3D::PARAM_SIZE,s.number_field(item,"size",.15,0,2));
+			light->set_bake_mode(Light3D::BAKE_STATIC); light->set_shadow(true);
+			light->set_meta("_veya_cooker_bake_only",true);
+			root->add_child(light); light->set_owner(root.get()); lua_pop(p_state,1);
+		}
+		lua_pop(p_state,1);
+		int32_t next_scene_id=1; assign_scene_ids(root.get(),root.get(),next_scene_id);
+		Ref<PackedScene> packed; packed.instantiate(); s.require(packed->pack(root.get())==OK,"cannot pack lightmap scene");
+		return s.push_resource(packed);
 	}
 	static int input(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
@@ -1033,7 +1094,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -1081,7 +1142,7 @@ Dictionary capabilities() {
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
 	result["api_version"] = 5; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }

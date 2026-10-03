@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "main.h"
+#include "veya_lightmap_bake.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
@@ -4015,6 +4016,8 @@ int Main::start() {
 	OS::get_singleton()->benchmark_begin_measure("Startup", "Main::Start");
 
 	ERR_FAIL_COND_V(!_start_success, EXIT_FAILURE);
+	int bake_status = EXIT_SUCCESS;
+	if (VeyaLightmapBake::start(bake_status)) return bake_status;
 
 	bool has_icon = false;
 	String positional_arg;
