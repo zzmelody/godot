@@ -119,7 +119,7 @@ public:
 };
 }
 
-bool VeyaLightmapBake::start(int &r_status) {
+bool VeyaLightmapBake::start(MainLoop *&r_loop, int &r_status) {
 	String source, output; bool requested = false;
 	for (const String &arg : OS::get_singleton()->get_cmdline_user_args()) {
 		if (arg.begins_with("--veya-bake-lightmap=")) { source = arg.trim_prefix("--veya-bake-lightmap="); requested = true; }
@@ -127,9 +127,9 @@ bool VeyaLightmapBake::start(int &r_status) {
 	}
 	if (!requested) return false;
 	if (source.is_empty() || output.is_empty()) { r_status = EXIT_FAILURE; return true; }
-	OS::get_singleton()->set_main_loop(memnew(BakeTree(source, output)));
+	r_loop = memnew(BakeTree(source, output));
 	r_status = EXIT_SUCCESS; return true;
 }
 #else
-bool VeyaLightmapBake::start(int &) { return false; }
+bool VeyaLightmapBake::start(MainLoop *&, int &) { return false; }
 #endif

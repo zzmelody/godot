@@ -4017,7 +4017,11 @@ int Main::start() {
 
 	ERR_FAIL_COND_V(!_start_success, EXIT_FAILURE);
 	int bake_status = EXIT_SUCCESS;
-	if (VeyaLightmapBake::start(bake_status)) return bake_status;
+	MainLoop *bake_loop = nullptr;
+	if (VeyaLightmapBake::start(bake_loop, bake_status)) {
+		if (bake_loop) OS::get_singleton()->set_main_loop(bake_loop);
+		return bake_status;
+	}
 
 	bool has_icon = false;
 	String positional_arg;
