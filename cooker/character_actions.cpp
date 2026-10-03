@@ -214,6 +214,7 @@ Error bake_limb_paths(const Dictionary &p_config, const Ref<Animation> &p_animat
 	const int count = skeleton->get_bone_count(), anchor = skeleton->find_bone(anchor_name);
 	const int samples = int(std::ceil(p_animation->get_length() * 60));
 	ERR_FAIL_COND_V(anchor < 0 || samples < 2 || samples > 1800, ERR_PARAMETER_RANGE_ERROR);
+	for (int index = 0; index < count; ++index) ERR_FAIL_COND_V(skeleton->get_bone_parent(index) >= index, ERR_INVALID_DATA);
 	struct LimbPath {
 		int upper = -1, lower = -1, end = -1;
 		Vector3 pole;
