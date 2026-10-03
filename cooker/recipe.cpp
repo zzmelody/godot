@@ -1213,6 +1213,75 @@ struct Recipe {
 		s.push_vector(box.get_end()); lua_setfield(p_state, -2, "max");
 		return 1;
 	}
+	// Top-level Node3D children of a PackedScene: name, root-space transform and
+	// transformed bounds. Lets a recipe derive anchors from a cooked layout.
+	static int children(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		Ref<PackedScene> packed = s.handle(1);
+		s.require(packed.is_valid(), "children requires a PackedScene handle");
+		OwnedNode root(packed->instantiate());
+		s.require(root != nullptr, "could not instantiate PackedScene for children");
+		const int count = root->get_child_count();
+		s.require(count <= 4096, "children exceeds 4096 instances");
+		lua_createtable(p_state, count, 0);
+		int index = 0;
+		for (int i = 0; i < count; ++i) {
+			Node3D *child = Object::cast_to<Node3D>(root->get_child(i));
+			if (!child) continue;
+			const Transform3D transform = child->get_transform();
+			AABB box; bool has_bounds = false;
+			collect_bounds(child, Transform3D(), box, has_bounds); // Applies the child's own transform.
+			if (!has_bounds) box = AABB(transform.origin, Vector3());
+			lua_createtable(p_state, 0, 5);
+			const CharString name = String(child->get_name()).utf8();
+			lua_pushlstring(p_state, name.get_data(), name.length()); lua_setfield(p_state, -2, "name");
+			s.push_vector(transform.origin); lua_setfield(p_state, -2, "position");
+			lua_createtable(p_state, 3, 0);
+			for (int c = 0; c < 3; ++c) { s.push_vector(transform.basis.get_column(c)); lua_rawseti(p_state, -2, c + 1); }
+			lua_setfield(p_state, -2, "basis");
+			s.push_vector(box.position); lua_setfield(p_state, -2, "min");
+			s.push_vector(box.get_end()); lua_setfield(p_state, -2, "max");
+			lua_rawseti(p_state, -2, ++index);
+		}
+		return 1;
+	}
+	static void collect_parts(Node *p_node, const Transform3D &p_parent, std::vector<std::pair<MeshInstance3D *, Transform3D>> &r_parts, int p_depth) {
+		Transform3D transform = p_parent;
+		if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) transform = p_parent * node_3d->get_transform();
+		if (MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(p_node); mesh && mesh->get_mesh().is_valid()) r_parts.push_back({mesh, transform});
+		if (p_depth < 32) for (int i = 0; i < p_node->get_child_count(); ++i) collect_parts(p_node->get_child(i), transform, r_parts, p_depth + 1);
+	}
+	// MeshInstance3D descendants of a PackedScene as {mesh,material,basis,position}
+	// in root space, so dense scatter can batch cooked models into MultiMesh.
+	// material is the node override or single-surface override, else nil
+	// (the mesh's own surface materials apply).
+	static int parts(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		Ref<PackedScene> packed = s.handle(1);
+		s.require(packed.is_valid(), "parts requires a PackedScene handle");
+		OwnedNode root(packed->instantiate());
+		s.require(root != nullptr, "could not instantiate PackedScene for parts");
+		std::vector<std::pair<MeshInstance3D *, Transform3D>> found;
+		collect_parts(root.get(), Transform3D(), found, 0);
+		s.require(!found.empty() && found.size() <= 64, "parts requires 1..64 mesh instances");
+		lua_createtable(p_state, found.size(), 0);
+		for (size_t i = 0; i < found.size(); ++i) {
+			MeshInstance3D *node = found[i].first;
+			const Transform3D &transform = found[i].second;
+			s.require(transform.basis.is_finite() && std::abs(transform.basis.determinant()) > 1e-12, "part transform must be invertible");
+			Ref<Material> material = node->get_material_override();
+			if (material.is_null() && node->get_mesh()->get_surface_count() == 1) material = node->get_surface_override_material(0);
+			lua_createtable(p_state, 0, 4);
+			s.push_resource(node->get_mesh()); lua_setfield(p_state, -2, "mesh");
+			if (material.is_valid()) { s.push_resource(material); lua_setfield(p_state, -2, "material"); }
+			s.push_vector(transform.origin); lua_setfield(p_state, -2, "position");
+			lua_createtable(p_state, 3, 0);
+			for (int c = 0; c < 3; ++c) { s.push_vector(transform.basis.get_column(c)); lua_rawseti(p_state, -2, c + 1); }
+			lua_setfield(p_state, -2, "basis");
+			lua_rawseti(p_state, -2, i + 1);
+		}
+		return 1;
+	}
 	void push_json(const Variant &p_value, int p_depth = 0) {
 		require(p_depth <= 16, "parameters exceed nesting limit");
 		switch (p_value.get_type()) {
@@ -1250,7 +1319,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -1298,7 +1367,7 @@ Dictionary capabilities() {
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
 	result["api_version"] = 6; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }

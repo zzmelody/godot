@@ -112,6 +112,9 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 | `field_info(field)` | `{width,height,cell,origin={x,z},channels={...},labels={...}}`. |
 | `points({kinds={...},labels={...},points={{kind=,habitat=,position=,normal=,radius=},...}})` | Point set (v6), at most 16,384 per recipe; may be empty (metadata `count` is authoritative, an empty set stores one zero row). `kind` is a 1-based index into `kinds`; `habitat` is 0 (none) or a 1-based index into `labels`; normal defaults to up and is normalized; radius 0..64. Stored as a three-column `FORMAT_RGBAF` `Image`, one row per point: `(x,y,z,radius)`, `(nx,ny,nz,kind)`, `(habitat,0,0,0)`. |
 
+| `children(scene)` | Top-level Node3D children of a PackedScene handle (<= 4096): `{name,position,basis={x,y,z columns},min,max}` in root space; bounds include the child's transformed meshes and MultiMeshes. |
+| `parts(scene)` | 1..64 MeshInstance3D descendants as `{mesh,material,position,basis}` in root space, so cooked models can be batched into MultiMesh by `scene()`. `material` is the node or single-surface override, otherwise absent (the mesh's surface materials apply). |
+
 Fields and point sets are data resources for later recipes and the Veya host;
 they are never rendered. A recipe input `Image` is admitted only when it carries
 valid `veya_field` metadata. `validate-resource` reports that metadata as

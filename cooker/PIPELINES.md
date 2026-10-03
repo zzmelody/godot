@@ -28,7 +28,7 @@ the same Luau pipelines in either mode.
 The script returns one dense array of job tables. It may use deterministic Luau
 control flow to reduce repetition, but has no filesystem, process, network,
 clock, random, `require`, bytecode-loading or engine-object API. The VM is limited
-to 16 MiB, 1 second, 256 steps, depth 16 and 16,384 converted values. Cooker
+to 16 MiB, 1 second, 256 steps, depth 16 and 65,536 converted values. Cooker
 converts the returned tables to native jobs and executes them sequentially.
 
 `pipeline.import(path)` reads a module's data-only `layout` export.

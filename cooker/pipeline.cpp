@@ -29,7 +29,7 @@ constexpr int MEMORY_BYTES = 16 * 1024 * 1024;
 constexpr int TIME_MS = 1000;
 constexpr int MAX_STEPS = 256;
 constexpr int MAX_DEPTH = 16;
-constexpr int MAX_ENTRIES = 16384;
+constexpr int MAX_ENTRIES = 65536;
 constexpr int MAX_MODULES = 12;
 constexpr double MAX_EXACT_INTEGER = 9007199254740991.0;
 

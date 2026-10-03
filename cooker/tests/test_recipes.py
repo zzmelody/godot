@@ -83,7 +83,7 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(report["script_languages"], 0)
         self.assertEqual(report["recipe_runtime"]["version"], "0.738")
         self.assertEqual(report["recipe_runtime"]["api_version"], 6)
-        for name in ("field", "sample", "field_info", "points"):
+        for name in ("field", "sample", "field_info", "points", "children", "parts"):
             self.assertIn(name, report["recipe_runtime"]["apis"])
         self.assertIn("scene", report["recipe_runtime"]["apis"])
         self.assertIn("procedural_texture", report["recipe_runtime"]["apis"])
@@ -324,6 +324,29 @@ return cooker.points({kinds={"perch","rest"},labels={"wetland"},points={
             'return cooker.points({kinds={"a"},points={{kind=1,position={0,0,0},normal={0,0,0}}}})',
         ):
             with self.subTest(code=code[:60]):
+                self.recipe(code, success=False)
+
+    def test_children_and_parts_expose_cooked_layouts(self):
+        model = self.recipe('''local b=cooker.primitive("box",{size={2,4,2}})
+local m=cooker.material({roughness=.5})
+return cooker.scene({{asset=b,material=m,lightmap=true,name="Body",position={0,2,0}}})''',
+                            output="res://content/worlds/fixture/generated/parts/model.scn")
+        layout = self.recipe('''local m=cooker.input("model")
+return cooker.scene({{asset=m,name="Tree_a_0001",position={10,0,0},scale={2,2,2}},{asset=m,name="Tree_b_0002",position={0,0,5}}})''',
+                             inputs={"model": model["output"]}, output="res://content/worlds/fixture/generated/parts/layout.scn")
+        self.recipe('''local list=cooker.children(cooker.input("layout"))
+assert(#list==2 and list[1].name=="Tree_a_0001", "children")
+assert(list[1].position[1]==10 and list[1].basis[2][2]==2, "transform")
+assert(math.abs(list[1].max[2]-8)<1e-4 and math.abs(list[1].min[1]-8)<1e-4, "bounds "..list[1].max[2])
+local parts=cooker.parts(cooker.input("model"))
+assert(#parts==1 and parts[1].material~=nil and parts[1].position[2]==2, "parts")
+local pieces={}
+for i=1,3 do table.insert(pieces,{asset=parts[1].mesh,material=parts[1].material,position={i,0,0}}) end
+return cooker.scene(pieces)''', inputs={"layout": layout["output"], "model": model["output"]},
+                    output="res://content/worlds/fixture/generated/parts/batched.scn")
+        for code in ('return cooker.scene({{asset=cooker.parts(cooker.primitive("box",{}))[1].mesh}})',
+                     'cooker.children(cooker.primitive("box",{})); return cooker.primitive("box",)'):
+            with self.subTest(code=code[:50]):
                 self.recipe(code, success=False)
 
     def test_packed_scene_bounds_removal_and_luau_composition(self):
