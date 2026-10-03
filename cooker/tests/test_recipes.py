@@ -344,6 +344,13 @@ local pieces={}
 for i=1,3 do table.insert(pieces,{asset=parts[1].mesh,material=parts[1].material,position={i,0,0}}) end
 return cooker.scene(pieces)''', inputs={"layout": layout["output"], "model": model["output"]},
                     output="res://content/worlds/fixture/generated/parts/batched.scn")
+        clump = self.recipe('''local b=cooker.primitive("box",{size={.1,1,.1}})
+return cooker.scene({{asset=b,position={0,.5,0}},{asset=b,position={.3,.5,0}},{asset=b,position={0,.5,.3}}})''',
+                            output="res://content/worlds/fixture/generated/parts/clump.scn")
+        self.recipe('''local parts=cooker.parts(cooker.input("clump"))
+assert(#parts==3 and math.abs(parts[2].position[1]-.3)<1e-5 and parts[2].material==nil, "multimesh parts "..#parts)
+return cooker.scene({{asset=parts[1].mesh}})''', inputs={"clump": clump["output"]},
+                    output="res://content/worlds/fixture/generated/parts/clump-batch.scn")
         for code in ('return cooker.scene({{asset=cooker.parts(cooker.primitive("box",{}))[1].mesh}})',
                      'cooker.children(cooker.primitive("box",{})); return cooker.primitive("box",)'):
             with self.subTest(code=code[:50]):

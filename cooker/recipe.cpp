@@ -1245,34 +1245,43 @@ struct Recipe {
 		}
 		return 1;
 	}
-	static void collect_parts(Node *p_node, const Transform3D &p_parent, std::vector<std::pair<MeshInstance3D *, Transform3D>> &r_parts, int p_depth) {
+	struct Part { Ref<Mesh> mesh; Ref<Material> material; Transform3D transform; };
+	static void collect_parts(Node *p_node, const Transform3D &p_parent, std::vector<Part> &r_parts, int p_depth) {
 		Transform3D transform = p_parent;
 		if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) transform = p_parent * node_3d->get_transform();
-		if (MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(p_node); mesh && mesh->get_mesh().is_valid()) r_parts.push_back({mesh, transform});
-		if (p_depth < 32) for (int i = 0; i < p_node->get_child_count(); ++i) collect_parts(p_node->get_child(i), transform, r_parts, p_depth + 1);
+		if (MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(p_node); mesh && mesh->get_mesh().is_valid()) {
+			Ref<Material> material = mesh->get_material_override();
+			if (material.is_null() && mesh->get_mesh()->get_surface_count() == 1) material = mesh->get_surface_override_material(0);
+			r_parts.push_back({mesh->get_mesh(), material, transform});
+		}
+		// Recipe-batched models expand to one part per MultiMesh instance.
+		if (MultiMeshInstance3D *multi = Object::cast_to<MultiMeshInstance3D>(p_node); multi && multi->get_multimesh().is_valid() && multi->get_multimesh()->get_mesh().is_valid()) {
+			const Ref<MultiMesh> batch = multi->get_multimesh();
+			for (int i = 0; i < batch->get_instance_count() && r_parts.size() <= 64; ++i)
+				r_parts.push_back({batch->get_mesh(), multi->get_material_override(), transform * batch->get_instance_transform(i)});
+		}
+		if (p_depth < 32 && r_parts.size() <= 64) for (int i = 0; i < p_node->get_child_count(); ++i) collect_parts(p_node->get_child(i), transform, r_parts, p_depth + 1);
 	}
-	// MeshInstance3D descendants of a PackedScene as {mesh,material,basis,position}
-	// in root space, so dense scatter can batch cooked models into MultiMesh.
-	// material is the node override or single-surface override, else nil
-	// (the mesh's own surface materials apply).
+	// MeshInstance3D descendants and MultiMesh instances of a PackedScene as
+	// {mesh,material,basis,position} in root space, so dense scatter can batch
+	// cooked models into MultiMesh. material is the node or single-surface
+	// override, else absent (the mesh's own surface materials apply).
 	static int parts(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
 		Ref<PackedScene> packed = s.handle(1);
 		s.require(packed.is_valid(), "parts requires a PackedScene handle");
 		OwnedNode root(packed->instantiate());
 		s.require(root != nullptr, "could not instantiate PackedScene for parts");
-		std::vector<std::pair<MeshInstance3D *, Transform3D>> found;
+		std::vector<Part> found;
 		collect_parts(root.get(), Transform3D(), found, 0);
 		s.require(!found.empty() && found.size() <= 64, "parts requires 1..64 mesh instances");
 		lua_createtable(p_state, found.size(), 0);
 		for (size_t i = 0; i < found.size(); ++i) {
-			MeshInstance3D *node = found[i].first;
-			const Transform3D &transform = found[i].second;
+			const Transform3D &transform = found[i].transform;
 			s.require(transform.basis.is_finite() && std::abs(transform.basis.determinant()) > 1e-12, "part transform must be invertible");
-			Ref<Material> material = node->get_material_override();
-			if (material.is_null() && node->get_mesh()->get_surface_count() == 1) material = node->get_surface_override_material(0);
+			const Ref<Material> &material = found[i].material;
 			lua_createtable(p_state, 0, 4);
-			s.push_resource(node->get_mesh()); lua_setfield(p_state, -2, "mesh");
+			s.push_resource(found[i].mesh); lua_setfield(p_state, -2, "mesh");
 			if (material.is_valid()) { s.push_resource(material); lua_setfield(p_state, -2, "material"); }
 			s.push_vector(transform.origin); lua_setfield(p_state, -2, "position");
 			lua_createtable(p_state, 3, 0);
