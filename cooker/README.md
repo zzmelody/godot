@@ -101,6 +101,14 @@ only as a low-level test/debug protocol. Jobs currently implemented in source:
 - `validate-resource`: `source`, optional expected `type`.
 - `save-resource`: load/validate a native text or binary resource, then save it
   to `output`; supports declarative 3D/VFX scenes without a script generator.
+- `stage-source`: copies immutable runtime-format bytes from a package's
+  `source/` to the same package's `generated/`. Supports PNG, OTF/TTF/WOFF2,
+  Godot shader/include source and their UIDs. It accepts only `source` and
+  `output`, preserves the extension and every byte, rejects empty/over-64-MiB
+  files and existing outputs. Luau pipelines own the file list, publication,
+  cache receipts and asset manifests. No executable or arbitrary file copy
+  capability is exposed. Godot exports these payloads directly; resource PCK
+  jobs and fixed `.scn/.res` release helpers retain their resource contract.
 - `import-texture`: `source`, `output`, `compression` (`lossless`, `basisu`,
   `s3tc`, `bptc`, `etc2`, `astc`), optional `mipmaps` and `normal_map`.
 - `process-mesh`: `source` is a Mesh resource (including declarative primitive

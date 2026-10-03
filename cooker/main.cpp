@@ -10,6 +10,7 @@
 #include "core/io/file_access_pack.h"
 #include "core/io/json.h"
 #include "pipeline_cache.h"
+#include "stage_source.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
@@ -87,7 +88,7 @@ Dictionary capabilities() {
 	result["recipe_runtime"] = CookerRecipe::capabilities();
 	result["pipeline_runtime"] = CookerPipeline::capabilities();
 	Array operations;
-	for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions" }) {
+	for (const char *name : { "import-scene", "import-texture", "stage-source", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions" }) {
 		operations.push_back(name);
 	}
 	result["operations"] = operations;
@@ -338,7 +339,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 		error = CookerFiles::check_path(path);
 		ERR_FAIL_COND_V(error != OK || !path.begins_with(base + "/") || seen.has(relative), ERR_INVALID_PARAMETER);
 		String extension = relative.get_extension().to_lower();
-		ERR_FAIL_COND_V_MSG(extension != "scn" && extension != "res", ERR_UNAVAILABLE, "Asset manifests may publish only cooked .scn/.res files.");
+		ERR_FAIL_COND_V_MSG(extension != "scn" && extension != "res" && !CookerSource::is_payload(path), ERR_UNAVAILABLE, "Asset manifests require cooked resources or immutable runtime payloads.");
 		Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ, &error);
 		ERR_FAIL_COND_V(file.is_null() || error != OK, error == OK ? ERR_FILE_CANT_READ : error);
 		Dictionary record;
@@ -401,6 +402,9 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(job.has(name) && job[name].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
 	}
 	String operation = job.get("operation", "");
+	if (operation == "stage-source") {
+		return CookerSource::stage(job, r_result);
+	}
 	if (operation == "run-recipe") {
 		return CookerRecipe::run(job, r_result);
 	}
@@ -848,7 +852,7 @@ Error execute_pipeline(Dictionary &r_result) {
 		String operation = job["operation"];
 		ERR_FAIL_COND_V_MSG(operation == "run-pipeline", ERR_INVALID_PARAMETER, "Nested pipelines are not supported.");
 		bool known_operation = false;
-		for (const char *name : { "import-scene", "import-texture", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions" }) {
+		for (const char *name : { "import-scene", "import-texture", "stage-source", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions" }) {
 			known_operation |= operation == name;
 		}
 		ERR_FAIL_COND_V_MSG(!known_operation, ERR_INVALID_PARAMETER, "Unknown pipeline operation: " + operation);

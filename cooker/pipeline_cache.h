@@ -1,6 +1,7 @@
 /*<<----- VEYA_COOKER: verified immutable job receipts; metadata, never an execution language. */
 #pragma once
 #include "asset_files.h"
+#include "stage_source.h"
 #include "core/io/json.h"
 
 namespace CookerCache {
@@ -53,7 +54,7 @@ inline Error validate_manifest_files(const String &path) {
 		const String relative=record["path"],digest=record["sha256"];
 		ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.contains(":") || relative.contains("\\") || seen.has(relative),ERR_INVALID_DATA);
 		const String resource=base.path_join(relative),extension=relative.get_extension().to_lower();
-		ERR_FAIL_COND_V(extension!="scn" && extension!="res",ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(extension!="scn" && extension!="res" && !CookerSource::is_payload(resource),ERR_INVALID_DATA);
 		error=CookerFiles::check_path(resource);ERR_FAIL_COND_V(error!=OK || !resource.begins_with(base+"/"),ERR_INVALID_DATA);
 		const Ref<FileAccess> file=FileAccess::open(resource,FileAccess::READ);
 		ERR_FAIL_COND_V_MSG(file.is_null() || int64_t(record.get("bytes",-1))!=int64_t(file->get_length()) || digest.length()!=64 || digest!=FileAccess::get_sha256(resource),ERR_INVALID_DATA,"Cached manifest resource changed; choose a new immutable revision: "+resource);
