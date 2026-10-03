@@ -321,7 +321,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	String kind = p_job["kind"];
 	String entry = p_job["entry"];
 	ERR_FAIL_COND_V(!valid_asset_id(asset_id) || revision < 1, ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V(kind != "model" && kind != "texture" && kind != "material" && kind != "environment" && kind != "physics_material" && kind != "shader" && kind != "navigation" && kind != "effect", ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(kind != "model" && kind != "texture" && kind != "material" && kind != "environment" && kind != "physics_material" && kind != "shader" && kind != "navigation" && kind != "effect" && kind != "terrain" && kind != "world" && kind != "animation" && kind != "avatar" && kind != "vfx", ERR_INVALID_PARAMETER);
 	Error error = CookerFiles::check_path(output, true);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V(output.get_file() != "asset.manifest.json", ERR_INVALID_PARAMETER);

@@ -923,11 +923,14 @@ struct Recipe {
 					instance->set_name(name);
 				} else instance->set_name("Scene" + itos(i));
 				lua_pop(p_state, 1);
-				bool localize = false;
+				// Recipe-created PackedScenes have no external scene to instance.
+				// Own their descendants in the enclosing scene so nested spatial
+				// MultiMesh clusters survive packing and subsequent serialization.
+				bool localize = packed->get_path().is_empty();
 				s.field(item, "remove");
 				if (!lua_isnil(p_state, -1)) {
 					int remove_count = s.array(-1, 128);
-					localize = remove_count > 0;
+					localize = localize || remove_count > 0;
 					for (int remove_index = 0; remove_index < remove_count; ++remove_index) {
 						lua_rawgeti(p_state, -1, remove_index + 1);
 						String path = s.string(-1); lua_pop(p_state, 1);
