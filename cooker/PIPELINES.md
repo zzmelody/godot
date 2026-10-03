@@ -151,6 +151,29 @@ JSON provenance includes its configuration and sample count, not Resource object
 Segment `blend` accepts 0..2 seconds and is clamped to the segment duration;
 it blends from the preceding segment's final pose without adding clip time.
 
+A segment may declare `hold_phase=0.5` to sample one finite source pose while
+`begin`, `end` and `speed` continue to determine its duration. The phase must
+be numeric and within 0..1. This creates a body-pose basis for authored transfers
+without replaying incompatible limb motion from the source.
+
+`limb_paths={model="res://.../body.scn",anchor="Hips",max_target_error=.03,
+limbs={{upper="LeftUpperArm",lower="LeftLowerArm",["end"]="LeftHand",
+pole={.65,-.15,-.18},keys={{phase=0,position={.36,.5,.32}},
+{phase=.5,position={.12,.5,.32}},{phase=1,position={.36,.5,.32}}}}}}`
+bakes up to four independent two-bone chains into ordinary FK rotation keys at
+60 Hz. Target positions are offsets from the sampled anchor's origin in skeleton
+coordinates; the pole is a bend-direction vector in the same coordinates. Linear
+interpolation permits a constant support sweep. Each path contains 2..8 strictly
+increasing phases spanning 0..1; a loop requires matching endpoint positions.
+The host validates direct parent chains, unique writable bones, finite values,
+uniform positive chain scale, 128 bones and 1800 samples. It preserves all rest
+translations, scales and sampled end-bone global orientation. Unreachable targets
+are bounded by `max_target_error` (0..0.15 m); larger errors fail the cook rather
+than stretching a limb. Provenance records sample count, clamped sample count and
+measured maximum error. This is an offline solve, and adds no runtime IK. Paths
+precede socket motion and gait measurement so both sample the final baked pose.
+The resource checks do not establish visual contact quality; inspect packaged Veya.
+
 `validate-character-actions` can additionally take `compare_base` and an
 `expected_changed` ID array. This cold check compares animation duration, loop,
 step, tracks, interpolation and every key against the prior library, bounded to

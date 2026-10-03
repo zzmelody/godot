@@ -195,6 +195,162 @@ Error mirror_bone_rotations(const Array &p_bones, const Ref<Animation> &p_animat
 	}
 	return OK;
 }
+// Solve authored end-point paths once at cook time. Runtime receives ordinary
+// FK rotation keys; rest translations and limb lengths are never changed.
+Error bake_limb_paths(const Dictionary &p_config, const Ref<Animation> &p_animation) {
+	const String model_path = p_config.get("model", ""), anchor_name = p_config.get("anchor", "Hips");
+	ERR_FAIL_COND_V(CookerFiles::check_path(model_path) != OK || p_config.get("limbs", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	const Variant error_value = p_config.get("max_target_error", .08);
+	ERR_FAIL_COND_V(error_value.get_type() != Variant::INT && error_value.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
+	const double allowed_error = error_value;
+	ERR_FAIL_COND_V(!std::isfinite(allowed_error) || allowed_error < 0 || allowed_error > .15, ERR_PARAMETER_RANGE_ERROR);
+	const Array limbs = p_config["limbs"];
+	ERR_FAIL_COND_V(limbs.is_empty() || limbs.size() > 4, ERR_PARAMETER_RANGE_ERROR);
+	const Ref<PackedScene> model = ResourceLoader::load(model_path, "PackedScene");
+	ERR_FAIL_COND_V(model.is_null(), ERR_INVALID_DATA);
+	Tree tree; tree.root = model->instantiate();
+	Skeleton3D *skeleton = tree.root ? skeleton_in(tree.root) : nullptr;
+	ERR_FAIL_COND_V(!skeleton || skeleton->get_bone_count() > 128, ERR_INVALID_DATA);
+	const int count = skeleton->get_bone_count(), anchor = skeleton->find_bone(anchor_name);
+	const int samples = int(std::ceil(p_animation->get_length() * 60));
+	ERR_FAIL_COND_V(anchor < 0 || samples < 2 || samples > 1800, ERR_PARAMETER_RANGE_ERROR);
+	struct LimbPath {
+		int upper = -1, lower = -1, end = -1;
+		Vector3 pole;
+		Vector<double> phases;
+		Vector<Vector3> targets;
+	};
+	Vector<LimbPath> paths;
+	HashSet<int> written_bones;
+	auto vector_value = [](const Variant &p_value, Vector3 &r_vector) -> bool {
+		if (p_value.get_type() != Variant::ARRAY) return false;
+		const Array values = p_value;
+		if (values.size() != 3) return false;
+		for (const Variant &v : values) if (v.get_type() != Variant::INT && v.get_type() != Variant::FLOAT) return false;
+		r_vector = Vector3{ real_t(double(values[0])), real_t(double(values[1])), real_t(double(values[2])) };
+		return r_vector.is_finite() && r_vector.length() <= 2;
+	};
+	for (const Variant &value : limbs) {
+		ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		const Dictionary config = value;
+		LimbPath path;
+		const char *names[3] = { "upper", "lower", "end" };
+		int indices[3];
+		for (int i = 0; i < 3; ++i) {
+			const Variant name = config.get(names[i], Variant());
+			ERR_FAIL_COND_V(name.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+			const String text = name;
+			ERR_FAIL_COND_V(text.is_empty() || text.length() > 64 || text.contains(":") || text.contains("/"), ERR_INVALID_PARAMETER);
+			indices[i] = skeleton->find_bone(text);
+			ERR_FAIL_COND_V(indices[i] < 0 || written_bones.has(indices[i]), ERR_INVALID_DATA);
+			written_bones.insert(indices[i]);
+		}
+		path.upper = indices[0]; path.lower = indices[1]; path.end = indices[2];
+		ERR_FAIL_COND_V(skeleton->get_bone_parent(path.lower) != path.upper || skeleton->get_bone_parent(path.end) != path.lower || anchor >= path.upper, ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(!vector_value(config.get("pole", Variant()), path.pole) || path.pole.length() < .05 || config.get("keys", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+		const Array keys = config["keys"];
+		ERR_FAIL_COND_V(keys.size() < 2 || keys.size() > 8, ERR_PARAMETER_RANGE_ERROR);
+		for (const Variant &key_value : keys) {
+			ERR_FAIL_COND_V(key_value.get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+			const Dictionary key = key_value;
+			const Variant phase_value = key.get("phase", Variant());
+			ERR_FAIL_COND_V(phase_value.get_type() != Variant::INT && phase_value.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
+			const double phase = phase_value;
+			Vector3 target;
+			ERR_FAIL_COND_V(!std::isfinite(phase) || phase < 0 || phase > 1 || (!path.phases.is_empty() && phase <= path.phases[path.phases.size() - 1]) || !vector_value(key.get("position", Variant()), target), ERR_INVALID_PARAMETER);
+			path.phases.push_back(phase); path.targets.push_back(target);
+		}
+		ERR_FAIL_COND_V(path.phases[0] != 0 || path.phases[path.phases.size() - 1] != 1, ERR_INVALID_PARAMETER);
+		if (p_animation->get_loop_mode() != Animation::LOOP_NONE) ERR_FAIL_COND_V(path.targets[0].distance_to(path.targets[path.targets.size() - 1]) > .0001, ERR_INVALID_PARAMETER);
+		paths.push_back(path);
+	}
+	for (const LimbPath &path : paths) {
+		for (int parent = skeleton->get_bone_parent(path.upper); parent >= 0; parent = skeleton->get_bone_parent(parent)) {
+			ERR_FAIL_COND_V(written_bones.has(parent), ERR_INVALID_DATA);
+		}
+	}
+	const Ref<Animation> source = p_animation->duplicate(true);
+	Vector<int> positions, rotations, scales, parents;
+	positions.resize(count); rotations.resize(count); scales.resize(count); parents.resize(count);
+	Vector<Transform3D> globals; globals.resize(count);
+	for (int index = 0; index < count; ++index) {
+		const NodePath name("%GeneralSkeleton:" + String(skeleton->get_bone_name(index)));
+		positions.write[index] = source->find_track(name, Animation::TYPE_POSITION_3D);
+		rotations.write[index] = source->find_track(name, Animation::TYPE_ROTATION_3D);
+		scales.write[index] = source->find_track(name, Animation::TYPE_SCALE_3D);
+		parents.write[index] = skeleton->get_bone_parent(index);
+		ERR_FAIL_COND_V(parents[index] >= index, ERR_INVALID_DATA);
+		if (written_bones.has(index)) {
+			ERR_FAIL_COND_V(rotations[index] < 0, ERR_INVALID_DATA);
+			const int track = p_animation->find_track(name, Animation::TYPE_ROTATION_3D);
+			for (int key = p_animation->track_get_key_count(track) - 1; key >= 0; --key) p_animation->track_remove_key(track, key);
+		}
+	}
+	double maximum_error = 0;
+	int clamped_samples = 0;
+	for (int sample = 0; sample <= samples; ++sample) {
+		const double phase = double(sample) / samples, time = phase * p_animation->get_length();
+		for (int index = 0; index < count; ++index) {
+			const Transform3D rest = skeleton->get_bone_rest(index);
+			const Vector3 position = positions[index] >= 0 ? source->position_track_interpolate(positions[index], time) : rest.origin;
+			const Quaternion rotation = rotations[index] >= 0 ? source->rotation_track_interpolate(rotations[index], time) : rest.basis.get_rotation_quaternion();
+			const Vector3 scale = scales[index] >= 0 ? source->scale_track_interpolate(scales[index], time) : rest.basis.get_scale();
+			const Transform3D local(Basis(rotation).scaled_local(scale), position);
+			globals.write[index] = parents[index] >= 0 ? globals[parents[index]] * local : local;
+			ERR_FAIL_COND_V(!globals[index].origin.is_finite() || !globals[index].basis.is_finite(), ERR_INVALID_DATA);
+		}
+		for (const LimbPath &path : paths) {
+			int interval = 0;
+			while (interval + 2 < path.phases.size() && phase > path.phases[interval + 1]) ++interval;
+			const double weight = CLAMP((phase - path.phases[interval]) / (path.phases[interval + 1] - path.phases[interval]), 0.0, 1.0);
+			const Vector3 target = globals[anchor].origin + path.targets[interval].lerp(path.targets[interval + 1], weight);
+			const Vector3 root = globals[path.upper].origin, old_joint = globals[path.lower].origin, old_end = globals[path.end].origin;
+			const Vector3 old_upper = old_joint - root, old_lower = old_end - old_joint;
+			const double upper_length = old_upper.length(), lower_length = old_lower.length();
+			ERR_FAIL_COND_V(upper_length < .01 || lower_length < .01 || upper_length > 1.5 || lower_length > 1.5, ERR_INVALID_DATA);
+			// Rotation-only reconstruction requires a uniform scale on this chain.
+			for (int index : { path.upper, path.lower, path.end }) {
+				const Vector3 scale = globals[index].basis.get_scale();
+				ERR_FAIL_COND_V(Math::abs(scale.x - scale.y) > .0001 || Math::abs(scale.y - scale.z) > .0001 || globals[index].basis.determinant() <= 0, ERR_INVALID_DATA);
+				const Basis &basis = globals[index].basis;
+				const Vector3 x = basis.get_column(0).normalized(), y = basis.get_column(1).normalized(), z = basis.get_column(2).normalized();
+				ERR_FAIL_COND_V(Math::abs(x.dot(y)) > .0001 || Math::abs(x.dot(z)) > .0001 || Math::abs(y.dot(z)) > .0001, ERR_INVALID_DATA);
+			}
+			const Vector3 delta = target - root;
+			const double requested = delta.length();
+			ERR_FAIL_COND_V(requested < .001, ERR_INVALID_DATA);
+			const double reach = CLAMP(requested, Math::abs(upper_length - lower_length) + .001, upper_length + lower_length - .001);
+			const double error = Math::abs(reach - requested);
+			maximum_error = MAX(maximum_error, error);
+			ERR_FAIL_COND_V_MSG(error > allowed_error, ERR_INVALID_DATA, "Offline limb path is outside target-body reach: " + String(skeleton->get_bone_name(path.end)));
+			if (error > .0001) ++clamped_samples;
+			const Vector3 direction = delta / requested;
+			const Vector3 pole = path.pole - direction * path.pole.dot(direction);
+			ERR_FAIL_COND_V(pole.length() < .001, ERR_INVALID_DATA);
+			const double along = (upper_length * upper_length - lower_length * lower_length + reach * reach) / (2 * reach);
+			const double bend = Math::sqrt(MAX(0.0, upper_length * upper_length - along * along));
+			const Vector3 joint = root + direction * along + pole.normalized() * bend;
+			const Vector3 endpoint = root + direction * reach;
+			const Quaternion upper_delta(old_upper.normalized(), (joint - root).normalized());
+			const Quaternion upper_global = (upper_delta * globals[path.upper].basis.get_rotation_quaternion()).normalized();
+			const Quaternion lower_delta(upper_delta.xform(old_lower).normalized(), (endpoint - joint).normalized());
+			const Quaternion lower_global = (lower_delta * upper_delta * globals[path.lower].basis.get_rotation_quaternion()).normalized();
+			const Quaternion parent_global = parents[path.upper] >= 0 ? globals[parents[path.upper]].basis.get_rotation_quaternion() : Quaternion();
+			const Quaternion local[3] = { (parent_global.inverse() * upper_global).normalized(), (upper_global.inverse() * lower_global).normalized(), (lower_global.inverse() * globals[path.end].basis.get_rotation_quaternion()).normalized() };
+			const int indices[3] = { path.upper, path.lower, path.end };
+			for (int i = 0; i < 3; ++i) {
+				ERR_FAIL_COND_V(!local[i].is_finite(), ERR_INVALID_DATA);
+				const int track = p_animation->find_track(NodePath("%GeneralSkeleton:" + String(skeleton->get_bone_name(indices[i]))), Animation::TYPE_ROTATION_3D);
+				p_animation->rotation_track_insert_key(track, time, local[i]);
+			}
+		}
+	}
+	Dictionary provenance = p_config.duplicate(true);
+	provenance["pose_samples"] = samples + 1; provenance["max_target_error_measured"] = maximum_error;
+	provenance["clamped_samples"] = clamped_samples;
+	p_animation->set_meta("limb_paths", provenance);
+	return OK;
+}
 // A carried prop follows the cooked grip without modifying the actor's bones.
 // Store one bounded socket-local pose channel alongside the ordinary FK clip.
 Error bake_socket_motion(const Dictionary &p_config, const Ref<Animation> &p_animation) {
@@ -447,6 +603,7 @@ Error prepare_compose_job(Dictionary &r_job) {
 		clip["hips_position_offsets"] = original->get_meta("hips_position_offsets", Array());
 		if (original->has_meta("align_hips_to")) clip["align_hips_to"] = original->get_meta("align_hips_to");
 		if (original->has_meta("align_hips_axes")) clip["align_hips_axes"] = original->get_meta("align_hips_axes");
+		if (original->has_meta("limb_paths")) clip["limb_paths"] = original->get_meta("limb_paths");
 		clip["visual_status"] = "body_baked_requires_runtime_review";
 		clips.push_back(clip);
 	}
@@ -541,6 +698,10 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 			const double begin = segment.get("begin", 0.0), end = segment.get("end", 1.0), speed = segment.get("speed", 1.0);
 			const bool reverse = segment.get("reverse", false), flatten_vertical = clip.get("flatten_vertical", false);
 			ERR_FAIL_COND_V(!std::isfinite(begin) || !std::isfinite(end) || !std::isfinite(speed) || begin < 0 || end > 1 || begin >= end || speed < 0.1 || speed > 4, ERR_PARAMETER_RANGE_ERROR);
+			const Variant hold_value = segment.get("hold_phase", 0.0);
+			ERR_FAIL_COND_V(hold_value.get_type() != Variant::FLOAT && hold_value.get_type() != Variant::INT, ERR_INVALID_PARAMETER);
+			const double hold_phase = hold_value;
+			ERR_FAIL_COND_V(!std::isfinite(hold_phase) || hold_phase < 0 || hold_phase > 1, ERR_PARAMETER_RANGE_ERROR);
 			const double start = begin * source->get_length(), finish = end * source->get_length();
 			const double duration = (finish - start) / speed;
 			const double blend = segment.get("blend", 0.08);
@@ -568,7 +729,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 				const Variant previous = previous_keys ? composed->track_get_key_value(target_track, previous_keys - 1) : Variant();
 				for (int sample = 0; sample <= samples; ++sample) {
 					const double phase = double(sample) / samples;
-					const double time = reverse ? finish - phase * (finish - start) : start + phase * (finish - start);
+					const double time = segment.has("hold_phase") ? hold_phase * source->get_length() : reverse ? finish - phase * (finish - start) : start + phase * (finish - start);
 					const double at = cursor + phase * duration;
 					const double blend_weight = cursor > 0 && previous_keys && blend > 0 ? MIN(1.0, phase * duration / MIN(blend, duration)) : 1.0;
 					if (type == Animation::TYPE_POSITION_3D) {
@@ -630,6 +791,11 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 			composed->set_meta("reference_segments", clip.get("reference_segments", Array()));
 		}
 		composed->set_loop_mode(bool(clip.get("loop", false)) ? Animation::LOOP_LINEAR : Animation::LOOP_NONE);
+		if (clip.has("limb_paths")) {
+			ERR_FAIL_COND_V(clip["limb_paths"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+			error = bake_limb_paths(clip["limb_paths"], composed);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
 		Dictionary socket_motion;
 		if (clip.has("socket_motion")) {
 			ERR_FAIL_COND_V(clip["socket_motion"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
@@ -659,6 +825,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 		record["mirror_x"] = mirror_x;
 		record["mirror_bones"] = mirror_bones;
 		if (!socket_motion.is_empty()) record["socket_motion"] = composed->get_meta("socket_motion_provenance");
+		if (clip.has("limb_paths")) record["limb_paths"] = composed->get_meta("limb_paths");
 		record["rotation_offsets"] = offsets;
 		record["hips_position_offsets"] = position_offsets;
 		if (!hips_reference_id.is_empty()) record["align_hips_to"] = hips_reference_id;
@@ -762,6 +929,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		row["mirror_x"] = animation->get_meta("mirror_x", false);
 		row["mirror_bones"] = animation->get_meta("mirror_bones", Array());
 		if (animation->has_meta("socket_motion_provenance")) row["socket_motion"] = animation->get_meta("socket_motion_provenance");
+		if (animation->has_meta("limb_paths")) row["limb_paths"] = animation->get_meta("limb_paths");
 		row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
 		row["hips_position_offsets"] = animation->get_meta("hips_position_offsets", Array());
 		if (animation->has_meta("locomotion_gait")) row["locomotion_gait"] = animation->get_meta("locomotion_gait");
