@@ -136,6 +136,7 @@ is [0.25,4]; automatic exposure stays disabled. DOF fields are `dof_far_enabled`
 
 | Fields | Bounds |
 | --- | --- |
+| `cloud_speed`, `cloud_wind` | 0..0.05 noise units/second (default 0), nonzero horizontal direction (default `{0.8,0,0.6}`; normalized by Cooker) |
 | `fog_height`, `fog_height_density` | -1000..1000 metres, 0..1 |
 | `fog_aerial_perspective`, `fog_sun_scatter` | 0..1 |
 | `volumetric_density`, `volumetric_length` | 0..0.05, 16..512 metres |
@@ -149,6 +150,12 @@ Zero density/intensity disables the corresponding effect. Volumetric fog never
 obscures the sky. These effects require validation in packaged Veya's target
 renderer; Cooker does not render them. Atmosphere recipes do not create or own
 lights: the authored world must use the matching sun metadata.
+
+The builder stores horizontal `cloud_drift` in the ShaderMaterial and uses Sky's
+automatic process mode with 256-pixel radiance faces. A shader using `TIME`
+selects realtime radiance filtering; this face size does not cap the resolution
+of the visible sky. The project sky shaders render their background at full
+resolution and use a continuous 900-second drift cycle, matching TIME rollover.
 
 ## Limits and publication
 

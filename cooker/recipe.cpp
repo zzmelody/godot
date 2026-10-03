@@ -620,7 +620,7 @@ struct Recipe {
 	}
 	static int atmosphere(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
-		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy", "fog_height", "fog_height_density", "fog_aerial_perspective", "fog_sun_scatter", "volumetric_density", "volumetric_length", "volumetric_albedo", "volumetric_anisotropy", "volumetric_ambient_inject", "ssao_intensity", "ssao_radius", "ssil_intensity", "ssil_radius", "glow_intensity", "glow_threshold", "contrast", "saturation", "brightness", "ssr_enabled"});
+		s.fields(1, {"shader", "cloud_texture", "preset_id", "family", "zenith", "horizon", "cloud_color", "cloud_shadow", "ambient_color", "fog_color", "sun_color", "sun_direction", "cloud_coverage", "cloud_scale", "cloud_softness", "cloud_seed", "cloud_speed", "cloud_wind", "ambient_energy", "sky_contribution", "fog_density", "fog_sky_affect", "exposure", "sun_size", "sun_energy", "fog_height", "fog_height_density", "fog_aerial_perspective", "fog_sun_scatter", "volumetric_density", "volumetric_length", "volumetric_albedo", "volumetric_anisotropy", "volumetric_ambient_inject", "ssao_intensity", "ssao_radius", "ssil_intensity", "ssil_radius", "glow_intensity", "glow_threshold", "contrast", "saturation", "brightness", "ssr_enabled"});
 		s.field(1, "preset_id"); const String preset_id = s.string(-1); lua_pop(p_state, 1);
 		s.require(!preset_id.is_empty() && preset_id.length() <= 48, "invalid atmosphere preset_id");
 		s.field(1, "shader"); Ref<Shader> shader = s.handle(-1); lua_pop(p_state, 1);
@@ -648,11 +648,18 @@ struct Recipe {
 		material->set_shader_parameter("cloud_scale", s.number_field(1, "cloud_scale", 2, 0.25, 8));
 		material->set_shader_parameter("cloud_softness", s.number_field(1, "cloud_softness", 0.25, 0.02, 1));
 		material->set_shader_parameter("cloud_seed", s.number_field(1, "cloud_seed", 1, 0, 10000));
+		const double cloud_speed = s.number_field(1, "cloud_speed", 0, 0, 0.05);
+		Vector3 cloud_wind = s.vector_field(1, "cloud_wind", Vector3(0.8, 0, 0.6));
+		s.require(Math::is_zero_approx(cloud_wind.y) && cloud_wind.length_squared() > 0.001, "cloud_wind must be a nonzero horizontal direction");
+		cloud_wind.y = 0;
+		material->set_shader_parameter("cloud_drift", cloud_wind.normalized() * cloud_speed);
 		material->set_shader_parameter("sun_size", s.number_field(1, "sun_size", 0.025, 0.001, 0.15));
 		material->set_shader_parameter("sun_energy", sun_energy);
 		material->set_shader_parameter("has_cloud_texture", cloud_texture.is_valid());
 		if (cloud_texture.is_valid()) material->set_shader_parameter("cloud_texture", cloud_texture);
-		Ref<Sky> sky; sky.instantiate(); sky->set_material(material); sky->set_process_mode(Sky::PROCESS_MODE_QUALITY); sky->set_radiance_size(Sky::RADIANCE_SIZE_256);
+		// TIME shaders select the realtime filter; static shaders retain the
+		// incremental/quality path. Radiance size does not limit the visible sky.
+		Ref<Sky> sky; sky.instantiate(); sky->set_material(material); sky->set_process_mode(Sky::PROCESS_MODE_AUTOMATIC); sky->set_radiance_size(Sky::RADIANCE_SIZE_256);
 		Ref<Environment> environment; environment.instantiate();
 		environment->set_background(Environment::BG_SKY); environment->set_sky(sky);
 		environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
