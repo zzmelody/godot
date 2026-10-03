@@ -21,6 +21,14 @@ clock, random, `require`, bytecode-loading or engine-object API. The VM is limit
 to 16 MiB, 1 second, 256 steps, depth 16 and 16,384 converted values. Cooker
 converts the returned tables to native jobs and executes them sequentially.
 
+`pipeline.import(path)` reads a module's data-only `layout` export.
+`pipeline.import(path, "steps")` reads a dense array of job tables from a Cooker
+module under `content/cooker/`, `content/shared/cooker/`, or a package's
+`content/worlds/<id>/cooker/` / `content/mod-worlds/<id>/cooker/` directory.
+Imported data is read-only; copy jobs into a new array before appending steps.
+Both forms preserve module-count, source-byte, value-depth, cycle and symlink
+guards. Step imports cannot load an authored gameplay module as a job graph.
+
 ```luau
 local asset = "res://content/worlds/example/generated/example/example.scn"
 return {
