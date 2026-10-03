@@ -304,6 +304,12 @@ return cooker.points({kinds={"perch","rest"},labels={"wetland"},points={
         report = self.job({"operation": "validate-resource", "source": reader["output"], "type": "Image"})
         self.assertEqual(report["field"]["kind"], "points")
         self.assertEqual(report["height"], 2)
+        self.assertEqual(report["field"]["count"], 2)
+        empty = self.recipe('return cooker.points({kinds={"a"},points={}})',
+                            output="res://content/worlds/fixture/generated/field/empty.res")
+        self.assertEqual(empty["points"], 0)
+        report = self.job({"operation": "validate-resource", "source": empty["output"], "type": "Image"})
+        self.assertEqual(report["field"]["count"], 0)
         for code in (
             'return cooker.field({channels={"h"},width=2,height=2,data={1,2,3}})',
             'return cooker.field({channels={"h","h"},width=2,height=2,data={1,2,3,4,5,6,7,8}})',
@@ -316,7 +322,6 @@ return cooker.points({kinds={"perch","rest"},labels={"wetland"},points={
             'return cooker.points({kinds={"a"},points={{kind=2,position={0,0,0}}}})',
             'return cooker.points({kinds={"a"},points={{kind=1,habitat=1,position={0,0,0}}}})',
             'return cooker.points({kinds={"a"},points={{kind=1,position={0,0,0},normal={0,0,0}}}})',
-            'return cooker.points({kinds={"a"},points={}})',
         ):
             with self.subTest(code=code[:60]):
                 self.recipe(code, success=False)

@@ -1156,8 +1156,9 @@ struct Recipe {
 		const Array kinds = s.name_list(1, "kinds", 64, true);
 		const Array labels = s.name_list(1, "labels", 64, false);
 		s.field(1, "points"); const int count = s.array(-1, 16384 - s.point_count);
-		s.require(count > 0, "points requires at least one point");
-		Vector<uint8_t> bytes; bytes.resize(size_t(count) * 12 * sizeof(float));
+		// An empty set keeps one zero row; `count` in the metadata is authoritative.
+		Vector<uint8_t> bytes; bytes.resize(size_t(MAX(count, 1)) * 12 * sizeof(float));
+		std::memset(bytes.ptrw(), 0, bytes.size());
 		float *values = reinterpret_cast<float *>(bytes.ptrw());
 		const int list = lua_gettop(p_state);
 		for (int i = 0; i < count; ++i) {
@@ -1176,9 +1177,9 @@ struct Recipe {
 		}
 		lua_pop(p_state, 1);
 		s.point_count += count;
-		Ref<Image> image = Image::create_from_data(3, count, false, Image::FORMAT_RGBAF, bytes);
+		Ref<Image> image = Image::create_from_data(3, MAX(count, 1), false, Image::FORMAT_RGBAF, bytes);
 		s.require(image.is_valid() && !image->is_empty(), "could not create point set");
-		Dictionary meta; meta["schema"] = 1; meta["kind"] = "points"; meta["kinds"] = kinds; meta["labels"] = labels;
+		Dictionary meta; meta["schema"] = 1; meta["kind"] = "points"; meta["kinds"] = kinds; meta["labels"] = labels; meta["count"] = count;
 		image->set_meta("veya_field", meta);
 		return s.push_resource(image);
 	}
