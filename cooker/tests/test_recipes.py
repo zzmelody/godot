@@ -82,7 +82,9 @@ class RecipeTests(unittest.TestCase):
         report = json.loads(next(line for line in run.stdout.splitlines() if line.startswith('{')))
         self.assertEqual(report["script_languages"], 0)
         self.assertEqual(report["recipe_runtime"]["version"], "0.738")
-        self.assertEqual(report["recipe_runtime"]["api_version"], 4)
+        self.assertEqual(report["recipe_runtime"]["api_version"], 6)
+        for name in ("field", "sample", "field_info", "points"):
+            self.assertIn(name, report["recipe_runtime"]["apis"])
         self.assertIn("scene", report["recipe_runtime"]["apis"])
         self.assertIn("procedural_texture", report["recipe_runtime"]["apis"])
         self.assertIn("effect", report["recipe_runtime"]["apis"])
@@ -268,6 +270,56 @@ return cooker.scene({{asset=m,material=cooker.input("finish")}})''',
         self.assertEqual(set(result["input_sha256"]), {mesh["output"], material["output"]})
         pack = self.job({"operation": "pack", "files": [result["output"]], "output": "res://content/releases/inputs.pck"})
         self.assertEqual(set(pack["files"]), {mesh["output"], material["output"], result["output"]})
+
+    def test_field_rasters_points_and_sampling(self):
+        field = '''local data={}
+for z=0,2 do for x=0,3 do table.insert(data,x+z*10); table.insert(data,-x) end end
+local f=cooker.field({channels={"height","water_distance"},width=4,height=3,origin={-2,5},cell=2,data=data,labels={"meadow","wetland"}})
+local a,b=cooker.sample(f,-2+1,5+2)
+assert(math.abs(a-10.5)<1e-5 and math.abs(b+0.5)<1e-5, "bilinear "..a.." "..b)
+local c=cooker.sample(f,-100,100)
+assert(c==20, "clamped "..c)
+local info=cooker.field_info(f)
+assert(info.width==4 and info.height==3 and info.cell==2 and info.origin[2]==5 and info.channels[2]=="water_distance" and info.labels[1]=="meadow")
+return f'''
+        target = self.project / "content/worlds/fixture/generated/field/a.res"
+        repeated = self.recipe(field, output="res://content/worlds/fixture/generated/field/a.res")
+        target.unlink()
+        first = self.recipe(field, output="res://content/worlds/fixture/generated/field/a.res")
+        # Same Luau, seed and output path give byte-identical rasters.
+        self.assertEqual(first["sha256"], repeated["sha256"])
+        self.assertEqual(first["type"], "Image")
+        self.assertEqual(first["field_cells"], 24)
+        report = self.job({"operation": "validate-resource", "source": first["output"], "type": "Image"})
+        self.assertEqual(report["field"]["kind"], "field")
+        self.assertEqual(report["field"]["channels"], ["height", "water_distance"])
+        # A downstream recipe reads the cooked field as a declared input.
+        reader = self.recipe('''local f=cooker.input("site")
+local h=cooker.sample(f,0,7)
+assert(math.abs(h-11)<1e-5, tostring(h))
+return cooker.points({kinds={"perch","rest"},labels={"wetland"},points={
+ {kind=1,habitat=1,position={0,h,7},normal={0,2,0},radius=.4},{kind=2,position={1,0,1}}}})''',
+            inputs={"site": first["output"]}, output="res://content/worlds/fixture/generated/field/anchors.res")
+        self.assertEqual(reader["points"], 2)
+        report = self.job({"operation": "validate-resource", "source": reader["output"], "type": "Image"})
+        self.assertEqual(report["field"]["kind"], "points")
+        self.assertEqual(report["height"], 2)
+        for code in (
+            'return cooker.field({channels={"h"},width=2,height=2,data={1,2,3}})',
+            'return cooker.field({channels={"h","h"},width=2,height=2,data={1,2,3,4,5,6,7,8}})',
+            'return cooker.field({channels={"a","b","c","d","e"},width=2,height=2,data={}})',
+            'return cooker.field({channels={"bad name"},width=2,height=2,data={1,2,3,4}})',
+            'return cooker.field({channels={"h"},width=1,height=2,data={1,2}})',
+            'return cooker.field({channels={"h"},width=2,height=2,data={1,2,3,0/0}})',
+            'return cooker.field({channels={"h"},width=2,height=2,data={1,2,3,4},extra=1})',
+            'cooker.sample(cooker.primitive("box",{}),0,0); return cooker.primitive("box",{})',
+            'return cooker.points({kinds={"a"},points={{kind=2,position={0,0,0}}}})',
+            'return cooker.points({kinds={"a"},points={{kind=1,habitat=1,position={0,0,0}}}})',
+            'return cooker.points({kinds={"a"},points={{kind=1,position={0,0,0},normal={0,0,0}}}})',
+            'return cooker.points({kinds={"a"},points={}})',
+        ):
+            with self.subTest(code=code[:60]):
+                self.recipe(code, success=False)
 
     def test_packed_scene_bounds_removal_and_luau_composition(self):
         base = self.recipe('local b=cooker.primitive("box",{size={8,1,8}}); return cooker.scene({{asset=b}})',

@@ -35,12 +35,14 @@
 #include "lua.h"
 #include "lualib.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -75,6 +77,7 @@ struct Recipe {
 	size_t allocated = 0, peak_memory = 0;
 	int vertices = 0, instances = 0;
 	int effect_layers = 0, effect_particle_systems = 0, effect_particles = 0, effect_textures = 0;
+	int field_cells = 0, point_count = 0;
 	uint64_t interrupts = 0;
 	uint32_t random_state = 1, seed_value = 1;
 	std::chrono::steady_clock::time_point deadline;
@@ -84,6 +87,9 @@ struct Recipe {
 	Dictionary input_hashes;
 	Ref<Resource> result;
 	std::string bytecode;
+	// Decoded float rasters, keyed by handle id. Images stay opaque to Luau.
+	struct FieldView { int width = 0, height = 0, channels = 0; double origin_x = 0, origin_z = 0, cell = 1; std::vector<float> data; };
+	std::map<size_t, FieldView> field_views;
 
 	~Recipe() { if (L) lua_close(L); }
 	static Recipe &self(lua_State *p_state) { return *static_cast<Recipe *>(lua_callbacks(p_state)->userdata); }
@@ -226,10 +232,48 @@ struct Recipe {
 	String string_field(int p_index, const char *p_name, const String &p_default = String()) {
 		field(p_index, p_name); String value = lua_isnil(L, -1) ? p_default : string(-1); lua_pop(L, 1); return value;
 	}
-	Ref<Resource> handle(int p_index) {
+	size_t handle_id(int p_index) {
 		auto *id = static_cast<size_t *>(lua_touserdatatagged(L, p_index, HANDLE_TAG));
 		require(id && *id < resources.size(), "expected a Cooker asset handle");
-		return resources[*id];
+		return *id;
+	}
+	Ref<Resource> handle(int p_index) { return resources[handle_id(p_index)]; }
+	// A field is an Image of 1..4 float channels plus typed `veya_field`
+	// metadata. Points use the same Image container (three RGBA rows per point)
+	// so runtime consumers decode one bounded format. Returns nullptr on success.
+	static const char *decode_field(const Ref<Image> &p_image, FieldView &r_view) {
+		if (p_image.is_null() || p_image->is_empty() || !p_image->has_meta("veya_field")) return "field requires veya_field metadata";
+		const Variant meta_value = p_image->get_meta("veya_field");
+		if (meta_value.get_type() != Variant::DICTIONARY) return "invalid veya_field metadata";
+		const Dictionary meta = meta_value;
+		if (int(meta.get("schema", 0)) != 1 || String(meta.get("kind", "")) != "field") return "unsupported veya_field schema";
+		const Array channels = meta.get("channels", Array()), origin = meta.get("origin", Array());
+		const double cell = meta.get("cell", 0.0);
+		static const Image::Format formats[] = {Image::FORMAT_RF, Image::FORMAT_RGF, Image::FORMAT_RGBF, Image::FORMAT_RGBAF};
+		if (channels.is_empty() || channels.size() > 4 || p_image->get_format() != formats[channels.size() - 1]) return "field channel format mismatch";
+		if (origin.size() != 2 || !std::isfinite(cell) || cell < .05 || cell > 64) return "invalid field placement";
+		const int width = p_image->get_width(), height = p_image->get_height();
+		if (width < 2 || height < 2 || width > 1024 || height > 1024 || p_image->has_mipmaps()) return "field dimensions out of range";
+		const Vector<uint8_t> bytes = p_image->get_data();
+		const size_t count = size_t(width) * height * channels.size();
+		if (size_t(bytes.size()) != count * sizeof(float)) return "field data size mismatch";
+		r_view.width = width; r_view.height = height; r_view.channels = channels.size();
+		r_view.origin_x = origin[0]; r_view.origin_z = origin[1]; r_view.cell = cell;
+		r_view.data.resize(count);
+		std::memcpy(r_view.data.data(), bytes.ptr(), count * sizeof(float));
+		for (float value : r_view.data) if (!std::isfinite(value)) return "field data must be finite";
+		return nullptr;
+	}
+	Array name_list(int p_index, const char *p_name, int p_max, bool p_required) {
+		field(p_index, p_name); Array names;
+		if (lua_isnil(L, -1)) { require(!p_required, "name list is required"); lua_pop(L, 1); return names; }
+		const int count = array(-1, p_max); require(!p_required || count > 0, "name list must not be empty");
+		for (int i = 0; i < count; ++i) {
+			lua_rawgeti(L, -1, i + 1); const String name = string(-1); lua_pop(L, 1);
+			require(!name.is_empty() && name.length() <= 64 && name.is_valid_ascii_identifier() && !names.has(name), "names must be unique ASCII identifiers");
+			names.push_back(name);
+		}
+		lua_pop(L, 1); return names;
 	}
 	int push_resource(const Ref<Resource> &p_resource) {
 		check_budget();
@@ -249,6 +293,15 @@ struct Recipe {
 			require(vertices <= limits.max_vertices, "scene vertex budget exceeded");
 		}
 		size_t id = resources.size();
+		Ref<Image> image = p_resource;
+		if (image.is_valid()) {
+			const Dictionary meta = image->get_meta("veya_field", Dictionary());
+			if (String(meta.get("kind", "")) == "field") {
+				FieldView view; const char *error = decode_field(image, view);
+				require(error == nullptr, error ? error : "");
+				field_views.emplace(id, std::move(view));
+			}
+		}
 		resources.push_back(p_resource);
 		*static_cast<size_t *>(lua_newuserdatatagged(L, sizeof(size_t), HANDLE_TAG)) = id;
 		return 1;
@@ -1029,6 +1082,106 @@ struct Recipe {
 		Ref<PackedScene> packed; packed.instantiate(); s.require(packed->pack(root.get())==OK,"cannot pack lightmap scene");
 		return s.push_resource(packed);
 	}
+	// cooker.field({channels={...},width=,height=,origin={x,z},cell=,data={...},labels={...}})
+	// Row-major (z rows, x columns), channel-interleaved float raster.
+	static int field_raster(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		s.fields(1, {"channels", "width", "height", "origin", "cell", "data", "labels"});
+		const Array channels = s.name_list(1, "channels", 4, true);
+		const Array labels = s.name_list(1, "labels", 64, false);
+		const double width = s.number_field(1, "width", 0, 2, 1024), height = s.number_field(1, "height", 0, 2, 1024);
+		s.require(width == std::floor(width) && height == std::floor(height), "field dimensions must be integers");
+		const Vector2 origin = s.vector2_field(1, "origin", Vector2());
+		const double cell = s.number_field(1, "cell", 1, .05, 64);
+		const int count = int(width) * int(height) * channels.size();
+		s.require(s.field_cells + count <= 4 * 1024 * 1024, "field cell budget exceeded");
+		s.field(1, "data"); s.require(s.array(-1, count) == count, "field data length must equal width*height*channels");
+		Vector<uint8_t> bytes; bytes.resize(count * sizeof(float));
+		float *values = reinterpret_cast<float *>(bytes.ptrw());
+		for (int i = 0; i < count; ++i) { lua_rawgeti(p_state, -1, i + 1); values[i] = float(s.number(-1)); lua_pop(p_state, 1); }
+		lua_pop(p_state, 1);
+		s.field_cells += count;
+		static const Image::Format formats[] = {Image::FORMAT_RF, Image::FORMAT_RGF, Image::FORMAT_RGBF, Image::FORMAT_RGBAF};
+		Ref<Image> image = Image::create_from_data(int(width), int(height), false, formats[channels.size() - 1], bytes);
+		s.require(image.is_valid() && !image->is_empty(), "could not create field raster");
+		Dictionary meta; meta["schema"] = 1; meta["kind"] = "field"; meta["channels"] = channels;
+		meta["origin"] = Array({origin.x, origin.y}); meta["cell"] = cell; meta["labels"] = labels;
+		image->set_meta("veya_field", meta);
+		return s.push_resource(image);
+	}
+	// Bilinear, edge-clamped world-space sample. Returns one number per channel.
+	static int sample(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(3);
+		const auto view = s.field_views.find(s.handle_id(1));
+		s.require(view != s.field_views.end(), "sample requires a field handle");
+		const FieldView &f = view->second;
+		const double x = std::clamp((s.number(2) - f.origin_x) / f.cell, 0.0, double(f.width - 1));
+		const double z = std::clamp((s.number(3) - f.origin_z) / f.cell, 0.0, double(f.height - 1));
+		const int ix = MIN(int(x), f.width - 2), iz = MIN(int(z), f.height - 2);
+		const double fx = x - ix, fz = z - iz;
+		for (int c = 0; c < f.channels; ++c) {
+			auto at = [&](int i, int j) { return double(f.data[(size_t(j) * f.width + i) * f.channels + c]); };
+			const double top = at(ix, iz) + (at(ix + 1, iz) - at(ix, iz)) * fx;
+			const double bottom = at(ix, iz + 1) + (at(ix + 1, iz + 1) - at(ix, iz + 1)) * fx;
+			lua_pushnumber(p_state, top + (bottom - top) * fz);
+		}
+		return f.channels;
+	}
+	static int field_info(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		const size_t id = s.handle_id(1);
+		const auto view = s.field_views.find(id);
+		s.require(view != s.field_views.end(), "field_info requires a field handle");
+		const FieldView &f = view->second;
+		const Dictionary meta = Ref<Image>(s.resources[id])->get_meta("veya_field");
+		auto names = [&](const Array &p_names) {
+			lua_createtable(p_state, p_names.size(), 0);
+			for (int i = 0; i < p_names.size(); ++i) { const CharString text = String(p_names[i]).utf8(); lua_pushlstring(p_state, text.get_data(), text.length()); lua_rawseti(p_state, -2, i + 1); }
+		};
+		lua_createtable(p_state, 0, 6);
+		lua_pushnumber(p_state, f.width); lua_setfield(p_state, -2, "width");
+		lua_pushnumber(p_state, f.height); lua_setfield(p_state, -2, "height");
+		lua_pushnumber(p_state, f.cell); lua_setfield(p_state, -2, "cell");
+		lua_createtable(p_state, 2, 0); lua_pushnumber(p_state, f.origin_x); lua_rawseti(p_state, -2, 1); lua_pushnumber(p_state, f.origin_z); lua_rawseti(p_state, -2, 2); lua_setfield(p_state, -2, "origin");
+		names(meta.get("channels", Array())); lua_setfield(p_state, -2, "channels");
+		names(meta.get("labels", Array())); lua_setfield(p_state, -2, "labels");
+		return 1;
+	}
+	// cooker.points({kinds={...},labels={...},points={{kind=1,habitat=1,position={},normal={},radius=}}})
+	// Encoded as an RGBA float Image, one row per point:
+	// (x,y,z,radius) (nx,ny,nz,kind) (habitat,0,0,0). Indices are 1-based; habitat 0 is none.
+	static int points(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		s.fields(1, {"kinds", "labels", "points"});
+		const Array kinds = s.name_list(1, "kinds", 64, true);
+		const Array labels = s.name_list(1, "labels", 64, false);
+		s.field(1, "points"); const int count = s.array(-1, 16384 - s.point_count);
+		s.require(count > 0, "points requires at least one point");
+		Vector<uint8_t> bytes; bytes.resize(size_t(count) * 12 * sizeof(float));
+		float *values = reinterpret_cast<float *>(bytes.ptrw());
+		const int list = lua_gettop(p_state);
+		for (int i = 0; i < count; ++i) {
+			lua_rawgeti(p_state, list, i + 1); const int item = lua_gettop(p_state);
+			s.fields(item, {"kind", "habitat", "position", "normal", "radius"});
+			const double kind = s.number_field(item, "kind", 0, 1, kinds.size());
+			const double habitat = s.number_field(item, "habitat", 0, 0, labels.size());
+			s.require(kind >= 1 && kind == std::floor(kind) && habitat == std::floor(habitat), "point kind and habitat must be integer indices");
+			const Vector3 position = s.vector_field(item, "position", Vector3());
+			Vector3 normal = s.vector_field(item, "normal", Vector3(0, 1, 0));
+			s.require(normal.length() > 1e-6, "point normal must be nonzero"); normal.normalize();
+			const float row[12] = {float(position.x), float(position.y), float(position.z), float(s.number_field(item, "radius", .25, 0, 64)),
+				float(normal.x), float(normal.y), float(normal.z), float(kind), float(habitat), 0, 0, 0};
+			std::memcpy(values + size_t(i) * 12, row, sizeof(row));
+			lua_settop(p_state, list);
+		}
+		lua_pop(p_state, 1);
+		s.point_count += count;
+		Ref<Image> image = Image::create_from_data(3, count, false, Image::FORMAT_RGBAF, bytes);
+		s.require(image.is_valid() && !image->is_empty(), "could not create point set");
+		Dictionary meta; meta["schema"] = 1; meta["kind"] = "points"; meta["kinds"] = kinds; meta["labels"] = labels;
+		image->set_meta("veya_field", meta);
+		return s.push_resource(image);
+	}
 	static int input(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
 		String name = s.string(1);
@@ -1096,7 +1249,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -1142,9 +1295,9 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 5; result["operation"] = "run-recipe";
+	result["api_version"] = 6; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }
@@ -1208,7 +1361,14 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		}
 		Ref<Resource> resource = ResourceLoader::load(path);
 		Ref<Mesh> mesh = resource; Ref<Material> material = resource; Ref<PackedScene> scene = resource; Ref<Shader> shader = resource; Ref<Texture2D> texture = resource;
-		if (mesh.is_null() && material.is_null() && scene.is_null() && shader.is_null() && texture.is_null()) return reject(r_result, "recipe inputs must be Mesh, Material, PackedScene, Shader or Texture2D resources");
+		Ref<Image> raster = resource;
+		if (raster.is_valid()) {
+			// Only Cooker-authored fields/point sets; arbitrary Images stay rejected.
+			const Dictionary meta = raster->get_meta("veya_field", Dictionary());
+			Recipe::FieldView view;
+			if (String(meta.get("kind", "")) == "field" && Recipe::decode_field(raster, view) != nullptr) return reject(r_result, "invalid field input");
+			if (String(meta.get("kind", "")) != "field" && String(meta.get("kind", "")) != "points") return reject(r_result, "Image inputs must be Cooker fields or point sets");
+		} else if (mesh.is_null() && material.is_null() && scene.is_null() && shader.is_null() && texture.is_null()) return reject(r_result, "recipe inputs must be Mesh, Material, PackedScene, Shader, Texture2D or field resources");
 		// Shader includes are not all exposed by ResourceLoader's dependency list.
 		// Resolve them through the same bounded collector used by pack jobs.
 		HashSet<ObjectID> visited;
@@ -1268,6 +1428,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	effect_stats["layers"] = recipe.effect_layers; effect_stats["particle_systems"] = recipe.effect_particle_systems;
 	effect_stats["declared_particles"] = recipe.effect_particles; effect_stats["textures"] = recipe.effect_textures;
 	r_result["effect"] = effect_stats;
+	r_result["field_cells"] = recipe.field_cells; r_result["points"] = recipe.point_count;
 	return OK;
 }
 }

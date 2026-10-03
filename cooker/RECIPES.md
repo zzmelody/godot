@@ -1,4 +1,4 @@
-# Cooker Luau recipe API v4
+# Cooker Luau recipe API v6
 
 Veya GI additions: `atmosphere` accepts `sdfgi_enabled`, `sdfgi_cascades`
 (4/6/8), `sdfgi_cell_size` (.25..8), `sdfgi_occlusion`, `sdfgi_read_sky`,
@@ -107,6 +107,16 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 | `camera_attributes({...})` | CameraAttributesPractical with bounded fixed exposure, near/far DOF and typed Veya camera-profile metadata. Configuration is authored in Luau; there are no Nodes or frame callbacks. |
 | `bounds(asset)` | Mesh-local or PackedScene-root-local `{min={x,y,z},max={x,y,z}}`. PackedScene bounds include transformed MeshInstance3D and MultiMeshInstance3D descendants. |
 | `random()` | Seeded xorshift32 value in `[0,1)`. |
+| `field({channels={...},width=,height=,origin={x,z},cell=,data={...},labels={...}})` | Float raster (v6). One to four unique ASCII-identifier channels, 2..1024 cells per side, `cell` .05..64 metres, row-major (z rows, x columns) channel-interleaved finite `data`. Optional `labels` (<= 64 identifiers) name categorical values such as habitat ids. Serialized as an `Image` (`FORMAT_RF`..`RGBAF`, no mipmaps) with typed `veya_field` metadata; at most 4,194,304 cells per recipe. |
+| `sample(field, x, z)` | Bilinear, edge-clamped world-space sample of a recipe-created or declared-input field; returns one number per channel. |
+| `field_info(field)` | `{width,height,cell,origin={x,z},channels={...},labels={...}}`. |
+| `points({kinds={...},labels={...},points={{kind=,habitat=,position=,normal=,radius=},...}})` | Point set (v6), at most 16,384 per recipe. `kind` is a 1-based index into `kinds`; `habitat` is 0 (none) or a 1-based index into `labels`; normal defaults to up and is normalized; radius 0..64. Stored as a three-column `FORMAT_RGBAF` `Image`, one row per point: `(x,y,z,radius)`, `(nx,ny,nz,kind)`, `(habitat,0,0,0)`. |
+
+Fields and point sets are data resources for later recipes and the Veya host;
+they are never rendered. A recipe input `Image` is admitted only when it carries
+valid `veya_field` metadata. `validate-resource` reports that metadata as
+`field`. Repeating a recipe with the same source, seed and output path produces
+identical bytes.
 
 Coordinates must be finite in `[-100000,100000]`. Arrays are dense, without named
 fields. Instance position defaults to zero, Euler rotation to zero (radians,

@@ -772,6 +772,15 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			r_result["depth"] = heightmap->get_map_depth();
 			r_result["sample_count"] = heightmap->get_map_data().size();
 		}
+		Ref<Image> raster = resource;
+		if (raster.is_valid()) {
+			// Recipe fields/point sets: report their typed metadata, reject other Images.
+			const Variant meta = raster->get_meta("veya_field", Variant());
+			ERR_FAIL_COND_V(meta.get_type() != Variant::DICTIONARY || raster->is_empty(), ERR_INVALID_DATA);
+			r_result["field"] = meta;
+			r_result["width"] = raster->get_width();
+			r_result["height"] = raster->get_height();
+		}
 		Ref<Texture2D> texture = resource;
 		if (texture.is_valid()) {
 			r_result["width"] = texture->get_width();
