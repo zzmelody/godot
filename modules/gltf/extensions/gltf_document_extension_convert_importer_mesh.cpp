@@ -63,11 +63,13 @@ MeshInstance3D *GLTFDocumentExtensionConvertImporterMesh::convert_importer_mesh_
 	_copy_meta(p_importer_mesh_instance_3d, mesh_instance_node_3d);
 	// Convert the mesh data in the mesh resource.
 	Ref<ImporterMesh> importer_mesh = p_importer_mesh_instance_3d->get_mesh();
-	if (importer_mesh.is_valid()) {
+	// Geometry-discarded imports leave mesh instances with no surfaces. Those have no
+	// mesh to convert, and materializing one makes ImporterMesh::get_mesh() error.
+	if (importer_mesh.is_valid() && importer_mesh->get_surface_count() > 0) {
 		Ref<ArrayMesh> array_mesh = importer_mesh->get_mesh();
 		mesh_instance_node_3d->set_mesh(array_mesh);
 		_copy_meta(importer_mesh.ptr(), array_mesh.ptr());
-	} else {
+	} else if (importer_mesh.is_null()) {
 		WARN_PRINT("glTF: ImporterMeshInstance3D does not have a valid mesh. This should not happen. Continuing anyway.");
 	}
 	return mesh_instance_node_3d;

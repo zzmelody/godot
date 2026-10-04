@@ -1932,9 +1932,11 @@ void FBXDocument::_import_animation(Ref<FBXState> p_state, AnimationPlayer *p_an
 		ERR_CONTINUE(mesh.is_null());
 		Ref<ImporterMesh> importer_mesh = mesh->get_mesh();
 		// Meshes imported with IMPORT_FLAG_DISCARD_MESHES_AND_MATERIALS keep no geometry,
-		// so they have nothing to bake blend shape tracks from. Checking the surface count
-		// avoids materializing an empty ArrayMesh, which ImporterMesh::get_mesh() reports as an error.
-		ERR_CONTINUE(importer_mesh.is_null() || importer_mesh->get_surface_count() == 0);
+		// so they have nothing to bake blend shape tracks from. Skip them quietly: an empty
+		// mesh here is expected, and materializing it makes ImporterMesh::get_mesh() error.
+		if (importer_mesh.is_null() || importer_mesh->get_surface_count() == 0) {
+			continue;
+		}
 		ERR_CONTINUE(importer_mesh->get_mesh().is_null());
 
 		Dictionary mesh_additional_data = mesh->get_additional_data("GODOT_mesh_blend_channels");
