@@ -5818,10 +5818,14 @@ void GLTFDocument::_import_animation(Ref<GLTFState> p_state, AnimationPlayer *p_
 			ERR_CONTINUE(gltf_node->mesh < 0 || gltf_node->mesh >= p_state->meshes.size());
 			Ref<GLTFMesh> mesh = p_state->meshes[gltf_node->mesh];
 			ERR_CONTINUE(mesh.is_null());
-			ERR_CONTINUE(mesh->get_mesh().is_null());
-			ERR_CONTINUE(mesh->get_mesh()->get_mesh().is_null());
+			Ref<ImporterMesh> importer_mesh = mesh->get_mesh();
+			// Meshes imported with IMPORT_FLAG_DISCARD_MESHES_AND_MATERIALS keep no geometry,
+			// so they have nothing to bake blend shape tracks from. Checking the surface count
+			// avoids materializing an empty ArrayMesh, which ImporterMesh::get_mesh() reports as an error.
+			ERR_CONTINUE(importer_mesh.is_null() || importer_mesh->get_surface_count() == 0);
+			ERR_CONTINUE(importer_mesh->get_mesh().is_null());
 
-			const String blend_path = String(mesh_instance_node_path) + ":" + String(mesh->get_mesh()->get_blend_shape_name(i));
+			const String blend_path = String(mesh_instance_node_path) + ":" + String(importer_mesh->get_blend_shape_name(i));
 
 			const int track_idx = animation->get_track_count();
 			animation->add_track(Animation::TYPE_BLEND_SHAPE);

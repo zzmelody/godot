@@ -1930,8 +1930,12 @@ void FBXDocument::_import_animation(Ref<FBXState> p_state, AnimationPlayer *p_an
 
 		Ref<GLTFMesh> mesh = p_state->meshes[node->mesh];
 		ERR_CONTINUE(mesh.is_null());
-		ERR_CONTINUE(mesh->get_mesh().is_null());
-		ERR_CONTINUE(mesh->get_mesh()->get_mesh().is_null());
+		Ref<ImporterMesh> importer_mesh = mesh->get_mesh();
+		// Meshes imported with IMPORT_FLAG_DISCARD_MESHES_AND_MATERIALS keep no geometry,
+		// so they have nothing to bake blend shape tracks from. Checking the surface count
+		// avoids materializing an empty ArrayMesh, which ImporterMesh::get_mesh() reports as an error.
+		ERR_CONTINUE(importer_mesh.is_null() || importer_mesh->get_surface_count() == 0);
+		ERR_CONTINUE(importer_mesh->get_mesh().is_null());
 
 		Dictionary mesh_additional_data = mesh->get_additional_data("GODOT_mesh_blend_channels");
 		Vector<int> blend_channels = mesh_additional_data["blend_channels"];
@@ -1948,7 +1952,7 @@ void FBXDocument::_import_animation(Ref<FBXState> p_state, AnimationPlayer *p_an
 			weights.times = blend_track["times"];
 			weights.values = blend_track["values"];
 
-			const String blend_path = String(mesh_instance_node_path) + ":" + String(mesh->get_mesh()->get_blend_shape_name(i));
+			const String blend_path = String(mesh_instance_node_path) + ":" + String(importer_mesh->get_blend_shape_name(i));
 			const int track_idx = animation->get_track_count();
 			animation->add_track(Animation::TYPE_BLEND_SHAPE);
 			animation->track_set_path(track_idx, blend_path);
