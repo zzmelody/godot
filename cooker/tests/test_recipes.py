@@ -424,6 +424,11 @@ assert(not pcall(function() math.sin = nil end))
                 report = self.recipe(code, limits={"time_ms": 10}, success=False)
                 self.assertIn("budget", report["message"])
 
+    def test_recipes_have_no_default_deadline(self):
+        # Several seconds of pure Luau: beyond the former 2 s default deadline.
+        report = self.recipe('local n=0 for i=1,80000000 do n=n+i%7 end assert(n>0) ' + BOX)
+        self.assertEqual(report["limits"]["time_ms"], 0)
+
     def test_vm_memory_failure_is_sticky(self):
         report = self.recipe('pcall(function() return string.rep("x", 8*1024*1024) end); ' + BOX,
                              limits={"memory_mb": 1}, success=False)
@@ -464,7 +469,7 @@ assert(not pcall(function() math.sin = nil end))
 
     def test_job_paths_inputs_and_limits_are_validated(self):
         for fields in ({"seed": -1}, {"seed": True}, {"seed": 1.5}, {"seed": 2**32},
-                       {"limits": {"time_ms": 2001}}, {"limits": {"memory_mb": 0}},
+                       {"limits": {"time_ms": 0}}, {"limits": {"memory_mb": 0}}, {"limits": {"memory_mb": 33}},
                        {"limits": {"extra": 2}}, {"parameters": []}, {"parameters": {"v": None}},
                        {"inputs": {"bad": "res://recipe-0.luau"}}, {"inputs": {"bad": "user://secret.res"}},
                        {"unknown": 1}, {"output": "res://content/worlds/fixture/generated/../escape.res"},

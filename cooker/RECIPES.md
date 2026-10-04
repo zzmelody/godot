@@ -194,12 +194,13 @@ resolution and use a continuous 900-second drift cycle, matching TIME rollover.
 
 ## Limits and publication
 
-Job limits may only **lower** these positive integer defaults:
+Job limits may only **lower** these positive integer defaults. `time_ms` has no
+default deadline (v6, 2026-10-04); a job may set one (1..86,400,000 ms):
 
 | Key | Default |
 | --- | --- |
 | `memory_mb` | 32 MiB VM allocator memory |
-| `time_ms` | 2000 ms of recipe execution |
+| `time_ms` | none (opt-in execution deadline) |
 | `max_resources` | 256 handles |
 | `input_mb` | 256 MiB declared input dependency bytes |
 | `max_vertices` | 500000 mesh vertices across requested handles |

@@ -56,7 +56,7 @@ constexpr int SOURCE_BYTES = 64 * 1024;
 
 struct Limits {
 	int memory_mb = 32;
-	int time_ms = 2000;
+	int time_ms = 0; // 0 = no execution deadline; a job may opt in with limits.time_ms.
 	int max_vertices = 500000;
 	int max_instances = 10000;
 	int max_resources = 256;
@@ -81,6 +81,7 @@ struct Recipe {
 	uint64_t interrupts = 0;
 	uint32_t random_state = 1, seed_value = 1;
 	std::chrono::steady_clock::time_point deadline;
+	bool timed = false;
 	std::vector<Ref<Resource>> resources;
 	Dictionary parameters;
 	Dictionary inputs;
@@ -114,12 +115,12 @@ struct Recipe {
 	void check_budget() {
 		require(!memory_failed, "recipe memory limit exceeded");
 		require(!fault, "recipe has a previous host API failure");
-		require(std::chrono::steady_clock::now() < deadline, "recipe execution budget exceeded");
+		require(!timed || std::chrono::steady_clock::now() < deadline, "recipe execution budget exceeded");
 	}
 	static void interrupt(lua_State *p_state, int p_gc) {
 		if (p_gc >= 0) return;
 		auto &s = self(p_state);
-		if (++s.interrupts > 2000000 || std::chrono::steady_clock::now() >= s.deadline || s.memory_failed || s.fault) {
+		if ((s.timed && std::chrono::steady_clock::now() >= s.deadline) || s.memory_failed || s.fault) {
 			if (!s.fault) s.fault = s.memory_failed ? "recipe memory limit exceeded" : "recipe execution budget exceeded";
 			// Never resume a broken VM. pcall/xpcall cannot swallow this budget fault.
 			if (lua_isyieldable(p_state)) lua_break(p_state);
@@ -1348,17 +1349,19 @@ struct Recipe {
 			lua_callbacks(L)->userdata = this;
 			int status = lua_cpcall(L, setup, nullptr);
 			if (status == LUA_OK) status = luau_load(L, "=cooker_recipe", bytecode.data(), bytecode.size(), 0);
-			deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.time_ms);
+			timed = limits.time_ms > 0;
+			if (timed) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.time_ms);
 			lua_callbacks(L)->interrupt = interrupt;
 			if (status == LUA_OK) status = lua_resume(L, nullptr, 0);
 			if (status == LUA_OK && !fault && !memory_failed) {
 				if (lua_gettop(L) != 1 || !lua_touserdatatagged(L, 1, HANDLE_TAG)) fault = "recipe must return exactly one Cooker asset handle";
 				else result = handle(1);
 			}
-			if (status == LUA_OK && !fault && !memory_failed && std::chrono::steady_clock::now() < deadline) return true;
+			const bool expired = timed && std::chrono::steady_clock::now() >= deadline;
+			if (status == LUA_OK && !fault && !memory_failed && !expired) return true;
 			if (memory_failed) r_error = "recipe memory limit exceeded";
 			else if (fault) r_error = fault;
-			else if (std::chrono::steady_clock::now() >= deadline) r_error = "recipe execution budget exceeded";
+			else if (expired) r_error = "recipe execution budget exceeded";
 			else r_error = lua_type(L, -1) == LUA_TSTRING ? String::utf8(lua_tostring(L, -1)).left(1024) : String("recipe failed");
 		} catch (const std::exception &error) { r_error = String::utf8(error.what()).left(1024); }
 		return false;
@@ -1415,7 +1418,8 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		else if (name == "output_mb") target = &recipe.limits.output_mb;
 		if (!target) return reject(r_result, "unknown recipe limit: " + name);
 		Variant value = limits[*key];
-		if ((value.get_type() != Variant::INT && value.get_type() != Variant::FLOAT) || !std::isfinite(double(value)) || double(value) < 1 || double(value) > *target || double(value) != std::floor(double(value))) return reject(r_result, "limits may only lower positive integer defaults");
+		const bool unbounded = target == &recipe.limits.time_ms; // Default is no deadline.
+		if ((value.get_type() != Variant::INT && value.get_type() != Variant::FLOAT) || !std::isfinite(double(value)) || double(value) < 1 || (!unbounded && double(value) > *target) || double(value) > 86400000 || double(value) != std::floor(double(value))) return reject(r_result, "limits may only lower positive integer defaults");
 		*target = int(value);
 	}
 	Dictionary inputs = p_job.get("inputs", Dictionary());
