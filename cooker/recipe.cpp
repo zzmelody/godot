@@ -1419,7 +1419,8 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		*target = int(value);
 	}
 	Dictionary inputs = p_job.get("inputs", Dictionary());
-	if (inputs.size() > 32) return reject(r_result, "at most 32 declared inputs are supported");
+	// Byte (input_mb) and VM budgets still bound what the declared inputs load.
+	if (inputs.size() > 64) return reject(r_result, "at most 64 declared inputs are supported");
 	HashSet<String> inspected_inputs;
 	uint64_t input_bytes = 0;
 	for (const Variant *key = inputs.next(); key; key = inputs.next(key)) {

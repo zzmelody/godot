@@ -115,6 +115,8 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 | `children(scene)` | Top-level Node3D children of a PackedScene handle (<= 4096): `{name,position,basis={x,y,z columns},min,max}` in root space; bounds include the child's transformed meshes and MultiMeshes. |
 | `parts(scene)` | 1..64 MeshInstance3D descendants and MultiMesh instances as `{mesh,material,position,basis}` in root space, so cooked models can be batched into MultiMesh by `scene()`. `material` is the node or single-surface override, otherwise absent (the mesh's surface materials apply). |
 
+A job declares at most 64 `inputs` (v6; previously 32), still bounded by `input_mb`.
+
 Fields and point sets are data resources for later recipes and the Veya host;
 they are never rendered. A recipe input `Image` is admitted only when it carries
 valid `veya_field` metadata. `validate-resource` reports that metadata as

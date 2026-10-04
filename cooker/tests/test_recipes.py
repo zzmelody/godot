@@ -326,6 +326,14 @@ return cooker.points({kinds={"perch","rest"},labels={"wetland"},points={
             with self.subTest(code=code[:60]):
                 self.recipe(code, success=False)
 
+    def test_declared_input_count_limit(self):
+        mesh = self.recipe()
+        many = {f"m{i}": mesh["output"] for i in range(64)}
+        self.recipe('return cooker.scene({{asset=cooker.input("m63")}})', inputs=many,
+                    output="res://content/worlds/fixture/generated/inputs/64.scn")
+        many["m64"] = mesh["output"]
+        self.recipe('return cooker.primitive("box",{})', inputs=many, success=False)
+
     def test_children_and_parts_expose_cooked_layouts(self):
         model = self.recipe('''local b=cooker.primitive("box",{size={2,4,2}})
 local m=cooker.material({roughness=.5})
