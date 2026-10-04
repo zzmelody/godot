@@ -1047,6 +1047,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			command = "invalid";
 			ERR_PRINT("Cooker requires an existing project.godot in --path.");
 		}
+		/*<<----- VEYA_COOKER: shaders may declare project's global uniforms (wind, wetness). */
+		renderer->global_shader_parameters_load_settings(false);
+		/*>>----- VEYA_COOKER */
 	}
 	return OK;
 }
