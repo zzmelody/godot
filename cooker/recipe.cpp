@@ -76,6 +76,7 @@ struct Recipe {
 	bool memory_failed = false;
 	size_t allocated = 0, peak_memory = 0;
 	int vertices = 0, instances = 0;
+	HashSet<ObjectID> accounted_meshes;
 	int effect_layers = 0, effect_particle_systems = 0, effect_particles = 0, effect_textures = 0;
 	int field_cells = 0, point_count = 0;
 	uint64_t interrupts = 0;
@@ -280,7 +281,8 @@ struct Recipe {
 		check_budget();
 		require(p_resource.is_valid() && resources.size() < size_t(limits.max_resources), "asset resource limit exceeded");
 		Ref<Mesh> mesh = p_resource;
-		if (mesh.is_valid()) {
+		if (mesh.is_valid() && !accounted_meshes.has(mesh->get_instance_id())) {
+			accounted_meshes.insert(mesh->get_instance_id());
 			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
 				vertices += mesh->surface_get_array_len(surface);
 				require(vertices <= limits.max_vertices, "mesh vertex budget exceeded");
@@ -307,16 +309,18 @@ struct Recipe {
 		*static_cast<size_t *>(lua_newuserdatatagged(L, sizeof(size_t), HANDLE_TAG)) = id;
 		return 1;
 	}
-	static int count_vertices(Node *p_node) {
+	int count_vertices(Node *p_node) {
 		int count = 0;
 		MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node);
-		if (mesh_instance && mesh_instance->get_mesh().is_valid()) {
+		if (mesh_instance && mesh_instance->get_mesh().is_valid() && !accounted_meshes.has(mesh_instance->get_mesh()->get_instance_id())) {
 			Ref<Mesh> mesh = mesh_instance->get_mesh();
+			accounted_meshes.insert(mesh->get_instance_id());
 			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) count += mesh->surface_get_array_len(surface);
 		}
 		MultiMeshInstance3D *multi_instance = Object::cast_to<MultiMeshInstance3D>(p_node);
-		if (multi_instance && multi_instance->get_multimesh().is_valid() && multi_instance->get_multimesh()->get_mesh().is_valid()) {
+		if (multi_instance && multi_instance->get_multimesh().is_valid() && multi_instance->get_multimesh()->get_mesh().is_valid() && !accounted_meshes.has(multi_instance->get_multimesh()->get_mesh()->get_instance_id())) {
 			Ref<Mesh> mesh = multi_instance->get_multimesh()->get_mesh();
+			accounted_meshes.insert(mesh->get_instance_id());
 			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) count += mesh->surface_get_array_len(surface);
 		}
 		for (int i = 0; i < p_node->get_child_count(); ++i) count += count_vertices(p_node->get_child(i));

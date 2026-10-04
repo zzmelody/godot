@@ -46,6 +46,7 @@
 #include "scene/resources/3d/height_map_shape_3d.h"
 #include "scene/resources/3d/importer_mesh.h"
 #include "scene/resources/multimesh.h"
+#include "scene/resources/surface_tool.h"
 #include "scene/resources/3d/navigation_mesh_source_geometry_data_3d.h"
 #include "scene/resources/navigation_mesh.h"
 #include "servers/navigation_3d/navigation_server_3d.h"
@@ -478,6 +479,40 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		}
 		// Unwrap rebuilds surfaces; generate LODs after the final vertex/index layout.
 		mesh->generate_lods(60.0, Array());
+		// A repeated forest model can start at an imported mesh LOD, while
+		// retaining its source UVs, normals, materials and complete silhouette.
+		// Compact the selected indices: retaining the LOD0 vertex buffer defeats
+		// the memory budget even when the renderer draws fewer triangles.
+		if (job.has("base_lod")) {
+			const Variant requested = job["base_lod"];
+			ERR_FAIL_COND_V((requested.get_type() != Variant::INT && requested.get_type() != Variant::FLOAT) ||
+					!std::isfinite(double(requested)) || double(requested) < 0 || double(requested) > 8 ||
+					double(requested) != std::floor(double(requested)), ERR_INVALID_PARAMETER);
+			const int level = int(requested);
+			if (level > 0) {
+				ERR_FAIL_COND_V(mesh->get_blend_shape_count() != 0, ERR_INVALID_DATA);
+				Ref<ArrayMesh> compact; compact.instantiate();
+				Array levels;
+				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
+					ERR_FAIL_COND_V(mesh->get_surface_primitive_type(surface) != Mesh::PRIMITIVE_TRIANGLES, ERR_INVALID_DATA);
+					Array arrays = mesh->get_surface_arrays(surface);
+					ERR_FAIL_COND_V(!PackedInt32Array(arrays[Mesh::ARRAY_BONES]).is_empty(), ERR_INVALID_DATA);
+					const int available = mesh->get_surface_lod_count(surface);
+					const int selected = MIN(level, available);
+					if (selected > 0) arrays[Mesh::ARRAY_INDEX] = mesh->get_surface_lod_indices(surface, selected - 1);
+					Ref<SurfaceTool> tool; tool.instantiate();
+					tool->create_from_arrays(arrays, Mesh::PRIMITIVE_TRIANGLES);
+					tool->deindex(); tool->index(); tool->set_material(mesh->get_surface_material(surface));
+					ERR_FAIL_COND_V(tool->commit(compact).is_null(), ERR_CANT_CREATE);
+					compact->surface_set_name(surface, mesh->get_surface_name(surface));
+					levels.push_back(selected);
+				}
+				mesh = ImporterMesh::from_mesh(compact);
+				ERR_FAIL_COND_V(mesh.is_null(), ERR_CANT_CREATE);
+				mesh->optimize_indices(); mesh->generate_lods(60.0, Array());
+				r_result["base_lod_surfaces"] = levels;
+			}
+		}
 		mesh->create_shadow_mesh();
 		Ref<ArrayMesh> result = mesh->get_mesh();
 		ERR_FAIL_COND_V(result.is_null(), ERR_CANT_CREATE);
@@ -486,6 +521,13 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			lod_count += mesh->get_surface_lod_count(i);
 		}
 		r_result["lod_count"] = lod_count;
+		int vertex_count = 0, triangle_count = 0;
+		for (int surface = 0; surface < result->get_surface_count(); ++surface) {
+			vertex_count += result->surface_get_array_len(surface);
+			triangle_count += result->surface_get_array_index_len(surface) / 3;
+		}
+		r_result["vertices"] = vertex_count;
+		r_result["triangles"] = triangle_count;
 		String collision_output = job.get("collision_output", "");
 		if (!collision_output.is_empty()) {
 			error = CookerFiles::check_path(collision_output, true);
