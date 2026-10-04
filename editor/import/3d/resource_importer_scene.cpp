@@ -2754,7 +2754,9 @@ Node *ResourceImporterScene::_generate_meshes(Node *p_node, const Dictionary &p_
 		mesh_node->merge_meta_from(src_mesh_node);
 
 		Ref<ImporterMesh> importer_mesh = src_mesh_node->get_mesh();
-		if (importer_mesh.is_valid()) {
+		// Geometry-discarded imports leave mesh instances with no surfaces. There is
+		// nothing to generate, and materializing one makes ImporterMesh::get_mesh() error.
+		if (importer_mesh.is_valid() && importer_mesh->get_surface_count() > 0) {
 			Ref<ArrayMesh> mesh;
 			if (!importer_mesh->has_mesh()) {
 				//do mesh processing
