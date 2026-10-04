@@ -466,7 +466,17 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		HashSet<String> dependencies;
 		error = CookerFiles::collect(source, dependencies);
 		ERR_FAIL_COND_V(error != OK, error);
-		Ref<Mesh> source_mesh = ResourceLoader::load(source);
+		Ref<Resource> source_resource = ResourceLoader::load(source);
+		Ref<Mesh> source_mesh = source_resource;
+		if (source_mesh.is_null()) {
+			Ref<PackedScene> source_scene = source_resource;
+			ERR_FAIL_COND_V(source_scene.is_null() || !job.has("source_node") || job["source_node"].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+			Node *root = source_scene->instantiate();
+			ERR_FAIL_NULL_V(root, ERR_CANT_CREATE);
+			MeshInstance3D *instance = Object::cast_to<MeshInstance3D>(root->find_child(job["source_node"], true, false));
+			if (instance) source_mesh = instance->get_mesh();
+			memdelete(root);
+		}
 		ERR_FAIL_COND_V(source_mesh.is_null(), ERR_INVALID_DATA);
 		Ref<ImporterMesh> mesh = ImporterMesh::from_mesh(source_mesh);
 		ERR_FAIL_COND_V(mesh.is_null(), ERR_INVALID_DATA);
@@ -511,6 +521,26 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 				ERR_FAIL_COND_V(mesh.is_null(), ERR_CANT_CREATE);
 				mesh->optimize_indices(); mesh->generate_lods(60.0, Array());
 				r_result["base_lod_surfaces"] = levels;
+			}
+		}
+		if (job.has("material_overrides")) {
+			ERR_FAIL_COND_V(job["material_overrides"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+			const Dictionary overrides = job["material_overrides"];
+			for (const Variant &key : overrides.keys()) {
+				ERR_FAIL_COND_V(key.get_type() != Variant::STRING || overrides[key].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+				const String name = key, path = overrides[key];
+				error = CookerFiles::collect(path, dependencies);
+				ERR_FAIL_COND_V(error != OK, error);
+				Ref<Material> material = ResourceLoader::load(path);
+				ERR_FAIL_COND_V(material.is_null(), ERR_INVALID_DATA);
+				bool matched = false;
+				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
+					const Ref<Material> original = mesh->get_surface_material(surface);
+					if (name == itos(surface) || (original.is_valid() && name == original->get_name())) {
+						mesh->set_surface_material(surface, material); matched = true;
+					}
+				}
+				ERR_FAIL_COND_V_MSG(!matched, ERR_INVALID_PARAMETER, "Mesh material override did not match a surface: " + name);
 			}
 		}
 		mesh->create_shadow_mesh();
