@@ -79,6 +79,8 @@ String command;
 String job_path;
 String pipeline_path;
 bool skip_pipeline_packs = false;
+bool plan_pipeline_only = false;
+String expected_pipeline_plan;
 bool initialized = false;
 
 Dictionary capabilities() {
@@ -90,6 +92,7 @@ Dictionary capabilities() {
 	result["script_languages"] = ScriptServer::get_language_count();
 	result["recipe_runtime"] = CookerRecipe::capabilities();
 	result["pipeline_runtime"] = CookerPipeline::capabilities();
+	result["pipeline_plan"] = true;
 	Array operations;
 	for (const char *name : { "import-scene", "import-texture", "stage-source", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions", "bake-lightmap" }) {
 		operations.push_back(name);
@@ -913,6 +916,26 @@ Error execute_pipeline(Dictionary &r_result) {
 	Error error = CookerPipeline::load(pipeline_path, steps, description);
 	if(error!=OK)r_result=description;
 	ERR_FAIL_COND_V(error != OK, error);
+	// Planning evaluates only the data-only Luau declarations. It never loads
+	// generated resources or prepares cache entries (which may delete outputs).
+	Dictionary plan;
+	plan["source_sha256"] = description["source_sha256"];
+	plan["dependencies"] = description["dependencies"];
+	plan["steps"] = steps;
+	const String plan_sha256 = JSON::stringify(plan, "", true).sha256_text();
+	description["plan_sha256"] = plan_sha256;
+	if (plan_pipeline_only) {
+		r_result = description;
+		r_result["planned"] = true;
+		r_result["steps"] = steps;
+		return OK;
+	}
+	if (!expected_pipeline_plan.is_empty() && expected_pipeline_plan != plan_sha256) {
+		r_result = description;
+		r_result["plan_changed"] = true;
+		r_result["message"] = "Pipeline declarations changed after scheduling.";
+		return ERR_BUSY;
+	}
 	Array reports;
 	for (int index = 0; index < steps.size(); ++index) {
 		Dictionary job = steps[index];
@@ -1090,6 +1113,10 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			skip_pipeline_packs = true;
 		} else if (arg == "--force") {
 			CookerCache::force_rebuild = true;
+		} else if (arg == "--plan") {
+			plan_pipeline_only = true;
+		} else if (arg == "--expected-plan" && i + 1 < argc) {
+			expected_pipeline_plan = String::utf8(argv[++i]);
 		} else if ((arg == "--path" || arg == "--job" || arg == "--pipeline") && i + 1 < argc) {
 			String value = String::utf8(argv[++i]);
 			if (arg == "--path") {
@@ -1109,6 +1136,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		}
 	}
 	if (command == "job" || command == "pipeline") {
+		if (command != "pipeline" && (plan_pipeline_only || !expected_pipeline_plan.is_empty())) {
+			command = "invalid";
+			ERR_PRINT("--plan and --expected-plan require --pipeline.");
+			return OK;
+		}
 		if (command != "pipeline" && skip_pipeline_packs) {
 			command = "invalid";
 			ERR_PRINT("--no-pack requires --pipeline.");
