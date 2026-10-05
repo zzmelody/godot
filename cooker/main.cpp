@@ -692,6 +692,24 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		error = image->load(source);
 		ERR_FAIL_COND_V(error != OK, error);
 		bool normal = job.get("normal_map", false);
+		// Source scans remain immutable; their runtime resolution belongs to the
+		// Luau pipeline. Resize before mip generation and GPU compression.
+		if (job.has("max_texture_dimension")) {
+			const Variant value = job["max_texture_dimension"];
+			ERR_FAIL_COND_V(value.get_type() != Variant::INT && value.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
+			const double number = value;
+			ERR_FAIL_COND_V(!Math::is_finite(number) || number != Math::floor(number) || number < 256 || number > 8192, ERR_INVALID_PARAMETER);
+			const int maximum = int(number);
+			ERR_FAIL_COND_V((maximum & (maximum - 1)) != 0, ERR_INVALID_PARAMETER);
+			r_result["source_width"] = image->get_width();
+			r_result["source_height"] = image->get_height();
+			if (MAX(image->get_width(), image->get_height()) > maximum) {
+				const double ratio = double(maximum) / MAX(image->get_width(), image->get_height());
+				image->resize(MAX(1, int(Math::round(image->get_width() * ratio))), MAX(1, int(Math::round(image->get_height() * ratio))), Image::INTERPOLATE_LANCZOS);
+				if (normal) image->normalize();
+			}
+			r_result["max_texture_dimension"] = maximum;
+		}
 		if (bool(job.get("mipmaps", true))) {
 			error = image->generate_mipmaps(normal);
 			ERR_FAIL_COND_V(error != OK, error);

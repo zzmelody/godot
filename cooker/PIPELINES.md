@@ -53,6 +53,10 @@ return {
 ```
 
 All native job operations listed in [the Cooker README](README.md) are supported.
+`import-texture` optionally accepts `max_texture_dimension`, a power of two from
+256 through 8192. Larger immutable source images are resized proportionally
+before mip generation and compression. With `normal_map=true`, resized normals
+are normalized. Reports retain source dimensions and the selected runtime cap.
 Humanoid animation production is described by project Lua as a `make-bone-map`
 step followed by one or more `retarget-animations` steps. The latter enumerates
 only `.fbx` files directly inside its declared `source_dir`, sorts them, rejects
