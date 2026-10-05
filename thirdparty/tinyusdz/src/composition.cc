@@ -1328,6 +1328,7 @@ static nonstd::optional<Prim> ReconstructPrimFromPrimSpec(
     /*typed_prim.primChildrenNames() = primChildren;*/                   \
     value::Value primdata = typed_prim;                                  \
     Prim prim(primspec.name(), primdata);                                \
+    prim.specifier() = primspec.specifier();                             \
     prim.prim_type_name() = primspec.typeName();                         \
     /* also add primChildren to Prim */                                  \
     /* prim.metas().primChildren = primChildren; */                      \
@@ -1350,6 +1351,7 @@ static nonstd::optional<Prim> ReconstructPrimFromPrimSpec(
     // typed_prim.primChildrenNames() = primChildren;
     value::Value primdata = typed_prim;
     Prim prim(primspec.name(), primdata);
+    prim.specifier() = primspec.specifier();
     prim.prim_type_name() = primspec.typeName();
     /* also add primChildren to Prim */
     // prim.metas().primChildren = primChildren;
