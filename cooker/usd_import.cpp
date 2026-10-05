@@ -120,6 +120,7 @@ struct Import {
 	std::map<std::string,const XformNode *> nodes;
 	std::map<std::string,std::array<Surface,2>> prototypes;
 	std::array<Surface,2> surfaces;
+	std::set<std::string> library_roots;
 	int prototype_budget=1200,trunk_budget=6000,leaf_budget=40000,instance_count=0;
 	int64_t source_triangles=0;
 	Error skin(const XformNode &node,const u::GeomMesh &mesh,std::vector<u::value::point3f> &points,std::vector<u::value::normal3f> &normals) {
@@ -238,6 +239,7 @@ struct Import {
 	Error visit(const XformNode &node) {
 		if(!node.prim) {for(const auto &child:node.children) {Error e=visit(child);if(e!=OK)return e;}return OK;}
 		const std::string path=node.absolute_path.full_path_name();
+		if(library_roots.count(path))return OK;
 		// Class libraries supply prototype geometry but are not visible objects.
 		if(node.prim->specifier()==u::Specifier::Class)return OK;
 		u::Attribute visibility;std::string visibility_error;
@@ -264,12 +266,22 @@ Error import_scene(const Dictionary &job,Dictionary &result) {
 	HashSet<String> files;Error e=dependencies(source,files);ERR_FAIL_COND_V(e!=OK,e);
 	u::Stage authored;e=load(source,authored,false);ERR_FAIL_COND_V(e!=OK,e);
 	int authored_instances=0;
-	std::function<void(const u::Prim &)> count_instances=[&](const u::Prim &prim) {
+	std::set<std::string> library_roots;
+	std::function<void(const u::Prim &,const std::string &)> count_instances=[&](const u::Prim &prim,const std::string &parent) {
+		const std::string path=parent+"/"+prim.element_name();
 		if(const auto *inst=prim.as<u::PointInstancer>()) {std::vector<int> ids;if(sample(inst->protoIndices,ids))authored_instances+=ids.size();}
-		for(const auto &child:prim.children())count_instances(child);
+		// Some source packages author their reference libraries as `over`, not
+		// `class`. They still only supply instancer prototypes, not scenery.
+		if(path.find("/Prototypes/")!=std::string::npos && prim.metas().references) {
+			for(const auto &reference:prim.metas().references->second)if(reference.asset_path.GetAssetPath().empty()) {
+				const auto target=reference.prim_path.full_path_name();const auto slash=target.rfind('/');
+				if(slash!=std::string::npos && slash>0)library_roots.insert(target.substr(0,slash));
+			}
+		}
+		for(const auto &child:prim.children())count_instances(child,path);
 	};
-	for(const auto &prim:authored.root_prims())count_instances(prim);
-	Import importer;e=load(source,importer.stage,true);ERR_FAIL_COND_V(e!=OK,e);
+	for(const auto &prim:authored.root_prims())count_instances(prim,"");
+	Import importer;importer.library_roots=std::move(library_roots);e=load(source,importer.stage,true);ERR_FAIL_COND_V(e!=OK,e);
 	ERR_FAIL_COND_V(importer.stage.metas().upAxis.get_value()!=u::Axis::Y || importer.stage.metas().metersPerUnit.get_value()!=1.0,ERR_UNAVAILABLE);
 	const Dictionary options=job.get("options",Dictionary());
 	for(const Variant &key:options.keys())ERR_FAIL_COND_V(key!="prototype_triangles" && key!="bark_triangles" && key!="leaf_triangles",ERR_INVALID_PARAMETER);
