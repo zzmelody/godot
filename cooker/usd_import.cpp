@@ -119,7 +119,7 @@ struct Import {
 	u::Stage stage; XformNode hierarchy;
 	std::map<std::string,const XformNode *> nodes;
 	std::map<std::string,std::array<Surface,2>> prototypes;
-	Surface surfaces[2];
+	std::array<Surface,2> surfaces;
 	int prototype_budget=1200,trunk_budget=6000,leaf_budget=40000,instance_count=0;
 	int64_t source_triangles=0;
 	Error skin(const XformNode &node,const u::GeomMesh &mesh,std::vector<u::value::point3f> &points,std::vector<u::value::normal3f> &normals) {
