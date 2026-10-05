@@ -29,8 +29,8 @@ template<class T> bool constant(const u::TypedAttribute<T> &a, T &out) {
 	const auto v = a.get_value(); if (!v) return false; out = *v; return true;
 }
 Transform3D transform(const u::value::matrix4d &m) {
-	Basis b; for (int c=0;c<3;++c) b.set_column(c, Vector3(m[c][0],m[c][1],m[c][2]));
-	return Transform3D(b,Vector3(m[3][0],m[3][1],m[3][2]));
+	Basis b; for (int c=0;c<3;++c) b.set_column(c, Vector3(m.m[c][0],m.m[c][1],m.m[c][2]));
+	return Transform3D(b,Vector3(m.m[3][0],m.m[3][1],m.m[3][2]));
 }
 template<class T> Vector3 vector(const T &v) { return Vector3(v[0],v[1],v[2]); }
 std::vector<u::Path> targets(const u::Relationship &r) {

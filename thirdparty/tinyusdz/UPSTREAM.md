@@ -12,3 +12,6 @@ static USD reader. The explicit sources in `cooker/SCsub` exclude bindings,
 PXR compatibility, sample renderers and external image/audio implementations.
 The upstream Apache 2.0 license and each bundled source's own notices apply.
 This library is absent from editor/template/client targets.
+
+Veya patch: namespace the legacy texture helper declarations to avoid the
+Godot `Texture` class name; no USD reader semantics are changed.

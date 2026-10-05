@@ -28,6 +28,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <utility>
 
+// Veya: unused legacy helper types must not collide with Godot's Texture.
+namespace tinyusdz_legacy {
+
 enum ColorSpace {
   COLORSPACE_NONE, // No explicit colorspace
   COLORSPACE_SRGB,
@@ -66,3 +69,4 @@ struct TextureSampler {
 
 };
 
+} // namespace tinyusdz_legacy
