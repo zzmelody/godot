@@ -396,6 +396,31 @@ return cooker.scene({
         self.assertEqual(set(result["input_sha256"]), {"res://content/worlds/fixture/generated/" + name for name in
                                                      ("finish.tres", "surface.gdshader", "color.gdshaderinc")})
 
+    def test_material_edit_rebuilds_only_its_own_step(self):
+        # A scene that references a material keeps its cache when only the
+        # material's parameters change; the material step itself rebuilds.
+        directory = self.project / "content/worlds/fixture/source"
+        directory.mkdir(parents=True)
+        material = directory / "finish.tres"
+        material.write_text('[gd_resource type="StandardMaterial3D" format=3]\n[resource]\nroughness=0.25\n')
+        (self.project / "scene.luau").write_text('return cooker.scene({{asset=cooker.primitive("box",{}),material=cooker.input("finish")}})')
+        code = '''local g="res://content/worlds/fixture/generated/"
+return {
+ {name="material",operation="save-resource",source="res://content/worlds/fixture/source/finish.tres",output=g.."finish.res",type="StandardMaterial3D"},
+ {name="scene",operation="run-recipe",source="res://scene.luau",output=g.."scene.scn",inputs={finish=g.."finish.res"}},
+ {name="layout",operation="run-recipe",source="res://layout.luau",output=g.."layout.scn",inputs={scene=g.."scene.scn"}},
+}'''
+        (self.project / "layout.luau").write_text('return cooker.scene({{asset=cooker.input("scene")}})')
+        first = {step["name"]: step for step in self.pipeline(code)["steps"]}
+        self.assertFalse(any(step.get("skipped") for step in first.values()), first)
+        material.write_text('[gd_resource type="StandardMaterial3D" format=3]\n[resource]\nroughness=0.75\n')
+        second = {step["name"]: step for step in self.pipeline(code)["steps"]}
+        self.assertFalse(second["material"].get("skipped"), second)
+        # The scene declares the material directly, so it rebuilds by content.
+        self.assertFalse(second["scene"].get("skipped"), second)
+        # The layout only reaches the material through the scene's path reference.
+        self.assertTrue(second["layout"].get("skipped"), second)
+
     def test_rejects_source_errors_and_invalid_returns(self):
         for code in ('return ???', 'error("intentional")', 'return nil', 'return {}', 'return 1',
                      'return cooker.primitive("box",{}), 1', b'\x00\x04bytecode', b'\xff\xfe',

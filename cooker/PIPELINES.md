@@ -25,6 +25,16 @@ Cooker executable SHA-256, request parameters and transitive resource inputs;
 a toolchain change invalidates prior receipts. Production descriptions remain
 the same Luau pipelines in either mode.
 
+Materials, shaders, shader includes and textures are fingerprinted by content
+only where a step declares them directly (`source` or an `inputs` value). When a
+step reaches them only *through* another resource, for example a layout that
+instances a mesh scene which references a material, they are fingerprinted by
+path: every cooked consumer stores them as an external path reference and no
+operation reads their contents through a consumer. Editing a material therefore
+rebuilds the material's own step and the steps that name it, not every mesh,
+layout and backdrop beneath them. `pack` steps embed bytes, so they always hash
+the full dependency closure by content.
+
 A stale output is never deleted before it is rebuilt. The previous file and its
 receipt stay published while the step runs; the new result is written to a
 same-directory staging file (`*.partial.*`, or a `.partial-<name>/` directory for
