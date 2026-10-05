@@ -1,5 +1,6 @@
 /*<<----- VEYA_COOKER: use Godot's skeleton import processors from a declarative Luau batch. */
 #include "retarget.h"
+#include "atomic_save.h"
 
 #include "cooker/asset_files.h"
 #include "cooker/pipeline_cache.h"
@@ -39,7 +40,7 @@ Error make_bone_map(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(output.get_extension().to_lower() != "res", ERR_INVALID_PARAMETER);
 	Error error = CookerFiles::check_path(output, true);
 	ERR_FAIL_COND_V(error != OK, error);
-	ERR_FAIL_COND_V_MSG(FileAccess::exists(output), ERR_ALREADY_EXISTS, "Bone map output already exists.");
+	ERR_FAIL_COND_V_MSG(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS, "Bone map output already exists.");
 	Ref<SkeletonProfileHumanoid> profile;
 	profile.instantiate();
 	Ref<BoneMap> map;
@@ -64,7 +65,7 @@ Error make_bone_map(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 	ERR_FAIL_COND_V(error != OK, error);
-	error = ResourceSaver::save(map, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+	error = CookerAtomicSave::save_resource(map, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["profile"] = "SkeletonProfileHumanoid";
@@ -150,7 +151,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 			// migration may regenerate those exact declared outputs from source;
 			// never admit their existing bytes as a verified cache hit.
 			if(rebuild_unverified && FileAccess::exists(output) && !FileAccess::exists(output+".cook.json")) {
-				error=DirAccess::remove_absolute(output);ERR_FAIL_COND_V(error!=OK,error);
+				CookerAtomicSave::replaceable.insert(output);
 			}
 			Dictionary request;request["operation"]="retarget-animations";request["source"]=source;request["output"]=output;
 			request["bone_map"]=map_path;request["animation_name"]=selected_animation;request["in_place"]=in_place;request["loop"]=loop;
@@ -158,7 +159,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 			error=CookerCache::prepare(request,output,receipt,cache_hit);ERR_FAIL_COND_V(error!=OK,error);
 			if(cache_hit) {Dictionary clip;clip["source"]=source;clip["output"]=output;clip["skipped"]=true;clips.push_back(clip);continue;}
 		}
-		ERR_FAIL_COND_V_MSG(FileAccess::exists(output), ERR_ALREADY_EXISTS, "Retarget output already exists: " + output);
+		ERR_FAIL_COND_V_MSG(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS, "Retarget output already exists: " + output);
 		Ref<ResourceImporterScene> importer;
 		importer.instantiate();
 		importer->set_scene_import_type("AnimationLibrary");
@@ -233,7 +234,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 			ERR_FAIL_COND_V_MSG(in_place && !found_hips && !baked_target, ERR_INVALID_DATA, "In-place animation has no Hips position track: " + source);
 		}
 		if (modified) {
-			error = ResourceSaver::save(library, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+			error = CookerAtomicSave::save_resource(library, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 			ERR_FAIL_COND_V(error != OK, error);
 		}
 		Dictionary clip;
@@ -278,7 +279,7 @@ Error retarget_model(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(error != OK, error);
 	error = CookerFiles::check_path(map_path);
 	ERR_FAIL_COND_V(error != OK, error);
-	ERR_FAIL_COND_V(FileAccess::exists(output), ERR_ALREADY_EXISTS);
+	ERR_FAIL_COND_V(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS);
 	Ref<BoneMap> map = ResourceLoader::load(map_path, "BoneMap", ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
 	ERR_FAIL_COND_V(map.is_null() || map->get_profile().is_null(), ERR_INVALID_DATA);
 	Ref<ResourceImporterScene> importer;
@@ -334,7 +335,7 @@ Error make_animation_preview(const Dictionary &p_job, Dictionary &r_result) {
 	error = CookerFiles::check_path(animation_path);
 	ERR_FAIL_COND_V(error != OK, error);
 	error = CookerFiles::check_path(output, true);
-	ERR_FAIL_COND_V(error != OK || FileAccess::exists(output), error == OK ? ERR_ALREADY_EXISTS : error);
+	ERR_FAIL_COND_V(error != OK || CookerAtomicSave::occupied(output), error == OK ? ERR_ALREADY_EXISTS : error);
 	Ref<PackedScene> model = ResourceLoader::load(model_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
 	ERR_FAIL_COND_V(model.is_null(), ERR_INVALID_DATA);
 	ERR_FAIL_COND_V(p_job.get("animation_name", Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
@@ -365,7 +366,7 @@ Error make_animation_preview(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(error != OK, error);
 	error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 	ERR_FAIL_COND_V(error != OK, error);
-	error = ResourceSaver::save(preview, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+	error = CookerAtomicSave::save_resource(preview, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["animation"] = animation_path;

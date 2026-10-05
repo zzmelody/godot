@@ -1,6 +1,7 @@
 /*<<----- VEYA_COOKER: immutable source payloads published by Luau pipelines. */
 #pragma once
 #include "asset_files.h"
+#include "atomic_save.h"
 
 namespace CookerSource {
 // Bootstrap PNGs, native fonts and shader source are already runtime formats.
@@ -33,7 +34,7 @@ inline Error stage(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(!shared && !world, ERR_UNAUTHORIZED);
 	ERR_FAIL_COND_V(!output.begins_with(package + "/generated/"), ERR_UNAUTHORIZED);
 	ERR_FAIL_COND_V(!is_payload(source) || source.get_extension() != output.get_extension(), ERR_UNAVAILABLE);
-	ERR_FAIL_COND_V(FileAccess::exists(output), ERR_ALREADY_EXISTS);
+	ERR_FAIL_COND_V(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS);
 	Ref<FileAccess> input = FileAccess::open(source, FileAccess::READ, &error);
 	ERR_FAIL_COND_V(input.is_null() || error != OK, ERR_FILE_CANT_READ);
 	const uint64_t bytes = input->get_length();
@@ -43,15 +44,15 @@ inline Error stage(const Dictionary &p_job, Dictionary &r_result) {
 	error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 	ERR_FAIL_COND_V(error != OK, error);
 	const String temporary = output + ".partial";
-	ERR_FAIL_COND_V(FileAccess::exists(temporary), ERR_ALREADY_EXISTS);
+	CookerAtomicSave::discard_stale(temporary);
 	Ref<FileAccess> file = FileAccess::open(temporary, FileAccess::WRITE, &error);
 	ERR_FAIL_COND_V(file.is_null() || error != OK, ERR_FILE_CANT_WRITE);
 	file->store_buffer(data);
 	file->flush();
 	error = file->get_error();
 	file.unref();
-	if (error == OK) error = DirAccess::rename_absolute(temporary, output);
-	if (error != OK) DirAccess::remove_absolute(temporary);
+	if (error == OK) error = CookerAtomicSave::publish(temporary, output);
+	if (error != OK) CookerAtomicSave::discard_stale(temporary);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["bytes"] = int64_t(bytes);
