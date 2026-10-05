@@ -10,6 +10,7 @@
 #include "tinyusdz.hh"
 #include "usdGeom.hh"
 #include "usdSkel.hh"
+#include "composition.hh"
 #include "tydra/scene-access.hh"
 #include <algorithm>
 #include <array>
@@ -38,10 +39,24 @@ std::vector<u::Path> targets(const u::Relationship &r) {
 }
 Error load(const String &path, u::Stage &stage, bool composed) {
 	u::USDLoadOptions opts; opts.num_threads=4; opts.max_memory_limit_in_mb=4096; opts.load_assets=false;
-	opts.do_composition=composed; opts.load_references=composed; opts.load_sublayers=composed;
 	std::string warn, err;
 	const String absolute=ProjectSettings::get_singleton()->globalize_path(path);
-	ERR_FAIL_COND_V_MSG(!u::LoadUSDFromFile(absolute.utf8().get_data(),&stage,&warn,&err,opts),ERR_INVALID_DATA,String::utf8(err.c_str()));
+	if(!composed) {
+		ERR_FAIL_COND_V_MSG(!u::LoadUSDFromFile(absolute.utf8().get_data(),&stage,&warn,&err,opts),ERR_INVALID_DATA,String::utf8(err.c_str()));
+	} else {
+		// Upstream deprecated load flags do not compose USDC. Explicitly flatten
+		// local layers and references before constructing a typed stage.
+		u::Layer layer,flattened;
+		ERR_FAIL_COND_V_MSG(!u::LoadLayerFromFile(absolute.utf8().get_data(),&layer,&warn,&err,opts),ERR_INVALID_DATA,String::utf8(err.c_str()));
+		u::AssetResolutionResolver resolver;resolver.set_search_paths({absolute.get_base_dir().utf8().get_data()});resolver.set_current_working_path(absolute.get_base_dir().utf8().get_data());
+		u::SublayersCompositionOptions sub;sub.max_depth=32;sub.error_when_asset_not_found=true;sub.error_when_unsupported_fileformat=true;
+		ERR_FAIL_COND_V_MSG(!u::CompositeSublayers(resolver,layer,&flattened,&warn,&err,sub),ERR_INVALID_DATA,String::utf8(err.c_str()));
+		layer=std::move(flattened);flattened=u::Layer();
+		u::ReferencesCompositionOptions refs;refs.max_depth=32;refs.error_when_asset_not_found=true;refs.error_when_unsupported_fileformat=true;
+		ERR_FAIL_COND_V_MSG(!u::CompositeReferences(resolver,layer,&flattened,&warn,&err,refs),ERR_INVALID_DATA,String::utf8(err.c_str()));
+		ERR_FAIL_COND_V_MSG(!u::LayerToStage(std::move(flattened),&stage,&warn,&err),ERR_INVALID_DATA,String::utf8(err.c_str()));
+		ERR_FAIL_COND_V(!stage.compute_absolute_prim_path_and_assign_prim_id(),ERR_INVALID_DATA);
+	}
 	return OK;
 }
 Error gather(const String &path, HashSet<String> &files, HashSet<String> &pending) {
@@ -239,6 +254,7 @@ Error import_scene(const Dictionary &job,Dictionary &result) {
 	// the final vector storage is stable. Never retain pointers into temporaries.
 	std::function<void(XformNode &,XformNode *)> index=[&](XformNode &n,XformNode *parent){n.parent=parent;importer.nodes[n.absolute_path.full_path_name()]=&n;for(auto &c:n.children)index(c,&n);};index(importer.hierarchy,nullptr);
 	e=importer.visit(importer.hierarchy);ERR_FAIL_COND_V(e!=OK,e);
+	ERR_FAIL_COND_V_MSG(importer.surfaces[1].indices.empty(),ERR_INVALID_DATA,"Plant import has no leaf material faces; refusing a bare-tree replacement.");
 	Ref<ArrayMesh> mesh;mesh.instantiate();const Dictionary overrides=job.get("material_overrides",Dictionary());
 	for(int r=0;r<2;++r) {
 		auto &s=importer.surfaces[r];if(s.indices.empty())continue;s.reduce(r==0?importer.trunk_budget:importer.leaf_budget);
