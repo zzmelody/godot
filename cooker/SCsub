@@ -26,6 +26,7 @@ if env.msvc:
 else:
     recipe_env.Append(CXXFLAGS=["-fexceptions"])
 recipe_env.Append(CPPPATH=[str(source / name / "include") for name in lock["components"]])
+recipe_env.Append(CPPPATH=["#thirdparty/tinyusdz/src"])
 
 luau_env = recipe_env.Clone()
 if env.msvc:
@@ -43,6 +44,21 @@ for component in lock["components"]:
         if name.endswith(".cpp"):
             objects += luau_env.Object(target="#cooker/luau_objects/" + name[:-4], source=str(source / name))
 luau_library = luau_env.add_library("#cooker/luau_recipe_vm", objects)
-recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp"])
-env.Prepend(LIBS=[recipe_library, luau_library])
+recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp", "#cooker/usd_import.cpp"])
+# Portable USD transport is Cooker-only; no PXR runtime or Python dependency.
+usd_env = luau_env.Clone()
+usd_env.Append(CPPPATH=["#thirdparty/tinyusdz/src"], CPPDEFINES=["TINYUSDZ_PRODUCTION_BUILD", "TINYUSDZ_WITH_TYDRA"])
+usd_names = """asset-resolution tinyusdz xform performance ascii-parser ascii-parser-basetype
+ascii-parser-timesamples ascii-parser-timesamples-array audio-loader base122 usda-reader usdc-reader
+usda-writer usdc-writer composition crate-reader crate-format crate-writer crate-pprint path-util
+prim-reconstruct prim-composition prim-types primvar str-util value-pprint value-types tiny-format
+io-util image-loader image-writer image-util linear-algebra usdGeom usdSkel usdShade usdLux usdMtlx
+usdObj pprinter stage lz4-compression tydra/facial tydra/prim-apply tydra/scene-access
+tydra/attribute-eval tydra/attribute-eval-typed tydra/attribute-eval-typed-animatable
+tydra/attribute-eval-typed-fallback tydra/attribute-eval-typed-animatable-fallback
+tydra/obj-export tydra/usd-export tydra/shader-network tydra/render-data tydra/texture-util""".split()
+usd_sources = ["#thirdparty/tinyusdz/src/" + name + ".cc" for name in usd_names]
+usd_sources += ["#thirdparty/tinyusdz/src/integerCoding.cpp", "#thirdparty/tinyusdz/src/lz4/lz4.c"]
+usd_library = usd_env.add_library("#cooker/static_usd", usd_sources)
+env.Prepend(LIBS=[recipe_library, luau_library, usd_library])
 # /*>>----- VEYA_COOKER */

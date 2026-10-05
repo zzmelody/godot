@@ -11,6 +11,7 @@
 #include "core/io/json.h"
 #include "pipeline_cache.h"
 #include "stage_source.h"
+#include "usd_import.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
@@ -735,6 +736,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		String type = job.get("type", "PackedScene");
 		ERR_FAIL_COND_V(source.is_empty() || output.is_empty(), ERR_INVALID_PARAMETER);
 		String extension = source.get_extension().to_lower();
+		if (extension == "usd" || extension == "usda" || extension == "usdc") return CookerUsd::import_scene(job, r_result);
 		ERR_FAIL_COND_V(extension != "gltf" && extension != "glb" && extension != "fbx" && extension != "obj", ERR_UNAVAILABLE);
 		ERR_FAIL_COND_V(type != "PackedScene" && type != "ArrayMesh" && type != "AnimationLibrary" && type != "MeshLibrary", ERR_INVALID_PARAMETER);
 		int maximum_texture_dimension = 0;

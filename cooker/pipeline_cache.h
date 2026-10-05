@@ -2,6 +2,7 @@
 #pragma once
 #include "asset_files.h"
 #include "stage_source.h"
+#include "usd_import.h"
 #include "core/io/json.h"
 #include "core/os/os.h"
 
@@ -26,6 +27,7 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 		Error error=CookerFiles::check_path(path);ERR_FAIL_COND_V(error!=OK,error);
 		HashSet<String> closure;
 		if(path.ends_with(".res") || path.ends_with(".scn")) {error=CookerFiles::collect(path,closure);ERR_FAIL_COND_V(error!=OK,error);}
+		else if (path.get_extension().to_lower()=="usd" || path.get_extension().to_lower()=="usda" || path.get_extension().to_lower()=="usdc") {error=CookerUsd::dependencies(path,closure);ERR_FAIL_COND_V(error!=OK,error);}
 		else closure.insert(path);
 		for(const String &source:closure)result[source]=FileAccess::get_sha256(source);
 		ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);

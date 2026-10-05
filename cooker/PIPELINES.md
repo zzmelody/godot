@@ -53,6 +53,17 @@ return {
 ```
 
 All native job operations listed in [the Cooker README](README.md) are supported.
+Static `import-scene` also admits `.usd`, `.usda` and `.usdc` plant packages
+(metres, Y up), with local referenced layers, material face subsets and original
+PointInstancer branch transforms. Skeleton/default poses are baked into static
+geometry. It writes `ArrayMesh` or `PackedScene`; USD animation export, payloads,
+arbitrary polygon tessellation and USD texture networks are not supported.
+Supply `material_overrides={bark=...,leaves=...}` with Cooker material resources.
+Luau `options` declares `prototype_triangles`, `bark_triangles`, `leaf_triangles`
+(integers 32..500000). Branches are compacted before expansion; the whole mesh
+is compacted again and receives native screen-space index LODs. All local USD
+layer bytes participate in verified cache fingerprints. USD support is linked
+only into Cooker, on Windows and macOS, without external PXR/Python executables.
 `import-texture` optionally accepts `max_texture_dimension`, a power of two from
 256 through 8192. Larger immutable source images are resized proportionally
 before mip generation and compression. With `normal_map=true`, resized normals
