@@ -1,6 +1,7 @@
 /*<<----- VEYA_COOKER: bounded shared humanoid composition, assembly and source coverage. */
 #include "character_actions.h"
 #include "asset_files.h"
+#include "atomic_save.h"
 #include "core/io/json.h"
 #include "core/io/resource_saver.h"
 #include "scene/3d/bone_attachment_3d.h"
@@ -25,7 +26,7 @@ Error output_path(const String &p_path, const String &p_extension) {
 	Error error = CookerFiles::check_path(p_path, true);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V(p_path.get_extension() != p_extension, ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V(FileAccess::exists(p_path), ERR_ALREADY_EXISTS);
+	ERR_FAIL_COND_V(CookerAtomicSave::occupied(p_path), ERR_ALREADY_EXISTS);
 	return DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(p_path.get_base_dir()));
 }
 bool bone_track(const Ref<Animation> &p_animation, int p_track) {
@@ -845,7 +846,7 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 	library->set_meta("character_catalog_revision", p_job.get("revision", 1));
 	library->set_meta("character_catalog", provenance);
 	if (bool(p_job.get("preserve_base_hips", false))) library->set_meta("source_replaced_ids", replaced_ids);
-	error = ResourceSaver::save(library, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+	error = CookerAtomicSave::save_resource(library, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	LocalVector<StringName> composed_names; library->get_animation_list(&composed_names);
 	r_result["output"] = output; r_result["clips"] = composed_names.size(); r_result["keys"] = total_keys;
@@ -893,7 +894,7 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 	Ref<PackedScene> assembled; assembled.instantiate();
 	error = assembled->pack(tree.root);
 	ERR_FAIL_COND_V(error != OK, error);
-	error = ResourceSaver::save(assembled, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+	error = CookerAtomicSave::save_resource(assembled, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output; r_result["sockets"] = sockets.size(); r_result["bone_count"] = skeleton->get_bone_count();
 	return OK;
@@ -1012,9 +1013,8 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		report["compared_keys"] = compared_keys;
 		if (bool(from_composition)) report["playback_and_hips_preserved"] = true;
 	}
-	Ref<FileAccess> file = FileAccess::open(output, FileAccess::WRITE, &error);
-	ERR_FAIL_COND_V(file.is_null(), error);
-	file->store_string(JSON::stringify(report, "\t", true));
+	error = CookerAtomicSave::save_text(JSON::stringify(report, "\t", true), output);
+	ERR_FAIL_COND_V(error != OK, error);
 	r_result = report; r_result["output"] = output;
 	// A report can be deliberately produced for an incomplete catalog; release jobs opt into strict gating.
 	return bool(p_job.get("require_complete", false)) && !missing.is_empty() ? ERR_DOES_NOT_EXIST : OK;

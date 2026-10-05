@@ -1,6 +1,7 @@
 /*<<----- VEYA_COOKER: verified immutable job receipts; metadata, never an execution language. */
 #pragma once
 #include "asset_files.h"
+#include "atomic_save.h"
 #include "stage_source.h"
 #include "core/io/json.h"
 #include "core/os/os.h"
@@ -87,7 +88,8 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	if(!FileAccess::exists(output))return OK;
 	if(!FileAccess::exists(receipt.path) && rebuild_unverified) {
 		// Regenerate legacy bytes from this declared step; do not reuse them.
-		error=DirAccess::remove_absolute(output);ERR_FAIL_COND_V(error!=OK,error);
+		// The old file stays readable until the new result replaces it.
+		CookerAtomicSave::replaceable.insert(output);
 		return OK;
 	}
 	ERR_FAIL_COND_V_MSG(!FileAccess::exists(receipt.path),ERR_INVALID_DATA,"Existing output has no verified provenance; choose a new immutable revision: "+output);
@@ -97,8 +99,10 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	// Only remove the exact verified output/receipt owned by this step.
 	ERR_FAIL_COND_V_MSG(String(prior.get("output_sha256",""))!=FileAccess::get_sha256(output),ERR_INVALID_DATA,"Cook cache output integrity failed: "+output);
 	if(force_rebuild || String(prior.get("request_sha256",""))!=receipt.fingerprint) {
-		error=DirAccess::remove_absolute(output);ERR_FAIL_COND_V(error!=OK,error);
-		error=DirAccess::remove_absolute(receipt.path);ERR_FAIL_COND_V(error!=OK,error);
+		// Keep the stale output and receipt published: concurrent Cookers that
+		// read this file see the old complete bytes, never a missing asset.
+		// The step replaces both atomically once its new result is ready.
+		CookerAtomicSave::replaceable.insert(output);
 		return OK;
 	}
 	// Manifest file names are relative to their generated directory, so they
@@ -109,16 +113,14 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 }
 inline Error commit(const Receipt &receipt) {
 	const String digest=FileAccess::get_sha256(receipt.output);ERR_FAIL_COND_V(digest.length()!=64,ERR_FILE_CORRUPT);
-	if(FileAccess::exists(receipt.path)) {
+	if(FileAccess::exists(receipt.path) && !CookerAtomicSave::replaceable.has(receipt.output)) {
 		Dictionary prior;const Error error=read(receipt.path,prior);ERR_FAIL_COND_V(error!=OK,error);
 		ERR_FAIL_COND_V(String(prior.get("request_sha256",""))!=receipt.fingerprint || String(prior.get("output_sha256",""))!=digest,ERR_INVALID_DATA);
 		return OK;
 	}
+	CookerAtomicSave::replaceable.erase(receipt.output);
 	Dictionary data;data["schema_version"]=1;data["output"]=receipt.output;data["request_sha256"]=receipt.fingerprint;data["output_sha256"]=digest;data["dependencies"]=receipt.dependencies;
-	const String temporary=receipt.path+".partial";ERR_FAIL_COND_V(FileAccess::exists(temporary),ERR_ALREADY_EXISTS);
-	Ref<FileAccess> file=FileAccess::open(temporary,FileAccess::WRITE);ERR_FAIL_COND_V(file.is_null(),ERR_FILE_CANT_WRITE);
-	file->store_string(JSON::stringify(data)+"\n");file.unref();
-	return DirAccess::rename_absolute(temporary,receipt.path);
+	return CookerAtomicSave::save_text(JSON::stringify(data)+"\n",receipt.path);
 }
 }
 /*>>----- VEYA_COOKER */

@@ -25,6 +25,16 @@ Cooker executable SHA-256, request parameters and transitive resource inputs;
 a toolchain change invalidates prior receipts. Production descriptions remain
 the same Luau pipelines in either mode.
 
+A stale output is never deleted before it is rebuilt. The previous file and its
+receipt stay published while the step runs; the new result is written to a
+same-directory staging file (`*.partial.*`, or a `.partial-<name>/` directory for
+scene imports) and then replaces the old one in a single rename. Other Cooker
+processes that read the file during a rebuild see the old complete bytes, never
+a missing asset. Each output is guarded by a cross-process named lock, so two
+sessions that would rebuild the same output serialize: the second waits, then
+finds a fresh receipt and reuses the result. Staging files left by an interrupted
+run are discarded on the next run.
+
 The script returns one dense array of job tables. It may use deterministic Luau
 control flow to reduce repetition, but has no filesystem, process, network,
 clock, random, `require`, bytecode-loading or engine-object API. The VM is limited

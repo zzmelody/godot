@@ -10,6 +10,9 @@
 #include "core/io/file_access_pack.h"
 #include "core/io/json.h"
 #include "pipeline_cache.h"
+#include "atomic_save.h"
+#include "output_lock.h"
+#include <memory>
 #include "stage_source.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
@@ -330,7 +333,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	Error error = CookerFiles::check_path(output, true);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V(output.get_file() != "asset.manifest.json", ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V(FileAccess::exists(output), ERR_ALREADY_EXISTS);
+	ERR_FAIL_COND_V(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS);
 	String base = output.get_base_dir();
 	Array declared = p_job["files"];
 	ERR_FAIL_COND_V(declared.is_empty() || declared.size() > 256, ERR_INVALID_PARAMETER);
@@ -381,17 +384,8 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(base));
 	ERR_FAIL_COND_V(error != OK, error);
-	String temporary = output + ".partial";
-	ERR_FAIL_COND_V(FileAccess::exists(temporary), ERR_ALREADY_EXISTS);
-	Ref<FileAccess> file = FileAccess::open(temporary, FileAccess::WRITE, &error);
-	ERR_FAIL_COND_V(file.is_null() || error != OK, error == OK ? ERR_FILE_CANT_WRITE : error);
-	file->store_string(JSON::stringify(manifest) + "\n");
-	file.unref();
-	error = DirAccess::rename_absolute(temporary, output);
-	if (error != OK) {
-		DirAccess::remove_absolute(temporary);
-		return error;
-	}
+	error = CookerAtomicSave::save_text(JSON::stringify(manifest) + "\n", output);
+	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["sha256"] = FileAccess::get_sha256(output);
 	r_result["files"] = records;
@@ -584,7 +578,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			ERR_FAIL_COND_V(error != OK, error);
 			error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(collision_output.get_base_dir()));
 			ERR_FAIL_COND_V(error != OK, error);
-			error = ResourceSaver::save(scene, collision_output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+			error = CookerAtomicSave::save_resource(scene, collision_output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 			ERR_FAIL_COND_V(error != OK, error);
 			r_result["collision_output"] = collision_output;
 			r_result["hull_count"] = hulls.size();
@@ -593,7 +587,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(error != OK, error);
 		error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(output.get_base_dir()));
 		ERR_FAIL_COND_V(error != OK, error);
-		error = ResourceSaver::save(result, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+		error = CookerAtomicSave::save_resource(result, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 		ERR_FAIL_COND_V(error != OK, error);
 		r_result["output"] = output;
 		return OK;
@@ -660,7 +654,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		ERR_FAIL_COND_V_MSG(mesh->get_polygon_count() == 0, ERR_CANT_CREATE, "Navigation bake produced no polygons.");
 		error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(output.get_base_dir()));
 		ERR_FAIL_COND_V(error != OK, error);
-		error = ResourceSaver::save(mesh, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+		error = CookerAtomicSave::save_resource(mesh, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 		ERR_FAIL_COND_V(error != OK, error);
 		r_result["output"] = output;
 		r_result["polygon_count"] = mesh->get_polygon_count();
@@ -703,7 +697,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(texture->get_width() != image->get_width() || texture->get_height() != image->get_height(), ERR_CANT_CREATE);
 		error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(output.get_base_dir()));
 		ERR_FAIL_COND_V(error != OK, error);
-		error = ResourceSaver::save(texture, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+		error = CookerAtomicSave::save_resource(texture, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 		ERR_FAIL_COND_V(error != OK, error);
 		r_result["output"] = output;
 		r_result["width"] = image->get_width();
@@ -755,12 +749,25 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		String base = output.get_basename();
 		error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(base.get_base_dir()));
 		ERR_FAIL_COND_V(error != OK, error);
+		// Import into a sibling staging directory with the same file name: the
+		// importer names the scene root after the save path, so the published
+		// bytes match a direct import. A stale output stays readable until the
+		// finished scene replaces it.
+		const String published_path = base + "." + importer->get_save_extension();
+		const String staging_dir = base.get_base_dir().path_join(".partial-" + base.get_file());
+		const String staging_base = staging_dir.path_join(base.get_file());
+		String imported_path = staging_base + "." + importer->get_save_extension();
+		CookerAtomicSave::discard_stale(imported_path);
+		error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(staging_dir));
+		ERR_FAIL_COND_V(error != OK, error);
 		List<String> variants;
 		List<String> generated;
 		Variant metadata;
-		error = importer->import(ResourceUID::INVALID_ID, source, base, options, &variants, &generated, &metadata);
-		ERR_FAIL_COND_V(error != OK, error);
-		String imported_path = base + "." + importer->get_save_extension();
+		error = importer->import(ResourceUID::INVALID_ID, source, staging_base, options, &variants, &generated, &metadata);
+		if (error != OK) {
+			CookerAtomicSave::discard_stale(imported_path);
+			return error;
+		}
 		if (maximum_texture_dimension > 0) {
 			Ref<PackedScene> imported = ResourceLoader::load(imported_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
 			ERR_FAIL_COND_V(imported.is_null() || error != OK, ERR_INVALID_DATA);
@@ -784,7 +791,10 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			r_result["textures_resized"] = resized_count;
 			r_result["max_texture_dimension"] = maximum_texture_dimension;
 		}
-		r_result["output"] = imported_path;
+		error = CookerAtomicSave::publish(imported_path, published_path);
+		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(staging_dir));
+		ERR_FAIL_COND_V(error != OK, error);
+		r_result["output"] = published_path;
 		return OK;
 	}
 	if (operation == "validate-resource" || operation == "save-resource") {
@@ -894,7 +904,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			ERR_FAIL_COND_V(output.is_empty(), ERR_INVALID_PARAMETER);
 			error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(output.get_base_dir()));
 			ERR_FAIL_COND_V(error != OK, error);
-			error = ResourceSaver::save(resource, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_OMIT_EDITOR_PROPERTIES);
+			error = CookerAtomicSave::save_resource(resource, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_OMIT_EDITOR_PROPERTIES);
 			ERR_FAIL_COND_V(error != OK, error);
 			r_result["output"] = output;
 		}
@@ -975,6 +985,10 @@ Error execute_pipeline(Dictionary &r_result) {
 			error = CookerCharacter::prepare_compose_job(job);
 			ERR_FAIL_COND_V(error != OK, error);
 		}
+		// One writer per output across Cooker processes. A second session that
+		// would rebuild the same file waits here, then finds a fresh receipt.
+		std::unique_ptr<CookerOutputLock::Guard> output_lock;
+		if (job.get("output", Variant()).get_type() == Variant::STRING) output_lock = std::make_unique<CookerOutputLock::Guard>(String(job["output"]));
 		CookerCache::Receipt receipt;bool verified_hit=false;
 		if(bool(verification)) {
 			ERR_FAIL_COND_V(!bool(condition) || job.get("output",Variant()).get_type()!=Variant::STRING,ERR_INVALID_PARAMETER);
@@ -986,7 +1000,7 @@ Error execute_pipeline(Dictionary &r_result) {
 			String output = job["output"];
 			error = CookerFiles::check_path(output, true, operation == "pack");
 			ERR_FAIL_COND_V(error != OK, error);
-			if (FileAccess::exists(output)) {
+			if (CookerAtomicSave::occupied(output)) {
 				report["ok"] = true;
 				report["skipped"] = true;
 				report["output"] = output;

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 parser = argparse.ArgumentParser()
@@ -52,6 +53,54 @@ class SourcePayloadContract(unittest.TestCase):
         self.assertTrue(all(step["skipped"] for step in self.pipeline(code)["steps"]))
         self.source.write_bytes(b"OTTO\x00changed source")
         self.pipeline(code)
+        self.assertEqual(self.output.read_bytes(), self.source.read_bytes())
+
+    def test_stale_rebuild_keeps_previous_output_readable(self):
+        # A changed source must not delete the published output before the
+        # new bytes replace it: concurrent Cookers keep reading a complete file.
+        code = self.declaration()
+        self.pipeline(code)
+        first = self.output.read_bytes()
+        self.source.write_bytes(b"OTTO\x00second revision")
+        environment = dict(os.environ, PATH=str(self.root / "no-executables"))
+        # Log to files: an unread pipe would block the Cooker once it fills.
+        with open(self.root / "cook.log", "wb") as log:
+            process = subprocess.Popen([str(COOKER), "--path", str(self.root), "--pipeline", "res://pipeline.luau"],
+                                       stdout=log, stderr=subprocess.STDOUT, env=environment)
+            seen = set()
+            while process.poll() is None:
+                if self.output.exists():
+                    try:
+                        seen.add(self.output.read_bytes())
+                    except PermissionError:
+                        pass  # Windows may block a read during the one-step replace.
+                else:
+                    seen.add(None)
+                time.sleep(0.002)  # Leave the publisher a window to rename.
+            process.wait(timeout=60)
+        self.assertEqual(process.returncode, 0, (self.root / "cook.log").read_text(errors="replace")[-2000:])
+        self.assertNotIn(None, seen, "output was missing during a stale rebuild")
+        self.assertTrue(seen <= {first, self.source.read_bytes()}, seen)
+        self.assertEqual(self.output.read_bytes(), self.source.read_bytes())
+        self.assertFalse(any(path.name.endswith(".partial") for path in self.output.parent.iterdir()))
+
+    def test_concurrent_cookers_share_one_output(self):
+        # Two sessions rebuilding the same stale output serialize on the
+        # per-output lock; both succeed and the result is the new source.
+        code = self.declaration()
+        self.pipeline(code)
+        self.source.write_bytes(b"OTTO\x00concurrent revision")
+        environment = dict(os.environ, PATH=str(self.root / "no-executables"))
+        processes = []
+        for index in range(2):
+            log = open(self.root / f"cook-{index}.log", "wb")
+            processes.append((subprocess.Popen([str(COOKER), "--path", str(self.root), "--pipeline", "res://pipeline.luau"],
+                                               stdout=log, stderr=subprocess.STDOUT, env=environment), log))
+        for process, log in processes:
+            process.wait(timeout=120)
+            log.close()
+        for index, (process, _) in enumerate(processes):
+            self.assertEqual(process.returncode, 0, (self.root / f"cook-{index}.log").read_text(errors="replace")[-2000:])
         self.assertEqual(self.output.read_bytes(), self.source.read_bytes())
 
     def test_output_tampering_is_rejected(self):

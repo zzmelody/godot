@@ -1,6 +1,7 @@
 /*<<----- VEYA_COOKER: bounded Luau asset recipes with native builders and one atomic output. */
 #include "recipe.h"
 #include "asset_files.h"
+#include "atomic_save.h"
 
 #include "core/io/json.h"
 #include "core/io/image.h"
@@ -1403,7 +1404,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	Error error = CookerFiles::check_path(source);
 	if (error == OK) error = CookerFiles::check_path(output, true);
 	if (error != OK) return reject(r_result, "recipe path rejected", error);
-	if (FileAccess::exists(output) || DirAccess::dir_exists_absolute(output)) return reject(r_result, "recipe output already exists; use a new revision", ERR_ALREADY_EXISTS);
+	if (CookerAtomicSave::occupied(output) || DirAccess::dir_exists_absolute(output)) return reject(r_result, "recipe output already exists; use a new revision", ERR_ALREADY_EXISTS);
 	Recipe recipe;
 	for (const char *key : {"parameters", "inputs", "limits"}) if (p_job.has(key) && p_job[key].get_type() != Variant::DICTIONARY) return reject(r_result, String(key) + " must be an object");
 	recipe.parameters = p_job.get("parameters", Dictionary());
@@ -1492,15 +1493,18 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	// Godot seeds built-in subresource IDs from the save path. Keep the private
 	// staging path stable so identical Luau inputs/seed produce identical bytes.
 	String temporary = output.get_basename() + ".recipe-tmp." + output.get_extension();
-	if (FileAccess::exists(temporary)) return reject(r_result, "temporary output collision", ERR_ALREADY_EXISTS);
+	// An interrupted earlier run may leave this staging file; the per-output
+	// lock guarantees no live writer owns it.
+	CookerAtomicSave::discard_stale(temporary);
 	error = ResourceSaver::save(recipe.result, temporary, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	if (error == OK) {
 		Ref<FileAccess> saved = FileAccess::open(temporary, FileAccess::READ);
 		if (saved.is_null() || saved->get_length() > uint64_t(recipe.limits.output_mb) * 1024 * 1024) error = ERR_OUT_OF_MEMORY;
 	}
-	if (error == OK && FileAccess::exists(output)) error = ERR_ALREADY_EXISTS;
-	if (error == OK) error = DirAccess::rename_absolute(temporary, output);
-	if (error != OK) { if (FileAccess::exists(temporary)) DirAccess::remove_absolute(temporary); return reject(r_result, "could not publish recipe output", error); }
+	if (error == OK && CookerAtomicSave::occupied(output)) error = ERR_ALREADY_EXISTS;
+	// Replace a stale output in one step; readers keep the old bytes until then.
+	if (error == OK) error = CookerAtomicSave::publish(temporary, output);
+	if (error != OK) { CookerAtomicSave::discard_stale(temporary); return reject(r_result, "could not publish recipe output", error); }
 	r_result["output"] = output; r_result["type"] = recipe.result->get_class();
 	r_result["sha256"] = FileAccess::get_sha256(output);
 	r_result["source_sha256"] = FileAccess::get_sha256(source);
