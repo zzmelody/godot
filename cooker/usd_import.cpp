@@ -54,7 +54,7 @@ Error load(const String &path, u::Stage &stage, bool composed) {
 		layer=std::move(flattened);flattened=u::Layer();
 		u::ReferencesCompositionOptions refs;refs.max_depth=32;refs.error_when_asset_not_found=true;refs.error_when_unsupported_fileformat=true;
 		ERR_FAIL_COND_V_MSG(!u::CompositeReferences(resolver,layer,&flattened,&warn,&err,refs),ERR_INVALID_DATA,String::utf8(err.c_str()));
-		ERR_FAIL_COND_V_MSG(!u::LayerToStage(std::move(flattened),&stage,&warn,&err),ERR_INVALID_DATA,String::utf8(err.c_str()));
+		ERR_FAIL_COND_V_MSG(!u::LayerToStage(flattened,&stage,&warn,&err),ERR_INVALID_DATA,String::utf8(err.c_str()));
 		ERR_FAIL_COND_V(!stage.compute_absolute_prim_path_and_assign_prim_id(),ERR_INVALID_DATA);
 	}
 	return OK;
