@@ -720,7 +720,7 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
             // Inherit-like operation.
 
             if (!in_layer.find_primspec_at(reference.prim_path, &src_ps, err)) {
-              return false;
+              PUSH_ERROR_AND_RETURN("Reference target not found: " + reference.prim_path.full_path_name() + " at " + dst_prim_path.full_path_name());
             }
 
           } else {
@@ -792,7 +792,7 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
             // Inherit-like operation.
 
             if (!in_layer.find_primspec_at(reference.prim_path, &src_ps, err)) {
-              return false;
+              PUSH_ERROR_AND_RETURN("Reference target not found: " + reference.prim_path.full_path_name() + " at " + dst_prim_path.full_path_name());
             }
 
           } else {
