@@ -203,8 +203,37 @@ struct Import {
 		return OK;
 	}
 	Error branch(const XformNode &root,const Transform3D &relative,std::array<Surface,2> &out) {
+		if(root.prim && (root.prim->specifier()==u::Specifier::Class || root.prim->element_name()=="Prototypes"))return OK;
+		if(root.prim && root.prim->as<u::PointInstancer>())return expand(root,relative,out,false);
 		if(root.prim && root.prim->as<u::GeomMesh>()) {std::array<Surface,2> raw;Error e=mesh(root,raw);ERR_FAIL_COND_V(e!=OK,e);for(int r=0;r<2;++r) {raw[r].reduce(prototype_budget);out[r].append(raw[r],relative*transform(root.get_world_matrix()));}}
 		for(const auto &child:root.children) {Error e=branch(child,relative,out);ERR_FAIL_COND_V(e!=OK,e);}return OK;
+	}
+	std::set<std::string> active_prototypes;
+	Error expand(const XformNode &node,const Transform3D &relative,std::array<Surface,2> &out,bool authored) {
+		const auto *inst=node.prim->as<u::PointInstancer>();
+		ERR_FAIL_COND_V(!inst || !inst->prototypes,ERR_INVALID_DATA);const auto paths=targets(*inst->prototypes);
+		std::vector<int> ids;std::vector<u::value::point3f> p;std::vector<u::value::quath> q;std::vector<u::value::float3> sc;
+		ERR_FAIL_COND_V(!sample(inst->protoIndices,ids) || !sample(inst->positions,p) || ids.size()!=p.size() || ids.size()>20000,ERR_INVALID_DATA);
+		sample(inst->orientations,q);sample(inst->scales,sc);ERR_FAIL_COND_V(!q.empty() && q.size()!=p.size() || !sc.empty() && sc.size()!=p.size(),ERR_INVALID_DATA);
+		for(const auto &prototype:paths) {
+			const auto key=prototype.full_path_name();ERR_FAIL_COND_V(!nodes.count(key),ERR_INVALID_DATA);
+			if(!prototypes.count(key)) {
+				ERR_FAIL_COND_V(active_prototypes.count(key) || active_prototypes.size()>=32,ERR_INVALID_DATA);
+				active_prototypes.insert(key);std::array<Surface,2> raw;
+				Error e=branch(*nodes.at(key),transform(nodes.at(key)->get_world_matrix()).affine_inverse(),raw);ERR_FAIL_COND_V(e!=OK,e);
+				for(auto &surface:raw)surface.reduce(prototype_budget);
+				active_prototypes.erase(key);prototypes[key]=std::move(raw);
+			}
+		}
+		for(size_t i=0;i<ids.size();++i) {
+			ERR_FAIL_COND_V(ids[i]<0 || ids[i]>=int(paths.size()),ERR_INVALID_DATA);Basis basis;
+			if(!q.empty())basis=Basis(Quaternion(u::value::half_to_float(q[i][0]),u::value::half_to_float(q[i][1]),u::value::half_to_float(q[i][2]),u::value::half_to_float(q[i][3])).normalized());
+			if(!sc.empty())basis.scale(vector(sc[i]));
+			const Transform3D placement=relative*transform(node.get_world_matrix())*Transform3D(basis,vector(p[i]));
+			const auto &source=prototypes.at(paths[ids[i]].full_path_name());for(int r=0;r<2;++r)out[r].append(source[r],placement);
+			if(authored)++instance_count;
+		}
+		return OK;
 	}
 	Error visit(const XformNode &node) {
 		if(!node.prim) {for(const auto &child:node.children) {Error e=visit(child);if(e!=OK)return e;}return OK;}
@@ -217,24 +246,7 @@ struct Import {
 			if(value && value->str()=="invisible")return OK;
 		}
 		if(path.find("/Prototypes/")!=std::string::npos || path.size()>=11 && path.compare(path.size()-11,11,"/Prototypes")==0)return OK;
-		if(const auto *inst=node.prim->as<u::PointInstancer>()) {
-			ERR_FAIL_COND_V(!inst->prototypes,ERR_INVALID_DATA);const auto paths=targets(*inst->prototypes);
-			std::vector<int> ids;std::vector<u::value::point3f> p;std::vector<u::value::quath> q;std::vector<u::value::float3> sc;
-			ERR_FAIL_COND_V(!sample(inst->protoIndices,ids) || !sample(inst->positions,p) || ids.size()!=p.size() || ids.size()>20000,ERR_INVALID_DATA);
-			sample(inst->orientations,q);sample(inst->scales,sc);ERR_FAIL_COND_V(!q.empty() && q.size()!=p.size() || !sc.empty() && sc.size()!=p.size(),ERR_INVALID_DATA);
-			for(const auto &prototype:paths) {
-				const auto key=prototype.full_path_name();ERR_FAIL_COND_V(!nodes.count(key),ERR_INVALID_DATA);
-				if(!prototypes.count(key)) {std::array<Surface,2> raw;Error e=branch(*nodes.at(key),transform(nodes.at(key)->get_world_matrix()).affine_inverse(),raw);ERR_FAIL_COND_V(e!=OK,e);prototypes[key]=std::move(raw);}
-			}
-			for(size_t i=0;i<ids.size();++i) {
-				ERR_FAIL_COND_V(ids[i]<0 || ids[i]>=int(paths.size()),ERR_INVALID_DATA);Basis basis;
-				if(!q.empty())basis=Basis(Quaternion(u::value::half_to_float(q[i][0]),u::value::half_to_float(q[i][1]),u::value::half_to_float(q[i][2]),u::value::half_to_float(q[i][3])).normalized());
-				if(!sc.empty())basis.scale(vector(sc[i]));
-				const Transform3D placement=transform(node.get_world_matrix())*Transform3D(basis,vector(p[i]));
-				const auto &source=prototypes.at(paths[ids[i]].full_path_name());for(int r=0;r<2;++r)surfaces[r].append(source[r],placement);++instance_count;
-			}
-			return OK;
-		}
+		if(node.prim->as<u::PointInstancer>())return expand(node,Transform3D(),surfaces,true);
 		if(node.prim->as<u::GeomMesh>()) {std::array<Surface,2> raw;Error e=mesh(node,raw);ERR_FAIL_COND_V(e!=OK,e);for(int r=0;r<2;++r){raw[r].reduce(r==0?trunk_budget:leaf_budget);surfaces[r].append(raw[r],transform(node.get_world_matrix()));}}
 		for(const auto &child:node.children) {Error e=visit(child);if(e!=OK)return e;}return OK;
 	}

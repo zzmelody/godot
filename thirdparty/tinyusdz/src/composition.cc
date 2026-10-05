@@ -149,6 +149,17 @@ bool ReplaceRootPrimPathRec(
     PUSH_ERROR_AND_RETURN("PrimSpec tree too deep.");
   }
 
+  // Internal references inside a referenced library share its namespace too.
+  // Keep external asset references relative to their own layer.
+  if (ps.metas().references) {
+    for (auto &reference : ps.metas().references->second) {
+      if (reference.asset_path.GetAssetPath().empty() &&
+          reference.prim_path.has_prefix(srcPrefix)) {
+        reference.prim_path.replace_prefix(srcPrefix, dstPrefix);
+      }
+    }
+  }
+
   for (auto &prop : ps.props()) {
 
     if (prop.second.is_relationship()) {
