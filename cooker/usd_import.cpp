@@ -112,8 +112,11 @@ struct Import {
 		if(!u::tydra::GetGeomPrimvar(stage,&mesh,"skel:jointIndices",&ji,&err))return OK;
 		ERR_FAIL_COND_V(!ji.flatten_with_indices(&indices,&err) || !u::tydra::GetGeomPrimvar(stage,&mesh,"skel:jointWeights",&jw,&err) || !jw.flatten_with_indices(&weights,&err),ERR_INVALID_DATA);
 		const int stride=ji.get_elementSize();ERR_FAIL_COND_V(stride<1 || stride>16 || indices.size()!=points.size()*stride || weights.size()!=indices.size(),ERR_INVALID_DATA);
-		const XformNode *binding=&node;u::Relationship rel;
-		while(binding && (!binding->prim || !u::tydra::GetRelationship(*binding->prim,"skel:skeleton",&rel,&err)))binding=binding->parent;
+		const XformNode *binding=&node;u::Relationship rel;u::Property relationship;
+		while(binding) {
+			if(binding->prim && u::tydra::GetProperty(*binding->prim,"skel:skeleton",&relationship,&err) && relationship.is_relationship()) {rel=relationship.get_relationship();break;}
+			binding=binding->parent;
+		}
 		ERR_FAIL_COND_V_MSG(!binding || targets(rel).empty(),ERR_INVALID_DATA,"Skinned USD mesh has no inherited skeleton.");
 		const std::string skel_path=targets(rel)[0].full_path_name();
 		ERR_FAIL_COND_V(!nodes.count(skel_path),ERR_INVALID_DATA);
@@ -231,7 +234,9 @@ Error import_scene(const Dictionary &job,Dictionary &result) {
 	importer.prototype_budget=budget(options,"prototype_triangles",1200);importer.trunk_budget=budget(options,"bark_triangles",6000);importer.leaf_budget=budget(options,"leaf_triangles",40000);
 	ERR_FAIL_COND_V(importer.prototype_budget<0 || importer.trunk_budget<0 || importer.leaf_budget<0,ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V_MSG(!u::tydra::BuildXformNodeFromStage(importer.stage,&importer.hierarchy,u::value::TimeCode::Default(),u::value::TimeSampleInterpolationType::Linear),ERR_INVALID_DATA,"USD transform hierarchy could not be evaluated.");
-	std::function<void(const XformNode &)> index=[&](const XformNode &n){importer.nodes[n.absolute_path.full_path_name()]=&n;for(const auto &c:n.children)index(c);};index(importer.hierarchy);
+	// Tydra copies its temporary hierarchy; repair ancestor pointers only after
+	// the final vector storage is stable. Never retain pointers into temporaries.
+	std::function<void(XformNode &,XformNode *)> index=[&](XformNode &n,XformNode *parent){n.parent=parent;importer.nodes[n.absolute_path.full_path_name()]=&n;for(auto &c:n.children)index(c,&n);};index(importer.hierarchy,nullptr);
 	e=importer.visit(importer.hierarchy);ERR_FAIL_COND_V(e!=OK,e);
 	Ref<ArrayMesh> mesh;mesh.instantiate();const Dictionary overrides=job.get("material_overrides",Dictionary());
 	for(int r=0;r<2;++r) {
