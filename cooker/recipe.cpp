@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -58,7 +59,9 @@ struct Limits {
 	int memory_mb = 32;
 	int time_ms = 0; // 0 = no execution deadline; a job may opt in with limits.time_ms.
 	int max_vertices = 500000;
-	int max_instances = 10000;
+	// No default ceiling: memory_mb, max_vertices and output_mb bound the result.
+	// A job may still opt in with limits.max_instances.
+	int max_instances = std::numeric_limits<int>::max();
 	int max_resources = 256;
 	int input_mb = 256;
 	int output_mb = 64;

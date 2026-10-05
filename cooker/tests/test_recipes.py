@@ -446,6 +446,9 @@ assert(not pcall(function() math.sin = nil end))
         self.recipe(limits={"max_vertices": 3}, success=False)
         self.recipe('local b=cooker.primitive("box",{}); return cooker.scene({{asset=b},{asset=b}})',
                     limits={"max_instances": 1}, success=False, output="res://content/worlds/fixture/generated/too-many.scn")
+        # No default instance ceiling: dense scatter cells may exceed the former 10000 cap.
+        self.recipe('local b=cooker.primitive("box",{}); local p={}; for i=1,12000 do p[i]={asset=b,position={i,0,0}} end; return cooker.scene(p)',
+                    output="res://content/worlds/fixture/generated/many.scn")
 
     def test_invalid_configuration_and_mesh_data(self):
         expressions = [

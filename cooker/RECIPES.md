@@ -204,7 +204,7 @@ default deadline (v6, 2026-10-04); a job may set one (1..86,400,000 ms):
 | `max_resources` | 256 handles |
 | `input_mb` | 256 MiB declared input dependency bytes |
 | `max_vertices` | 500000 mesh vertices across requested handles |
-| `max_instances` | 10000 scene instance declarations |
+| `max_instances` | none (opt-in cap on scene instance declarations) |
 | `output_mb` | 64 MiB serialized output |
 
 Index arrays are limited to `6 * max_vertices`. Repeated input requests consume
