@@ -1,10 +1,14 @@
 /*<<----- VEYA_COOKER: replace stale generated outputs in place; readers never see a missing file. */
 #pragma once
+#include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_saver.h"
 #include "core/os/os.h"
 #include "core/templates/hash_set.h"
+#ifdef WINDOWS_ENABLED
+#include <windows.h>
+#endif
 
 namespace CookerAtomicSave {
 
@@ -31,13 +35,29 @@ inline bool is_staging(const String &p_name) {
 	return p_name.contains(".partial.") || p_name.ends_with(".partial") || p_name.contains(".recipe-tmp.");
 }
 
-// Move a finished staging file over the destination. Godot replaces an
-// existing destination on every platform; on Windows a concurrent reader
-// without delete sharing can briefly block that, so retry for a bounded time.
+// Publish in one filesystem operation. DirAccessWindows::rename removes the
+// old destination first, so use replace-existing directly on Windows instead.
+// A reader without delete sharing can block the move; retry with the old file
+// still published. POSIX rename already replaces the destination atomically.
 inline Error publish(const String &p_staging, const String &p_path) {
+#ifdef WINDOWS_ENABLED
+	const auto windows_path = [](const String &p_value) {
+		const String path = ProjectSettings::get_singleton()->globalize_path(p_value).replace("/", "\\");
+		if (path.begins_with("\\\\?\\")) return path;
+		if (path.begins_with("\\\\")) return String("\\\\?\\UNC\\") + path.substr(2);
+		return String("\\\\?\\") + path;
+	};
+	const Char16String staging = windows_path(p_staging).utf16();
+	const Char16String destination = windows_path(p_path).utf16();
+#endif
 	Error error = FAILED;
 	for (int attempt = 0; attempt < 80; ++attempt) {
+#ifdef WINDOWS_ENABLED
+		error = MoveFileExW(reinterpret_cast<LPCWSTR>(staging.get_data()), reinterpret_cast<LPCWSTR>(destination.get_data()),
+				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? OK : FAILED;
+#else
 		error = DirAccess::rename_absolute(p_staging, p_path);
+#endif
 		if (error == OK) return OK;
 		OS::get_singleton()->delay_usec(250000);
 	}
