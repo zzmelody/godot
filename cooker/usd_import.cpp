@@ -280,7 +280,7 @@ Error import_scene(const Dictionary &job,Dictionary &result) {
 	// the final vector storage is stable. Never retain pointers into temporaries.
 	std::function<void(XformNode &,XformNode *)> index=[&](XformNode &n,XformNode *parent){n.parent=parent;importer.nodes[n.absolute_path.full_path_name()]=&n;for(auto &c:n.children)index(c,&n);};index(importer.hierarchy,nullptr);
 	e=importer.visit(importer.hierarchy);ERR_FAIL_COND_V(e!=OK,e);
-	ERR_FAIL_COND_V_MSG(authored_instances!=importer.instance_count,ERR_INVALID_DATA,"USD composition lost authored branch instances.");
+	ERR_FAIL_COND_V_MSG(authored_instances!=importer.instance_count,ERR_INVALID_DATA,"USD authored branch count "+itos(authored_instances)+" differs from composed visible count "+itos(importer.instance_count)+".");
 	ERR_FAIL_COND_V_MSG(importer.surfaces[1].indices.empty(),ERR_INVALID_DATA,"Plant import has no leaf material faces; refusing a bare-tree replacement.");
 	Ref<ArrayMesh> mesh;mesh.instantiate();const Dictionary overrides=job.get("material_overrides",Dictionary());
 	for(int r=0;r<2;++r) {

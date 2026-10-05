@@ -1433,6 +1433,15 @@ static bool OverridePrimSpecRec(uint32_t depth, PrimSpec &dst,
   dst.metas().update_from(src.metas());
   DCOUT("update_from done");
 
+  // A local class opinion makes a referenced prototype library abstract.
+  // An `over` adds opinions without turning a concrete `def` into an object.
+  if (src.specifier() == Specifier::Class) {
+    dst.specifier() = Specifier::Class;
+  }
+  if (!src.typeName().empty()) {
+    dst.typeName() = src.typeName();
+  }
+
   // Override properties
   for (const auto &prop : src.props()) {
     // replace
