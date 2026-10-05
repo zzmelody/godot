@@ -209,6 +209,13 @@ struct Import {
 	Error visit(const XformNode &node) {
 		if(!node.prim) {for(const auto &child:node.children) {Error e=visit(child);if(e!=OK)return e;}return OK;}
 		const std::string path=node.absolute_path.full_path_name();
+		// Class libraries supply prototype geometry but are not visible objects.
+		if(node.prim->specifier()==u::Specifier::Class)return OK;
+		u::Attribute visibility;std::string visibility_error;
+		if(u::tydra::GetAttribute(*node.prim,"visibility",&visibility,&visibility_error)) {
+			auto value=visibility.get_value<u::value::token>();
+			if(value && value->str()=="invisible")return OK;
+		}
 		if(path.find("/Prototypes/")!=std::string::npos || path.size()>=11 && path.compare(path.size()-11,11,"/Prototypes")==0)return OK;
 		if(const auto *inst=node.prim->as<u::PointInstancer>()) {
 			ERR_FAIL_COND_V(!inst->prototypes,ERR_INVALID_DATA);const auto paths=targets(*inst->prototypes);
@@ -243,6 +250,13 @@ Error import_scene(const Dictionary &job,Dictionary &result) {
 	const String source=job.get("source",""),output=job.get("output",""),type=job.get("type","PackedScene");
 	ERR_FAIL_COND_V(type!="ArrayMesh" && type!="PackedScene",ERR_UNAVAILABLE);
 	HashSet<String> files;Error e=dependencies(source,files);ERR_FAIL_COND_V(e!=OK,e);
+	u::Stage authored;e=load(source,authored,false);ERR_FAIL_COND_V(e!=OK,e);
+	int authored_instances=0;
+	std::function<void(const u::Prim &)> count_instances=[&](const u::Prim &prim) {
+		if(const auto *inst=prim.as<u::PointInstancer>()) {std::vector<int> ids;if(sample(inst->protoIndices,ids))authored_instances+=ids.size();}
+		for(const auto &child:prim.children())count_instances(child);
+	};
+	for(const auto &prim:authored.root_prims())count_instances(prim);
 	Import importer;e=load(source,importer.stage,true);ERR_FAIL_COND_V(e!=OK,e);
 	ERR_FAIL_COND_V(importer.stage.metas().upAxis.get_value()!=u::Axis::Y || importer.stage.metas().metersPerUnit.get_value()!=1.0,ERR_UNAVAILABLE);
 	const Dictionary options=job.get("options",Dictionary());
@@ -254,6 +268,7 @@ Error import_scene(const Dictionary &job,Dictionary &result) {
 	// the final vector storage is stable. Never retain pointers into temporaries.
 	std::function<void(XformNode &,XformNode *)> index=[&](XformNode &n,XformNode *parent){n.parent=parent;importer.nodes[n.absolute_path.full_path_name()]=&n;for(auto &c:n.children)index(c,&n);};index(importer.hierarchy,nullptr);
 	e=importer.visit(importer.hierarchy);ERR_FAIL_COND_V(e!=OK,e);
+	ERR_FAIL_COND_V_MSG(authored_instances!=importer.instance_count,ERR_INVALID_DATA,"USD composition lost authored branch instances.");
 	ERR_FAIL_COND_V_MSG(importer.surfaces[1].indices.empty(),ERR_INVALID_DATA,"Plant import has no leaf material faces; refusing a bare-tree replacement.");
 	Ref<ArrayMesh> mesh;mesh.instantiate();const Dictionary overrides=job.get("material_overrides",Dictionary());
 	for(int r=0;r<2;++r) {

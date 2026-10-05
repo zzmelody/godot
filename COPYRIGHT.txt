@@ -673,6 +673,11 @@ Copyright: 2018-2020, Jonathan Young
   2006, NVIDIA Corporation, Ignacio Castano
 License: Expat
 
+Files: thirdparty/tinyusdz/*
+Comment: TinyUSDZ / LightUSD, Cooker-only static USD reader
+Copyright: 2022-present, Light Transport Entertainment, Inc.
+License: Apache-2.0
+
 Files: thirdparty/zlib/*
 Comment: zlib
 Copyright: 1995-2026, Jean-loup Gailly and Mark Adler

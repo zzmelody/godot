@@ -60,6 +60,7 @@ RECONSTRUCT_PRIM_DECL(GeomSphere);
 RECONSTRUCT_PRIM_DECL(GeomBasisCurves);
 RECONSTRUCT_PRIM_DECL(GeomCamera);
 RECONSTRUCT_PRIM_DECL(GeomSubset);
+RECONSTRUCT_PRIM_DECL(PointInstancer);
 RECONSTRUCT_PRIM_DECL(SphereLight);
 RECONSTRUCT_PRIM_DECL(DomeLight);
 RECONSTRUCT_PRIM_DECL(DiskLight);
@@ -700,22 +701,13 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
     PUSH_ERROR_AND_RETURN("Too deep.");
   }
 
-  // Traverse children first.
-  for (auto &child : primspec.children()) {
-    const Path parent_prim_path = dst_prim_path.AppendPrim(child.name());
-    if (!CompositeReferencesRec(depth + 1, resolver, asset_search_paths, parent_prim_path, in_layer, child,
-                                warn, err, options)) {
-      return false;
-    }
-  }
-
   // Use PrimSpec's AssetResolution state.
   std::string cwp = primspec.get_current_working_path();
   std::vector<std::string> search_paths = primspec.get_asset_search_paths();
 
   if (primspec.metas().references) {
-    const ListEditQual &qual = primspec.metas().references.value().first;
-    const auto &refecences = primspec.metas().references.value().second;
+    const ListEditQual qual = primspec.metas().references.value().first;
+    const auto refecences = primspec.metas().references.value().second;
 
     if ((qual == ListEditQual::ResetToExplicit) ||
         (qual == ListEditQual::Prepend)) {
@@ -759,12 +751,13 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
         }
 
         // Replace prim path prefix
-        if (!ReplaceRootPrimPathRec(0, reference.prim_path, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
+        PrimSpec referenced = *src_ps;
+        if (!ReplaceRootPrimPathRec(0, reference.prim_path, dst_prim_path, referenced, warn, err)) {
           return false;
         }
 
         // `inherits` op
-        if (!InheritPrimSpec(primspec, *src_ps, warn, err)) {
+        if (!InheritPrimSpec(primspec, referenced, warn, err)) {
           PUSH_ERROR_AND_RETURN(fmt::format("Failed to reference layer `{}`",
                                             reference.asset_path));
         }
@@ -826,12 +819,13 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
         }
 
         // Replace prim path prefix
-        if (!ReplaceRootPrimPathRec(0, reference.prim_path, dst_prim_path, *const_cast<PrimSpec *>(src_ps), warn, err)) {
+        PrimSpec referenced = *src_ps;
+        if (!ReplaceRootPrimPathRec(0, reference.prim_path, dst_prim_path, referenced, warn, err)) {
           return false;
         }
 
         // `over` op
-        if (!OverridePrimSpec(primspec, *src_ps, warn, err)) {
+        if (!OverridePrimSpec(primspec, referenced, warn, err)) {
           PUSH_ERROR_AND_RETURN(fmt::format("Failed to reference layer `{}`",
                                             reference.asset_path));
         }
@@ -851,6 +845,16 @@ bool CompositeReferencesRec(uint32_t depth, AssetResolutionResolver &resolver,
 
   // Remove `references`.
   primspec.metas().references.reset();
+
+  // Parent references may supply the targets used by local child references.
+  // Resolve those children against the live destination layer after merging.
+  for (auto &child : primspec.children()) {
+    const Path child_path = dst_prim_path.AppendPrim(child.name());
+    if (!CompositeReferencesRec(depth + 1, resolver, asset_search_paths,
+                                child_path, in_layer, child, warn, err, options)) {
+      return false;
+    }
+  }
 
   return true;
 }
@@ -1174,7 +1178,7 @@ bool CompositeReferences(AssetResolutionResolver &resolver,
 
   for (auto &item : dst.primspecs()) {
     Path primPath("/" + item.first, "");
-    if (!CompositeReferencesRec(/* depth */ 0, resolver, search_paths, primPath, in_layer,
+    if (!CompositeReferencesRec(/* depth */ 0, resolver, search_paths, primPath, dst,
                                 item.second, warn, err, options)) {
       PUSH_ERROR_AND_RETURN("Composite `references` failed.");
     }
@@ -1365,6 +1369,7 @@ static nonstd::optional<Prim> ReconstructPrimFromPrimSpec(
   RECONSTRUCT_PRIM(GeomBasisCurves)
   RECONSTRUCT_PRIM(GeomCamera)
   RECONSTRUCT_PRIM(GeomSubset)
+  RECONSTRUCT_PRIM(PointInstancer)
   RECONSTRUCT_PRIM(SphereLight)
   RECONSTRUCT_PRIM(DomeLight)
   RECONSTRUCT_PRIM(CylinderLight)
@@ -1495,6 +1500,18 @@ static bool InheritPrimSpecImpl(PrimSpec &dst, const PrimSpec &src,
       if (!OverridePrimSpecRec(1, child, (*src_it), warn, err)) {
         return false;
       }
+    }
+  }
+
+  // Local authored children are stronger than the referenced layer and must
+  // survive even when the referenced prim does not contain a matching child.
+  for (const auto &child : dst.children()) {
+    const auto it = std::find_if(ps.children().begin(), ps.children().end(),
+                                [&child](const PrimSpec &item) {
+                                  return item.name() == child.name();
+                                });
+    if (it == ps.children().end()) {
+      ps.children().push_back(child);
     }
   }
 
