@@ -113,11 +113,12 @@ struct Import {
 		ERR_FAIL_COND_V(!ji.flatten_with_indices(&indices,&err) || !u::tydra::GetGeomPrimvar(stage,&mesh,"skel:jointWeights",&jw,&err) || !jw.flatten_with_indices(&weights,&err),ERR_INVALID_DATA);
 		const int stride=ji.get_elementSize();ERR_FAIL_COND_V(stride<1 || stride>16 || indices.size()!=points.size()*stride || weights.size()!=indices.size(),ERR_INVALID_DATA);
 		const XformNode *binding=&node;u::Relationship rel;u::Property relationship;
-		while(binding) {
+		if(mesh.skeleton)rel=*mesh.skeleton;
+		while(binding && !mesh.skeleton) {
 			if(binding->prim && u::tydra::GetProperty(*binding->prim,"skel:skeleton",&relationship,&err) && relationship.is_relationship()) {rel=relationship.get_relationship();break;}
 			binding=binding->parent;
 		}
-		ERR_FAIL_COND_V_MSG(!binding || targets(rel).empty(),ERR_INVALID_DATA,"Skinned USD mesh has no inherited skeleton.");
+		ERR_FAIL_COND_V_MSG(!binding || targets(rel).empty(),ERR_INVALID_DATA,"Skinned USD mesh has no inherited skeleton: "+String::utf8(node.absolute_path.full_path_name().c_str()));
 		const std::string skel_path=targets(rel)[0].full_path_name();
 		ERR_FAIL_COND_V(!nodes.count(skel_path),ERR_INVALID_DATA);
 		const auto *skel=nodes.at(skel_path)->prim->as<u::Skeleton>();ERR_FAIL_NULL_V(skel,ERR_INVALID_DATA);
