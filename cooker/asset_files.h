@@ -1,6 +1,7 @@
 /*<<----- VEYA_COOKER: bounded workspace paths and dependency-closed, unsigned asset packs. */
 #pragma once
 
+#include "atomic_save.h"
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
@@ -207,7 +208,7 @@ inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
 	Error error = check_path(output, true, true);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V(output.get_extension() != "pck", ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V_MSG(FileAccess::exists(output), ERR_ALREADY_EXISTS, "Use a new release path; existing packs are immutable.");
+	ERR_FAIL_COND_V_MSG(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS, "Use a new release path; existing packs are immutable.");
 	HashSet<String> closure;
 	HashSet<ObjectID> visited_resources;
 	Vector<Ref<Resource>> loaded_roots; // Keep visited ObjectIDs alive through the traversal.
@@ -269,7 +270,7 @@ inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
 		DirAccess::remove_absolute(absolute + ".partial");
 		return error;
 	}
-	error = DirAccess::rename_absolute(absolute + ".partial", absolute);
+	error = CookerAtomicSave::publish(absolute + ".partial", absolute);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["files"] = hashes;
