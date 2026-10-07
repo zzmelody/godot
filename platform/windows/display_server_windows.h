@@ -394,6 +394,7 @@ class DisplayServerWindows : public DisplayServer {
 
 		HWND parent_hwnd = nullptr;
 		bool wallpaper = false;
+		bool wallpaper_surface_pending = false;
 		bool wallpaper_enabled = true;
 		LONG_PTR wallpaper_style = 0, wallpaper_ex_style = 0;
 		RECT wallpaper_rect = {};

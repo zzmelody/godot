@@ -2157,26 +2157,56 @@ Error DisplayServerWindows::window_restore_wallpaper(DisplayServerEnums::WindowI
 	ERR_FAIL_COND_V(!windows.has(p_window), ERR_INVALID_PARAMETER);
 	window_set_wallpaper_input(false, p_window);
 	WindowData previous = windows[p_window];
-	if (!previous.wallpaper) return OK;
+	if (!previous.wallpaper) {
+		return OK;
+	}
 	HWND restored_parent = IsWindow(previous.wallpaper_parent) ? previous.wallpaper_parent : nullptr;
 	if (!IsWindow(previous.hWnd)) {
 		// Explorer may destroy a cross-process child. Recreate only the engine surface,
-		// preserving the Window instance, SceneTree, extension, world and CEF browser.
+		// preserving the Window instance, SceneTree, extension and world.
 #ifdef RD_ENABLED
-		if (rendering_device) rendering_device->screen_free(p_window);
-		if (rendering_context && previous.rendering_context_window_created) rendering_context->window_destroy(p_window);
+		if (previous.rendering_context_window_created) {
+			if (rendering_device) {
+				rendering_device->screen_free(p_window);
+			}
+			if (rendering_context) {
+				rendering_context->window_destroy(p_window);
+			}
+		}
 #endif
 #ifdef GLES3_ENABLED
-		if (gl_manager_native && previous.gl_native_window_created) gl_manager_native->window_destroy(p_window);
+		if (gl_manager_native && previous.gl_native_window_created) {
+			gl_manager_native->window_destroy(p_window);
+		}
 #ifdef ANGLE_ENABLED
-		if (gl_manager_angle && previous.gl_angle_window_created) gl_manager_angle->window_destroy(p_window);
+		if (gl_manager_angle && previous.gl_angle_window_created) {
+			gl_manager_angle->window_destroy(p_window);
+		}
 #endif
 #endif
-		if (previous.drop_target) previous.drop_target->Release();
-		windows.erase(p_window);
+		_destroy_window(p_window);
+		// Retain only the restoration recipe and logical callbacks. Freed native
+		// resources must never be copied back when creation fails.
+		previous.hWnd = nullptr;
+		previous.drop_target = nullptr;
+		previous.wtctx = nullptr;
+		previous.wrt_wd = nullptr;
+		previous.icon_big = nullptr;
+		previous.icon_small = nullptr;
+		previous.im_himc = nullptr;
+		previous.rendering_context_window_created = false;
+		previous.gl_native_window_created = false;
+#ifdef ANGLE_ENABLED
+		previous.gl_angle_window_created = false;
+#endif
+		previous.create_completed = false;
+		previous.initialized = false;
 		Rect2i rect(previous.wallpaper_rect.left, previous.wallpaper_rect.top, previous.wallpaper_rect.right - previous.wallpaper_rect.left, previous.wallpaper_rect.bottom - previous.wallpaper_rect.top);
 		Error result = _create_window(p_window, previous.wallpaper_mode, previous.wallpaper_flags, rect, previous.exclusive, previous.transient_parent, restored_parent, previous.no_redirection_bitmap);
-		if (result != OK) return result;
+		if (result != OK) {
+			windows[p_window] = previous;
+			return result;
+		}
 		WindowData &created = windows[p_window];
 		created.instance_id = previous.instance_id;
 		created.rect_changed_callback = previous.rect_changed_callback;
@@ -2184,39 +2214,104 @@ Error DisplayServerWindows::window_restore_wallpaper(DisplayServerEnums::WindowI
 		created.input_event_callback = previous.input_event_callback;
 		created.input_text_callback = previous.input_text_callback;
 		created.drop_files_callback = previous.drop_files_callback;
-#ifdef RD_ENABLED
-		if (rendering_context) {
-			result = _create_rendering_context_window(p_window, rendering_driver);
-			if (result != OK) return result;
-			if (rendering_device) rendering_device->screen_create(p_window);
-		}
-#endif
-#ifdef GLES3_ENABLED
-		if (gl_manager_native) { result = _create_gl_window(p_window); if (result != OK) return result; }
-#endif
+		created.wallpaper = true;
+		created.wallpaper_surface_pending = true;
+		created.wallpaper_enabled = previous.wallpaper_enabled;
+		created.wallpaper_style = previous.wallpaper_style;
+		created.wallpaper_ex_style = previous.wallpaper_ex_style;
+		created.wallpaper_rect = previous.wallpaper_rect;
+		created.wallpaper_parent = previous.wallpaper_parent;
+		created.wallpaper_owner = previous.wallpaper_owner;
+		created.wallpaper_placement = previous.wallpaper_placement;
+		created.wallpaper_mode = previous.wallpaper_mode;
+		created.wallpaper_flags = previous.wallpaper_flags;
+		created.pre_fs_rect = previous.pre_fs_rect;
+		created.pre_fs_valid = previous.pre_fs_valid;
+		created.was_maximized_pre_fs = previous.was_maximized_pre_fs;
 	} else {
 		SetLastError(ERROR_SUCCESS);
 		DPI_AWARENESS_CONTEXT old_dpi = restored_parent ? SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(restored_parent)) : nullptr;
 		SetParent(previous.hWnd, restored_parent);
 		const DWORD error = GetLastError();
-		if (old_dpi) SetThreadDpiAwarenessContext(old_dpi);
-		if (error != ERROR_SUCCESS) return ERR_CANT_CREATE;
+		if (old_dpi) {
+			SetThreadDpiAwarenessContext(old_dpi);
+		}
+		if (error != ERROR_SUCCESS) {
+			return ERR_CANT_CREATE;
+		}
 	}
 	WindowData &wd = windows[p_window];
+	if (wd.wallpaper_surface_pending) {
+		// A failed surface creation leaves the HWND and recipe available for the
+		// next restore call. Do not silently accept an incomplete replacement.
+#ifdef RD_ENABLED
+		if (rendering_context && !wd.rendering_context_window_created) {
+			const Error result = _create_rendering_context_window(p_window, rendering_driver);
+			if (result != OK) {
+				return result;
+			}
+			if (rendering_device) {
+				const Error screen_result = rendering_device->screen_create(p_window);
+				if (screen_result != OK) {
+					_destroy_rendering_context_window(p_window);
+					return screen_result;
+				}
+			}
+		}
+#endif
+#ifdef GLES3_ENABLED
+		if ((gl_manager_native && !wd.gl_native_window_created)
+#ifdef ANGLE_ENABLED
+				|| (gl_manager_angle && !wd.gl_angle_window_created)
+#endif
+		) {
+			const Error result = _create_gl_window(p_window);
+			if (result != OK) {
+				return result;
+			}
+		}
+#endif
+		wd.wallpaper_surface_pending = false;
+	}
 	wd.parent_hwnd = restored_parent;
-	wd.wallpaper = false;
+	SetLastError(ERROR_SUCCESS);
 	SetWindowLongPtrW(wd.hWnd, GWL_STYLE, previous.wallpaper_style);
+	if (GetLastError() != ERROR_SUCCESS) {
+		return ERR_CANT_CREATE;
+	}
+	SetLastError(ERROR_SUCCESS);
 	SetWindowLongPtrW(wd.hWnd, GWL_EXSTYLE, previous.wallpaper_ex_style);
+	if (GetLastError() != ERROR_SUCCESS) {
+		return ERR_CANT_CREATE;
+	}
 	EnableWindow(wd.hWnd, previous.wallpaper_enabled);
+	if (!IsWindow(wd.hWnd) || bool(IsWindowEnabled(wd.hWnd)) != previous.wallpaper_enabled) {
+		return ERR_CANT_CREATE;
+	}
 	const RECT &r = previous.wallpaper_rect;
-	POINT origin = {r.left, r.top};
-	if (restored_parent) ScreenToClient(restored_parent, &origin);
-	else if (IsWindow(previous.wallpaper_owner)) SetWindowLongPtrW(wd.hWnd, GWLP_HWNDPARENT, (LONG_PTR)previous.wallpaper_owner);
-	if (!SetWindowPos(wd.hWnd, previous.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST, origin.x, origin.y, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE)) return ERR_CANT_CREATE;
+	POINT origin = { r.left, r.top };
+	if (restored_parent) {
+		if (!ScreenToClient(restored_parent, &origin)) {
+			return ERR_CANT_CREATE;
+		}
+	} else if (IsWindow(previous.wallpaper_owner)) {
+		SetLastError(ERROR_SUCCESS);
+		SetWindowLongPtrW(wd.hWnd, GWLP_HWNDPARENT, (LONG_PTR)previous.wallpaper_owner);
+		if (GetLastError() != ERROR_SUCCESS) {
+			return ERR_CANT_CREATE;
+		}
+	}
+	if (!SetWindowPos(wd.hWnd, previous.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST, origin.x, origin.y, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE)) {
+		return ERR_CANT_CREATE;
+	}
 	if (!restored_parent && previous.wallpaper_placement.length == sizeof(WINDOWPLACEMENT)) {
 		WINDOWPLACEMENT placement = previous.wallpaper_placement;
-		if (placement.showCmd == SW_SHOWNORMAL) placement.showCmd = SW_SHOWNOACTIVATE;
-		if (!SetWindowPlacement(wd.hWnd, &placement)) return ERR_CANT_CREATE;
+		if (placement.showCmd == SW_SHOWNORMAL) {
+			placement.showCmd = SW_SHOWNOACTIVATE;
+		}
+		if (!SetWindowPlacement(wd.hWnd, &placement)) {
+			return ERR_CANT_CREATE;
+		}
 	}
 	wd.fullscreen = previous.wallpaper_mode == DisplayServerEnums::WINDOW_MODE_FULLSCREEN || previous.wallpaper_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN;
 	wd.multiwindow_fs = previous.wallpaper_mode == DisplayServerEnums::WINDOW_MODE_FULLSCREEN;
@@ -2225,6 +2320,9 @@ Error DisplayServerWindows::window_restore_wallpaper(DisplayServerEnums::WindowI
 	wd.pre_fs_rect = previous.pre_fs_rect;
 	wd.pre_fs_valid = previous.pre_fs_valid;
 	wd.was_maximized_pre_fs = previous.was_maximized_pre_fs;
+	// Commit only after every native restoration operation succeeds.
+	wd.wallpaper = false;
+	wd.initialized = true;
 	// The passive wallpaper removed the mouse collection. Restore ordinary
 	// focus-based registration only after this HWND is a normal window again.
 	_register_raw_input_devices(DisplayServerEnums::INVALID_WINDOW_ID);
