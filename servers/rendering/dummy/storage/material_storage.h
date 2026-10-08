@@ -50,7 +50,8 @@ private:
 		HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniforms;
 	};
 
-	mutable RID_Owner<DummyShader> shader_owner;
+	// RenderingServer allocates shader and material RIDs on loading threads.
+	mutable RID_Owner<DummyShader, true> shader_owner;
 
 	ShaderCompiler dummy_compiler;
 	HashSet<RID> dummy_embedded_set;
@@ -60,7 +61,7 @@ private:
 		RID next_pass;
 	};
 
-	mutable RID_Owner<DummyMaterial> material_owner;
+	mutable RID_Owner<DummyMaterial, true> material_owner;
 
 public:
 	static MaterialStorage *get_singleton() { return singleton; }
