@@ -119,6 +119,70 @@ return {
         self.assertTrue(repeated["steps"][2]["skipped"])
         self.assertTrue(repeated["steps"][3]["skipped"])
 
+    def test_module_package_pipeline_paths(self):
+        for world_root in ("worlds", "mod-worlds"):
+            for collection in ("modules", "props", "npcs"):
+                with self.subTest(world_root=world_root, collection=collection):
+                    package = f"content/{world_root}/fixture/{collection}/fixture_asset"
+                    folder = self.project / package
+                    (folder / "cooker").mkdir(parents=True)
+                    (folder / "source").mkdir()
+                    (folder / "cooker/recipe.luau").write_text(BOX)
+                    payload = b"uid://immutable-module-payload\n"
+                    (folder / "source/model.uid").write_bytes(payload)
+                    output = f"res://{package}/generated/model/fixture/model.res"
+                    uid = output + ".uid"
+                    steps = f'''return {{
+ {{operation="run-recipe",source="res://{package}/cooker/recipe.luau",output="{output}"}},
+ {{operation="stage-source",source="res://{package}/source/model.uid",output="{uid}"}},
+ {{operation="asset-manifest",output="res://{package}/generated/model/fixture/asset.manifest.json",
+  asset_id="fixture",revision=1,kind="model",entry="model.res",files={{"model.res","model.res.uid"}}}},
+}}'''
+                    (folder / "cooker/steps.luau").write_text(steps)
+                    report = self.pipeline(f'return pipeline.import("res://{package}/cooker/steps.luau","steps")')
+                    self.assertEqual(report["step_count"], 3)
+                    self.assertTrue(all(step["ok"] for step in report["steps"]))
+                    self.assertEqual((folder / "generated/model/fixture/model.res.uid").read_bytes(), payload)
+                    generated = folder / "generated/model/fixture/model.res"
+                    manifest = json.loads((generated.parent / "asset.manifest.json").read_text())
+                    recorded = {entry["path"]: entry["sha256"] for entry in manifest["files"]}
+                    self.assertEqual(recorded["model.res"], hashlib.sha256(generated.read_bytes()).hexdigest())
+                    self.assertEqual(recorded["model.res.uid"], hashlib.sha256(payload).hexdigest())
+
+    def test_module_package_paths_reject_wrong_owner_and_intermediate_folders(self):
+        package = "content/worlds/fixture/props/fixture_asset"
+        folder = self.project / package
+        (folder / "source").mkdir(parents=True)
+        (folder / "source/model.uid").write_bytes(b"uid://immutable-module-payload\n")
+        outputs = (
+            "content/worlds/fixture/middle/props/fixture_asset/generated/model.res",
+            "content/worlds/fixture/props/fixture_asset/middle/generated/model.res",
+            "content/worlds/fixture/props/generated/model.res",
+            "content/worlds/fixture/other/fixture_asset/generated/model.res",
+            "content/worlds/fixture/props//generated/model.res",
+            "content/worlds/fixture/props/fixture_asset/generated/../escape.res",
+        )
+        for output in outputs:
+            with self.subTest(output=output):
+                self.recipe(output="res://" + output, success=False)
+                self.assertFalse((self.project / output).exists())
+        for owner in ("content/worlds/other/props/fixture_asset",
+                      "content/worlds/fixture/props/another_asset",
+                      "content/worlds/fixture",
+                      "content/shared"):
+            with self.subTest(owner=owner):
+                output = f"{owner}/generated/model/refused/model.uid"
+                self.pipeline(f'return {{{{operation="stage-source",source="res://{package}/source/model.uid",output="res://{output}"}}}}', success=False)
+                self.assertFalse((self.project / output).exists())
+        for directory in ("content/worlds/fixture/props/fixture_asset/middle/cooker",
+                          "content/worlds/fixture/middle/props/fixture_asset/cooker"):
+            with self.subTest(directory=directory):
+                steps = self.project / directory / "steps.luau"
+                steps.parent.mkdir(parents=True)
+                steps.write_text(f'return {{{{operation="stage-source",source="res://{package}/source/model.uid",output="res://{package}/generated/model/refused/model.uid"}}}}')
+                self.pipeline(f'return pipeline.import("res://{directory}/steps.luau","steps")', success=False)
+        self.assertFalse((folder / "generated").exists())
+
     def test_luau_pipeline_rejects_non_declarative_or_unsafe_values(self):
         cached = self.project / "content/worlds/fixture/generated/cached.res"
         cached.parent.mkdir(parents=True)

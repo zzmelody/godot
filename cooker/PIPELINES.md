@@ -55,6 +55,9 @@ converts the returned tables to native jobs and executes them sequentially.
 `pipeline.import(path, "steps")` reads a dense array of job tables from a Cooker
 module under `content/cooker/`, `content/shared/cooker/`, or a package's
 `content/worlds/<id>/cooker/` / `content/mod-worlds/<id>/cooker/` directory.
+World packages may also import steps from their direct `modules/<id>/cooker/`,
+`props/<kind>/cooker/`, and `npcs/<id>/cooker/` directories. Extra intermediate
+directories do not create a package boundary.
 Imported data is read-only; copy jobs into a new array before appending steps.
 Both forms preserve module-count, source-byte, value-depth, cycle and symlink
 guards. Step imports cannot load an authored gameplay module as a job graph.

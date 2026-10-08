@@ -24,14 +24,9 @@ inline Error stage(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(error != OK, error);
 	error = CookerFiles::check_path(output, true);
 	ERR_FAIL_COND_V(error != OK, error);
-	const int marker = source.find("/source/");
-	ERR_FAIL_COND_V(marker < 0, ERR_UNAUTHORIZED);
-	const String package = source.left(marker);
-	const Vector<String> parts = package.trim_prefix("res://").split("/");
-	const bool shared = package == "res://content/shared";
-	const bool world = parts.size() == 3 && parts[0] == "content" &&
-			(parts[1] == "worlds" || parts[1] == "mod-worlds");
-	ERR_FAIL_COND_V(!shared && !world, ERR_UNAUTHORIZED);
+	const String package_root = CookerFiles::package_root_relative(source.trim_prefix("res://"), "source");
+	ERR_FAIL_COND_V(package_root.is_empty(), ERR_UNAUTHORIZED);
+	const String package = "res://" + package_root;
 	ERR_FAIL_COND_V(!output.begins_with(package + "/generated/"), ERR_UNAUTHORIZED);
 	ERR_FAIL_COND_V(!is_payload(source) || source.get_extension() != output.get_extension(), ERR_UNAVAILABLE);
 	ERR_FAIL_COND_V(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS);

@@ -113,8 +113,11 @@ only as a low-level test/debug protocol. Jobs currently implemented in source:
   Godot shader/include source and their UIDs. It accepts only `source` and
   `output`, preserves the extension and every byte, rejects empty/over-64-MiB
   files and existing outputs. Luau pipelines own the file list, publication,
-  cache receipts and asset manifests. No executable or arbitrary file copy
-  capability is exposed. Godot exports these payloads directly; resource PCK
+  cache receipts and asset manifests.
+  World modules use the same rule inside `modules/<id>/`, `props/<kind>/`, or
+  `npcs/<id>/`: source staging cannot cross a module or world boundary.
+  No executable or arbitrary file copy capability is exposed. Godot exports
+  these payloads directly; resource PCK
   jobs and fixed `.scn/.res` release helpers retain their resource contract.
 - `import-texture`: `source`, `output`, `compression` (`lossless`, `basisu`,
   `s3tc`, `bptc`, `etc2`, `astc`), optional `mipmaps` and `normal_map`.
@@ -162,7 +165,9 @@ external FBX converters are not started.
 All asset paths use `res://` inside the specified workspace. Resource outputs
 belong to the world that owns them, `content/worlds/<id>/generated/` or
 `content/mod-worlds/<id>/generated/`, or to the engine-wide
-`content/shared/generated/`. Outputs are saved with relative external paths so
+`content/shared/generated/`. Each world also admits direct module outputs at
+`modules/<id>/generated/`, `props/<kind>/generated/`, and `npcs/<id>/generated/`.
+Outputs are saved with relative external paths so
 a world directory loads from `user://` as well as `res://`. PCK outputs go under
 `content/releases/` and may not overwrite an existing pack. Pack dependencies
 must already be cooked into one of those `generated/` roots; raw image/model

@@ -15,21 +15,36 @@
 #include <filesystem>
 
 namespace CookerFiles {
-// Cooked outputs live inside the world that owns them, or in the engine-wide
-// shared tree: content/{worlds,mod-worlds}/<id>/generated/ or content/shared/generated/.
-inline bool is_generated_relative(const String &p_relative) {
-	// Directory roots (pack "directories") may name generated/ itself, without a trailing slash.
-	if (p_relative == "content/shared/generated" || p_relative.begins_with("content/shared/generated/")) {
-		return true;
+// Only the shared package, a world package, or one direct module package owns
+// cooker/source/generated directories. Intermediate folders are not packages.
+inline String package_root_relative(const String &p_relative, const String &p_directory) {
+	const String shared = "content/shared/" + p_directory;
+	if (p_relative == shared || p_relative.begins_with(shared + "/")) {
+		return "content/shared";
 	}
 	for (const char *root : { "content/worlds/", "content/mod-worlds/" }) {
 		if (!p_relative.begins_with(root)) {
 			continue;
 		}
-		Vector<String> parts = p_relative.trim_prefix(root).split("/");
-		return parts.size() >= 2 && !parts[0].is_empty() && parts[1] == "generated";
+		const Vector<String> parts = p_relative.trim_prefix(root).split("/");
+		if (parts.size() < 2 || parts[0].is_empty()) {
+			return String();
+		}
+		const String world = String(root) + parts[0];
+		if (parts[1] == p_directory) {
+			return world;
+		}
+		if (parts.size() >= 4 && (parts[1] == "modules" || parts[1] == "props" || parts[1] == "npcs") && !parts[2].is_empty() && parts[3] == p_directory) {
+			return world + "/" + parts[1] + "/" + parts[2];
+		}
+		return String();
 	}
-	return false;
+	return String();
+}
+
+inline bool is_generated_relative(const String &p_relative) {
+	// Pack directory roots may name generated itself, without a trailing slash.
+	return !package_root_relative(p_relative, "generated").is_empty();
 }
 
 inline bool is_generated(const String &p_path) {

@@ -159,15 +159,15 @@ struct Pipeline {
 		String kind;
 		if (lua_gettop(L)==2) {if(!string(2,kind,16))return false;} else kind="layout";
 		if (kind!="layout" && kind!="steps") return fail("pipeline.import export must be layout or steps");
-		const String world_root=path.begins_with("res://content/mod-worlds/") ? "res://content/mod-worlds/" : "res://content/worlds/";
-		const String world_relative=path.trim_prefix(world_root);
-		const int world_separator=world_relative.find("/");
-		const bool world_cooker=path.begins_with(world_root) && world_separator>0 && world_relative.substr(world_separator).begins_with("/cooker/");
-		const bool cooker_module=path.begins_with("res://content/cooker/") || path.begins_with("res://content/shared/cooker/") || world_cooker;
-		const bool content_module=cooker_module || path.begins_with("res://content/runtime/") || path.begins_with("res://content/worlds/") || path.begins_with("res://content/mod-worlds/");
-		if (!content_module || !path.ends_with(".luau") || CookerFiles::check_path(path)!=OK)
+		const bool package_cooker = path.begins_with("res://") && !CookerFiles::package_root_relative(path.trim_prefix("res://"), "cooker").is_empty();
+		const bool cooker_module = path.begins_with("res://content/cooker/") || package_cooker;
+		const bool content_module = cooker_module || path.begins_with("res://content/runtime/") || path.begins_with("res://content/worlds/") || path.begins_with("res://content/mod-worlds/");
+		if (!content_module || !path.ends_with(".luau") || CookerFiles::check_path(path) != OK) {
 			return fail("layout module path rejected");
-		if (kind=="steps" && !cooker_module) return fail("step imports require Cooker modules");
+		}
+		if (kind == "steps" && !cooker_module) {
+			return fail("step imports require Cooker modules");
+		}
 		Ref<DirAccess> directory=DirAccess::open("res://");
 		String prefix="res://";
 		for (const String &part:path.trim_prefix("res://").split("/")) {
