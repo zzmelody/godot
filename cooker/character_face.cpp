@@ -640,13 +640,10 @@ Error LocateOriginalFace(const Vector<OriginalFacePoint>& points,
   }
   double white_minimum;
   double white_chroma;
-  double dark_maximum;
   double eye_depth;
   error = FaceNumber(settings, "white_minimum", .1, 1, white_minimum);
   ERR_FAIL_COND_V(error != OK, error);
   error = FaceNumber(settings, "white_chroma", .01, .5, white_chroma);
-  ERR_FAIL_COND_V(error != OK, error);
-  error = FaceNumber(settings, "mouth_dark_maximum", .01, .7, dark_maximum);
   ERR_FAIL_COND_V(error != OK, error);
   error = FaceNumber(settings, "eye_depth", .005, .06, eye_depth);
   ERR_FAIL_COND_V(error != OK, error);
@@ -696,27 +693,30 @@ Error LocateOriginalFace(const Vector<OriginalFacePoint>& points,
     samples.push_back(counts[side]);
   }
   const Vector3 eye_middle = (landmarks.eyes[0] + landmarks.eyes[1]) * .5;
-  int mouth_samples = 0;
+  Vector3 mouth_offset;
+  error = ReadVector(settings.get("mouth_offset", Variant()), mouth_offset);
+  ERR_FAIL_COND_V(
+      error != OK || mouth_offset.length() > .15 || mouth_offset.y >= -.02,
+      ERR_INVALID_PARAMETER);
+  landmarks.mouth = eye_middle + mouth_offset;
+  // The painted lips do not provide reliable vertex-color landmarks. Their
+  // bounded offset is authored against this source mesh, with a surface check.
+  double mouth_surface_distance = 1;
   for (const OriginalFacePoint& point : points) {
-    if (point.head_weight >= .5 && Math::abs(point.position.x) < .045 &&
-        point.position.y > eye_middle.y - .105 &&
-        point.position.y < eye_middle.y - .045 &&
-        point.position.z > eye_middle.z - .025 &&
-        point.color.get_luminance() < dark_maximum) {
-      landmarks.mouth += point.position;
-      ++mouth_samples;
+    if (point.head_weight >= .5) {
+      mouth_surface_distance = MIN(mouth_surface_distance,
+                                   point.position.distance_to(landmarks.mouth));
     }
   }
-  ERR_FAIL_COND_V_MSG(mouth_samples < 3, ERR_INVALID_DATA,
-                      vformat("Original lip samples are insufficient: samples=%d eye_mid=%s",
-                              mouth_samples, eye_middle));
-  landmarks.mouth /= mouth_samples;
-  landmarks.mouth.x = 0;
+  ERR_FAIL_COND_V_MSG(
+      mouth_surface_distance > .03, ERR_INVALID_DATA,
+      "Authored mouth landmark is outside the original face surface");
   landmarks.jaw = landmarks.mouth + Vector3(0, .018, -.045);
   report["eye_centers"] = eyes;
   report["eye_white_samples"] = samples;
   report["mouth_center"] = landmarks.mouth;
-  report["mouth_samples"] = mouth_samples;
+  report["mouth_landmark_source"] = "authored_eye_relative_offset";
+  report["mouth_surface_distance_meters"] = mouth_surface_distance;
   report["jaw_pivot"] = landmarks.jaw;
   return OK;
 }
