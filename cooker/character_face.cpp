@@ -391,7 +391,9 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
         }
       }
       const Vector3 position = head_space.xform(vertices[vertex]);
-      discard.write[vertex] = amount > 0.5 && position.y >= neck_offset;
+      // Neck-blended face vertices still belong to the replaced head. Keeping
+      // them by majority weight leaves floating skin around the new neck.
+      discard.write[vertex] = amount > 0.05 && position.y >= neck_offset;
       hair.write[vertex] = false;
       if (!discard[vertex]) {
         continue;
@@ -415,15 +417,15 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
     }
     PackedInt32Array kept;
     for (int triangle = 0; triangle < indices.size(); triangle += 3) {
-      bool erase = true;
+      bool erase = false;
       int hair_corners = 0;
       for (int corner = 0; corner < 3; ++corner) {
         const int vertex = indices[triangle + corner];
         ERR_FAIL_COND_V(vertex < 0 || vertex >= discard.size(), ERR_INVALID_DATA);
-        erase &= discard[vertex];
+        erase |= discard[vertex];
         hair_corners += hair[vertex];
       }
-      if (erase && hair_corners >= 2) {
+      if (erase && hair_corners == 3) {
         erase = false;
         ++preserved;
       }
