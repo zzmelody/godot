@@ -503,7 +503,10 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
                   ERR_PARAMETER_RANGE_ERROR);
   Ref<ArrayMesh> mesh;
   mesh.instantiate();
-  mesh->set_blend_shape_mode(Mesh::BLEND_SHAPE_MODE_RELATIVE);
+  // Godot packs shape normals as unit octahedral vectors. Delta normals,
+  // especially zero deltas, cannot survive that encoding. Store full targets
+  // as the glTF importer does; normalized blending still adds target deltas.
+  mesh->set_blend_shape_mode(Mesh::BLEND_SHAPE_MODE_NORMALIZED);
   Vector<Array> arrays;
   Vector<Array> shapes;
   for (const FaceSurface& surface : source.surfaces) {
@@ -531,24 +534,17 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
     for (int part = 0; part < source.surfaces.size(); ++part) {
       const FaceSurface& surface = source.surfaces[part];
       const PackedVector3Array base = arrays[part][Mesh::ARRAY_VERTEX];
-      const PackedVector3Array base_normals = arrays[part][Mesh::ARRAY_NORMAL];
-      PackedVector3Array offsets;
       PackedVector3Array moved = base;
-      offsets.resize(base.size());
       for (int vertex = 0; vertex < base.size(); ++vertex) {
         const Vector3 delta = deltas[surface.corners[vertex].source] * scale;
-        offsets.set(vertex, delta);
         moved.set(vertex, base[vertex] + delta);
         affected += delta.length_squared() > 1e-12;
         maximum_delta = MAX(maximum_delta, delta.length());
       }
-      PackedVector3Array normals = Normals(moved, surface.triangles);
-      for (int vertex = 0; vertex < normals.size(); ++vertex) {
-        normals.set(vertex, normals[vertex] - base_normals[vertex]);
-      }
+      const PackedVector3Array normals = Normals(moved, surface.triangles);
       Array shape;
       shape.resize(Mesh::ARRAY_MAX);
-      shape[Mesh::ARRAY_VERTEX] = offsets;
+      shape[Mesh::ARRAY_VERTEX] = moved;
       shape[Mesh::ARRAY_NORMAL] = normals;
       shapes.write[part].push_back(shape);
     }
