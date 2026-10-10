@@ -3,6 +3,7 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "core/io/file_access.h"
+#include "core/io/image.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "scene/3d/bone_attachment_3d.h"
@@ -11,6 +12,7 @@
 #include "scene/resources/3d/skin.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "scene/resources/texture.h"
 #include "scene/resources/3d/primitive_meshes.h"
 
 namespace CookerCharacter {
@@ -293,8 +295,30 @@ Error CollectNodes(Node* node, Vector<MeshInstance3D*>& meshes,
   return OK;
 }
 
+struct HeadTrimSettings {
+  double maximum_hair_luminance = 0.35;
+  double front_hair_minimum_y = 0.13;
+  double back_hair_maximum_z = 0.02;
+};
+
+Color SampleAlbedo(const Ref<BaseMaterial3D>& material, const Ref<Image>& image,
+                   const PackedVector2Array& uvs, int vertex) {
+  Color color = material.is_valid() ? material->get_albedo() : Color(1, 1, 1);
+  if (image.is_valid() && vertex < uvs.size()) {
+    const Vector2 uv = uvs[vertex];
+    const int x = CLAMP(int(Math::fposmod(uv.x, 1.0) * image->get_width()),
+                        0, image->get_width() - 1);
+    const int y = CLAMP(int(Math::fposmod(uv.y, 1.0) * image->get_height()),
+                        0, image->get_height() - 1);
+    color *= image->get_pixel(x, y);
+  }
+  return color;
+}
+
 Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
-                 int head, double neck_offset, int& removed) {
+                 int head, double neck_offset, const HeadTrimSettings& settings,
+                 int& removed, int& preserved, Color& skin_sum,
+                 int& skin_samples) {
   const Ref<ArrayMesh> source = instance->get_mesh();
   const Ref<Skin> skin = instance->get_skin();
   ERR_FAIL_COND_V(source.is_null() || skin.is_null(), ERR_INVALID_DATA);
@@ -331,14 +355,31 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
     const PackedInt32Array binds = arrays[Mesh::ARRAY_BONES];
     const PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
     const PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
+    const PackedVector2Array uvs = arrays[Mesh::ARRAY_TEX_UV];
     ERR_FAIL_COND_V(vertices.is_empty() || binds.size() != weights.size() ||
                         binds.size() % vertices.size() != 0 ||
                         indices.is_empty() || indices.size() % 3 != 0,
                     ERR_INVALID_DATA);
     const int stride = binds.size() / vertices.size();
     ERR_FAIL_COND_V(stride != 4 && stride != 8, ERR_INVALID_DATA);
+    const Ref<BaseMaterial3D> material = source->surface_get_material(surface);
+    Ref<Image> albedo;
+    if (material.is_valid()) {
+      const Ref<Texture2D> texture = material->get_texture(
+          BaseMaterial3D::TEXTURE_ALBEDO);
+      if (texture.is_valid()) {
+        albedo = texture->get_image();
+        ERR_FAIL_COND_V(albedo.is_null() || albedo->is_empty(), ERR_INVALID_DATA);
+        if (albedo->is_compressed()) {
+          albedo = albedo->duplicate();
+          ERR_FAIL_COND_V(albedo->decompress() != OK, ERR_INVALID_DATA);
+        }
+      }
+    }
     Vector<bool> discard;
     discard.resize(vertices.size());
+    Vector<bool> hair;
+    hair.resize(vertices.size());
     for (int vertex = 0; vertex < vertices.size(); ++vertex) {
       double amount = 0;
       for (int slot = 0; slot < stride; ++slot) {
@@ -348,16 +389,41 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
           amount += weights[vertex * stride + slot];
         }
       }
-      discard.write[vertex] = amount > 0.5 &&
-                              head_space.xform(vertices[vertex]).y >= neck_offset;
+      const Vector3 position = head_space.xform(vertices[vertex]);
+      discard.write[vertex] = amount > 0.5 && position.y >= neck_offset;
+      hair.write[vertex] = false;
+      if (!discard[vertex]) {
+        continue;
+      }
+      const Color color = SampleAlbedo(material, albedo, uvs, vertex);
+      const double luminance = color.get_luminance();
+      // The source may contain hair and skin in one textured surface. The
+      // authored head-space mask preserves dark hair without retaining the
+      // old eyes, mouth or face underneath the new facial topology.
+      hair.write[vertex] = luminance <= settings.maximum_hair_luminance &&
+          (position.y >= settings.front_hair_minimum_y ||
+           position.z <= settings.back_hair_maximum_z);
+      if (!hair[vertex] && albedo.is_valid() &&
+          luminance > settings.maximum_hair_luminance &&
+          position.y >= 0 && position.y < settings.front_hair_minimum_y &&
+          position.z > settings.back_hair_maximum_z) {
+        skin_sum += color;
+        ++skin_samples;
+      }
     }
     PackedInt32Array kept;
     for (int triangle = 0; triangle < indices.size(); triangle += 3) {
       bool erase = true;
+      int hair_corners = 0;
       for (int corner = 0; corner < 3; ++corner) {
         const int vertex = indices[triangle + corner];
         ERR_FAIL_COND_V(vertex < 0 || vertex >= discard.size(), ERR_INVALID_DATA);
         erase &= discard[vertex];
+        hair_corners += hair[vertex];
+      }
+      if (erase && hair_corners >= 2) {
+        erase = false;
+        ++preserved;
       }
       if (erase) {
         ++removed;
@@ -544,16 +610,37 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   ERR_FAIL_COND_V(head < 0, ERR_INVALID_DATA);
   const double neck_offset = configuration.get("neck_offset", -0.07);
   const double eye_radius = configuration.get("eye_radius", 0.0125);
+  ERR_FAIL_COND_V(configuration.get("head_preservation", Variant()).get_type() !=
+                      Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+  const Dictionary preservation = configuration["head_preservation"];
+  HeadTrimSettings settings;
+  settings.maximum_hair_luminance = preservation.get("maximum_luminance", 0.35);
+  settings.front_hair_minimum_y = preservation.get("front_minimum_y", 0.13);
+  settings.back_hair_maximum_z = preservation.get("back_maximum_z", 0.02);
+  ERR_FAIL_COND_V(!Math::is_finite(settings.maximum_hair_luminance) ||
+                      settings.maximum_hair_luminance < 0 ||
+                      settings.maximum_hair_luminance > 1 ||
+                      !Math::is_finite(settings.front_hair_minimum_y) ||
+                      settings.front_hair_minimum_y < -0.2 ||
+                      settings.front_hair_minimum_y > 0.5 ||
+                      !Math::is_finite(settings.back_hair_maximum_z) ||
+                      settings.back_hair_maximum_z < -0.5 ||
+                      settings.back_hair_maximum_z > 0.5, ERR_INVALID_PARAMETER);
   ERR_FAIL_COND_V(!Math::is_finite(neck_offset) || neck_offset < -0.2 ||
                       neck_offset > 0.1 || !Math::is_finite(eye_radius) ||
                       eye_radius < 0.005 || eye_radius > 0.025,
                   ERR_INVALID_PARAMETER);
   int removed = 0;
+  int preserved = 0;
+  Color skin_sum(0, 0, 0, 0);
+  int skin_samples = 0;
   for (auto* mesh : meshes) {
-    error = RemoveHead(mesh, skeleton, head, neck_offset, removed);
+    error = RemoveHead(mesh, skeleton, head, neck_offset, settings, removed,
+                       preserved, skin_sum, skin_samples);
     ERR_FAIL_COND_V(error != OK, error);
   }
-  ERR_FAIL_COND_V(removed == 0, ERR_INVALID_DATA);
+  ERR_FAIL_COND_V(removed == 0 || preserved == 0 || skin_samples == 0,
+                  ERR_INVALID_DATA);
   auto* attachment = memnew(BoneAttachment3D);
   attachment->set_name("FaceAttachment");
   skeleton->add_child(attachment);
@@ -562,6 +649,16 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   auto* face_mesh = memnew(MeshInstance3D);
   face_mesh->set_name("FaceMesh");
   face_mesh->set_mesh(face);
+  const Color skin_color = skin_sum / skin_samples;
+  for (int surface = 0; surface < face->get_surface_count(); ++surface) {
+    if (face->surface_get_name(surface) == "body") {
+      Ref<StandardMaterial3D> skin_material;
+      skin_material.instantiate();
+      skin_material->set_albedo(skin_color);
+      skin_material->set_roughness(0.85);
+      face_mesh->set_surface_override_material(surface, skin_material);
+    }
+  }
   attachment->add_child(face_mesh);
   face_mesh->set_owner(root);
   Vector3 iris;
@@ -591,6 +688,9 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   root->set_meta("character_face", configuration);
   result["face_channels"] = face->get_blend_shape_count();
   result["replaced_head_triangles"] = removed;
+  result["preserved_hair_triangles"] = preserved;
+  result["skin_color_samples"] = skin_samples;
+  result["skin_color"] = skin_color;
   result["eye_centers"] = eyes;
   return OK;
 }
