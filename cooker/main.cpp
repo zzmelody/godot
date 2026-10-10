@@ -98,7 +98,7 @@ Dictionary capabilities() {
 	result["pipeline_runtime"] = CookerPipeline::capabilities();
 	result["pipeline_plan"] = true;
 	Array operations;
-	for (const char *name : { "import-scene", "import-texture", "stage-source", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions", "bake-lightmap" }) {
+	for (const char *name : { "import-scene", "import-texture", "stage-source", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "compose-character-face", "validate-character-actions", "bake-lightmap" }) {
 		operations.push_back(name);
 	}
 	result["operations"] = operations;
@@ -434,6 +434,9 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 	}
 	if (operation == "assemble-character") {
 		return CookerCharacter::assemble(job, r_result);
+	}
+	if (operation == "compose-character-face") {
+		return CookerCharacter::ComposeFace(job, r_result);
 	}
 	if (operation == "validate-character-actions") {
 		return CookerCharacter::validate(job, r_result);
@@ -996,7 +999,7 @@ Error execute_pipeline(Dictionary &r_result) {
 		}
 		ERR_FAIL_COND_V_MSG(operation == "run-pipeline", ERR_INVALID_PARAMETER, "Nested pipelines are not supported.");
 		bool known_operation = false;
-		for (const char *name : { "import-scene", "import-texture", "stage-source", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "validate-character-actions", "bake-lightmap" }) {
+		for (const char *name : { "import-scene", "import-texture", "stage-source", "save-resource", "process-mesh", "bake-navigation", "validate-resource", "run-recipe", "asset-manifest", "pack", "make-bone-map", "retarget-animations", "retarget-model", "make-animation-preview", "compose-character-animation", "assemble-character", "compose-character-face", "validate-character-actions", "bake-lightmap" }) {
 			known_operation |= operation == name;
 		}
 		ERR_FAIL_COND_V_MSG(!known_operation, ERR_INVALID_PARAMETER, "Unknown pipeline operation: " + operation);

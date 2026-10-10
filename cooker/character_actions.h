@@ -10,6 +10,8 @@ namespace CookerCharacter {
 // Cook-time only: preserve skin bind space while pruning source helper bones
 // and adding the declared runtime bones. No runtime or editor script is used.
 Error PrepareRig(Node *root, const Array &bones, Dictionary &report);
+// Convert immutable topology and sparse facial targets into a head-only mesh.
+Error ComposeFace(const Dictionary &job, Dictionary &result);
 // Expand a Luau source substitution from the immutable compiled catalog before
 // cache hashing, so every replacement resource is an explicit dependency.
 Error prepare_compose_job(Dictionary &r_job);
