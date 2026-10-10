@@ -13,6 +13,8 @@ Error PrepareRig(Node *root, const Array &bones, Dictionary &report,
                  Node *reference = nullptr);
 // Convert immutable topology and sparse facial targets into a head-only mesh.
 Error ComposeFace(const Dictionary &job, Dictionary &result);
+Error AttachFace(Node *root, const Dictionary &configuration,
+                  Dictionary &result);
 // Expand a Luau source substitution from the immutable compiled catalog before
 // cache hashing, so every replacement resource is an explicit dependency.
 Error prepare_compose_job(Dictionary &r_job);

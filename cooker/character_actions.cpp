@@ -887,6 +887,11 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(error != OK, error);
 	}
 	remove_players(tree.root);
+	if (p_job.has("face")) {
+		ERR_FAIL_COND_V(p_job["face"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		error = AttachFace(tree.root, p_job["face"], r_result);
+		ERR_FAIL_COND_V(error != OK, error);
+	}
 	auto *player = memnew(AnimationPlayer);
 	player->set_name("CharacterAnimationPlayer"); tree.root->add_child(player); player->set_owner(tree.root);
 	player->set_root_node(NodePath(".."));

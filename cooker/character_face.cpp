@@ -5,8 +5,13 @@
 #include "core/io/file_access.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
+#include "scene/3d/bone_attachment_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/skeleton_3d.h"
+#include "scene/resources/3d/skin.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "scene/resources/primitive_meshes.h"
 
 namespace CookerCharacter {
 namespace {
@@ -32,6 +37,8 @@ struct FaceSource {
   Vector<Vector3> positions;
   Vector<Vector2> uvs;
   Vector<FaceSurface> surfaces;
+  HashSet<int> left_eye;
+  HashSet<int> right_eye;
 };
 
 Error ReadVector(const Variant& value, Vector3& result) {
@@ -108,6 +115,7 @@ Error ReadSource(const String& path, FaceSource& source) {
   ERR_FAIL_COND_V(file.is_null() || file->get_length() > 16 * 1024 * 1024,
                   ERR_FILE_CANT_READ);
   int selected = -1;
+  int landmark = -1;
   while (!file->eof_reached()) {
     const String line = file->get_line().strip_edges();
     if (line.is_empty() || line.begins_with("#")) {
@@ -135,23 +143,34 @@ Error ReadSource(const String& path, FaceSource& source) {
       source.uvs.push_back(uv);
     } else if (fields[0] == "g") {
       selected = -1;
+      landmark = -1;
+      if (fields.size() == 2 && fields[1] == "joint-l-eye") {
+        landmark = 0;
+      } else if (fields.size() == 2 && fields[1] == "joint-r-eye") {
+        landmark = 1;
+      }
       for (int surface = 0; surface < source.surfaces.size(); ++surface) {
         if (fields.size() == 2 && fields[1] == source.surfaces[surface].group) {
           selected = surface;
           break;
         }
       }
-    } else if (fields[0] == "f" && selected >= 0) {
+    } else if (fields[0] == "f" && (selected >= 0 || landmark >= 0)) {
       ERR_FAIL_COND_V(fields.size() < 4 || fields.size() > 5, ERR_FILE_CORRUPT);
       FaceCorner corners[4];
       bool inside = true;
       for (int i = 1; i < fields.size(); ++i) {
         const Error error = ReadCorner(fields[i], source, corners[i - 1]);
         ERR_FAIL_COND_V(error != OK, error);
-        inside &= source.positions[corners[i - 1].source].y >=
-                  source.surfaces[selected].minimum_y;
+        if (landmark >= 0) {
+          HashSet<int>& points = landmark == 0 ? source.left_eye : source.right_eye;
+          points.insert(corners[i - 1].source);
+        } else {
+          inside &= source.positions[corners[i - 1].source].y >=
+                    source.surfaces[selected].minimum_y;
+        }
       }
-      if (!inside) {
+      if (landmark >= 0 || !inside) {
         continue;
       }
       FaceSurface& surface = source.surfaces.write[selected];
@@ -243,6 +262,147 @@ Array SurfaceArrays(const FaceSource& source, const FaceSurface& surface,
   arrays[Mesh::ARRAY_TEX_UV] = uvs;
   arrays[Mesh::ARRAY_INDEX] = surface.triangles;
   return arrays;
+}
+
+Vector3 EyeCenter(const FaceSource& source, const HashSet<int>& vertices,
+                  const Vector3& origin, const Vector3& scale) {
+  Vector3 center;
+  for (const int vertex : vertices) {
+    center += source.positions[vertex];
+  }
+  return (center / vertices.size() - origin) * scale;
+}
+
+Error CollectNodes(Node* node, Vector<MeshInstance3D*>& meshes,
+                   Skeleton3D*& skeleton, int& visited) {
+  ERR_FAIL_COND_V(++visited > 512, ERR_PARAMETER_RANGE_ERROR);
+  if (auto* found = Object::cast_to<Skeleton3D>(node)) {
+    ERR_FAIL_COND_V(skeleton && found != skeleton, ERR_INVALID_DATA);
+    skeleton = found;
+  }
+  if (auto* mesh = Object::cast_to<MeshInstance3D>(node)) {
+    if (mesh->get_skin().is_valid()) {
+      ERR_FAIL_COND_V(meshes.size() >= 32, ERR_PARAMETER_RANGE_ERROR);
+      meshes.push_back(mesh);
+    }
+  }
+  for (int i = 0; i < node->get_child_count(); ++i) {
+    const Error error = CollectNodes(node->get_child(i), meshes, skeleton, visited);
+    ERR_FAIL_COND_V(error != OK, error);
+  }
+  return OK;
+}
+
+Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
+                 int head, double neck_offset, int& removed) {
+  const Ref<ArrayMesh> source = instance->get_mesh();
+  const Ref<Skin> skin = instance->get_skin();
+  ERR_FAIL_COND_V(source.is_null() || skin.is_null(), ERR_INVALID_DATA);
+  Vector<bool> head_binds;
+  head_binds.resize(skin->get_bind_count());
+  Transform3D mesh_to_skeleton;
+  for (int bind = 0; bind < head_binds.size(); ++bind) {
+    int bone = skin->get_bind_name(bind) == StringName()
+                   ? skin->get_bind_bone(bind)
+                   : skeleton->find_bone(skin->get_bind_name(bind));
+    ERR_FAIL_COND_V(bone < 0 || bone >= skeleton->get_bone_count(), ERR_INVALID_DATA);
+    if (bind == 0) {
+      mesh_to_skeleton = skeleton->get_bone_global_rest(bone) *
+                          skin->get_bind_pose(bind);
+    }
+    while (bone >= 0 && bone != head) {
+      bone = skeleton->get_bone_parent(bone);
+    }
+    head_binds.write[bind] = bone == head;
+  }
+  const Transform3D head_space =
+      skeleton->get_bone_global_rest(head).affine_inverse() * mesh_to_skeleton;
+  Ref<ArrayMesh> mesh;
+  mesh.instantiate();
+  mesh->set_blend_shape_mode(source->get_blend_shape_mode());
+  for (int shape = 0; shape < source->get_blend_shape_count(); ++shape) {
+    mesh->add_blend_shape(source->get_blend_shape_name(shape));
+  }
+  for (int surface = 0; surface < source->get_surface_count(); ++surface) {
+    ERR_FAIL_COND_V(source->surface_get_primitive_type(surface) !=
+                        Mesh::PRIMITIVE_TRIANGLES, ERR_INVALID_DATA);
+    Array arrays = source->surface_get_arrays(surface);
+    const PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+    const PackedInt32Array binds = arrays[Mesh::ARRAY_BONES];
+    const PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
+    const PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
+    ERR_FAIL_COND_V(vertices.is_empty() || binds.size() != weights.size() ||
+                        binds.size() % vertices.size() != 0 ||
+                        indices.is_empty() || indices.size() % 3 != 0,
+                    ERR_INVALID_DATA);
+    const int stride = binds.size() / vertices.size();
+    ERR_FAIL_COND_V(stride != 4 && stride != 8, ERR_INVALID_DATA);
+    Vector<bool> discard;
+    discard.resize(vertices.size());
+    for (int vertex = 0; vertex < vertices.size(); ++vertex) {
+      double amount = 0;
+      for (int slot = 0; slot < stride; ++slot) {
+        const int bind = binds[vertex * stride + slot];
+        ERR_FAIL_COND_V(bind < 0 || bind >= head_binds.size(), ERR_INVALID_DATA);
+        if (head_binds[bind]) {
+          amount += weights[vertex * stride + slot];
+        }
+      }
+      discard.write[vertex] = amount > 0.5 &&
+                              head_space.xform(vertices[vertex]).y >= neck_offset;
+    }
+    PackedInt32Array kept;
+    for (int triangle = 0; triangle < indices.size(); triangle += 3) {
+      bool erase = true;
+      for (int corner = 0; corner < 3; ++corner) {
+        const int vertex = indices[triangle + corner];
+        ERR_FAIL_COND_V(vertex < 0 || vertex >= discard.size(), ERR_INVALID_DATA);
+        erase &= discard[vertex];
+      }
+      if (erase) {
+        ++removed;
+      } else {
+        for (int corner = 0; corner < 3; ++corner) {
+          kept.push_back(indices[triangle + corner]);
+        }
+      }
+    }
+    if (kept.is_empty()) {
+      continue;
+    }
+    arrays[Mesh::ARRAY_INDEX] = kept;
+    const int output_surface = mesh->get_surface_count();
+    mesh->add_surface_from_arrays(
+        Mesh::PRIMITIVE_TRIANGLES, arrays,
+        source->surface_get_blend_shape_arrays(surface), Dictionary(),
+        stride == 8 ? Mesh::ARRAY_FLAG_USE_8_BONE_WEIGHTS : 0);
+    mesh->surface_set_material(output_surface, source->surface_get_material(surface));
+    mesh->surface_set_name(output_surface, source->surface_get_name(surface));
+  }
+  instance->set_mesh(mesh);
+  return OK;
+}
+
+void AddEyePart(Node* owner, Node* attachment, const String& name,
+                double radius, double depth, double forward, const Color& color) {
+  Ref<SphereMesh> sphere;
+  sphere.instantiate();
+  sphere->set_radius(radius);
+  sphere->set_height(radius * 2);
+  sphere->set_radial_segments(24);
+  sphere->set_rings(12);
+  Ref<StandardMaterial3D> material;
+  material.instantiate();
+  material->set_albedo(color);
+  material->set_roughness(0.35);
+  sphere->set_material(material);
+  auto* mesh = memnew(MeshInstance3D);
+  mesh->set_name(name);
+  mesh->set_mesh(sphere);
+  mesh->set_position(Vector3(0, 0, forward));
+  mesh->set_scale(Vector3(1, 1, depth));
+  attachment->add_child(mesh);
+  mesh->set_owner(owner);
 }
 }  // namespace
 
@@ -348,6 +508,12 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
   }
   mesh->set_meta("face_channels", coverage);
   mesh->set_meta("face_source", source_path);
+  ERR_FAIL_COND_V(source.left_eye.is_empty() || source.right_eye.is_empty(),
+                  ERR_INVALID_DATA);
+  Array eyes;
+  eyes.push_back(EyeCenter(source, source.left_eye, origin, scale));
+  eyes.push_back(EyeCenter(source, source.right_eye, origin, scale));
+  mesh->set_meta("eye_centers", eyes);
   error = DirAccess::make_dir_recursive_absolute(
       ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
   ERR_FAIL_COND_V(error != OK, error);
@@ -358,6 +524,74 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
   result["vertices"] = vertices;
   result["surfaces"] = source.surfaces.size();
   result["channels"] = coverage;
+  return OK;
+}
+
+Error AttachFace(Node* root, const Dictionary& configuration,
+                  Dictionary& result) {
+  const String path = configuration.get("mesh", "");
+  Error error = CookerFiles::check_path(path);
+  ERR_FAIL_COND_V(error != OK, error);
+  const Ref<ArrayMesh> face = ResourceLoader::load(path, "ArrayMesh");
+  ERR_FAIL_COND_V(face.is_null() || face->get_blend_shape_count() != 52 ||
+                      !face->has_meta("eye_centers"), ERR_INVALID_DATA);
+  Vector<MeshInstance3D*> meshes;
+  Skeleton3D* skeleton = nullptr;
+  int visited = 0;
+  error = CollectNodes(root, meshes, skeleton, visited);
+  ERR_FAIL_COND_V(error != OK || !skeleton, ERR_INVALID_DATA);
+  const int head = skeleton->find_bone("Head");
+  ERR_FAIL_COND_V(head < 0, ERR_INVALID_DATA);
+  const double neck_offset = configuration.get("neck_offset", -0.07);
+  const double eye_radius = configuration.get("eye_radius", 0.0125);
+  ERR_FAIL_COND_V(!Math::is_finite(neck_offset) || neck_offset < -0.2 ||
+                      neck_offset > 0.1 || !Math::is_finite(eye_radius) ||
+                      eye_radius < 0.005 || eye_radius > 0.025,
+                  ERR_INVALID_PARAMETER);
+  int removed = 0;
+  for (auto* mesh : meshes) {
+    error = RemoveHead(mesh, skeleton, head, neck_offset, removed);
+    ERR_FAIL_COND_V(error != OK, error);
+  }
+  ERR_FAIL_COND_V(removed == 0, ERR_INVALID_DATA);
+  auto* attachment = memnew(BoneAttachment3D);
+  attachment->set_name("FaceAttachment");
+  skeleton->add_child(attachment);
+  attachment->set_owner(root);
+  attachment->set_bone_name("Head");
+  auto* face_mesh = memnew(MeshInstance3D);
+  face_mesh->set_name("FaceMesh");
+  face_mesh->set_mesh(face);
+  attachment->add_child(face_mesh);
+  face_mesh->set_owner(root);
+  Vector3 iris;
+  error = ReadVector(configuration.get("iris_color", Variant()), iris);
+  ERR_FAIL_COND_V(error != OK, error);
+  const Array eyes = face->get_meta("eye_centers");
+  ERR_FAIL_COND_V(eyes.size() != 2, ERR_INVALID_DATA);
+  for (int side = 0; side < 2; ++side) {
+    const String name = side == 0 ? "LeftEye" : "RightEye";
+    const int bone = skeleton->find_bone(name);
+    ERR_FAIL_COND_V(bone < 0 || skeleton->get_bone_parent(bone) != head,
+                    ERR_INVALID_DATA);
+    const Vector3 center = eyes[side];
+    skeleton->set_bone_rest(bone, Transform3D(Basis(), center));
+    skeleton->reset_bone_pose(bone);
+    auto* eye = memnew(BoneAttachment3D);
+    eye->set_name(name + "Attachment");
+    skeleton->add_child(eye);
+    eye->set_owner(root);
+    eye->set_bone_name(name);
+    AddEyePart(root, eye, "White", eye_radius, 1, 0, Color(0.91, 0.89, 0.84));
+    AddEyePart(root, eye, "Iris", eye_radius * 0.55, 0.12,
+               eye_radius * 0.91, Color(iris.x, iris.y, iris.z));
+    AddEyePart(root, eye, "Pupil", eye_radius * 0.27, 0.10,
+               eye_radius * 1.01, Color(0.025, 0.019, 0.014));
+  }
+  root->set_meta("character_face", configuration);
+  result["face_channels"] = face->get_blend_shape_count();
+  result["replaced_head_triangles"] = removed;
+  result["eye_centers"] = eyes;
   return OK;
 }
 }  // namespace CookerCharacter
