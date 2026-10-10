@@ -1069,8 +1069,11 @@ Error BindOriginalFace(Node* root, const Dictionary& configuration,
   instance->set_name("FaceMesh");
   root->set_meta("character_face", configuration);
   result["face_channels"] = coverage;
-  result["facial_weighted_vertices"] =
-      Array::make(weighted[0], weighted[1], weighted[2]);
+  Array weighted_vertices;
+  for (int count : weighted) {
+    weighted_vertices.push_back(count);
+  }
+  result["facial_weighted_vertices"] = weighted_vertices;
   result["neutral_maximum_delta_meters"] = 0.0;
   result["preserved_source_vertices"] = points.size();
   result["preserved_source_triangles"] = indices.size() / 3;
