@@ -300,6 +300,8 @@ struct HeadTrimSettings {
   double front_hair_minimum_y = 0.13;
   double back_hair_maximum_z = 0.02;
   double side_hair_minimum_x = 0.075;
+  double skin_red_green_ratio = 1.15;
+  double skin_green_blue_ratio = 1.15;
 };
 
 Color SampleAlbedo(const Ref<BaseMaterial3D>& material, const Ref<Image>& image,
@@ -391,14 +393,18 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
         }
       }
       const Vector3 position = head_space.xform(vertices[vertex]);
+      const Color color = SampleAlbedo(material, albedo, uvs, vertex);
+      const bool skin_color = color.r > color.g * settings.skin_red_green_ratio &&
+          color.g > color.b * settings.skin_green_blue_ratio;
       // Neck-blended face vertices still belong to the replaced head. Keeping
       // them by majority weight leaves floating skin around the new neck.
-      discard.write[vertex] = amount > 0.05 && position.y >= neck_offset;
+      // The authored color mask keeps neck-weighted clothing intact.
+      discard.write[vertex] = (amount > 0.5 || (amount > 0.05 && skin_color)) &&
+          position.y >= neck_offset;
       hair.write[vertex] = false;
       if (!discard[vertex]) {
         continue;
       }
-      const Color color = SampleAlbedo(material, albedo, uvs, vertex);
       const double luminance = color.get_luminance();
       // The source may contain hair and skin in one textured surface. The
       // authored head-space mask preserves dark hair without retaining the
@@ -417,15 +423,15 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
     }
     PackedInt32Array kept;
     for (int triangle = 0; triangle < indices.size(); triangle += 3) {
-      bool erase = false;
+      bool erase = true;
       int hair_corners = 0;
       for (int corner = 0; corner < 3; ++corner) {
         const int vertex = indices[triangle + corner];
         ERR_FAIL_COND_V(vertex < 0 || vertex >= discard.size(), ERR_INVALID_DATA);
-        erase |= discard[vertex];
+        erase &= discard[vertex];
         hair_corners += hair[vertex];
       }
-      if (erase && hair_corners == 3) {
+      if (erase && hair_corners >= 2) {
         erase = false;
         ++preserved;
       }
@@ -676,6 +682,8 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   settings.front_hair_minimum_y = preservation.get("front_minimum_y", 0.13);
   settings.back_hair_maximum_z = preservation.get("back_maximum_z", 0.02);
   settings.side_hair_minimum_x = preservation.get("side_minimum_x", 0.075);
+  settings.skin_red_green_ratio = preservation.get("skin_red_green_ratio", 1.15);
+  settings.skin_green_blue_ratio = preservation.get("skin_green_blue_ratio", 1.15);
   ERR_FAIL_COND_V(!Math::is_finite(settings.maximum_hair_luminance) ||
                       settings.maximum_hair_luminance < 0 ||
                       settings.maximum_hair_luminance > 1 ||
@@ -687,7 +695,13 @@ Error AttachFace(Node* root, const Dictionary& configuration,
                       settings.back_hair_maximum_z > 0.5 ||
                       !Math::is_finite(settings.side_hair_minimum_x) ||
                       settings.side_hair_minimum_x < 0.005 ||
-                      settings.side_hair_minimum_x > 0.2, ERR_INVALID_PARAMETER);
+                      settings.side_hair_minimum_x > 0.2 ||
+                      !Math::is_finite(settings.skin_red_green_ratio) ||
+                      settings.skin_red_green_ratio < 1 ||
+                      settings.skin_red_green_ratio > 4 ||
+                      !Math::is_finite(settings.skin_green_blue_ratio) ||
+                      settings.skin_green_blue_ratio < 1 ||
+                      settings.skin_green_blue_ratio > 4, ERR_INVALID_PARAMETER);
   ERR_FAIL_COND_V(!Math::is_finite(neck_offset) || neck_offset < -0.2 ||
                       neck_offset > 0.1 || !Math::is_finite(eye_radius) ||
                       eye_radius < 0.005 || eye_radius > 0.025,
