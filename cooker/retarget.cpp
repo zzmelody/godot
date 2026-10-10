@@ -72,6 +72,22 @@ Error RetargetAnimation(const String& reference_model,
   const double ratio = target_height / source_height;
   ERR_FAIL_COND_V(!Math::is_finite(ratio) || ratio < .25 || ratio > 4,
                   ERR_INVALID_DATA);
+  // Import optimization can omit a constant reference-rest track. Restore
+  // that pose for an explicit overlay instead of leaving a previous grip.
+  int rest_tracks = 0;
+  for (const String& name : mask) {
+    const NodePath path("%GeneralSkeleton:" + name);
+    if (animation->find_track(path, Animation::TYPE_ROTATION_3D) >= 0) {
+      continue;
+    }
+    const int track = animation->add_track(Animation::TYPE_ROTATION_3D);
+    animation->track_set_path(track, path);
+    const Quaternion rest = source->get_bone_rest(source->find_bone(name))
+                                .basis.get_rotation_quaternion();
+    animation->rotation_track_insert_key(track, 0, rest);
+    animation->rotation_track_insert_key(track, animation->get_length(), rest);
+    ++rest_tracks;
+  }
   for (int track = animation->get_track_count() - 1; track >= 0; --track) {
     const NodePath path = animation->track_get_path(track);
     const String text = path;
@@ -129,6 +145,7 @@ Error RetargetAnimation(const String& reference_model,
   animation->set_meta("retarget_reference", reference_model);
   animation->set_meta("retarget_target", target_model);
   animation->set_meta("retarget_bones", bones);
+  animation->set_meta("restored_reference_tracks", rest_tracks);
   return OK;
 }
 
