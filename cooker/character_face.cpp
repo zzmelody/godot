@@ -680,15 +680,26 @@ Error LocateOriginalFace(const Vector<OriginalFacePoint>& points,
   }
   Array eyes;
   Array samples;
+  const Array eye_offsets = settings.get("eye_offsets", Array());
+  Vector3 eye_radius;
+  error = ReadVector(settings.get("eye_radius", Variant()), eye_radius);
+  ERR_FAIL_COND_V(error != OK || eye_offsets.size() != 2,
+                  ERR_INVALID_PARAMETER);
+  for (int axis = 0; axis < 3; ++axis) {
+    ERR_FAIL_COND_V(eye_radius[axis] < .009 || eye_radius[axis] > .065,
+                    ERR_INVALID_PARAMETER);
+  }
   for (int side = 0; side < 2; ++side) {
     ERR_FAIL_COND_V_MSG(counts[side] < 3, ERR_INVALID_DATA,
                         "Original eye-white samples are insufficient: side=" +
                             itos(side) + " samples=" + itos(counts[side]));
     landmarks.eyes[side] /= counts[side];
-    landmarks.eye_radius[side] = (upper[side] - lower[side]) * .5;
-    landmarks.eye_radius[side].x = MAX(.014, landmarks.eye_radius[side].x);
-    landmarks.eye_radius[side].y = MAX(.009, landmarks.eye_radius[side].y);
-    landmarks.eye_radius[side].z = eye_depth;
+    Vector3 correction;
+    error = ReadVector(eye_offsets[side], correction);
+    ERR_FAIL_COND_V(error != OK || correction.length() > .04,
+                    ERR_INVALID_PARAMETER);
+    landmarks.eyes[side] += correction;
+    landmarks.eye_radius[side] = eye_radius;
     eyes.push_back(landmarks.eyes[side]);
     samples.push_back(counts[side]);
   }
@@ -908,7 +919,7 @@ Error BindOriginalFace(Node* root, const Dictionary& configuration,
   std::array<int, 3> weighted{};
   for (int vertex = 0; vertex < points.size(); ++vertex) {
     const OriginalFacePoint& point = points[vertex];
-    if (point.head_weight < .5) {
+    if (point.head_weight < .1) {
       continue;
     }
     int chosen = 2;
@@ -946,8 +957,13 @@ Error BindOriginalFace(Node* root, const Dictionary& configuration,
     weights.set(from, weights[from] - transferred);
     ++weighted[chosen];
   }
-  ERR_FAIL_COND_V(weighted[0] < 6 || weighted[1] < 6 || weighted[2] < 6,
-                  ERR_INVALID_DATA);
+  Array weighted_vertices;
+  for (int count : weighted) {
+    weighted_vertices.push_back(count);
+  }
+  result["facial_weighted_vertices"] = weighted_vertices;
+  ERR_FAIL_COND_V_MSG(weighted[0] < 6 || weighted[1] < 6 || weighted[2] < 6,
+                      ERR_INVALID_DATA, vformat("Original facial weights are insufficient: %s", weighted_vertices));
   arrays[Mesh::ARRAY_BONES] = bones;
   arrays[Mesh::ARRAY_WEIGHTS] = weights;
   const Array channels = configuration.get("channels", Array());
@@ -1006,7 +1022,7 @@ Error BindOriginalFace(Node* root, const Dictionary& configuration,
     double maximum_delta = 0;
     for (int vertex = 0; vertex < points.size(); ++vertex) {
       const OriginalFacePoint& point = points[vertex];
-      if (point.head_weight < .5 ||
+      if (point.head_weight < .1 ||
           point.position.z < landmarks.mouth.z - .06) {
         continue;
       }
@@ -1077,11 +1093,6 @@ Error BindOriginalFace(Node* root, const Dictionary& configuration,
   instance->set_name("FaceMesh");
   root->set_meta("character_face", configuration);
   result["face_channels"] = coverage;
-  Array weighted_vertices;
-  for (int count : weighted) {
-    weighted_vertices.push_back(count);
-  }
-  result["facial_weighted_vertices"] = weighted_vertices;
   result["neutral_maximum_delta_meters"] = 0.0;
   result["preserved_source_vertices"] = points.size();
   result["preserved_source_triangles"] = indices.size() / 3;
