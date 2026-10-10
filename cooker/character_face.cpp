@@ -76,9 +76,9 @@ Error BuildBrows(const Array& skin, const Dictionary& configuration,
     for (int step = 0; step <= segments; ++step) {
       const double phase = double(step) / segments;
       const double x = center.x + radius.x * (phase * 2 - 1);
-      const double height = center.y + arch * Math::sin(phase * Math_PI);
+      const double height = center.y + arch * Math::sin(phase * Math::PI);
       const double thickness = radius.y *
-          MAX(.15, Math::sin(phase * Math_PI));
+          MAX(.15, Math::sin(phase * Math::PI));
       for (int edge : {-1, 1}) {
         const Vector2 point(side * x, height + edge * thickness);
         double front = -1e20;
