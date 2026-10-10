@@ -75,7 +75,8 @@ Error RetargetAnimation(const String& reference_model,
   // Import optimization can omit a constant reference-rest track. Restore
   // that pose for an explicit overlay instead of leaving a previous grip.
   int rest_tracks = 0;
-  for (const String& name : mask) {
+  for (const Variant& value : bones) {
+    const String name = value;
     const NodePath path("%GeneralSkeleton:" + name);
     if (animation->find_track(path, Animation::TYPE_ROTATION_3D) >= 0) {
       continue;

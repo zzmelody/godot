@@ -74,12 +74,14 @@ Error PrepareBoneOverlays(Dictionary& job) {
   HashSet<String> seen;
   for (const Variant& value : semantics) {
     ERR_FAIL_COND_V(value.get_type() != Variant::STRING || seen.has(value) ||
-                        !base->has_animation(value),
+                        !identifier(value),
                     ERR_INVALID_PARAMETER);
     const String id = value;
     seen.insert(id);
-    const Ref<Animation> animation = base->get_animation(id);
-    Array segments = animation->get_meta("source_segments", Array());
+    Array segments;
+    if (base->has_animation(id)) {
+      segments = base->get_animation(id)->get_meta("source_segments", Array());
+    }
     const Array replacements = job.get("clips", Array());
     for (const Variant& replacement_value : replacements) {
       ERR_FAIL_COND_V(replacement_value.get_type() != Variant::DICTIONARY,
