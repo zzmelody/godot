@@ -708,7 +708,8 @@ Error LocateOriginalFace(const Vector<OriginalFacePoint>& points,
     }
   }
   ERR_FAIL_COND_V_MSG(mouth_samples < 3, ERR_INVALID_DATA,
-                      "Original lip samples are insufficient");
+                      vformat("Original lip samples are insufficient: samples=%d eye_mid=%s",
+                              mouth_samples, eye_middle));
   landmarks.mouth /= mouth_samples;
   landmarks.mouth.x = 0;
   landmarks.jaw = landmarks.mouth + Vector3(0, .018, -.045);
