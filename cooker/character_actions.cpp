@@ -892,6 +892,16 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 		error = AttachFace(tree.root, p_job["face"], r_result);
 		ERR_FAIL_COND_V(error != OK, error);
 	}
+	if (p_job.has("finger_pose")) {
+		ERR_FAIL_COND_V(p_job["finger_pose"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		const Dictionary pose_definition = p_job["finger_pose"];
+		Ref<AnimationLibrary> finger_library;
+		error = load_library(pose_definition.get("library", ""), finger_library);
+		ERR_FAIL_COND_V(error != OK, error);
+		const StringName pose_clip = pose_definition.get("clip", "");
+		ERR_FAIL_COND_V(!finger_library->has_animation(pose_clip), ERR_INVALID_DATA);
+		tree.root->set_meta("character_finger_pose", finger_library->get_animation(pose_clip));
+	}
 	auto *player = memnew(AnimationPlayer);
 	player->set_name("CharacterAnimationPlayer"); tree.root->add_child(player); player->set_owner(tree.root);
 	player->set_root_node(NodePath(".."));
