@@ -15,6 +15,8 @@
 #include "scene/resources/texture.h"
 #include "scene/resources/3d/primitive_meshes.h"
 
+#include <array>
+
 namespace CookerCharacter {
 namespace {
 constexpr int kMaximumSourceVertices = 100000;
@@ -586,6 +588,495 @@ void AddEyePart(Node* owner, Node* attachment, const String& name,
   attachment->add_child(mesh);
   mesh->set_owner(owner);
 }
+
+struct OriginalFacePoint {
+  Vector3 position;
+  Color color;
+  double head_weight = 0;
+};
+
+struct OriginalFaceLandmarks {
+  std::array<Vector3, 2> eyes;
+  std::array<Vector3, 2> eye_radius;
+  Vector3 mouth;
+  Vector3 jaw;
+};
+
+double RegionWeight(const Vector3& position, const Vector3& center,
+                    const Vector3& radius) {
+  const Vector3 offset = (position - center) / radius;
+  const double remaining = MAX(0.0, 1.0 - offset.length_squared());
+  return remaining * remaining;
+}
+
+Error FaceNumber(const Dictionary& values, const String& key, double minimum,
+                 double maximum, double& number) {
+  const Variant value = values.get(key, Variant());
+  ERR_FAIL_COND_V(
+      value.get_type() != Variant::FLOAT && value.get_type() != Variant::INT,
+      ERR_INVALID_PARAMETER);
+  number = value;
+  ERR_FAIL_COND_V(
+      !Math::is_finite(number) || number < minimum || number > maximum,
+      ERR_INVALID_PARAMETER);
+  return OK;
+}
+
+// White-eye and lip samples are inspected in the original UV texture. These
+// points define the original anatomy; no template head is fitted or inserted.
+Error LocateOriginalFace(const Vector<OriginalFacePoint>& points,
+                         const Dictionary& settings,
+                         OriginalFaceLandmarks& landmarks, Dictionary& report) {
+  Vector3 minimum;
+  Vector3 maximum;
+  Error error = ReadVector(settings.get("eye_minimum", Variant()), minimum);
+  ERR_FAIL_COND_V(error != OK, error);
+  error = ReadVector(settings.get("eye_maximum", Variant()), maximum);
+  ERR_FAIL_COND_V(error != OK, error);
+  for (int axis = 0; axis < 3; ++axis) {
+    ERR_FAIL_COND_V(minimum[axis] < 0 || maximum[axis] <= minimum[axis] ||
+                        maximum[axis] > .5,
+                    ERR_INVALID_PARAMETER);
+  }
+  double white_minimum;
+  double white_chroma;
+  double dark_maximum;
+  double eye_depth;
+  error = FaceNumber(settings, "white_minimum", .1, 1, white_minimum);
+  ERR_FAIL_COND_V(error != OK, error);
+  error = FaceNumber(settings, "white_chroma", .01, .5, white_chroma);
+  ERR_FAIL_COND_V(error != OK, error);
+  error = FaceNumber(settings, "mouth_dark_maximum", .01, .7, dark_maximum);
+  ERR_FAIL_COND_V(error != OK, error);
+  error = FaceNumber(settings, "eye_depth", .005, .06, eye_depth);
+  ERR_FAIL_COND_V(error != OK, error);
+  std::array<int, 2> counts{};
+  std::array<Vector3, 2> lower{Vector3(.5, .5, .5), Vector3(.5, .5, .5)};
+  std::array<Vector3, 2> upper{Vector3(-.5, -.5, -.5), Vector3(-.5, -.5, -.5)};
+  for (const OriginalFacePoint& point : points) {
+    if (point.head_weight < .5) {
+      continue;
+    }
+    Vector3 position = point.position;
+    position.x = Math::abs(position.x);
+    const double largest =
+        MAX(point.color.r, MAX(point.color.g, point.color.b));
+    const double smallest =
+        MIN(point.color.r, MIN(point.color.g, point.color.b));
+    if (point.color.get_luminance() < white_minimum ||
+        largest - smallest > white_chroma) {
+      continue;
+    }
+    bool inside = true;
+    for (int axis = 0; axis < 3; ++axis) {
+      inside &=
+          position[axis] >= minimum[axis] && position[axis] <= maximum[axis];
+    }
+    if (!inside) {
+      continue;
+    }
+    const int side = point.position.x >= 0 ? 0 : 1;
+    landmarks.eyes[side] += point.position;
+    ++counts[side];
+    lower[side] = lower[side].min(point.position);
+    upper[side] = upper[side].max(point.position);
+  }
+  Array eyes;
+  Array samples;
+  for (int side = 0; side < 2; ++side) {
+    ERR_FAIL_COND_V_MSG(counts[side] < 6, ERR_INVALID_DATA,
+                        "Original eye-white samples are insufficient: side=" +
+                            itos(side) + " samples=" + itos(counts[side]));
+    landmarks.eyes[side] /= counts[side];
+    landmarks.eye_radius[side] = (upper[side] - lower[side]) * .5;
+    landmarks.eye_radius[side].x = MAX(.014, landmarks.eye_radius[side].x);
+    landmarks.eye_radius[side].y = MAX(.009, landmarks.eye_radius[side].y);
+    landmarks.eye_radius[side].z = eye_depth;
+    eyes.push_back(landmarks.eyes[side]);
+    samples.push_back(counts[side]);
+  }
+  const Vector3 eye_middle = (landmarks.eyes[0] + landmarks.eyes[1]) * .5;
+  int mouth_samples = 0;
+  for (const OriginalFacePoint& point : points) {
+    if (point.head_weight >= .5 && Math::abs(point.position.x) < .045 &&
+        point.position.y > eye_middle.y - .105 &&
+        point.position.y < eye_middle.y - .045 &&
+        point.position.z > eye_middle.z - .025 &&
+        point.color.get_luminance() < dark_maximum) {
+      landmarks.mouth += point.position;
+      ++mouth_samples;
+    }
+  }
+  ERR_FAIL_COND_V_MSG(mouth_samples < 3, ERR_INVALID_DATA,
+                      "Original lip samples are insufficient");
+  landmarks.mouth /= mouth_samples;
+  landmarks.mouth.x = 0;
+  landmarks.jaw = landmarks.mouth + Vector3(0, .018, -.045);
+  report["eye_centers"] = eyes;
+  report["eye_white_samples"] = samples;
+  report["mouth_center"] = landmarks.mouth;
+  report["mouth_samples"] = mouth_samples;
+  report["jaw_pivot"] = landmarks.jaw;
+  return OK;
+}
+
+Error ReadOriginalFacePoints(MeshInstance3D* instance, Skeleton3D* skeleton,
+                             int head, Vector<OriginalFacePoint>& points,
+                             Transform3D& mesh_to_skeleton) {
+  const Ref<ArrayMesh> mesh = instance->get_mesh();
+  const Ref<Skin> skin = instance->get_skin();
+  ERR_FAIL_COND_V(mesh.is_null() || skin.is_null() ||
+                      mesh->get_surface_count() != 1 ||
+                      mesh->get_blend_shape_count() != 0 ||
+                      mesh->get_shadow_mesh().is_valid(),
+                  ERR_INVALID_DATA);
+  Vector<int> bind_bones;
+  bind_bones.resize(skin->get_bind_count());
+  for (int bind = 0; bind < skin->get_bind_count(); ++bind) {
+    const int bone = skin->get_bind_name(bind) == StringName()
+                         ? skin->get_bind_bone(bind)
+                         : skeleton->find_bone(skin->get_bind_name(bind));
+    ERR_FAIL_COND_V(bone < 0 || bone >= skeleton->get_bone_count(),
+                    ERR_INVALID_DATA);
+    bind_bones.write[bind] = bone;
+    const Transform3D space =
+        skeleton->get_bone_global_rest(bone) * skin->get_bind_pose(bind);
+    if (bind == 0) {
+      mesh_to_skeleton = space;
+    } else {
+      ERR_FAIL_COND_V(!space.is_equal_approx(mesh_to_skeleton),
+                      ERR_INVALID_DATA);
+    }
+  }
+  const Array arrays = mesh->surface_get_arrays(0);
+  const PackedVector3Array positions = arrays[Mesh::ARRAY_VERTEX];
+  const PackedVector2Array uvs = arrays[Mesh::ARRAY_TEX_UV];
+  const PackedInt32Array bones = arrays[Mesh::ARRAY_BONES];
+  const PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
+  ERR_FAIL_COND_V(positions.is_empty() || positions.size() > 100000 ||
+                      uvs.size() != positions.size() ||
+                      bones.size() != weights.size(),
+                  ERR_INVALID_DATA);
+  const int stride = bones.size() / positions.size();
+  ERR_FAIL_COND_V(
+      (stride != 4 && stride != 8) || stride * positions.size() != bones.size(),
+      ERR_INVALID_DATA);
+  const Ref<BaseMaterial3D> material = mesh->surface_get_material(0);
+  ERR_FAIL_COND_V(material.is_null(), ERR_INVALID_DATA);
+  const Ref<Texture2D> texture =
+      material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO);
+  ERR_FAIL_COND_V(texture.is_null(), ERR_INVALID_DATA);
+  Ref<Image> image = texture->get_image();
+  ERR_FAIL_COND_V(image.is_null() || image->is_empty(), ERR_INVALID_DATA);
+  if (image->is_compressed()) {
+    image = image->duplicate();
+    ERR_FAIL_COND_V(image->decompress() != OK, ERR_INVALID_DATA);
+  }
+  const Transform3D head_space =
+      skeleton->get_bone_global_rest(head).affine_inverse() * mesh_to_skeleton;
+  points.resize(positions.size());
+  for (int vertex = 0; vertex < positions.size(); ++vertex) {
+    OriginalFacePoint& point = points.write[vertex];
+    point.position = head_space.xform(positions[vertex]);
+    point.color = SampleAlbedo(material, image, uvs, vertex);
+    for (int slot = 0; slot < stride; ++slot) {
+      const int bind = bones[vertex * stride + slot];
+      const double weight = weights[vertex * stride + slot];
+      ERR_FAIL_COND_V(bind < 0 || bind >= bind_bones.size() ||
+                          !Math::is_finite(weight) || weight < 0,
+                      ERR_INVALID_DATA);
+      int bone = bind_bones[bind];
+      while (bone >= 0 && bone != head) {
+        bone = skeleton->get_bone_parent(bone);
+      }
+      if (bone == head) {
+        point.head_weight += weight;
+      }
+    }
+  }
+  return OK;
+}
+
+Vector3 FaceRegionCenter(const String& region,
+                         const OriginalFaceLandmarks& face) {
+  if (region == "jaw" || region == "mouth") {
+    return face.mouth;
+  }
+  const int side = region.ends_with("left") ? 0 : 1;
+  const double sign = side == 0 ? 1.0 : -1.0;
+  if (region.begins_with("mouth_")) {
+    return face.mouth + Vector3(sign * .028, 0, 0);
+  }
+  if (region == "brow_inner") {
+    return (face.eyes[0] + face.eyes[1]) * .5 + Vector3(0, .032, -.015);
+  }
+  if (region.begins_with("brow_")) {
+    return face.eyes[side] + Vector3(0, .032, -.015);
+  }
+  if (region.begins_with("cheek_")) {
+    return face.eyes[side] + Vector3(sign * .005, -.030, -.010);
+  }
+  return face.eyes[side];
+}
+
+double OriginalJawWeight(const Vector3& position,
+                         const OriginalFaceLandmarks& face) {
+  return RegionWeight(position, face.mouth + Vector3(0, -.02, -.004),
+                      Vector3(.10, .080, .075)) *
+         CLAMP((face.mouth.y + .008 - position.y) / .018, 0.0, 1.0);
+}
+
+Error BindOriginalFace(Node* root, const Dictionary& configuration,
+                       Dictionary& result) {
+  Vector<MeshInstance3D*> meshes;
+  Skeleton3D* skeleton = nullptr;
+  int visited = 0;
+  Error error = CollectNodes(root, meshes, skeleton, visited);
+  ERR_FAIL_COND_V(error != OK || !skeleton || meshes.size() != 1,
+                  ERR_INVALID_DATA);
+  const int head = skeleton->find_bone("Head");
+  const int jaw = skeleton->find_bone("Jaw");
+  const std::array<int, 2> eye_bones{skeleton->find_bone("LeftEye"),
+                                     skeleton->find_bone("RightEye")};
+  ERR_FAIL_COND_V(head < 0 || jaw < 0 || eye_bones[0] < 0 || eye_bones[1] < 0 ||
+                      skeleton->get_bone_parent(jaw) != head ||
+                      skeleton->get_bone_parent(eye_bones[0]) != head ||
+                      skeleton->get_bone_parent(eye_bones[1]) != head,
+                  ERR_INVALID_DATA);
+  auto* instance = meshes[0];
+  Vector<OriginalFacePoint> points;
+  Transform3D mesh_to_skeleton;
+  error = ReadOriginalFacePoints(instance, skeleton, head, points,
+                                 mesh_to_skeleton);
+  ERR_FAIL_COND_V(error != OK, error);
+  OriginalFaceLandmarks landmarks;
+  const Dictionary calibration = configuration.get("calibration", Dictionary());
+  error = LocateOriginalFace(points, calibration, landmarks, result);
+  ERR_FAIL_COND_V(error != OK, error);
+  double eye_depth;
+  error = FaceNumber(calibration, "eye_depth", .005, .06, eye_depth);
+  ERR_FAIL_COND_V(error != OK, error);
+  skeleton->set_bone_rest(jaw, Transform3D(Basis(), landmarks.jaw));
+  skeleton->reset_bone_pose(jaw);
+  for (int side = 0; side < 2; ++side) {
+    skeleton->set_bone_rest(
+        eye_bones[side],
+        Transform3D(Basis(), landmarks.eyes[side] - Vector3(0, 0, eye_depth)));
+    skeleton->reset_bone_pose(eye_bones[side]);
+  }
+  const Ref<ArrayMesh> source = instance->get_mesh();
+  const Ref<Skin> source_skin = instance->get_skin();
+  Ref<Skin> skin;
+  skin.instantiate();
+  std::array<int, 3> facial_binds{-1, -1, -1};
+  int head_bind = -1;
+  for (int bind = 0; bind < source_skin->get_bind_count(); ++bind) {
+    const StringName name = source_skin->get_bind_name(bind);
+    const int bone = name == StringName() ? source_skin->get_bind_bone(bind)
+                                          : skeleton->find_bone(name);
+    skin->add_named_bind(skeleton->get_bone_name(bone),
+                         skeleton->get_bone_global_rest(bone).affine_inverse() *
+                             mesh_to_skeleton);
+    if (bone == head) {
+      head_bind = bind;
+    }
+    if (bone == eye_bones[0]) {
+      facial_binds[0] = bind;
+    }
+    if (bone == eye_bones[1]) {
+      facial_binds[1] = bind;
+    }
+    if (bone == jaw) {
+      facial_binds[2] = bind;
+    }
+  }
+  ERR_FAIL_COND_V(head_bind < 0 || facial_binds[0] < 0 || facial_binds[1] < 0 ||
+                      facial_binds[2] < 0,
+                  ERR_INVALID_DATA);
+  Array arrays = source->surface_get_arrays(0);
+  PackedInt32Array bones = arrays[Mesh::ARRAY_BONES];
+  PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
+  const int stride = bones.size() / points.size();
+  std::array<int, 3> weighted{};
+  for (int vertex = 0; vertex < points.size(); ++vertex) {
+    const OriginalFacePoint& point = points[vertex];
+    if (point.head_weight < .5) {
+      continue;
+    }
+    int chosen = 2;
+    double amount = OriginalJawWeight(point.position, landmarks);
+    for (int side = 0; side < 2; ++side) {
+      const Vector3 radius =
+          landmarks.eye_radius[side] * Vector3(1.2, 1.3, .65);
+      const double eye =
+          RegionWeight(point.position, landmarks.eyes[side], radius);
+      if (eye > .1 && eye > amount) {
+        chosen = side;
+        amount = MIN(1.0, eye * 4);
+      }
+    }
+    if (amount < .001) {
+      continue;
+    }
+    int head_slot = -1;
+    int available_slot = -1;
+    for (int slot = 0; slot < stride; ++slot) {
+      const int offset = vertex * stride + slot;
+      if (bones[offset] == head_bind && weights[offset] > 0) {
+        head_slot = slot;
+      }
+      if (weights[offset] == 0) {
+        available_slot = slot;
+      }
+    }
+    ERR_FAIL_COND_V(head_slot < 0 || available_slot < 0, ERR_INVALID_DATA);
+    const int from = vertex * stride + head_slot;
+    const int to = vertex * stride + available_slot;
+    const float transferred = weights[from] * float(amount);
+    bones.set(to, facial_binds[chosen]);
+    weights.set(to, transferred);
+    weights.set(from, weights[from] - transferred);
+    ++weighted[chosen];
+  }
+  ERR_FAIL_COND_V(weighted[0] < 6 || weighted[1] < 6 || weighted[2] < 6,
+                  ERR_INVALID_DATA);
+  arrays[Mesh::ARRAY_BONES] = bones;
+  arrays[Mesh::ARRAY_WEIGHTS] = weights;
+  const Array channels = configuration.get("channels", Array());
+  ERR_FAIL_COND_V(channels.is_empty() || channels.size() > kMaximumChannels,
+                  ERR_INVALID_PARAMETER);
+  const PackedVector3Array positions = arrays[Mesh::ARRAY_VERTEX];
+  const PackedVector3Array original_normals = arrays[Mesh::ARRAY_NORMAL];
+  const PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
+  ERR_FAIL_COND_V(
+      indices.is_empty() || indices.size() % 3 != 0 ||
+          source->surface_get_primitive_type(0) != Mesh::PRIMITIVE_TRIANGLES,
+      ERR_INVALID_DATA);
+  const PackedVector3Array neutral_normals = Normals(positions, indices);
+  const Transform3D head_space =
+      skeleton->get_bone_global_rest(head).affine_inverse() * mesh_to_skeleton;
+  const Basis to_mesh = head_space.basis.inverse();
+  Ref<ArrayMesh> mesh;
+  mesh.instantiate();
+  mesh->set_blend_shape_mode(Mesh::BLEND_SHAPE_MODE_NORMALIZED);
+  Array shapes;
+  Array coverage;
+  HashSet<String> names;
+  for (const Variant& value : channels) {
+    ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY,
+                    ERR_INVALID_PARAMETER);
+    const Dictionary channel = value;
+    const String name = channel.get("name", "");
+    const String kind = channel.get("kind", "");
+    const String region = channel.get("region", "");
+    ERR_FAIL_COND_V(name.is_empty() || name.length() > 64 || names.has(name) ||
+                        (kind != "translate" && kind != "blink" &&
+                         kind != "jaw" && kind != "eye_wide") ||
+                        (region != "eye_left" && region != "eye_right" &&
+                         region != "brow_left" && region != "brow_right" &&
+                         region != "brow_inner" && region != "mouth_left" &&
+                         region != "mouth_right" && region != "cheek_left" &&
+                         region != "cheek_right" && region != "jaw"),
+                    ERR_INVALID_PARAMETER);
+    Vector3 radius;
+    Vector3 translation;
+    error = ReadVector(channel.get("radius", Variant()), radius);
+    ERR_FAIL_COND_V(error != OK, error);
+    error = ReadVector(channel.get("translation", Variant()), translation);
+    ERR_FAIL_COND_V(error != OK || translation.length() > .03,
+                    ERR_INVALID_PARAMETER);
+    for (int axis = 0; axis < 3; ++axis) {
+      ERR_FAIL_COND_V(radius[axis] < .005 || radius[axis] > .2,
+                      ERR_INVALID_PARAMETER);
+    }
+    double amount;
+    error = FaceNumber(channel, "amount", 0, kind == "blink" ? 1 : .35, amount);
+    ERR_FAIL_COND_V(error != OK, error);
+    const Vector3 center = FaceRegionCenter(region, landmarks);
+    PackedVector3Array moved = positions;
+    int affected = 0;
+    double maximum_delta = 0;
+    for (int vertex = 0; vertex < points.size(); ++vertex) {
+      const OriginalFacePoint& point = points[vertex];
+      if (point.head_weight < .5 ||
+          point.position.z < landmarks.mouth.z - .06) {
+        continue;
+      }
+      const double weight = RegionWeight(point.position, center, radius);
+      Vector3 delta;
+      if (kind == "translate") {
+        delta = translation * weight;
+      } else if (kind == "jaw") {
+        const Vector3 offset = point.position - landmarks.jaw;
+        delta = (Basis(Vector3(1, 0, 0), amount).xform(offset) - offset) *
+                OriginalJawWeight(point.position, landmarks);
+      } else if (kind == "eye_wide") {
+        delta.y = (point.position.y - center.y) * amount * weight;
+      } else {
+        // Fold the original eye and its surrounding lid toward the closure
+        // line. The source eye, UVs and face remain unchanged at zero weight.
+        const double horizontal =
+            Math::abs(point.position.x - center.x) / radius.x;
+        const double vertical =
+            Math::abs(point.position.y - center.y) / radius.y;
+        const double front = CLAMP(
+            (1.0 - Math::abs(point.position.z - center.z) / radius.z) * 3.0,
+            0.0, 1.0);
+        const double fold = CLAMP((1.0 - horizontal) * 3.0, 0.0, 1.0) *
+                            CLAMP((1.0 - vertical) * 3.0, 0.0, 1.0) * front;
+        delta.y = (center.y - point.position.y) * fold * amount;
+      }
+      if (delta.length_squared() <= 1e-12) {
+        continue;
+      }
+      moved.set(vertex, positions[vertex] + to_mesh.xform(delta));
+      ++affected;
+      maximum_delta = MAX(maximum_delta, delta.length());
+    }
+    ERR_FAIL_COND_V_MSG(
+        affected < 6 || maximum_delta > .035, ERR_INVALID_DATA,
+        "Original facial channel is empty or exceeds its displacement bound: " +
+            name);
+    const PackedVector3Array computed = Normals(moved, indices);
+    PackedVector3Array normals = original_normals;
+    for (int vertex = 0; vertex < normals.size(); ++vertex) {
+      normals.set(vertex, (original_normals[vertex] + computed[vertex] -
+                           neutral_normals[vertex])
+                              .normalized());
+    }
+    Array shape;
+    shape.resize(Mesh::ARRAY_MAX);
+    shape[Mesh::ARRAY_VERTEX] = moved;
+    shape[Mesh::ARRAY_NORMAL] = normals;
+    shape[Mesh::ARRAY_TANGENT] = arrays[Mesh::ARRAY_TANGENT];
+    shapes.push_back(shape);
+    mesh->add_blend_shape(name);
+    names.insert(name);
+    Dictionary record;
+    record["name"] = name;
+    record["affected_vertices"] = affected;
+    record["maximum_delta_meters"] = maximum_delta;
+    coverage.push_back(record);
+  }
+  mesh->add_surface_from_arrays(
+      Mesh::PRIMITIVE_TRIANGLES, arrays, shapes, source->surface_get_lods(0),
+      stride == 8 ? Mesh::ARRAY_FLAG_USE_8_BONE_WEIGHTS : 0);
+  mesh->surface_set_material(0, source->surface_get_material(0));
+  mesh->surface_set_name(0, source->surface_get_name(0));
+  mesh->set_meta("face_channels", coverage);
+  instance->set_mesh(mesh);
+  instance->set_skin(skin);
+  instance->set_name("FaceMesh");
+  root->set_meta("character_face", configuration);
+  result["face_channels"] = coverage;
+  result["facial_weighted_vertices"] =
+      Array::make(weighted[0], weighted[1], weighted[2]);
+  result["neutral_maximum_delta_meters"] = 0.0;
+  result["preserved_source_vertices"] = points.size();
+  result["preserved_source_triangles"] = indices.size() / 3;
+  result["preserved_source_material"] = true;
+  return OK;
+}
 }  // namespace
 
 Error ComposeFace(const Dictionary& job, Dictionary& result) {
@@ -762,6 +1253,9 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
 
 Error AttachFace(Node* root, const Dictionary& configuration,
                   Dictionary& result) {
+  if (bool(configuration.get("preserve_source", false))) {
+    return BindOriginalFace(root, configuration, result);
+  }
   const String path = configuration.get("mesh", "");
   Error error = CookerFiles::check_path(path);
   ERR_FAIL_COND_V(error != OK, error);
