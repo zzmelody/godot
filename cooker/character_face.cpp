@@ -450,7 +450,8 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
 }
 
 void AddEyePart(Node* owner, Node* attachment, const String& name,
-                double radius, double depth, double forward, const Color& color) {
+                double radius, double depth, double forward, const Color& color,
+                const Vector3& fit_scale) {
   Ref<SphereMesh> sphere;
   sphere.instantiate();
   sphere->set_radius(radius);
@@ -465,8 +466,8 @@ void AddEyePart(Node* owner, Node* attachment, const String& name,
   auto* mesh = memnew(MeshInstance3D);
   mesh->set_name(name);
   mesh->set_mesh(sphere);
-  mesh->set_position(Vector3(0, 0, forward));
-  mesh->set_scale(Vector3(1, 1, depth));
+  mesh->set_position(Vector3(0, 0, forward * fit_scale.z));
+  mesh->set_scale(Vector3(1, 1, depth) * fit_scale);
   attachment->add_child(mesh);
   mesh->set_owner(owner);
 }
@@ -610,6 +611,17 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   ERR_FAIL_COND_V(head < 0, ERR_INVALID_DATA);
   const double neck_offset = configuration.get("neck_offset", -0.07);
   const double eye_radius = configuration.get("eye_radius", 0.0125);
+  Vector3 fit_scale;
+  Vector3 fit_offset;
+  error = ReadVector(configuration.get("fit_scale", Variant()), fit_scale);
+  ERR_FAIL_COND_V(error != OK, error);
+  error = ReadVector(configuration.get("fit_offset", Variant()), fit_offset);
+  ERR_FAIL_COND_V(error != OK || fit_offset.length() > 0.25,
+                  ERR_INVALID_PARAMETER);
+  for (int axis = 0; axis < 3; ++axis) {
+    ERR_FAIL_COND_V(fit_scale[axis] < 0.5 || fit_scale[axis] > 2,
+                    ERR_INVALID_PARAMETER);
+  }
   ERR_FAIL_COND_V(configuration.get("head_preservation", Variant()).get_type() !=
                       Variant::DICTIONARY, ERR_INVALID_PARAMETER);
   const Dictionary preservation = configuration["head_preservation"];
@@ -649,6 +661,8 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   auto* face_mesh = memnew(MeshInstance3D);
   face_mesh->set_name("FaceMesh");
   face_mesh->set_mesh(face);
+  face_mesh->set_scale(fit_scale);
+  face_mesh->set_position(fit_offset);
   const Color skin_color = skin_sum / skin_samples;
   for (int surface = 0; surface < face->get_surface_count(); ++surface) {
     if (face->surface_get_name(surface) == "body") {
@@ -664,14 +678,17 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   Vector3 iris;
   error = ReadVector(configuration.get("iris_color", Variant()), iris);
   ERR_FAIL_COND_V(error != OK, error);
-  const Array eyes = face->get_meta("eye_centers");
-  ERR_FAIL_COND_V(eyes.size() != 2, ERR_INVALID_DATA);
+  const Array source_eyes = face->get_meta("eye_centers");
+  ERR_FAIL_COND_V(source_eyes.size() != 2, ERR_INVALID_DATA);
+  Array eyes;
   for (int side = 0; side < 2; ++side) {
     const String name = side == 0 ? "LeftEye" : "RightEye";
     const int bone = skeleton->find_bone(name);
     ERR_FAIL_COND_V(bone < 0 || skeleton->get_bone_parent(bone) != head,
                     ERR_INVALID_DATA);
-    const Vector3 center = eyes[side];
+    const Vector3 source_center = source_eyes[side];
+    const Vector3 center = source_center * fit_scale + fit_offset;
+    eyes.push_back(center);
     skeleton->set_bone_rest(bone, Transform3D(Basis(), center));
     skeleton->reset_bone_pose(bone);
     auto* eye = memnew(BoneAttachment3D);
@@ -679,11 +696,12 @@ Error AttachFace(Node* root, const Dictionary& configuration,
     skeleton->add_child(eye);
     eye->set_owner(root);
     eye->set_bone_name(name);
-    AddEyePart(root, eye, "White", eye_radius, 1, 0, Color(0.91, 0.89, 0.84));
+    AddEyePart(root, eye, "White", eye_radius, 1, 0,
+               Color(0.91, 0.89, 0.84), fit_scale);
     AddEyePart(root, eye, "Iris", eye_radius * 0.55, 0.12,
-               eye_radius * 0.91, Color(iris.x, iris.y, iris.z));
+               eye_radius * 0.91, Color(iris.x, iris.y, iris.z), fit_scale);
     AddEyePart(root, eye, "Pupil", eye_radius * 0.27, 0.10,
-               eye_radius * 1.01, Color(0.025, 0.019, 0.014));
+               eye_radius * 1.01, Color(0.025, 0.019, 0.014), fit_scale);
   }
   root->set_meta("character_face", configuration);
   result["face_channels"] = face->get_blend_shape_count();
@@ -691,6 +709,8 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   result["preserved_hair_triangles"] = preserved;
   result["skin_color_samples"] = skin_samples;
   result["skin_color"] = skin_color;
+  result["face_fit_scale"] = fit_scale;
+  result["face_fit_offset"] = fit_offset;
   result["eye_centers"] = eyes;
   return OK;
 }
