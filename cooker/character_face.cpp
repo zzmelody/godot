@@ -702,15 +702,22 @@ Error LocateOriginalFace(const Vector<OriginalFacePoint>& points,
   // The painted lips do not provide reliable vertex-color landmarks. Their
   // bounded offset is authored against this source mesh, with a surface check.
   double mouth_surface_distance = 1;
+  Vector3 closest_mouth_point;
   for (const OriginalFacePoint& point : points) {
-    if (point.head_weight >= .5) {
-      mouth_surface_distance = MIN(mouth_surface_distance,
-                                   point.position.distance_to(landmarks.mouth));
+    if (point.head_weight >= .1) {
+      const double distance = point.position.distance_to(landmarks.mouth);
+      if (distance < mouth_surface_distance) {
+        mouth_surface_distance = distance;
+        closest_mouth_point = point.position;
+      }
     }
   }
   ERR_FAIL_COND_V_MSG(
       mouth_surface_distance > .03, ERR_INVALID_DATA,
-      "Authored mouth landmark is outside the original face surface");
+      vformat("Authored mouth landmark is outside the original face surface: "
+              "mouth=%s closest=%s distance=%f eyes=%s",
+              landmarks.mouth, closest_mouth_point, mouth_surface_distance,
+              eyes));
   landmarks.jaw = landmarks.mouth + Vector3(0, .018, -.045);
   report["eye_centers"] = eyes;
   report["eye_white_samples"] = samples;
