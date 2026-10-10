@@ -870,6 +870,12 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 	Skeleton3D *skeleton = skeleton_in(tree.root);
 	ERR_FAIL_NULL_V(skeleton, ERR_INVALID_DATA);
 	ERR_FAIL_COND_V(skeleton->find_bone("Hips") < 0 || skeleton->find_bone("LeftHand") < 0 || skeleton->find_bone("RightFoot") < 0, ERR_INVALID_DATA);
+	Dictionary rig_report;
+	if (p_job.has("rig_bones")) {
+		ERR_FAIL_COND_V(p_job["rig_bones"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+		error = PrepareRig(tree.root, p_job["rig_bones"], rig_report);
+		ERR_FAIL_COND_V(error != OK, error);
+	}
 	remove_players(tree.root);
 	auto *player = memnew(AnimationPlayer);
 	player->set_name("CharacterAnimationPlayer"); tree.root->add_child(player); player->set_owner(tree.root);
@@ -897,6 +903,7 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 	error = CookerAtomicSave::save_resource(assembled, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output; r_result["sockets"] = sockets.size(); r_result["bone_count"] = skeleton->get_bone_count();
+	if (!rig_report.is_empty()) r_result["rig"] = rig_report;
 	return OK;
 }
 
