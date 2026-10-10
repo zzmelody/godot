@@ -58,7 +58,8 @@ Error CollectMeshes(Node* node, Vector<MeshInstance3D*>& meshes,
   return OK;
 }
 
-Error ReadBones(Skeleton3D* skeleton, const Array& declarations,
+Error ReadBones(Skeleton3D* skeleton, Skeleton3D* reference,
+                const Array& declarations,
                 Vector<RigBone>& bones, Vector<int>& remap) {
   ERR_FAIL_COND_V(declarations.is_empty() || declarations.size() > 128,
                   ERR_PARAMETER_RANGE_ERROR);
@@ -95,6 +96,37 @@ Error ReadBones(Skeleton3D* skeleton, const Array& declarations,
       ERR_FAIL_COND_V(bone.segment_start.distance_to(bone.segment_end) < 0.001,
                       ERR_INVALID_DATA);
       bone.rest.origin = bone.segment_start.lerp(bone.segment_end, fraction);
+    } else if (!row.has("offset") && reference &&
+               reference->find_bone(bone.name) >= 0) {
+      // Missing fingers inherit the target hand's rest space, not the source
+      // model's world-space position. Limb proportions scale their offsets.
+      int anchor = bone.parent;
+      while (anchor >= 0 && bones[anchor].source < 0) {
+        anchor = bones[anchor].parent;
+      }
+      ERR_FAIL_COND_V(anchor < 0, ERR_INVALID_DATA);
+      const int reference_anchor = reference->find_bone(bones[anchor].name);
+      const int reference_bone = reference->find_bone(bone.name);
+      ERR_FAIL_COND_V(reference_anchor < 0, ERR_INVALID_DATA);
+      Transform3D relative =
+          reference->get_bone_global_rest(reference_anchor).affine_inverse() *
+          reference->get_bone_global_rest(reference_bone);
+      const int target_parent = skeleton->get_bone_parent(bones[anchor].source);
+      const int reference_parent = reference->get_bone_parent(reference_anchor);
+      double ratio = 1;
+      if (target_parent >= 0 && reference_parent >= 0) {
+        const double target_length = bones[anchor].rest.origin.distance_to(
+            skeleton->get_bone_global_rest(target_parent).origin);
+        const double reference_length =
+            reference->get_bone_global_rest(reference_anchor).origin.distance_to(
+                reference->get_bone_global_rest(reference_parent).origin);
+        ERR_FAIL_COND_V(reference_length < 0.001, ERR_INVALID_DATA);
+        ratio = target_length / reference_length;
+      }
+      ERR_FAIL_COND_V(!std::isfinite(ratio) || ratio < 0.25 || ratio > 4,
+                      ERR_INVALID_DATA);
+      relative.origin *= ratio;
+      bone.rest = bones[anchor].rest * relative;
     } else {
       const Array offset = row.get("offset", Array());
       ERR_FAIL_COND_V(offset.size() != 3, ERR_INVALID_DATA);
@@ -134,7 +166,8 @@ void AddInfluence(std::array<Influence, 16>& entries, int& count, int bone,
 
 Error RebindMesh(MeshInstance3D* instance, Skeleton3D* skeleton,
                  const Vector<RigBone>& bones, const Vector<int>& remap,
-                 uint64_t& vertex_count, uint64_t& twist_vertices) {
+                 uint64_t& vertex_count, uint64_t& twist_vertices,
+                 uint64_t& finger_vertices) {
   const Ref<ArrayMesh> source = instance->get_mesh();
   const Ref<Skin> source_skin = instance->get_skin();
   ERR_FAIL_COND_V(source.is_null() || source_skin.is_null() ||
@@ -184,6 +217,7 @@ Error RebindMesh(MeshInstance3D* instance, Skeleton3D* skeleton,
       std::array<Influence, 16> influences{};
       int count = 0;
       bool has_twist = false;
+      bool has_fingers = false;
       const Vector3 point = mesh_to_skeleton.xform(positions[vertex]);
       for (int slot = 0; slot < stride; ++slot) {
         const int bind = skin_bones[vertex * stride + slot];
@@ -192,6 +226,59 @@ Error RebindMesh(MeshInstance3D* instance, Skeleton3D* skeleton,
                             !std::isfinite(weight) || weight < 0,
                         ERR_INVALID_DATA);
         const int mapped = bind_bones[bind];
+        const String& mapped_name = bones[mapped].name;
+        if (mapped_name == "LeftHand" || mapped_name == "RightHand") {
+          int closest = -1;
+          double closest_distance = 1e20;
+          double closest_phase = 0;
+          for (int finger = 0; finger < bones.size(); ++finger) {
+            const RigBone& candidate = bones[finger];
+            if (candidate.source >= 0 || candidate.parent < 0 ||
+                !candidate.name.begins_with(mapped_name.trim_suffix("Hand")) ||
+                (!candidate.name.ends_with("Metacarpal") &&
+                 !candidate.name.ends_with("Proximal") &&
+                 !candidate.name.ends_with("Intermediate") &&
+                 !candidate.name.ends_with("Distal"))) {
+              continue;
+            }
+            Vector3 end = candidate.rest.origin +
+                          (candidate.rest.origin -
+                           bones[candidate.parent].rest.origin) * 0.7;
+            for (const RigBone& child : bones) {
+              if (child.parent == finger) {
+                end = child.rest.origin;
+                break;
+              }
+            }
+            const Vector3 segment = end - candidate.rest.origin;
+            if (segment.length_squared() < 1e-8) {
+              continue;
+            }
+            const double phase = CLAMP(
+                (point - candidate.rest.origin).dot(segment) /
+                    segment.length_squared(), 0.0, 1.0);
+            const double distance = point.distance_squared_to(
+                candidate.rest.origin + segment * phase);
+            if (distance < closest_distance) {
+              closest = finger;
+              closest_distance = distance;
+              closest_phase = phase;
+            }
+          }
+          const double hand_distance = point.distance_to(bones[mapped].rest.origin);
+          if (closest >= 0 && hand_distance > 0.001) {
+            double amount = CLAMP(
+                1 - Math::sqrt(closest_distance) / hand_distance, 0.0, 1.0);
+            if (bones[closest].parent == mapped) {
+              amount *= closest_phase;
+            }
+            const float finger_weight = weight * float(amount * 0.9);
+            AddInfluence(influences, count, closest, finger_weight);
+            AddInfluence(influences, count, mapped, weight - finger_weight);
+            has_fingers |= finger_weight > 0.0001;
+            continue;
+          }
+        }
         float twist_weight = 0;
         for (int twist = 0; twist < bones.size(); ++twist) {
           const RigBone& candidate = bones[twist];
@@ -225,6 +312,7 @@ Error RebindMesh(MeshInstance3D* instance, Skeleton3D* skeleton,
                          slot < count ? influences[slot].weight / sum : 0);
       }
       twist_vertices += has_twist;
+      finger_vertices += has_fingers;
     }
     arrays[Mesh::ARRAY_BONES] = skin_bones;
     arrays[Mesh::ARRAY_WEIGHTS] = skin_weights;
@@ -247,14 +335,17 @@ Error RebindMesh(MeshInstance3D* instance, Skeleton3D* skeleton,
 }
 }  // namespace
 
-Error PrepareRig(Node* root, const Array& declarations, Dictionary& report) {
+Error PrepareRig(Node* root, const Array& declarations, Dictionary& report,
+                 Node* reference_root) {
   Skeleton3D* skeleton = FindSkeleton(root);
   ERR_FAIL_NULL_V(skeleton, ERR_INVALID_DATA);
   const int source_count = skeleton->get_bone_count();
   ERR_FAIL_COND_V(source_count <= 0 || source_count > 256, ERR_INVALID_DATA);
   Vector<RigBone> bones;
   Vector<int> remap;
-  Error error = ReadBones(skeleton, declarations, bones, remap);
+  Skeleton3D* reference = reference_root ? FindSkeleton(reference_root) : nullptr;
+  ERR_FAIL_COND_V(reference_root && !reference, ERR_INVALID_DATA);
+  Error error = ReadBones(skeleton, reference, declarations, bones, remap);
   ERR_FAIL_COND_V(error != OK, error);
   Vector<MeshInstance3D*> meshes;
   int visited = 0;
@@ -262,8 +353,10 @@ Error PrepareRig(Node* root, const Array& declarations, Dictionary& report) {
   ERR_FAIL_COND_V(error != OK || meshes.is_empty(), ERR_INVALID_DATA);
   uint64_t vertices = 0;
   uint64_t twist_vertices = 0;
+  uint64_t finger_vertices = 0;
   for (auto* mesh : meshes) {
-    error = RebindMesh(mesh, skeleton, bones, remap, vertices, twist_vertices);
+    error = RebindMesh(mesh, skeleton, bones, remap, vertices, twist_vertices,
+                       finger_vertices);
     ERR_FAIL_COND_V(error != OK, error);
   }
   skeleton->clear_bones();
@@ -283,6 +376,7 @@ Error PrepareRig(Node* root, const Array& declarations, Dictionary& report) {
   report["meshes"] = meshes.size();
   report["vertices"] = vertices;
   report["twist_weighted_vertices"] = twist_vertices;
+  report["finger_weighted_vertices"] = finger_vertices;
   report["bone_names"] = names;
   root->set_meta("character_rig_bones", names);
   root->set_meta("character_rig_report", report);

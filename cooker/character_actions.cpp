@@ -873,7 +873,17 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 	Dictionary rig_report;
 	if (p_job.has("rig_bones")) {
 		ERR_FAIL_COND_V(p_job["rig_bones"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
-		error = PrepareRig(tree.root, p_job["rig_bones"], rig_report);
+		Tree reference_tree;
+		if (p_job.has("rig_reference")) {
+			const String reference_path = p_job["rig_reference"];
+			error = CookerFiles::check_path(reference_path);
+			ERR_FAIL_COND_V(error != OK, error);
+			Ref<PackedScene> reference = ResourceLoader::load(reference_path, "PackedScene");
+			ERR_FAIL_COND_V(reference.is_null(), ERR_INVALID_DATA);
+			reference_tree.root = reference->instantiate();
+			ERR_FAIL_NULL_V(reference_tree.root, ERR_CANT_CREATE);
+		}
+		error = PrepareRig(tree.root, p_job["rig_bones"], rig_report, reference_tree.root);
 		ERR_FAIL_COND_V(error != OK, error);
 	}
 	remove_players(tree.root);
