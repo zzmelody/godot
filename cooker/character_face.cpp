@@ -297,6 +297,8 @@ Error CollectNodes(Node* node, Vector<MeshInstance3D*>& meshes,
 
 struct HeadTrimSettings {
   double maximum_hair_luminance = 0.35;
+  double minimum_hair_y = 0.03;
+  double majority_head_minimum_y = 0.03;
   double front_hair_minimum_y = 0.13;
   double back_hair_maximum_z = 0.02;
   double side_hair_minimum_x = 0.075;
@@ -400,8 +402,10 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
       // Neck-blended face vertices still belong to the replaced head. Keeping
       // them by majority weight leaves floating skin around the new neck.
       // The authored color mask keeps neck-weighted clothing intact.
-      discard.write[vertex] = (amount > 0.5 || (amount > 0.05 && skin_color)) &&
-          position.y >= neck_offset;
+      discard.write[vertex] =
+          position.y >= neck_offset &&
+          ((amount > 0.5 && position.y >= settings.majority_head_minimum_y) ||
+           (amount > 0.05 && skin_color));
       hair.write[vertex] = false;
       if (!discard[vertex]) {
         continue;
@@ -410,7 +414,8 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
       // The source may contain hair and skin in one textured surface. The
       // authored head-space mask preserves dark hair without retaining the
       // old eyes, mouth or face underneath the new facial topology.
-      hair.write[vertex] = luminance <= settings.maximum_hair_luminance &&
+      hair.write[vertex] = position.y >= settings.minimum_hair_y &&
+          luminance <= settings.maximum_hair_luminance &&
           color.b >= color.r * settings.minimum_hair_blue_red_ratio &&
           (position.y >= settings.front_hair_minimum_y ||
            position.z <= settings.back_hair_maximum_z ||
@@ -681,6 +686,9 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   const Dictionary preservation = configuration["head_preservation"];
   HeadTrimSettings settings;
   settings.maximum_hair_luminance = preservation.get("maximum_luminance", 0.35);
+  settings.minimum_hair_y = preservation.get("minimum_y", 0.03);
+  settings.majority_head_minimum_y =
+      preservation.get("majority_head_minimum_y", 0.03);
   settings.front_hair_minimum_y = preservation.get("front_minimum_y", 0.13);
   settings.back_hair_maximum_z = preservation.get("back_maximum_z", 0.02);
   settings.side_hair_minimum_x = preservation.get("side_minimum_x", 0.075);
@@ -690,6 +698,12 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   ERR_FAIL_COND_V(!Math::is_finite(settings.maximum_hair_luminance) ||
                       settings.maximum_hair_luminance < 0 ||
                       settings.maximum_hair_luminance > 1 ||
+                      !Math::is_finite(settings.minimum_hair_y) ||
+                      settings.minimum_hair_y < -0.2 ||
+                      settings.minimum_hair_y > 0.5 ||
+                      !Math::is_finite(settings.majority_head_minimum_y) ||
+                      settings.majority_head_minimum_y < -0.2 ||
+                      settings.majority_head_minimum_y > 0.5 ||
                       !Math::is_finite(settings.front_hair_minimum_y) ||
                       settings.front_hair_minimum_y < -0.2 ||
                       settings.front_hair_minimum_y > 0.5 ||
