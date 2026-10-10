@@ -11,7 +11,7 @@
 #include "scene/resources/3d/skin.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
-#include "scene/resources/primitive_meshes.h"
+#include "scene/resources/3d/primitive_meshes.h"
 
 namespace CookerCharacter {
 namespace {
