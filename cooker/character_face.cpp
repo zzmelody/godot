@@ -306,9 +306,9 @@ Color SampleAlbedo(const Ref<BaseMaterial3D>& material, const Ref<Image>& image,
   Color color = material.is_valid() ? material->get_albedo() : Color(1, 1, 1);
   if (image.is_valid() && vertex < uvs.size()) {
     const Vector2 uv = uvs[vertex];
-    const int x = CLAMP(int(Math::fposmod(uv.x, 1.0) * image->get_width()),
+    const int x = CLAMP(int(Math::fposmod(static_cast<double>(uv.x), 1.0) * image->get_width()),
                         0, image->get_width() - 1);
-    const int y = CLAMP(int(Math::fposmod(uv.y, 1.0) * image->get_height()),
+    const int y = CLAMP(int(Math::fposmod(static_cast<double>(uv.y), 1.0) * image->get_height()),
                         0, image->get_height() - 1);
     color *= image->get_pixel(x, y);
   }
