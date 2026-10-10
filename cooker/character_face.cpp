@@ -299,6 +299,7 @@ struct HeadTrimSettings {
   double maximum_hair_luminance = 0.35;
   double front_hair_minimum_y = 0.13;
   double back_hair_maximum_z = 0.02;
+  double side_hair_minimum_x = 0.075;
 };
 
 Color SampleAlbedo(const Ref<BaseMaterial3D>& material, const Ref<Image>& image,
@@ -402,7 +403,8 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
       // old eyes, mouth or face underneath the new facial topology.
       hair.write[vertex] = luminance <= settings.maximum_hair_luminance &&
           (position.y >= settings.front_hair_minimum_y ||
-           position.z <= settings.back_hair_maximum_z);
+           position.z <= settings.back_hair_maximum_z ||
+           Math::abs(position.x) >= settings.side_hair_minimum_x);
       if (!hair[vertex] && albedo.is_valid() &&
           luminance > settings.maximum_hair_luminance &&
           position.y >= 0 && position.y < settings.front_hair_minimum_y &&
@@ -513,6 +515,50 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
     arrays.push_back(SurfaceArrays(source, surface, origin, scale));
     shapes.push_back(Array());
   }
+  ERR_FAIL_COND_V(job.get("eyebrows", Variant()).get_type() !=
+                      Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+  const Dictionary eyebrows = job["eyebrows"];
+  Vector3 brow_center;
+  Vector3 brow_radius;
+  Vector3 brow_color;
+  error = ReadVector(eyebrows.get("center", Variant()), brow_center);
+  ERR_FAIL_COND_V(error != OK, error);
+  error = ReadVector(eyebrows.get("radius", Variant()), brow_radius);
+  ERR_FAIL_COND_V(error != OK, error);
+  error = ReadVector(eyebrows.get("color", Variant()), brow_color);
+  ERR_FAIL_COND_V(error != OK, error);
+  const double brow_arch = eyebrows.get("arch", 0.0);
+  ERR_FAIL_COND_V(!Math::is_finite(brow_arch) ||
+                      Math::abs(brow_arch) > 0.02 ||
+                      brow_center.length() > 0.25, ERR_INVALID_PARAMETER);
+  for (int axis = 0; axis < 3; ++axis) {
+    ERR_FAIL_COND_V(brow_radius[axis] <= 0 || brow_radius[axis] > 0.1 ||
+                        brow_color[axis] < 0 || brow_color[axis] > 1,
+                    ERR_INVALID_PARAMETER);
+  }
+  // Color the same deforming vertices so brow expressions cannot separate
+  // a rigid eyebrow attachment from the face. All parameters are authored.
+  for (int part = 0; part < source.surfaces.size(); ++part) {
+    if (source.surfaces[part].group != "body") {
+      continue;
+    }
+    const PackedVector3Array points = arrays[part][Mesh::ARRAY_VERTEX];
+    PackedColorArray colors;
+    colors.resize(points.size());
+    for (int vertex = 0; vertex < points.size(); ++vertex) {
+      const Vector3 point = points[vertex];
+      const double x = (Math::abs(point.x) - brow_center.x) / brow_radius.x;
+      const double height = brow_center.y + brow_arch * MAX(0.0, 1 - x * x);
+      const double y = (point.y - height) / brow_radius.y;
+      const double amount = point.z >= brow_center.z - brow_radius.z
+          ? CLAMP(1.0 - Math::sqrt(x * x + y * y), 0.0, 1.0) : 0.0;
+      colors.set(vertex, Color(1, 1, 1).lerp(
+          Color(brow_color.x, brow_color.y, brow_color.z), amount));
+    }
+    Array surface_arrays = arrays[part];
+    surface_arrays[Mesh::ARRAY_COLOR] = colors;
+    arrays.write[part] = surface_arrays;
+  }
   HashSet<String> names;
   Array coverage;
   for (const Variant& value : channels) {
@@ -565,6 +611,8 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
     material.instantiate();
     material->set_albedo(source.surfaces[part].color);
     material->set_roughness(0.85);
+    material->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR,
+                       source.surfaces[part].group == "body");
     mesh->surface_set_material(part, material);
     mesh->surface_set_name(part, source.surfaces[part].group);
     vertices += source.surfaces[part].corners.size();
@@ -625,6 +673,7 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   settings.maximum_hair_luminance = preservation.get("maximum_luminance", 0.35);
   settings.front_hair_minimum_y = preservation.get("front_minimum_y", 0.13);
   settings.back_hair_maximum_z = preservation.get("back_maximum_z", 0.02);
+  settings.side_hair_minimum_x = preservation.get("side_minimum_x", 0.075);
   ERR_FAIL_COND_V(!Math::is_finite(settings.maximum_hair_luminance) ||
                       settings.maximum_hair_luminance < 0 ||
                       settings.maximum_hair_luminance > 1 ||
@@ -633,7 +682,10 @@ Error AttachFace(Node* root, const Dictionary& configuration,
                       settings.front_hair_minimum_y > 0.5 ||
                       !Math::is_finite(settings.back_hair_maximum_z) ||
                       settings.back_hair_maximum_z < -0.5 ||
-                      settings.back_hair_maximum_z > 0.5, ERR_INVALID_PARAMETER);
+                      settings.back_hair_maximum_z > 0.5 ||
+                      !Math::is_finite(settings.side_hair_minimum_x) ||
+                      settings.side_hair_minimum_x < 0.005 ||
+                      settings.side_hair_minimum_x > 0.2, ERR_INVALID_PARAMETER);
   ERR_FAIL_COND_V(!Math::is_finite(neck_offset) || neck_offset < -0.2 ||
                       neck_offset > 0.1 || !Math::is_finite(eye_radius) ||
                       eye_radius < 0.005 || eye_radius > 0.025,
@@ -666,6 +718,7 @@ Error AttachFace(Node* root, const Dictionary& configuration,
       skin_material.instantiate();
       skin_material->set_albedo(skin_color);
       skin_material->set_roughness(0.85);
+      skin_material->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
       face_mesh->set_surface_override_material(surface, skin_material);
     }
   }
