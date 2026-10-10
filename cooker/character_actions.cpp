@@ -118,7 +118,8 @@ Error PrepareBoneOverlays(Dictionary& job) {
       segment["source"] = source_path.begins_with(from)
                               ? to + source_path.substr(from.length())
                               : source_path;
-      segment.erase("sha256");
+      segment["sha256"] = FileAccess::get_sha256(segment["source"]);
+      ERR_FAIL_COND_V(String(segment["sha256"]).length() != 64, ERR_INVALID_DATA);
       mapped.push_back(segment);
     }
     Dictionary entry;

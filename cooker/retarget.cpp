@@ -379,7 +379,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 					rotations++;
 				}
 			}
-			ERR_FAIL_COND_V_MSG(rotations < 10, ERR_INVALID_DATA, "Retarget lost humanoid rotation tracks: " + source);
+			ERR_FAIL_COND_V_MSG(rotations < (target_bones.is_empty() ? 10 : 1), ERR_INVALID_DATA, "Retarget lost selected rotation tracks: " + source);
 			// Import optimization can remove a target's stationary rest-position
 			// track. A validated baked Hips rotation makes that omission explicit.
 			ERR_FAIL_COND_V_MSG(in_place && !found_hips && !baked_target && target_bones.is_empty(), ERR_INVALID_DATA, "In-place animation has no Hips position track: " + source);
