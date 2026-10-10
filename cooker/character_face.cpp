@@ -300,6 +300,7 @@ struct HeadTrimSettings {
   double front_hair_minimum_y = 0.13;
   double back_hair_maximum_z = 0.02;
   double side_hair_minimum_x = 0.075;
+  double minimum_hair_blue_red_ratio = 0;
   double skin_red_green_ratio = 1.15;
   double skin_green_blue_ratio = 1.15;
 };
@@ -410,6 +411,7 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
       // authored head-space mask preserves dark hair without retaining the
       // old eyes, mouth or face underneath the new facial topology.
       hair.write[vertex] = luminance <= settings.maximum_hair_luminance &&
+          color.b >= color.r * settings.minimum_hair_blue_red_ratio &&
           (position.y >= settings.front_hair_minimum_y ||
            position.z <= settings.back_hair_maximum_z ||
            Math::abs(position.x) >= settings.side_hair_minimum_x);
@@ -682,6 +684,7 @@ Error AttachFace(Node* root, const Dictionary& configuration,
   settings.front_hair_minimum_y = preservation.get("front_minimum_y", 0.13);
   settings.back_hair_maximum_z = preservation.get("back_maximum_z", 0.02);
   settings.side_hair_minimum_x = preservation.get("side_minimum_x", 0.075);
+  settings.minimum_hair_blue_red_ratio = preservation.get("minimum_blue_red_ratio", 0);
   settings.skin_red_green_ratio = preservation.get("skin_red_green_ratio", 1.15);
   settings.skin_green_blue_ratio = preservation.get("skin_green_blue_ratio", 1.15);
   ERR_FAIL_COND_V(!Math::is_finite(settings.maximum_hair_luminance) ||
@@ -696,6 +699,9 @@ Error AttachFace(Node* root, const Dictionary& configuration,
                       !Math::is_finite(settings.side_hair_minimum_x) ||
                       settings.side_hair_minimum_x < 0.005 ||
                       settings.side_hair_minimum_x > 0.2 ||
+                      !Math::is_finite(settings.minimum_hair_blue_red_ratio) ||
+                      settings.minimum_hair_blue_red_ratio < 0 ||
+                      settings.minimum_hair_blue_red_ratio > 1 ||
                       !Math::is_finite(settings.skin_red_green_ratio) ||
                       settings.skin_red_green_ratio < 1 ||
                       settings.skin_red_green_ratio > 4 ||
