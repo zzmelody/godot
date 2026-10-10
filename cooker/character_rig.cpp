@@ -269,11 +269,39 @@ Error RebindMesh(MeshInstance3D* instance, Skeleton3D* skeleton,
           if (closest >= 0 && hand_distance > 0.001) {
             double amount = CLAMP(
                 1 - Math::sqrt(closest_distance) / hand_distance, 0.0, 1.0);
+            // Keep the palm on Hand. Only the knuckle band transitions to
+            // finger joints; a nearby folded finger must not pull the wrist.
+            if (!bones[closest].name.contains("Thumb")) {
+              Vector3 knuckles;
+              int knuckle_count = 0;
+              for (const RigBone& candidate : bones) {
+                if (candidate.parent == mapped &&
+                    candidate.name.ends_with("Proximal") &&
+                    !candidate.name.contains("Thumb")) {
+                  knuckles += candidate.rest.origin;
+                  ++knuckle_count;
+                }
+              }
+              if (knuckle_count > 0) {
+                const Vector3 palm = knuckles / knuckle_count -
+                                     bones[mapped].rest.origin;
+                const double length_squared = palm.length_squared();
+                if (length_squared > 1e-8) {
+                  const double phase =
+                      (point - bones[mapped].rest.origin).dot(palm) /
+                      length_squared;
+                  amount *= CLAMP((phase - .65) / .35, 0.0, 1.0);
+                }
+              }
+            }
             if (bones[closest].parent == mapped) {
               amount *= closest_phase;
             }
             const float finger_weight = weight * float(amount * 0.9);
-            AddInfluence(influences, count, closest, finger_weight);
+            const float parent_weight = bones[closest].parent == mapped
+                ? 0 : finger_weight * float(CLAMP(.25 - closest_phase, 0.0, .25));
+            AddInfluence(influences, count, closest, finger_weight - parent_weight);
+            AddInfluence(influences, count, bones[closest].parent, parent_weight);
             AddInfluence(influences, count, mapped, weight - finger_weight);
             has_fingers |= finger_weight > 0.0001;
             continue;

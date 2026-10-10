@@ -42,6 +42,95 @@ struct FaceSource {
   HashSet<int> left_eye;
   HashSet<int> right_eye;
 };
+struct BrowBinding {
+  Vector3 weights;
+  Vector3i vertices;
+};
+
+Error ReadVector(const Variant& value, Vector3& result);
+PackedVector3Array Normals(const PackedVector3Array& points,
+                          const PackedInt32Array& triangles);
+
+// Project a finite ribbon onto the front of the authored head. Barycentric
+// bindings let every expression move the brow with the same skin surface.
+Error BuildBrows(const Array& skin, const Dictionary& configuration,
+                 Array& arrays, Vector<BrowBinding>& bindings) {
+  Vector3 center, radius;
+  Error error = ReadVector(configuration.get("center", Variant()), center);
+  ERR_FAIL_COND_V(error != OK, error);
+  error = ReadVector(configuration.get("radius", Variant()), radius);
+  ERR_FAIL_COND_V(error != OK, error);
+  const double arch = configuration.get("arch", 0.0);
+  ERR_FAIL_COND_V(!center.is_finite() || center.length() > .25 ||
+                      !Math::is_finite(arch) || Math::abs(arch) > .02 ||
+                      radius.x <= 0 || radius.x > .1 ||
+                      radius.y <= 0 || radius.y > .03 ||
+                      radius.z <= 0 || radius.z > .1, ERR_INVALID_PARAMETER);
+  const PackedVector3Array vertices = skin[Mesh::ARRAY_VERTEX];
+  const PackedInt32Array triangles = skin[Mesh::ARRAY_INDEX];
+  PackedVector3Array points;
+  PackedInt32Array indices;
+  constexpr int segments = 16;
+  for (int side : {-1, 1}) {
+    const int first = points.size();
+    for (int step = 0; step <= segments; ++step) {
+      const double phase = double(step) / segments;
+      const double x = center.x + radius.x * (phase * 2 - 1);
+      const double height = center.y + arch * Math::sin(phase * Math_PI);
+      const double thickness = radius.y *
+          MAX(.15, Math::sin(phase * Math_PI));
+      for (int edge : {-1, 1}) {
+        const Vector2 point(side * x, height + edge * thickness);
+        double front = -1e20;
+        BrowBinding binding;
+        for (int triangle = 0; triangle < triangles.size(); triangle += 3) {
+          const int a = triangles[triangle];
+          const int b = triangles[triangle + 1];
+          const int c = triangles[triangle + 2];
+          const Vector2 va(vertices[a].x, vertices[a].y);
+          const Vector2 vb(vertices[b].x, vertices[b].y);
+          const Vector2 vc(vertices[c].x, vertices[c].y);
+          const double denominator = (vb - va).cross(vc - va);
+          if (Math::abs(denominator) < 1e-10) {
+            continue;
+          }
+          const double wb = (point - va).cross(vc - va) / denominator;
+          const double wc = (vb - va).cross(point - va) / denominator;
+          const double wa = 1 - wb - wc;
+          if (MIN(wa, MIN(wb, wc)) < -.0001) {
+            continue;
+          }
+          const double z = vertices[a].z * wa + vertices[b].z * wb +
+                           vertices[c].z * wc;
+          if (z > front) {
+            front = z;
+            binding = {Vector3(wa, wb, wc), Vector3i(a, b, c)};
+          }
+        }
+        ERR_FAIL_COND_V(front < center.z - radius.z, ERR_INVALID_DATA);
+        points.push_back(Vector3(point.x, point.y, front + .0005));
+        bindings.push_back(binding);
+      }
+    }
+    for (int step = 0; step < segments; ++step) {
+      const int a = first + step * 2;
+      if (side > 0) {
+        for (int index : {a, a + 1, a + 3, a, a + 3, a + 2}) {
+          indices.push_back(index);
+        }
+      } else {
+        for (int index : {a, a + 3, a + 1, a, a + 2, a + 3}) {
+          indices.push_back(index);
+        }
+      }
+    }
+  }
+  arrays.resize(Mesh::ARRAY_MAX);
+  arrays[Mesh::ARRAY_VERTEX] = points;
+  arrays[Mesh::ARRAY_INDEX] = indices;
+  arrays[Mesh::ARRAY_NORMAL] = Normals(points, indices);
+  return OK;
+}
 
 Error ReadVector(const Variant& value, Vector3& result) {
   ERR_FAIL_COND_V(value.get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
@@ -386,6 +475,8 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
     discard.resize(vertices.size());
     Vector<bool> hair;
     hair.resize(vertices.size());
+    Vector<bool> skin_vertices;
+    skin_vertices.resize(vertices.size());
     for (int vertex = 0; vertex < vertices.size(); ++vertex) {
       double amount = 0;
       for (int slot = 0; slot < stride; ++slot) {
@@ -399,6 +490,7 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
       const Color color = SampleAlbedo(material, albedo, uvs, vertex);
       const bool skin_color = color.r > color.g * settings.skin_red_green_ratio &&
           color.g > color.b * settings.skin_green_blue_ratio;
+      skin_vertices.write[vertex] = skin_color;
       // Neck-blended face vertices still belong to the replaced head. Keeping
       // them by majority weight leaves floating skin around the new neck.
       // The authored color mask keeps neck-weighted clothing intact.
@@ -431,13 +523,19 @@ Error RemoveHead(MeshInstance3D* instance, Skeleton3D* skeleton,
     PackedInt32Array kept;
     for (int triangle = 0; triangle < indices.size(); triangle += 3) {
       bool erase = true;
+      bool touches_head = false;
+      bool all_skin = true;
       int hair_corners = 0;
       for (int corner = 0; corner < 3; ++corner) {
         const int vertex = indices[triangle + corner];
         ERR_FAIL_COND_V(vertex < 0 || vertex >= discard.size(), ERR_INVALID_DATA);
         erase &= discard[vertex];
+        touches_head |= discard[vertex];
+        all_skin &= skin_vertices[vertex];
         hair_corners += hair[vertex];
       }
+      // Trim the skin boundary without cutting mixed clothing triangles.
+      erase |= all_skin && touches_head;
       if (erase && hair_corners >= 2) {
         erase = false;
         ++preserved;
@@ -533,47 +631,26 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
   ERR_FAIL_COND_V(job.get("eyebrows", Variant()).get_type() !=
                       Variant::DICTIONARY, ERR_INVALID_PARAMETER);
   const Dictionary eyebrows = job["eyebrows"];
-  Vector3 brow_center;
-  Vector3 brow_radius;
   Vector3 brow_color;
-  error = ReadVector(eyebrows.get("center", Variant()), brow_center);
-  ERR_FAIL_COND_V(error != OK, error);
-  error = ReadVector(eyebrows.get("radius", Variant()), brow_radius);
-  ERR_FAIL_COND_V(error != OK, error);
   error = ReadVector(eyebrows.get("color", Variant()), brow_color);
   ERR_FAIL_COND_V(error != OK, error);
-  const double brow_arch = eyebrows.get("arch", 0.0);
-  ERR_FAIL_COND_V(!Math::is_finite(brow_arch) ||
-                      Math::abs(brow_arch) > 0.02 ||
-                      brow_center.length() > 0.25, ERR_INVALID_PARAMETER);
   for (int axis = 0; axis < 3; ++axis) {
-    ERR_FAIL_COND_V(brow_radius[axis] <= 0 || brow_radius[axis] > 0.1 ||
-                        brow_color[axis] < 0 || brow_color[axis] > 1,
+    ERR_FAIL_COND_V(brow_color[axis] < 0 || brow_color[axis] > 1,
                     ERR_INVALID_PARAMETER);
   }
-  // Color the same deforming vertices so brow expressions cannot separate
-  // a rigid eyebrow attachment from the face. All parameters are authored.
+  int skin_part = -1;
   for (int part = 0; part < source.surfaces.size(); ++part) {
-    if (source.surfaces[part].group != "body") {
-      continue;
+    if (source.surfaces[part].group == "body") {
+      skin_part = part;
+      break;
     }
-    const PackedVector3Array points = arrays[part][Mesh::ARRAY_VERTEX];
-    PackedColorArray colors;
-    colors.resize(points.size());
-    for (int vertex = 0; vertex < points.size(); ++vertex) {
-      const Vector3 point = points[vertex];
-      const double x = (Math::abs(point.x) - brow_center.x) / brow_radius.x;
-      const double height = brow_center.y + brow_arch * MAX(0.0, 1 - x * x);
-      const double y = (point.y - height) / brow_radius.y;
-      const double amount = point.z >= brow_center.z - brow_radius.z
-          ? CLAMP(1.0 - Math::sqrt(x * x + y * y), 0.0, 1.0) : 0.0;
-      colors.set(vertex, Color(1, 1, 1).lerp(
-          Color(brow_color.x, brow_color.y, brow_color.z), amount));
-    }
-    Array surface_arrays = arrays[part];
-    surface_arrays[Mesh::ARRAY_COLOR] = colors;
-    arrays.write[part] = surface_arrays;
   }
+  ERR_FAIL_COND_V(skin_part < 0, ERR_INVALID_DATA);
+  Array brow_arrays;
+  Vector<BrowBinding> brow_bindings;
+  error = BuildBrows(arrays[skin_part], eyebrows, brow_arrays, brow_bindings);
+  ERR_FAIL_COND_V(error != OK, error);
+  Array brow_shapes;
   HashSet<String> names;
   Array coverage;
   for (const Variant& value : channels) {
@@ -592,6 +669,7 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
     ERR_FAIL_COND_V(error != OK, error);
     int affected = 0;
     double maximum_delta = 0;
+    PackedVector3Array moved_skin;
     for (int part = 0; part < source.surfaces.size(); ++part) {
       const FaceSurface& surface = source.surfaces[part];
       const PackedVector3Array base = arrays[part][Mesh::ARRAY_VERTEX];
@@ -608,7 +686,28 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
       shape[Mesh::ARRAY_VERTEX] = moved;
       shape[Mesh::ARRAY_NORMAL] = normals;
       shapes.write[part].push_back(shape);
+      if (part == skin_part) {
+        moved_skin = moved;
+      }
     }
+    const PackedVector3Array skin_base = arrays[skin_part][Mesh::ARRAY_VERTEX];
+    const PackedVector3Array brow_base = brow_arrays[Mesh::ARRAY_VERTEX];
+    const PackedInt32Array brow_indices = brow_arrays[Mesh::ARRAY_INDEX];
+    PackedVector3Array moved_brows = brow_base;
+    for (int vertex = 0; vertex < brow_bindings.size(); ++vertex) {
+      const BrowBinding& binding = brow_bindings[vertex];
+      Vector3 delta;
+      for (int corner = 0; corner < 3; ++corner) {
+        const int index = binding.vertices[corner];
+        delta += (moved_skin[index] - skin_base[index]) * binding.weights[corner];
+      }
+      moved_brows.set(vertex, brow_base[vertex] + delta);
+    }
+    Array brow_shape;
+    brow_shape.resize(Mesh::ARRAY_MAX);
+    brow_shape[Mesh::ARRAY_VERTEX] = moved_brows;
+    brow_shape[Mesh::ARRAY_NORMAL] = Normals(moved_brows, brow_indices);
+    brow_shapes.push_back(brow_shape);
     ERR_FAIL_COND_V_MSG(affected == 0, ERR_INVALID_DATA,
                         "Face channel has no selected vertices: " + name);
     mesh->add_blend_shape(name);
@@ -626,12 +725,20 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
     material.instantiate();
     material->set_albedo(source.surfaces[part].color);
     material->set_roughness(0.85);
-    material->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR,
-                       source.surfaces[part].group == "body");
     mesh->surface_set_material(part, material);
     mesh->surface_set_name(part, source.surfaces[part].group);
     vertices += source.surfaces[part].corners.size();
   }
+  const int brow_surface = mesh->get_surface_count();
+  mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, brow_arrays,
+                               brow_shapes);
+  Ref<StandardMaterial3D> brow_material;
+  brow_material.instantiate();
+  brow_material->set_albedo(Color(brow_color.x, brow_color.y, brow_color.z));
+  brow_material->set_roughness(.85);
+  mesh->surface_set_material(brow_surface, brow_material);
+  mesh->surface_set_name(brow_surface, "eyebrows");
+  vertices += brow_bindings.size();
   mesh->set_meta("face_channels", coverage);
   mesh->set_meta("face_source", source_path);
   ERR_FAIL_COND_V(source.left_eye.is_empty() || source.right_eye.is_empty(),
@@ -648,7 +755,7 @@ Error ComposeFace(const Dictionary& job, Dictionary& result) {
   ERR_FAIL_COND_V(error != OK, error);
   result["output"] = output;
   result["vertices"] = vertices;
-  result["surfaces"] = source.surfaces.size();
+  result["surfaces"] = mesh->get_surface_count();
   result["channels"] = coverage;
   return OK;
 }
