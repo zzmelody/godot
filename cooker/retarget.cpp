@@ -10,18 +10,135 @@
 #include "editor/import/3d/resource_importer_scene.h"
 #include "modules/fbx/editor/editor_scene_importer_ufbx.h"
 #include "modules/gltf/gltf_state.h"
-#include "scene/resources/bone_map.h"
-#include "scene/resources/animation_library.h"
-#include "scene/resources/packed_scene.h"
 #include "scene/3d/skeleton_3d.h"
 #include "scene/animation/animation_player.h"
+#include "scene/resources/animation_library.h"
+#include "scene/resources/bone_map.h"
+#include "scene/resources/packed_scene.h"
 
 namespace CookerRetarget {
 
-static void apply_import_defaults(const Ref<ResourceImporterScene> &p_importer, const String &p_source, const Ref<BoneMap> &p_map, HashMap<StringName, Variant> &r_options) {
-	List<ResourceImporter::ImportOption> definitions;
-	p_importer->get_import_options(p_source, &definitions);
-	for (const ResourceImporter::ImportOption &option : definitions) {
+static Skeleton3D* find_skeleton(Node* p_root);
+
+Error RetargetAnimation(const String& reference_model,
+                        const String& target_model,
+                        const Ref<Animation>& animation, const Array& bones) {
+  ERR_FAIL_COND_V(animation.is_null() || bones.size() > 64,
+                  ERR_INVALID_PARAMETER);
+  for (const String& path : {reference_model, target_model}) {
+    const Error error = CookerFiles::check_path(path);
+    ERR_FAIL_COND_V(error != OK, error);
+  }
+  const Ref<PackedScene> reference =
+      ResourceLoader::load(reference_model, "PackedScene");
+  const Ref<PackedScene> target =
+      ResourceLoader::load(target_model, "PackedScene");
+  ERR_FAIL_COND_V(reference.is_null() || target.is_null(), ERR_INVALID_DATA);
+  Node* reference_root = reference->instantiate();
+  Node* target_root = target->instantiate();
+  struct Trees {
+    Node* reference;
+    Node* target;
+    ~Trees() {
+      if (reference)
+        memdelete(reference);
+      if (target)
+        memdelete(target);
+    }
+  } trees{reference_root, target_root};
+  ERR_FAIL_NULL_V(reference_root, ERR_CANT_CREATE);
+  ERR_FAIL_NULL_V(target_root, ERR_CANT_CREATE);
+  Skeleton3D* source = find_skeleton(reference_root);
+  Skeleton3D* destination = find_skeleton(target_root);
+  ERR_FAIL_COND_V(!source || !destination || destination->get_bone_count() > 64,
+                  ERR_INVALID_DATA);
+  HashSet<String> mask;
+  for (const Variant& value : bones) {
+    ERR_FAIL_COND_V(value.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+    const String name = value;
+    ERR_FAIL_COND_V(mask.has(name) || source->find_bone(name) < 0 ||
+                        destination->find_bone(name) < 0,
+                    ERR_INVALID_PARAMETER);
+    mask.insert(name);
+  }
+  const int source_hips = source->find_bone("Hips"),
+            target_hips = destination->find_bone("Hips");
+  ERR_FAIL_COND_V(source_hips < 0 || target_hips < 0, ERR_INVALID_DATA);
+  const double source_height =
+      source->get_bone_global_rest(source_hips).origin.y;
+  const double target_height =
+      destination->get_bone_global_rest(target_hips).origin.y;
+  ERR_FAIL_COND_V(source_height <= 0 || target_height <= 0, ERR_INVALID_DATA);
+  const double ratio = target_height / source_height;
+  ERR_FAIL_COND_V(!Math::is_finite(ratio) || ratio < .25 || ratio > 4,
+                  ERR_INVALID_DATA);
+  for (int track = animation->get_track_count() - 1; track >= 0; --track) {
+    const NodePath path = animation->track_get_path(track);
+    const String text = path;
+    const auto type = animation->track_get_type(track);
+    if (!text.begins_with("%GeneralSkeleton:") ||
+        path.get_subname_count() != 1) {
+      animation->remove_track(track);
+      continue;
+    }
+    const String name = path.get_subname(0);
+    const int from = source->find_bone(name), to = destination->find_bone(name);
+    const bool protected_bone = name == "LeftEye" || name == "RightEye" ||
+                                name == "Jaw" || name.ends_with("Twist");
+    if (protected_bone || from < 0 || to < 0 ||
+        (!mask.is_empty() && !mask.has(name)) ||
+        (type != Animation::TYPE_ROTATION_3D &&
+         type != Animation::TYPE_POSITION_3D) ||
+        (type == Animation::TYPE_POSITION_3D && name != "Root" &&
+         name != "Hips")) {
+      animation->remove_track(track);
+      continue;
+    }
+    const Transform3D source_rest = source->get_bone_rest(from),
+                      target_rest = destination->get_bone_rest(to);
+    const Quaternion source_rotation =
+        source_rest.basis.get_rotation_quaternion();
+    const Quaternion target_rotation =
+        target_rest.basis.get_rotation_quaternion();
+    const Quaternion axes =
+        destination->get_bone_global_rest(to)
+            .basis.get_rotation_quaternion()
+            .inverse() *
+        source->get_bone_global_rest(from).basis.get_rotation_quaternion();
+    for (int key = 0; key < animation->track_get_key_count(track); ++key) {
+      if (type == Animation::TYPE_ROTATION_3D) {
+        const Quaternion value = animation->track_get_key_value(track, key);
+        ERR_FAIL_COND_V(
+            !value.is_finite() || Math::abs(value.length_squared() - 1) > .002,
+            ERR_INVALID_DATA);
+        const Quaternion converted = target_rotation * axes *
+                                     source_rotation.inverse() * value *
+                                     axes.inverse();
+        animation->track_set_key_value(track, key, converted.normalized());
+      } else {
+        const Vector3 value = animation->track_get_key_value(track, key);
+        ERR_FAIL_COND_V(!value.is_finite(), ERR_INVALID_DATA);
+        animation->track_set_key_value(
+            track, key,
+            target_rest.origin +
+                axes.xform(value - source_rest.origin) * ratio);
+      }
+    }
+  }
+  ERR_FAIL_COND_V(animation->get_track_count() == 0, ERR_INVALID_DATA);
+  animation->set_meta("retarget_reference", reference_model);
+  animation->set_meta("retarget_target", target_model);
+  animation->set_meta("retarget_bones", bones);
+  return OK;
+}
+
+static void apply_import_defaults(const Ref<ResourceImporterScene>& p_importer,
+                                  const String& p_source,
+                                  const Ref<BoneMap>& p_map,
+                                  HashMap<StringName, Variant>& r_options) {
+  List<ResourceImporter::ImportOption> definitions;
+  p_importer->get_import_options(p_source, &definitions);
+  for (const ResourceImporter::ImportOption &option : definitions) {
 		r_options[option.option.name] = option.default_value;
 	}
 	if (p_source.get_extension().to_lower() == "fbx") {
@@ -85,13 +202,30 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(p_job.has("in_place") && p_job["in_place"].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(p_job.has("loop") && p_job["loop"].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(p_job.has("baked_target") && p_job["baked_target"].get_type() != Variant::BOOL, ERR_INVALID_PARAMETER);
-	const bool baked_target = p_job.get("baked_target", false);
-	ERR_FAIL_COND_V(p_job.has("skip_existing") && p_job["skip_existing"].get_type()!=Variant::BOOL,ERR_INVALID_PARAMETER);
-	const bool skip_existing=p_job.get("skip_existing",false);
-	ERR_FAIL_COND_V(p_job.has("rebuild_unverified") && p_job["rebuild_unverified"].get_type()!=Variant::BOOL,ERR_INVALID_PARAMETER);
-	const bool rebuild_unverified=p_job.get("rebuild_unverified",false);
-	ERR_FAIL_COND_V(rebuild_unverified && !skip_existing,ERR_INVALID_PARAMETER);
-	bool in_place = p_job.get("in_place", false);
+  const bool baked_target = p_job.get("baked_target", false);
+  const String target_model = p_job.get("target_model", "");
+  const String reference_model = p_job.get("reference_model", "");
+  for (const char* field : {"target_model", "reference_model"}) {
+    ERR_FAIL_COND_V(
+        p_job.has(field) && p_job[field].get_type() != Variant::STRING,
+        ERR_INVALID_PARAMETER);
+  }
+  ERR_FAIL_COND_V(target_model.is_empty() != reference_model.is_empty(),
+                  ERR_INVALID_PARAMETER);
+  ERR_FAIL_COND_V(
+      p_job.has("bones") && p_job["bones"].get_type() != Variant::ARRAY,
+      ERR_INVALID_PARAMETER);
+  const Array target_bones = p_job.get("bones", Array());
+  ERR_FAIL_COND_V(p_job.has("skip_existing") &&
+                      p_job["skip_existing"].get_type() != Variant::BOOL,
+                  ERR_INVALID_PARAMETER);
+  const bool skip_existing = p_job.get("skip_existing", false);
+  ERR_FAIL_COND_V(p_job.has("rebuild_unverified") &&
+                      p_job["rebuild_unverified"].get_type() != Variant::BOOL,
+                  ERR_INVALID_PARAMETER);
+  const bool rebuild_unverified = p_job.get("rebuild_unverified", false);
+  ERR_FAIL_COND_V(rebuild_unverified && !skip_existing, ERR_INVALID_PARAMETER);
+  bool in_place = p_job.get("in_place", false);
 	bool loop = p_job.get("loop", false);
 	Error error = CookerFiles::check_path(source_dir, false, false, false);
 	ERR_FAIL_COND_V(error != OK, error);
@@ -156,6 +290,11 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 			Dictionary request;request["operation"]="retarget-animations";request["source"]=source;request["output"]=output;
 			request["bone_map"]=map_path;request["animation_name"]=selected_animation;request["in_place"]=in_place;request["loop"]=loop;
 			if (baked_target) request["baked_target"] = true;
+      if (!target_model.is_empty()) {
+        request["target_model"] = target_model;
+        request["reference_model"] = reference_model;
+        request["bones"] = target_bones;
+      }
 			error=CookerCache::prepare(request,output,receipt,cache_hit);ERR_FAIL_COND_V(error!=OK,error);
 			if(cache_hit) {Dictionary clip;clip["source"]=source;clip["output"]=output;clip["skipped"]=true;clips.push_back(clip);continue;}
 		}
@@ -189,21 +328,33 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 		}
 		for (const StringName &animation_name : animations) {
 			Ref<Animation> animation = library->get_animation(animation_name);
-			// Offline target bakes may contain FBX object axes/centimeter scale.
-			// Those must never become executable character tracks. Preserve only
-			// joint rotations and Root/Hips translation, with authored bone lengths.
-			if (baked_target) {
-				for (int track = animation->get_track_count() - 1; track >= 0; --track) {
-					const String path = String(animation->track_get_path(track));
-					const auto type = animation->track_get_type(track);
-					const bool rotation = type == Animation::TYPE_ROTATION_3D && path.begins_with("%GeneralSkeleton:");
-					const bool position = type == Animation::TYPE_POSITION_3D && (path == "%GeneralSkeleton:Hips" || path == "%GeneralSkeleton:Root");
-					if (!rotation && !position) { animation->remove_track(track); modified = true; }
-				}
-				ERR_FAIL_COND_V_MSG(animation->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_ROTATION_3D) < 0,
+      if (!target_model.is_empty()) {
+        error = RetargetAnimation(reference_model, target_model, animation, target_bones);
+        ERR_FAIL_COND_V(error != OK, error);
+        modified = true;
+      }
+      // Offline target bakes may contain FBX object axes/centimeter scale.
+      // Those must never become executable character tracks. Preserve only
+      // joint rotations and Root/Hips translation, with authored bone lengths.
+      if (baked_target) {
+        for (int track = animation->get_track_count() - 1; track >= 0;
+             --track) {
+          const String path = String(animation->track_get_path(track));
+          const auto type = animation->track_get_type(track);
+          const bool rotation = type == Animation::TYPE_ROTATION_3D &&
+                                path.begins_with("%GeneralSkeleton:");
+          const bool position = type == Animation::TYPE_POSITION_3D &&
+                                (path == "%GeneralSkeleton:Hips" ||
+                                 path == "%GeneralSkeleton:Root");
+          if (!rotation && !position) {
+            animation->remove_track(track);
+            modified = true;
+          }
+        }
+        ERR_FAIL_COND_V_MSG(animation->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_ROTATION_3D) < 0,
 					ERR_INVALID_DATA, "Baked target animation has no Hips rotation.");
-			}
-			if (loop) {
+      }
+      if (loop) {
 				animation->set_loop_mode(Animation::LOOP_LINEAR);
 				modified = true;
 			}
@@ -231,7 +382,7 @@ Error retarget_animations(const Dictionary &p_job, Dictionary &r_result) {
 			ERR_FAIL_COND_V_MSG(rotations < 10, ERR_INVALID_DATA, "Retarget lost humanoid rotation tracks: " + source);
 			// Import optimization can remove a target's stationary rest-position
 			// track. A validated baked Hips rotation makes that omission explicit.
-			ERR_FAIL_COND_V_MSG(in_place && !found_hips && !baked_target, ERR_INVALID_DATA, "In-place animation has no Hips position track: " + source);
+			ERR_FAIL_COND_V_MSG(in_place && !found_hips && !baked_target && target_bones.is_empty(), ERR_INVALID_DATA, "In-place animation has no Hips position track: " + source);
 		}
 		if (modified) {
 			error = CookerAtomicSave::save_resource(library, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
@@ -372,5 +523,5 @@ Error make_animation_preview(const Dictionary &p_job, Dictionary &r_result) {
 	r_result["animation"] = animation_path;
 	return OK;
 }
-}
+}  // namespace CookerRetarget
 /*>>----- VEYA_COOKER */

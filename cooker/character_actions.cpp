@@ -2,6 +2,7 @@
 #include "character_actions.h"
 #include "asset_files.h"
 #include "atomic_save.h"
+#include "retarget.h"
 #include "core/io/json.h"
 #include "core/io/resource_saver.h"
 #include "scene/3d/bone_attachment_3d.h"
@@ -14,25 +15,220 @@
 
 namespace CookerCharacter {
 namespace {
-bool identifier(const String &p_id) {
-	if (p_id.is_empty() || p_id.length() > 96) return false;
-	for (int i = 0; i < p_id.length(); ++i) {
-		const char32_t c = p_id[i];
-		if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.')) return false;
-	}
-	return true;
+Error load_library(const String& p_path, Ref<AnimationLibrary>& r_library);
+NodePath mirrored_bone_path(const NodePath& p_path);
+bool identifier(const String& p_id) {
+  if (p_id.is_empty() || p_id.length() > 96)
+    return false;
+  for (int i = 0; i < p_id.length(); ++i) {
+    const char32_t c = p_id[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' ||
+          c == '.'))
+      return false;
+  }
+  return true;
 }
-Error output_path(const String &p_path, const String &p_extension) {
-	Error error = CookerFiles::check_path(p_path, true);
-	ERR_FAIL_COND_V(error != OK, error);
-	ERR_FAIL_COND_V(p_path.get_extension() != p_extension, ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V(CookerAtomicSave::occupied(p_path), ERR_ALREADY_EXISTS);
-	return DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(p_path.get_base_dir()));
+Error output_path(const String& p_path, const String& p_extension) {
+  Error error = CookerFiles::check_path(p_path, true);
+  ERR_FAIL_COND_V(error != OK, error);
+  ERR_FAIL_COND_V(p_path.get_extension() != p_extension, ERR_INVALID_PARAMETER);
+  ERR_FAIL_COND_V(CookerAtomicSave::occupied(p_path), ERR_ALREADY_EXISTS);
+  return DirAccess::make_dir_recursive_absolute(
+      ProjectSettings::get_singleton()->globalize_path(p_path.get_base_dir()));
 }
-bool bone_track(const Ref<Animation> &p_animation, int p_track) {
-	const auto type = p_animation->track_get_type(p_track);
-	return (type == Animation::TYPE_POSITION_3D || type == Animation::TYPE_ROTATION_3D || type == Animation::TYPE_SCALE_3D) &&
-		String(p_animation->track_get_path(p_track)).begins_with("%GeneralSkeleton:");
+bool bone_track(const Ref<Animation>& p_animation, int p_track) {
+  const auto type = p_animation->track_get_type(p_track);
+  return (type == Animation::TYPE_POSITION_3D ||
+          type == Animation::TYPE_ROTATION_3D ||
+          type == Animation::TYPE_SCALE_3D) &&
+         String(p_animation->track_get_path(p_track))
+             .begins_with("%GeneralSkeleton:");
+}
+
+Error PrepareBoneOverlays(Dictionary& job) {
+  if (!job.has("bone_overlays"))
+    return OK;
+  ERR_FAIL_COND_V(job["bone_overlays"].get_type() != Variant::DICTIONARY,
+                  ERR_INVALID_PARAMETER);
+  Dictionary config = Dictionary(job["bone_overlays"]).duplicate(true);
+  for (const char* field :
+       {"source_from", "source_to", "reference_model", "target_model"}) {
+    ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
+                    ERR_INVALID_PARAMETER);
+  }
+  const String from = config.get("source_from", ""),
+               to = config.get("source_to", "");
+  ERR_FAIL_COND_V(!from.ends_with("/") || !to.ends_with("/"),
+                  ERR_INVALID_PARAMETER);
+  ERR_FAIL_COND_V(
+      config.get("semantics", Variant()).get_type() != Variant::ARRAY ||
+          config.get("bones", Variant()).get_type() != Variant::ARRAY,
+      ERR_INVALID_PARAMETER);
+  const Ref<AnimationLibrary> base =
+      ResourceLoader::load(job.get("base_library", ""), "AnimationLibrary");
+  ERR_FAIL_COND_V(base.is_null(), ERR_INVALID_DATA);
+  const Array semantics = config["semantics"];
+  ERR_FAIL_COND_V(semantics.is_empty() || semantics.size() > 256,
+                  ERR_INVALID_PARAMETER);
+  Array entries;
+  HashSet<String> seen;
+  for (const Variant& value : semantics) {
+    ERR_FAIL_COND_V(value.get_type() != Variant::STRING || seen.has(value) ||
+                        !base->has_animation(value),
+                    ERR_INVALID_PARAMETER);
+    const String id = value;
+    seen.insert(id);
+    const Ref<Animation> animation = base->get_animation(id);
+    Array segments = animation->get_meta("source_segments", Array());
+    const Array replacements = job.get("clips", Array());
+    for (const Variant& replacement_value : replacements) {
+      ERR_FAIL_COND_V(replacement_value.get_type() != Variant::DICTIONARY,
+                      ERR_INVALID_PARAMETER);
+      const Dictionary replacement = replacement_value;
+      if (String(replacement.get("id", "")) == id) {
+        segments = replacement.get("segments", Array());
+        break;
+      }
+    }
+    ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8,
+                    ERR_INVALID_DATA);
+    Array mapped;
+    for (const Variant& segment_value : segments) {
+      ERR_FAIL_COND_V(segment_value.get_type() != Variant::DICTIONARY,
+                      ERR_INVALID_DATA);
+      Dictionary segment = Dictionary(segment_value).duplicate(true);
+      const String source_path = segment.get("source", "");
+      ERR_FAIL_COND_V(
+          !source_path.begins_with(from) && !source_path.begins_with(to),
+          ERR_INVALID_DATA);
+      const Ref<AnimationLibrary> original =
+          ResourceLoader::load(source_path, "AnimationLibrary");
+      const StringName name = segment.get("animation", "mixamo_com");
+      ERR_FAIL_COND_V(original.is_null() || !original->has_animation(name),
+                      ERR_INVALID_DATA);
+      const double begin = segment.get("begin", 0.0),
+                   end = segment.get("end", 1.0),
+                   speed = segment.get("speed", 1.0);
+      ERR_FAIL_COND_V(!Math::is_finite(begin) || !Math::is_finite(end) ||
+                          !Math::is_finite(speed) || begin < 0 || end > 1 ||
+                          begin >= end || speed < .1 || speed > 4,
+                      ERR_INVALID_DATA);
+      segment["duration"] =
+          original->get_animation(name)->get_length() * (end - begin) / speed;
+      segment["source"] = source_path.begins_with(from)
+                              ? to + source_path.substr(from.length())
+                              : source_path;
+      segment.erase("sha256");
+      mapped.push_back(segment);
+    }
+    Dictionary entry;
+    entry["id"] = id;
+    entry["segments"] = mapped;
+    entries.push_back(entry);
+  }
+  config["entries"] = entries;
+  job["bone_overlays"] = config;
+  return OK;
+}
+
+Error ApplyBoneOverlays(const Dictionary& config,
+                        const Ref<AnimationLibrary>& library) {
+  const Array bones = config["bones"], entries = config["entries"];
+  ERR_FAIL_COND_V(bones.is_empty() || bones.size() > 64, ERR_INVALID_PARAMETER);
+  HashSet<String> mask;
+  for (const Variant& value : bones) {
+    ERR_FAIL_COND_V(value.get_type() != Variant::STRING || mask.has(value),
+                    ERR_INVALID_PARAMETER);
+    mask.insert(value);
+  }
+  uint64_t keys = 0;
+  for (const Variant& value : entries) {
+    const Dictionary entry = value;
+    const StringName id = entry["id"];
+    ERR_FAIL_COND_V(!library->has_animation(id), ERR_INVALID_DATA);
+    const Ref<Animation> original = library->get_animation(id);
+    Ref<Animation> result = original->duplicate();
+    for (int track = result->get_track_count() - 1; track >= 0; --track) {
+      const NodePath path = result->track_get_path(track);
+      if (path.get_subname_count() == 1 && mask.has(path.get_subname(0)))
+        result->remove_track(track);
+    }
+    const bool mirrored = result->get_meta("mirror_x", false);
+    const Array segments = entry["segments"];
+    double cursor = 0;
+    for (const Variant& segment_value : segments) {
+      const Dictionary segment = segment_value;
+      Ref<AnimationLibrary> source_library;
+      Error error = load_library(segment["source"], source_library);
+      ERR_FAIL_COND_V(error != OK, error);
+      const StringName name = segment.get("animation", "mixamo_com");
+      ERR_FAIL_COND_V(!source_library->has_animation(name), ERR_INVALID_DATA);
+      Ref<Animation> source = source_library->get_animation(name)->duplicate();
+      error = CookerRetarget::RetargetAnimation(
+          config["reference_model"], config["target_model"], source, bones);
+      ERR_FAIL_COND_V(error != OK, error);
+      const double begin = segment.get("begin", 0.0),
+                   end = segment.get("end", 1.0),
+                   duration = segment["duration"];
+      ERR_FAIL_COND_V(!Math::is_finite(duration) || duration < .01 ||
+                          duration > 30 || cursor + duration > 30,
+                      ERR_INVALID_DATA);
+      const bool reverse = segment.get("reverse", false);
+      const double hold = segment.get("hold_phase", 0.0),
+                   blend = segment.get("blend", .08);
+      ERR_FAIL_COND_V(!Math::is_finite(hold) || hold < 0 || hold > 1 ||
+                          !Math::is_finite(blend) || blend < 0 || blend > 2,
+                      ERR_INVALID_DATA);
+      const int samples = static_cast<int>(std::ceil(duration * 60));
+      for (int track = 0; track < source->get_track_count(); ++track) {
+        ERR_FAIL_COND_V(
+            source->track_get_type(track) != Animation::TYPE_ROTATION_3D,
+            ERR_INVALID_DATA);
+        const NodePath path =
+            mirrored ? mirrored_bone_path(source->track_get_path(track))
+                     : source->track_get_path(track);
+        int output_track =
+            result->find_track(path, Animation::TYPE_ROTATION_3D);
+        if (output_track < 0) {
+          output_track = result->add_track(Animation::TYPE_ROTATION_3D);
+          result->track_set_path(output_track, path);
+        }
+        const int previous_count = result->track_get_key_count(output_track);
+        const Quaternion previous =
+            previous_count ? Quaternion(result->track_get_key_value(
+                                 output_track, previous_count - 1))
+                           : Quaternion();
+        keys += samples + 1;
+        ERR_FAIL_COND_V(keys > 4000000, ERR_OUT_OF_MEMORY);
+        for (int sample = 0; sample <= samples; ++sample) {
+          const double phase = static_cast<double>(sample) / samples;
+          const double at = (segment.has("hold_phase") ? hold
+                             : reverse ? end - phase * (end - begin)
+                                       : begin + phase * (end - begin)) *
+                            source->get_length();
+          Quaternion rotation = source->rotation_track_interpolate(track, at);
+          if (mirrored)
+            rotation =
+                Quaternion(rotation.x, -rotation.y, -rotation.z, rotation.w);
+          if (previous_count && blend > 0)
+            rotation = previous.slerp(
+                rotation, MIN(1.0, phase * duration / MIN(blend, duration)));
+          result->rotation_track_insert_key(
+              output_track, cursor + phase * duration, rotation.normalized());
+        }
+      }
+      cursor += duration;
+    }
+    ERR_FAIL_COND_V_MSG(
+        Math::abs(cursor - original->get_length()) > .0001, ERR_INVALID_DATA,
+        "Finger overlay changed action duration: " + String(id));
+    result->set_meta("bone_overlay_sources", segments);
+    result->set_meta("bone_overlay_bones", bones);
+    library->remove_animation(id);
+    const Error error = library->add_animation(id, result);
+    ERR_FAIL_COND_V(error != OK, error);
+  }
+  return OK;
 }
 NodePath mirrored_bone_path(const NodePath &p_path) {
 	const String path = String(p_path);
@@ -574,9 +770,11 @@ Error apply_hips_position_offsets(const Array &p_offsets, const Ref<Animation> &
 	}
 	return OK;
 }
-}
+}  // namespace
 
 Error prepare_compose_job(Dictionary &r_job) {
+	const Error overlay_error = PrepareBoneOverlays(r_job);
+	ERR_FAIL_COND_V(overlay_error != OK, overlay_error);
 	if (!r_job.has("source_remap")) return OK;
 	ERR_FAIL_COND_V(r_job.has("clips") || r_job.get("source_remap", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(r_job.get("preserve_base_hips", Variant()).get_type() != Variant::BOOL || !bool(r_job["preserve_base_hips"]), ERR_INVALID_PARAMETER);
@@ -892,10 +1090,55 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	library->set_meta("character_catalog_revision", p_job.get("revision", 1));
 	library->set_meta("character_catalog", provenance);
-	if (bool(p_job.get("preserve_base_hips", false))) library->set_meta("source_replaced_ids", replaced_ids);
-	error = CookerAtomicSave::save_resource(library, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
-	ERR_FAIL_COND_V(error != OK, error);
-	LocalVector<StringName> composed_names; library->get_animation_list(&composed_names);
+	if (p_job.has("bone_overlays")) {
+		error = ApplyBoneOverlays(p_job["bone_overlays"], library);
+    ERR_FAIL_COND_V(error != OK, error);
+  }
+  if (p_job.has("target_model")) {
+    ERR_FAIL_COND_V(p_job["target_model"].get_type() != Variant::STRING,
+                    ERR_INVALID_PARAMETER);
+    const String target_path = p_job["target_model"];
+    error = CookerFiles::check_path(target_path);
+    ERR_FAIL_COND_V(error != OK, error);
+    const Ref<PackedScene> target =
+        ResourceLoader::load(target_path, "PackedScene");
+    ERR_FAIL_COND_V(target.is_null(), ERR_INVALID_DATA);
+    Tree target_tree{target->instantiate()};
+    Skeleton3D* skeleton = skeleton_in(target_tree.root);
+    ERR_FAIL_COND_V(!skeleton || skeleton->get_bone_count() != 64,
+                    ERR_INVALID_DATA);
+    LocalVector<StringName> names;
+    library->get_animation_list(&names);
+    for (const StringName& name : names) {
+      Ref<Animation> animation = library->get_animation(name)->duplicate();
+      for (int track = animation->get_track_count() - 1; track >= 0; --track) {
+        ERR_FAIL_COND_V(!bone_track(animation, track), ERR_INVALID_DATA);
+        const NodePath path = animation->track_get_path(track);
+        ERR_FAIL_COND_V(path.get_subname_count() != 1 ||
+                            skeleton->find_bone(path.get_subname(0)) < 0,
+                        ERR_INVALID_DATA);
+        const String bone = path.get_subname(0);
+        const auto type = animation->track_get_type(track);
+        if (bone == "LeftEye" || bone == "RightEye" || bone == "Jaw" ||
+            bone.ends_with("Twist") || type == Animation::TYPE_SCALE_3D ||
+            (type == Animation::TYPE_POSITION_3D && bone != "Hips")) {
+          animation->remove_track(track);
+        }
+      }
+      animation->set_meta("target_model", target_path);
+      library->remove_animation(name);
+      error = library->add_animation(name, animation);
+      ERR_FAIL_COND_V(error != OK, error);
+    }
+    library->set_meta("target_model", target_path);
+  }
+  if (bool(p_job.get("preserve_base_hips", false)))
+    library->set_meta("source_replaced_ids", replaced_ids);
+  error = CookerAtomicSave::save_resource(
+      library, output,
+      ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+  ERR_FAIL_COND_V(error != OK, error);
+  LocalVector<StringName> composed_names; library->get_animation_list(&composed_names);
 	r_result["output"] = output; r_result["clips"] = composed_names.size(); r_result["keys"] = total_keys;
 	r_result["replaced_ids"] = replaced_ids;
 	return OK;
@@ -1035,38 +1278,118 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 	Ref<AnimationLibrary> library;
 	Error error = load_library(library_path, library);
 	ERR_FAIL_COND_V(error != OK, error);
-	error = output_path(output, "json");
-	ERR_FAIL_COND_V(error != OK, error);
-	Array required = Array(p_job.get("required", Array())).duplicate();
-	if (bool(p_job.get("include_library", false))) {
-		LocalVector<StringName> names; library->get_animation_list(&names);
-		for (const StringName &name : names) if (!required.has(String(name))) required.push_back(String(name));
-	}
-	ERR_FAIL_COND_V(required.is_empty() || required.size() > 256, ERR_PARAMETER_RANGE_ERROR);
-	Array missing, unverified, rows;
-	HashSet<String> seen;
-	for (const Variant &value : required) {
-		ERR_FAIL_COND_V(value.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
-		const String id = value;
-		ERR_FAIL_COND_V(!identifier(id) || seen.has(id), ERR_INVALID_PARAMETER);
-		seen.insert(id);
-		Dictionary row; row["id"] = id;
-		if (!library->has_animation(id)) { missing.push_back(id); row["status"] = "missing_source"; rows.push_back(row); continue; }
-		const Ref<Animation> animation = library->get_animation(id);
-		ERR_FAIL_COND_V(animation->get_length() <= 0 || animation->get_track_count() < 10, ERR_INVALID_DATA);
-		for (int i = 0; i < animation->get_track_count(); ++i) ERR_FAIL_COND_V(!bone_track(animation, i), ERR_INVALID_DATA);
-		row["status"] = animation->get_meta("visual_status", "unverified");
-		row["seconds"] = animation->get_length(); row["loop"] = animation->get_loop_mode() != Animation::LOOP_NONE;
-		row["sources"] = animation->get_meta("source_segments", Array());
-		row["mirror_x"] = animation->get_meta("mirror_x", false);
-		row["mirror_bones"] = animation->get_meta("mirror_bones", Array());
-		if (animation->has_meta("socket_motion_provenance")) row["socket_motion"] = animation->get_meta("socket_motion_provenance");
-		if (animation->has_meta("limb_paths")) row["limb_paths"] = animation->get_meta("limb_paths");
-		row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
-		row["hips_position_offsets"] = animation->get_meta("hips_position_offsets", Array());
-		if (animation->has_meta("locomotion_gait")) row["locomotion_gait"] = animation->get_meta("locomotion_gait");
-		if (animation->has_meta("align_hips_axes")) row["align_hips_axes"] = animation->get_meta("align_hips_axes");
-		if (bool(p_job.get("include_hips_positions", false))) {
+	Tree target_tree;
+	Skeleton3D *target_skeleton = nullptr;
+	if (p_job.has("target_model")) {
+		ERR_FAIL_COND_V(p_job["target_model"].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		const String path = p_job["target_model"];
+    error = CookerFiles::check_path(path);
+    ERR_FAIL_COND_V(error != OK, error);
+    const Ref<PackedScene> target = ResourceLoader::load(path, "PackedScene");
+    ERR_FAIL_COND_V(target.is_null(), ERR_INVALID_DATA);
+    target_tree.root = target->instantiate();
+    target_skeleton = skeleton_in(target_tree.root);
+    ERR_FAIL_COND_V(!target_skeleton || target_skeleton->get_bone_count() != 64,
+                    ERR_INVALID_DATA);
+  }
+  error = output_path(output, "json");
+  ERR_FAIL_COND_V(error != OK, error);
+  Array required = Array(p_job.get("required", Array())).duplicate();
+  if (bool(p_job.get("include_library", false))) {
+    LocalVector<StringName> names;
+    library->get_animation_list(&names);
+    for (const StringName& name : names)
+      if (!required.has(String(name)))
+        required.push_back(String(name));
+  }
+  ERR_FAIL_COND_V(required.is_empty() || required.size() > 256,
+                  ERR_PARAMETER_RANGE_ERROR);
+  Array missing, unverified, rows;
+  HashSet<String> seen;
+  for (const Variant& value : required) {
+    ERR_FAIL_COND_V(value.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+    const String id = value;
+    ERR_FAIL_COND_V(!identifier(id) || seen.has(id), ERR_INVALID_PARAMETER);
+    seen.insert(id);
+    Dictionary row;
+    row["id"] = id;
+    if (!library->has_animation(id)) {
+      missing.push_back(id);
+      row["status"] = "missing_source";
+      rows.push_back(row);
+      continue;
+    }
+    const Ref<Animation> animation = library->get_animation(id);
+    if (target_skeleton) {
+      ERR_FAIL_COND_V(!Math::is_finite(animation->get_length()) ||
+                          animation->get_length() <= 0 ||
+                          animation->get_length() > 30,
+                      ERR_INVALID_DATA);
+      int fingers = 0;
+      for (int track = 0; track < animation->get_track_count(); ++track) {
+        const NodePath path = animation->track_get_path(track);
+        const auto type = animation->track_get_type(track);
+        ERR_FAIL_COND_V(
+            !bone_track(animation, track) || path.get_subname_count() != 1,
+            ERR_INVALID_DATA);
+        const String bone = path.get_subname(0);
+        ERR_FAIL_COND_V(
+            target_skeleton->find_bone(bone) < 0 ||
+                type == Animation::TYPE_SCALE_3D ||
+                (type == Animation::TYPE_POSITION_3D && bone != "Hips") ||
+                bone == "Jaw" || bone == "LeftEye" || bone == "RightEye" ||
+                bone.ends_with("Twist"),
+            ERR_INVALID_DATA);
+        fingers += bone.ends_with("Proximal") ||
+                   bone.ends_with("Intermediate") || bone.ends_with("Distal") ||
+                   bone.ends_with("Metacarpal");
+        for (int key = 0; key < animation->track_get_key_count(track); ++key) {
+          const double time = animation->track_get_key_time(track, key);
+          ERR_FAIL_COND_V(!Math::is_finite(time) || time < 0 ||
+                              time > animation->get_length() + .0001,
+                          ERR_INVALID_DATA);
+          if (type == Animation::TYPE_ROTATION_3D) {
+            const Quaternion q = animation->track_get_key_value(track, key);
+            ERR_FAIL_COND_V(
+                !q.is_finite() || Math::abs(q.length_squared() - 1) > .002,
+                ERR_INVALID_DATA);
+          } else {
+            const Vector3 p = animation->track_get_key_value(track, key);
+            ERR_FAIL_COND_V(!p.is_finite() || p.length() > 3, ERR_INVALID_DATA);
+          }
+        }
+      }
+      row["finger_tracks"] = fingers;
+      row["target_bones"] = target_skeleton->get_bone_count();
+      row["fixed_limb_lengths"] = true;
+    }
+    ERR_FAIL_COND_V(
+        animation->get_length() <= 0 || animation->get_track_count() < 10,
+        ERR_INVALID_DATA);
+    for (int i = 0; i < animation->get_track_count(); ++i)
+      ERR_FAIL_COND_V(!bone_track(animation, i), ERR_INVALID_DATA);
+    row["status"] = animation->get_meta("visual_status", "unverified");
+    row["seconds"] = animation->get_length();
+    row["loop"] = animation->get_loop_mode() != Animation::LOOP_NONE;
+    row["sources"] = animation->get_meta("source_segments", Array());
+    row["bone_overlay_sources"] =
+        animation->get_meta("bone_overlay_sources", Array());
+    row["bone_overlay_bones"] =
+        animation->get_meta("bone_overlay_bones", Array());
+    row["mirror_x"] = animation->get_meta("mirror_x", false);
+    row["mirror_bones"] = animation->get_meta("mirror_bones", Array());
+    if (animation->has_meta("socket_motion_provenance"))
+      row["socket_motion"] = animation->get_meta("socket_motion_provenance");
+    if (animation->has_meta("limb_paths"))
+      row["limb_paths"] = animation->get_meta("limb_paths");
+    row["rotation_offsets"] = animation->get_meta("rotation_offsets", Array());
+    row["hips_position_offsets"] =
+        animation->get_meta("hips_position_offsets", Array());
+    if (animation->has_meta("locomotion_gait"))
+      row["locomotion_gait"] = animation->get_meta("locomotion_gait");
+    if (animation->has_meta("align_hips_axes"))
+      row["align_hips_axes"] = animation->get_meta("align_hips_axes");
+    if (bool(p_job.get("include_hips_positions", false))) {
 			const int hips = animation->find_track(NodePath("%GeneralSkeleton:Hips"), Animation::TYPE_POSITION_3D);
 			ERR_FAIL_COND_V(hips < 0 || animation->track_get_key_count(hips) == 0, ERR_INVALID_DATA);
 			const Vector3 first = animation->position_track_interpolate(hips, 0);
@@ -1081,8 +1404,8 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
 		}
 		if (String(row["status"]) != "verified") unverified.push_back(id);
 		rows.push_back(row);
-	}
-	Dictionary report;
+  }
+  Dictionary report;
 	report["schema_version"] = 1; report["library"] = library_path; report["sha256"] = FileAccess::get_sha256(library_path);
 	report["required"] = required.size(); report["missing"] = missing; report["unverified"] = unverified; report["entries"] = rows;
 	report["source_complete"] = missing.is_empty(); report["visual_complete"] = missing.is_empty() && unverified.is_empty();
