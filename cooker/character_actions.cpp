@@ -920,6 +920,14 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(error != OK, error);
 	Tree tree{ model->instantiate() };
 	ERR_FAIL_NULL_V(tree.root, ERR_CANT_CREATE);
+	// Assembly replaces the animation library and can change the skeleton.
+	// A source support reference cannot describe this new assembly.
+	if (tree.root->has_meta("character_simulation")) {
+		tree.root->remove_meta("character_simulation");
+	}
+	if (tree.root->has_meta("character_simulation_path")) {
+		tree.root->remove_meta("character_simulation_path");
+	}
 	Skeleton3D *skeleton = skeleton_in(tree.root);
 	ERR_FAIL_NULL_V(skeleton, ERR_INVALID_DATA);
 	ERR_FAIL_COND_V(skeleton->find_bone("Hips") < 0 || skeleton->find_bone("LeftHand") < 0 || skeleton->find_bone("RightFoot") < 0, ERR_INVALID_DATA);
