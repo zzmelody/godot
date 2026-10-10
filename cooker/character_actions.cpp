@@ -76,6 +76,53 @@ void remove_players(Node *p_node) {
 		else remove_players(child);
 	}
 }
+Node3D *CopySimulationTree(Node *p_node, Node *p_owner) {
+	Node3D *result = nullptr;
+	if (auto *source = Object::cast_to<Skeleton3D>(p_node)) {
+		auto *skeleton = memnew(Skeleton3D);
+		for (int bone = 0; bone < source->get_bone_count(); ++bone) {
+			skeleton->add_bone(source->get_bone_name(bone));
+		}
+		for (int bone = 0; bone < source->get_bone_count(); ++bone) {
+			skeleton->set_bone_parent(bone, source->get_bone_parent(bone));
+			skeleton->set_bone_rest(bone, source->get_bone_rest(bone));
+			skeleton->set_bone_pose_position(bone, source->get_bone_pose_position(bone));
+			skeleton->set_bone_pose_rotation(bone, source->get_bone_pose_rotation(bone));
+			skeleton->set_bone_pose_scale(bone, source->get_bone_pose_scale(bone));
+		}
+		result = skeleton;
+	} else if (auto *source = Object::cast_to<BoneAttachment3D>(p_node)) {
+		auto *socket = memnew(BoneAttachment3D);
+		socket->set_bone_name(source->get_bone_name());
+		result = socket;
+	} else {
+		result = memnew(Node3D);
+	}
+	result->set_name(p_node->get_name());
+	if (auto *source = Object::cast_to<Node3D>(p_node)) {
+		result->set_transform(source->get_transform());
+	}
+	for (int index = 0; index < p_node->get_child_count(); ++index) {
+		Node *child = p_node->get_child(index);
+		if (Object::cast_to<AnimationPlayer>(child)) {
+			continue;
+		}
+		if (!skeleton_in(child) && !Object::cast_to<BoneAttachment3D>(child)) {
+			continue;
+		}
+		Node3D *copy = CopySimulationTree(child, p_owner ? p_owner : result);
+		result->add_child(copy);
+	}
+	return result;
+}
+void SetSimulationOwners(Node *p_node, Node *p_root) {
+	if (p_node != p_root) {
+		p_node->set_owner(p_root);
+	}
+	for (int index = 0; index < p_node->get_child_count(); ++index) {
+		SetSimulationOwners(p_node->get_child(index), p_root);
+	}
+}
 Error load_library(const String &p_path, Ref<AnimationLibrary> &r_library) {
 	Error error = CookerFiles::check_path(p_path);
 	ERR_FAIL_COND_V(error != OK, error);
@@ -856,10 +903,16 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
 
 Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 	const String model_path = p_job.get("model", ""), library_path = p_job.get("library", ""), output = p_job.get("output", "");
+	const String simulation_output = p_job.get("simulation_output", "");
 	Error error = CookerFiles::check_path(model_path);
 	ERR_FAIL_COND_V(error != OK, error);
 	error = output_path(output, "scn");
 	ERR_FAIL_COND_V(error != OK, error);
+	if (!simulation_output.is_empty()) {
+		ERR_FAIL_COND_V(simulation_output == output || simulation_output.get_base_dir() != output.get_base_dir(), ERR_INVALID_PARAMETER);
+		error = output_path(simulation_output, "scn");
+		ERR_FAIL_COND_V(error != OK, error);
+	}
 	Ref<PackedScene> model = ResourceLoader::load(model_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
 	ERR_FAIL_COND_V(model.is_null(), ERR_INVALID_DATA);
 	Ref<AnimationLibrary> library;
@@ -922,6 +975,43 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	tree.root->set_meta("character_rig_profile", p_job.get("rig_profile", Dictionary()));
 	tree.root->set_meta("character_library", library_path);
+	if (!simulation_output.is_empty()) {
+		LocalVector<StringName> clips;
+		library->get_animation_list(&clips);
+		for (const StringName &clip : clips) {
+			const Ref<Animation> animation = library->get_animation(clip);
+			for (int track = 0; track < animation->get_track_count(); ++track) {
+				ERR_FAIL_COND_V_MSG(!bone_track(animation, track), ERR_INVALID_DATA, "Simulation animation must contain bone tracks only: " + String(clip));
+				const NodePath path = animation->track_get_path(track);
+				ERR_FAIL_COND_V(path.get_subname_count() != 1 || skeleton->find_bone(path.get_subname(0)) < 0, ERR_INVALID_DATA);
+			}
+		}
+		Tree simulation;
+		simulation.root = CopySimulationTree(tree.root, nullptr);
+		auto *support_player = memnew(AnimationPlayer);
+		support_player->set_name("CharacterAnimationPlayer");
+		simulation.root->add_child(support_player);
+		support_player->set_root_node(NodePath(".."));
+		error = support_player->add_animation_library("character", library);
+		ERR_FAIL_COND_V(error != OK, error);
+		SetSimulationOwners(simulation.root, simulation.root);
+		skeleton_in(simulation.root)->set_unique_name_in_owner(true);
+		simulation.root->set_meta("character_rig_profile", p_job.get("rig_profile", Dictionary()));
+		simulation.root->set_meta("veya_simulation_support", true);
+		if (tree.root->has_meta("character_finger_pose")) {
+			simulation.root->set_meta("character_finger_pose", tree.root->get_meta("character_finger_pose"));
+		}
+		Ref<PackedScene> support;
+		support.instantiate();
+		error = support->pack(simulation.root);
+		ERR_FAIL_COND_V(error != OK, error);
+		error = CookerAtomicSave::save_resource(support, simulation_output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+		ERR_FAIL_COND_V(error != OK, error);
+		support->set_path(simulation_output);
+		tree.root->set_meta("character_simulation", support);
+		tree.root->set_meta("character_simulation_path", simulation_output.get_file());
+		r_result["simulation_output"] = simulation_output;
+	}
 	Ref<PackedScene> assembled; assembled.instantiate();
 	error = assembled->pack(tree.root);
 	ERR_FAIL_COND_V(error != OK, error);

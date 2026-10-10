@@ -9,7 +9,7 @@
 
 namespace CookerCache {
 inline bool force_rebuild = false;
-struct Receipt { String path, output, fingerprint; Dictionary dependencies; };
+struct Receipt { String path, output, fingerprint; Dictionary dependencies, auxiliary_outputs; };
 // Materials, shaders, shader includes and textures reached *through* another
 // resource are stored as external path references in every cooked consumer,
 // and no Cooker operation reads their contents from a consumer. Fingerprint
@@ -28,7 +28,7 @@ inline bool pass_through(const String &p_path) {
 }
 inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,const String &field="") {
 	ERR_FAIL_COND_V(depth>16,ERR_INVALID_DATA);
-	if(field=="output" || field=="output_dir") return OK;
+	if(field=="output" || field=="output_dir" || field=="simulation_output") return OK;
 	if(value.get_type()==Variant::STRING) {
 		const String path=value;
 		if(!path.begins_with("res://")) return OK;
@@ -91,6 +91,15 @@ inline Error validate_manifest_files(const String &path) {
 inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt,bool &hit,bool rebuild_unverified=false) {
 	hit=false;receipt={};receipt.output=output;receipt.path=output+".cook.json";
 	Error error=CookerFiles::check_path(output,true,String(job.get("operation",""))=="pack");ERR_FAIL_COND_V(error!=OK,error);
+	if (String(job.get("operation", "")) == "assemble-character" && job.has("simulation_output")) {
+		ERR_FAIL_COND_V(job["simulation_output"].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+		const String auxiliary = job["simulation_output"];
+		if (!auxiliary.is_empty()) {
+			error = CookerFiles::check_path(auxiliary, true); ERR_FAIL_COND_V(error != OK, error);
+			ERR_FAIL_COND_V(auxiliary == output || auxiliary.get_base_dir() != output.get_base_dir() || auxiliary.get_extension() != "scn", ERR_INVALID_PARAMETER);
+			receipt.auxiliary_outputs[auxiliary] = "";
+		}
+	}
 	embeds_dependencies=String(job.get("operation",""))=="pack";
 	error=dependencies(job,receipt.dependencies);
 	embeds_dependencies=false;
@@ -116,6 +125,7 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 		// Regenerate legacy bytes from this declared step; do not reuse them.
 		// The old file stays readable until the new result replaces it.
 		CookerAtomicSave::replaceable.insert(output);
+		for (const Variant *key = receipt.auxiliary_outputs.next(); key; key = receipt.auxiliary_outputs.next(key)) CookerAtomicSave::replaceable.insert(*key);
 		return OK;
 	}
 	ERR_FAIL_COND_V_MSG(!FileAccess::exists(receipt.path),ERR_INVALID_DATA,"Existing output has no verified provenance; choose a new immutable revision: "+output);
@@ -124,11 +134,19 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	// source invalidates its cache, but a modified output is still rejected.
 	// Only remove the exact verified output/receipt owned by this step.
 	ERR_FAIL_COND_V_MSG(String(prior.get("output_sha256",""))!=FileAccess::get_sha256(output),ERR_INVALID_DATA,"Cook cache output integrity failed: "+output);
-	if(force_rebuild || String(prior.get("request_sha256",""))!=receipt.fingerprint) {
+	const Dictionary prior_auxiliary = prior.get("auxiliary_outputs", Dictionary());
+	bool missing_auxiliary = false;
+	for (const Variant *key = receipt.auxiliary_outputs.next(); key; key = receipt.auxiliary_outputs.next(key)) {
+		const String path = *key;
+		if (!FileAccess::exists(path)) { missing_auxiliary = true; continue; }
+		ERR_FAIL_COND_V_MSG(String(prior_auxiliary.get(path, "")) != FileAccess::get_sha256(path), ERR_INVALID_DATA, "Cook cache support integrity failed: " + path);
+	}
+	if(force_rebuild || missing_auxiliary || String(prior.get("request_sha256",""))!=receipt.fingerprint) {
 		// Keep the stale output and receipt published: concurrent Cookers that
 		// read this file see the old complete bytes, never a missing asset.
 		// The step replaces both atomically once its new result is ready.
 		CookerAtomicSave::replaceable.insert(output);
+		for (const Variant *key = receipt.auxiliary_outputs.next(); key; key = receipt.auxiliary_outputs.next(key)) CookerAtomicSave::replaceable.insert(*key);
 		return OK;
 	}
 	// Manifest file names are relative to their generated directory, so they
@@ -145,7 +163,14 @@ inline Error commit(const Receipt &receipt) {
 		return OK;
 	}
 	CookerAtomicSave::replaceable.erase(receipt.output);
+	Dictionary auxiliary;
+	for (const Variant *key = receipt.auxiliary_outputs.next(); key; key = receipt.auxiliary_outputs.next(key)) {
+		const String hash = FileAccess::get_sha256(*key); ERR_FAIL_COND_V(hash.length() != 64, ERR_FILE_CORRUPT);
+		auxiliary[*key] = hash;
+		CookerAtomicSave::replaceable.erase(*key);
+	}
 	Dictionary data;data["schema_version"]=1;data["output"]=receipt.output;data["request_sha256"]=receipt.fingerprint;data["output_sha256"]=digest;data["dependencies"]=receipt.dependencies;
+	if (!auxiliary.is_empty()) data["auxiliary_outputs"] = auxiliary;
 	return CookerAtomicSave::save_text(JSON::stringify(data)+"\n",receipt.path);
 }
 }

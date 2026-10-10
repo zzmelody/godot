@@ -14,6 +14,8 @@
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/gpu_particles_3d.h"
 #include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/3d/concave_polygon_shape_3d.h"
+#include "scene/resources/3d/convex_polygon_shape_3d.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/animation_library.h"
 #include "scene/resources/curve.h"
@@ -856,6 +858,31 @@ struct Recipe {
 		Ref<ImageTexture> mask = ImageTexture::create_from_image(output);
 		return s.push_resource(mask);
 	}
+	static int collision(lua_State *p_state) {
+		auto &s = self(p_state);
+		s.arity(2);
+		Ref<Mesh> mesh = s.handle(1);
+		s.require(mesh.is_valid(), "collision requires a Mesh handle");
+		const String kind = s.string(2);
+		s.require(kind == "trimesh" || kind == "convex", "collision kind must be trimesh or convex");
+		const Vector<Vector3> faces = mesh->get_faces();
+		s.require(!faces.is_empty() && faces.size() % 3 == 0, "collision requires complete triangle faces");
+		s.require(faces.size() <= int64_t(s.limits.max_vertices) * 6, "collision triangle budget exceeded");
+		for (const Vector3 &vertex : faces) {
+			s.require(vertex.is_finite(), "collision contains a nonfinite vertex");
+		}
+		Ref<Shape3D> shape;
+		if (kind == "trimesh") {
+			Ref<ConcavePolygonShape3D> concave;
+			concave.instantiate();
+			concave->set_faces(faces);
+			shape = concave;
+		} else {
+			shape = mesh->create_convex_shape(true, false);
+		}
+		s.require(shape.is_valid(), "collision shape construction failed");
+		return s.push_resource(shape);
+	}
 	static int primitive(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(2);
 		String kind = s.string(1);
@@ -1337,7 +1364,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"collision", collision}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -1387,7 +1414,7 @@ Dictionary capabilities() {
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
 	result["api_version"] = 6; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"primitive", "mesh", "collision", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }
