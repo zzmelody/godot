@@ -684,7 +684,7 @@ Error LocateOriginalFace(const Vector<OriginalFacePoint>& points,
   Array eyes;
   Array samples;
   for (int side = 0; side < 2; ++side) {
-    ERR_FAIL_COND_V_MSG(counts[side] < 6, ERR_INVALID_DATA,
+    ERR_FAIL_COND_V_MSG(counts[side] < 3, ERR_INVALID_DATA,
                         "Original eye-white samples are insufficient: side=" +
                             itos(side) + " samples=" + itos(counts[side]));
     landmarks.eyes[side] /= counts[side];
