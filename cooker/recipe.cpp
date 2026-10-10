@@ -865,11 +865,17 @@ struct Recipe {
 		s.require(mesh.is_valid(), "collision requires a Mesh handle");
 		const String kind = s.string(2);
 		s.require(kind == "trimesh" || kind == "convex", "collision kind must be trimesh or convex");
-		const Vector<Vector3> faces = mesh->get_faces();
-		s.require(!faces.is_empty() && faces.size() % 3 == 0, "collision requires complete triangle faces");
-		s.require(faces.size() <= int64_t(s.limits.max_vertices) * 6, "collision triangle budget exceeded");
-		for (const Vector3 &vertex : faces) {
-			s.require(vertex.is_finite(), "collision contains a nonfinite vertex");
+		const Vector<Face3> triangles = mesh->get_faces();
+		s.require(!triangles.is_empty(), "collision requires complete triangle faces");
+		s.require(triangles.size() <= int64_t(s.limits.max_vertices) * 2, "collision triangle budget exceeded");
+		Vector<Vector3> faces;
+		faces.resize(triangles.size() * 3);
+		for (int index = 0; index < triangles.size(); ++index) {
+			for (int corner = 0; corner < 3; ++corner) {
+				const Vector3 vertex = triangles[index].vertex[corner];
+				s.require(vertex.is_finite(), "collision contains a nonfinite vertex");
+				faces.write[index * 3 + corner] = vertex;
+			}
 		}
 		Ref<Shape3D> shape;
 		if (kind == "trimesh") {
