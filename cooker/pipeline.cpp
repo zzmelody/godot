@@ -133,7 +133,7 @@ struct Pipeline {
 			const String file = path.path_join(name);
 			if (directory->is_link(name) || CookerFiles::check_path(file) != OK) return fail("manifest inventory path rejected");
 			Ref<FileAccess> input = FileAccess::open(file, FileAccess::READ);
-			if (input.is_null() || input->get_length() > 2 * 1024 * 1024) return fail("manifest inventory record rejected");
+			if (input.is_null() || input->get_length() > 16 * 1024 * 1024) return fail("manifest inventory record rejected: " + file);
 			Ref<JSON> parser; parser.instantiate();
 			if (parser->parse(input->get_as_text()) != OK || parser->get_data().get_type() != Variant::DICTIONARY) return fail("manifest inventory JSON rejected");
 			const Dictionary record = parser->get_data();
