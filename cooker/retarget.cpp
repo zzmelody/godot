@@ -93,7 +93,7 @@ Error RetargetAnimation(const String& reference_model,
   }
   for (int track = animation->get_track_count() - 1; track >= 0; --track) {
     const NodePath path = animation->track_get_path(track);
-    const String text = path;
+    const String text = String(path);
     const auto type = animation->track_get_type(track);
     if (!text.begins_with("%GeneralSkeleton:") ||
         path.get_subname_count() != 1) {
