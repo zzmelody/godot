@@ -50,7 +50,8 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 			// A declared input is always hashed by content. Its transitive
 			// surface resources are only referenced by path in the output.
 			if(source!=path && pass_through(source)) {if(!result.has(source))result[source]=IDENTITY;}
-			else result[source]=FileAccess::get_sha256(source);
+			else if (CookerFiles::is_generated(source) && source.get_file() != "asset.manifest.json" && !source.ends_with(".cook.json")) result[source] = "md5:" + FileAccess::get_md5(source);
+			else result[source] = "sha256:" + FileAccess::get_sha256(source);
 		}
 		ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);
 	} else if(value.get_type()==Variant::ARRAY) {
@@ -70,20 +71,20 @@ inline Error read(const String &path,Dictionary &out) {
 }
 inline Error validate_manifest_files(const String &path) {
 	Dictionary manifest;Error error=read(path,manifest);ERR_FAIL_COND_V(error!=OK,error);
-	ERR_FAIL_COND_V(manifest.get("files",Variant()).get_type()!=Variant::ARRAY,ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(int64_t(manifest.get("schema_version", 0)) != 2 || String(manifest.get("hash_algorithm", "")) != "md5" || manifest.get("files",Variant()).get_type()!=Variant::ARRAY,ERR_INVALID_DATA);
 	const Array files=manifest["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>256,ERR_INVALID_DATA);
 	const String base=path.get_base_dir();HashSet<String> seen;
 	for(const Variant &value:files) {
 		ERR_FAIL_COND_V(value.get_type()!=Variant::DICTIONARY,ERR_INVALID_DATA);
 		const Dictionary record=value;
-		ERR_FAIL_COND_V(record.get("path",Variant()).get_type()!=Variant::STRING || record.get("sha256",Variant()).get_type()!=Variant::STRING,ERR_INVALID_DATA);
-		const String relative=record["path"],digest=record["sha256"];
+		ERR_FAIL_COND_V(record.get("path",Variant()).get_type()!=Variant::STRING || record.get("md5",Variant()).get_type()!=Variant::STRING,ERR_INVALID_DATA);
+		const String relative=record["path"],digest=record["md5"];
 		ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.contains(":") || relative.contains("\\") || seen.has(relative),ERR_INVALID_DATA);
 		const String resource=base.path_join(relative),extension=relative.get_extension().to_lower();
 		ERR_FAIL_COND_V(extension!="scn" && extension!="res" && !CookerSource::is_payload(resource),ERR_INVALID_DATA);
 		error=CookerFiles::check_path(resource);ERR_FAIL_COND_V(error!=OK || !resource.begins_with(base+"/"),ERR_INVALID_DATA);
 		const Ref<FileAccess> file=FileAccess::open(resource,FileAccess::READ);
-		ERR_FAIL_COND_V_MSG(file.is_null() || int64_t(record.get("bytes",-1))!=int64_t(file->get_length()) || digest.length()!=64 || digest!=FileAccess::get_sha256(resource),ERR_INVALID_DATA,"Cached manifest resource changed; choose a new immutable revision: "+resource);
+		ERR_FAIL_COND_V_MSG(file.is_null() || int64_t(record.get("bytes",-1))!=int64_t(file->get_length()) || digest.length()!=32 || digest != digest.to_lower() || !digest.is_valid_hex_number(false) || digest!=FileAccess::get_md5(resource),ERR_INVALID_DATA,"Cached manifest resource changed; choose a new immutable revision: "+resource);
 		seen.insert(relative);
 	}
 	return OK;

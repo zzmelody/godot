@@ -4,6 +4,7 @@
 #include "asset_files.h"
 
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 
 #include "Luau/Compiler.h"
 #include "lua.h"
@@ -113,11 +114,62 @@ struct Pipeline {
 		lua_newtable(p_state);
 		lua_pushcfunction(p_state, import_layout, "pipeline.import");
 		lua_setfield(p_state, -2, "import");
+		lua_pushcfunction(p_state, manifest_steps, "pipeline.manifests");
+		lua_setfield(p_state, -2, "manifests");
 		lua_setreadonly(p_state, -1, true);
 		lua_setglobal(p_state, "pipeline");
 		luaL_sandbox(p_state);
 		luaL_sandboxthread(p_state);
 		return 0;
+	}
+
+
+	bool collect_manifests(const String &path, Array &steps, int depth) {
+		if (depth > 16 || steps.size() > MAX_STEPS) return fail("manifest inventory limit exceeded");
+		Ref<DirAccess> directory = DirAccess::open(path);
+		if (directory.is_null()) return fail("manifest inventory directory missing");
+		for (const String &name : directory->get_files()) {
+			if (name != "asset.manifest.json" || !path.contains("/generated/")) continue;
+			const String file = path.path_join(name);
+			if (directory->is_link(name) || CookerFiles::check_path(file) != OK) return fail("manifest inventory path rejected");
+			Ref<FileAccess> input = FileAccess::open(file, FileAccess::READ);
+			if (input.is_null() || input->get_length() > 2 * 1024 * 1024) return fail("manifest inventory record rejected");
+			Ref<JSON> parser; parser.instantiate();
+			if (parser->parse(input->get_as_text()) != OK || parser->get_data().get_type() != Variant::DICTIONARY) return fail("manifest inventory JSON rejected");
+			const Dictionary record = parser->get_data();
+			if (record.get("files", Variant()).get_type() != Variant::ARRAY) return fail("manifest inventory files missing");
+			Array files;
+			for (const Variant &value : Array(record["files"])) {
+				if (value.get_type() != Variant::DICTIONARY) return fail("manifest inventory file rejected");
+				const Dictionary member = value;
+				if (member.get("path", Variant()).get_type() != Variant::STRING) return fail("manifest inventory file path missing");
+				files.push_back(member["path"]);
+			}
+			Dictionary step;
+			step["operation"] = "asset-manifest"; step["output"] = file;
+			step["name"] = "refresh " + String(record.get("asset_id", ""));
+			for (const char *key : {"asset_id", "revision", "kind", "entry", "source", "generator", "provenance"}) {
+				if (record.has(key)) step[key] = record[key];
+			}
+			step["files"] = files; step["if_missing"] = true;
+			steps.push_back(step);
+		}
+		for (const String &name : directory->get_directories()) {
+			if (name.begins_with(".") || name == "source" || name == "releases") continue;
+			if (directory->is_link(name)) return fail("manifest inventory links forbidden");
+			if (!collect_manifests(path.path_join(name), steps, depth + 1)) return false;
+		}
+		return true;
+	}
+	static int manifest_steps(lua_State *state) {
+		auto &host = self(state);
+		String root;
+		if (lua_gettop(state) != 1 || !host.string(1, root, 512) ||
+				root != "res://content") luaL_error(state, "pipeline.manifests requires the content inventory root");
+		Array steps;
+		if (!host.collect_manifests(root, steps, 0)) luaL_error(state, "%s", host.fault.utf8().get_data());
+		host.push_data(steps);
+		return 1;
 	}
 
 	bool fail(const String &p_message) {
@@ -393,6 +445,8 @@ Dictionary capabilities() {
 	result["operation"] = "run-pipeline";
 	result["max_steps"] = MAX_STEPS;
 	result["layout_import"] = true;
+	result["data_import"] = true;
+	result["manifest_inventory"] = true;
 	result["step_import"] = true;
 	result["max_layout_modules"] = MAX_MODULES;
 	return result;
