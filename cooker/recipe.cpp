@@ -893,7 +893,14 @@ struct Recipe {
 	static int minimum_visual(lua_State *p_state) {
 		auto &s = self(p_state);
 		s.arity(2);
-		Ref<Resource> resource = s.handle(1);
+		Ref<Resource> resource;
+		if (lua_type(p_state, 1) == LUA_TSTRING) {
+			const String name = s.string(1);
+			s.require(s.inputs.has(name), "minimum_visual input is not declared");
+			resource = s.inputs[name];
+		} else {
+			resource = s.handle(1);
+		}
 		s.fields(2, {"triangle_ratio", "max_texture_size", "minimum_height", "lock_border"});
 		CookerMinimum::Options options;
 		s.field(2, "triangle_ratio");
