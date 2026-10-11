@@ -132,6 +132,10 @@ Error PrepareBoneOverlays(Dictionary& job) {
     entries.push_back(entry);
   }
   config["entries"] = entries;
+  // The expanded segments are the exact inputs. Prefixes are mapping rules,
+  // not whole-directory resource dependencies (nor valid trailing-slash paths).
+  config.erase("source_from");
+  config.erase("source_to");
   job["bone_overlays"] = config;
   return OK;
 }
