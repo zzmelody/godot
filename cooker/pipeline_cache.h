@@ -139,6 +139,9 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	for (const Variant *key = receipt.auxiliary_outputs.next(); key; key = receipt.auxiliary_outputs.next(key)) {
 		const String path = *key;
 		if (!FileAccess::exists(path)) { missing_auxiliary = true; continue; }
+		// A newly declared support output is not part of the old receipt. Never
+		// reuse its unverified bytes; regenerate it with the verified parent.
+		if (!prior_auxiliary.has(path)) { missing_auxiliary = true; continue; }
 		ERR_FAIL_COND_V_MSG(String(prior_auxiliary.get(path, "")) != FileAccess::get_sha256(path), ERR_INVALID_DATA, "Cook cache support integrity failed: " + path);
 	}
 	if(force_rebuild || missing_auxiliary || String(prior.get("request_sha256",""))!=receipt.fingerprint) {
