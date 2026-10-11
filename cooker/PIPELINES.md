@@ -59,6 +59,10 @@ algorithm for roots and dependencies. MD5 has no reliable collision resistance.
 It checks ordinary damage and cache consistency; signed manifest identity does
 not repair that limit. Release-package byte validation retains SHA-256.
 
+Streaming dependency paths, resource cost identities and layout references
+are relative only within the same content package. Shared dependencies remain
+absolute `res://content/shared/...` paths when a world moves to `user://`.
+
 `--manifests-only` executes only `asset-manifest` steps. Every listed output must
 already exist; a missing output fails. This mode does not generate geometry or
 rewrite resource bytes. `pipeline.manifests("res://content")` returns steps from

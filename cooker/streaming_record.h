@@ -4,22 +4,47 @@
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
 #include "core/object/script_language.h"
-#include "core/templates/hash_set.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/skeleton_3d.h"
 #include "scene/resources/packed_scene.h"
-#include "scene/resources/texture.h"
 #include "scene/resources/shader.h"
+#include "scene/resources/texture.h"
+
+#include <initializer_list>
 
 namespace CookerStreaming {
-inline Array VectorValue(const Vector3& value) {
-  Array result;
-  result.push_back(value.x);
-  result.push_back(value.y);
-  result.push_back(value.z);
-  return result;
+inline String PackageRoot(const String &path) {
+	if (path.begins_with("res://content/shared/")) {
+		return "res://content/shared/";
+	}
+	for (const char *prefix : { "res://content/worlds/",
+				 "res://content/mod-worlds/" }) {
+		if (path.begins_with(prefix)) {
+			const String id = path.trim_prefix(prefix).get_slicec('/', 0);
+			return id.is_empty() ? String() : String(prefix) + id + "/";
+		}
+	}
+	return {};
+}
+
+inline String ReferencePath(const String &source, const String &target) {
+	// A world can move to user://. Dependencies outside its package cannot
+	// follow that move; this matches the binary resource saver contract.
+	const String package = PackageRoot(source);
+	return !package.is_empty() && package == PackageRoot(target)
+			? source.get_base_dir().path_to_file(target)
+			: target;
+}
+
+inline Array VectorValue(const Vector3 &value) {
+	Array result;
+	result.push_back(value.x);
+	result.push_back(value.y);
+	result.push_back(value.z);
+	return result;
 }
 
 struct Measure {
@@ -71,11 +96,11 @@ inline Error MeasureValue(const Variant& value, Measure& result, int depth) {
       const String identity = resource->get_path().is_empty()
           ? result.path + "#resource:" + itos(result.resources.size())
           : resource->get_path();
-      cost["identity"] = result.path.get_base_dir().path_to_file(identity);
-      cost["geometry_bytes"] = int64_t(geometry_bytes);
-      cost["texture_bytes"] = int64_t(texture_bytes);
-      result.costs.push_back(cost);
-    }
+      cost["identity"] = ReferencePath(result.path, identity);
+	  cost["geometry_bytes"] = int64_t(geometry_bytes);
+	  cost["texture_bytes"] = int64_t(texture_bytes);
+	  result.costs.push_back(cost);
+	}
     Ref<Shader> shader = resource;
     if (shader.is_valid()) {
       List<StringName> names;
@@ -213,9 +238,9 @@ inline Error Record(const String& path, Dictionary& output,
         }
         Dictionary entry;
         entry["name"] = String(child->get_name());
-        entry["resource"] = path.get_base_dir().path_to_file(child->get_scene_file_path());
-        entry["position"] = VectorValue(child->get_transform().origin);
-        Array basis;
+        entry["resource"] = ReferencePath(path, child->get_scene_file_path());
+		entry["position"] = VectorValue(child->get_transform().origin);
+		Array basis;
         for (int column = 0; column < 3; ++column) {
           basis.push_back(VectorValue(child->get_transform().basis.get_column(column)));
         }
@@ -250,9 +275,9 @@ inline Error Record(const String& path, Dictionary& output,
     ERR_FAIL_COND_V(visited.size() >= 65536, ERR_INVALID_DATA);
     visited.insert(current);
     Dictionary dependency;
-    dependency["path"] = path.get_base_dir().path_to_file(current);
-    dependency["md5"] = Digest(current, digests);
-    const Ref<FileAccess> file = FileAccess::open(current, FileAccess::READ);
+    dependency["path"] = ReferencePath(path, current);
+	dependency["md5"] = Digest(current, digests);
+	const Ref<FileAccess> file = FileAccess::open(current, FileAccess::READ);
     ERR_FAIL_COND_V(file.is_null(), ERR_FILE_CANT_READ);
     dependency["bytes"] = int64_t(file->get_length());
     closure.push_back(dependency);
@@ -286,4 +311,4 @@ inline Error Record(const String& path, Dictionary& output,
   output["layouts"] = layouts;
   return OK;
 }
-}  // namespace CookerStreaming
+} // namespace CookerStreaming
