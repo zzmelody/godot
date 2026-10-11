@@ -85,6 +85,7 @@ String job_path;
 String pipeline_path;
 bool skip_pipeline_packs = false;
 bool plan_pipeline_only = false;
+bool manifests_only = false;
 String expected_pipeline_plan;
 bool initialized = false;
 
@@ -356,7 +357,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 		Dictionary record;
 		record["path"] = relative;
 		record["bytes"] = int64_t(file->get_length());
-		record["sha256"] = FileAccess::get_sha256(path);
+		record["md5"] = FileAccess::get_md5(path);
 		if (extension == "scn" || extension == "res") {
 			Dictionary streaming;
 			error = CookerStreaming::Record(path, streaming);
@@ -369,7 +370,8 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	ERR_FAIL_COND_V_MSG(!found_entry, ERR_INVALID_PARAMETER, "Asset manifest entry must be one of the cooked files.");
 	Dictionary manifest;
-	manifest["schema_version"] = 1;
+	manifest["schema_version"] = 2;
+	manifest["hash_algorithm"] = "md5";
 	manifest["asset_id"] = asset_id;
 	manifest["revision"] = revision;
 	manifest["kind"] = kind;
@@ -997,6 +999,18 @@ Error execute_pipeline(Dictionary &r_result) {
 		job.erase("verify_cache");
 		ERR_FAIL_COND_V(job.get("operation", Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 		String operation = job["operation"];
+		if (manifests_only && operation != "asset-manifest") {
+			report["ok"] = true;
+			report["skipped"] = true;
+			report["reason"] = "manifests_only";
+			reports.push_back(report);
+			continue;
+		}
+		if (manifests_only) {
+			condition = false;
+			verification = false;
+			CookerAtomicSave::replaceable.insert(job["output"]);
+		}
 		if (skip_pipeline_packs && operation == "pack") {
 			report["ok"] = true;
 			report["skipped"] = true;
@@ -1157,6 +1171,8 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			skip_pipeline_packs = true;
 		} else if (arg == "--force") {
 			CookerCache::force_rebuild = true;
+		} else if (arg == "--manifests-only") {
+			manifests_only = true;
 		} else if (arg == "--plan") {
 			plan_pipeline_only = true;
 		} else if (arg == "--expected-plan" && i + 1 < argc) {

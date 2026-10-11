@@ -234,7 +234,7 @@ inline Error Record(const String& path, Dictionary& output) {
     visited.insert(current);
     Dictionary dependency;
     dependency["path"] = path.get_base_dir().path_to_file(current);
-    dependency["sha256"] = FileAccess::get_sha256(current);
+    dependency["md5"] = FileAccess::get_md5(current);
     const Ref<FileAccess> file = FileAccess::open(current, FileAccess::READ);
     ERR_FAIL_COND_V(file.is_null(), ERR_FILE_CANT_READ);
     dependency["bytes"] = int64_t(file->get_length());
@@ -254,8 +254,9 @@ inline Error Record(const String& path, Dictionary& output) {
       pending.push_back(next.simplify_path());
     }
   }
-  output["version"] = 1;
-  output["sha256"] = FileAccess::get_sha256(path);
+  output["version"] = 2;
+  output["hash_algorithm"] = "md5";
+  output["md5"] = FileAccess::get_md5(path);
   output["resource_type"] = String(resource->get_class());
   output["has_geometry"] = measure.geometry;
   output["minimum"] = VectorValue(measure.bounds.position);
