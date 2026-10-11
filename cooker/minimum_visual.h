@@ -19,6 +19,9 @@ struct Options {
   double triangle_ratio = 0.25, minimum_height = 0;
   int texture_size = 256;
   bool lock_border = true;
+  // Zero keeps relative error. A positive value limits error in mesh units.
+  double max_error = 0;
+  bool preserve_heightfields = false;
 };
 
 class Builder {
@@ -58,6 +61,18 @@ class Builder {
   }
 
  private:
+  static bool HasUpwardProjection(const PackedVector3Array& vertices,
+                                  const PackedInt32Array& indices) {
+    for (int i = 0; i < indices.size(); i += 3) {
+      const Vector3& a = vertices[indices[i]];
+      const Vector3& b = vertices[indices[i + 1]];
+      const Vector3& c = vertices[indices[i + 2]];
+      if ((c - a).cross(b - a).y <= 0) {
+        return false;
+      }
+    }
+    return true;
+  }
   template <class Values>
   static bool CompactValue(Variant& value, const std::vector<int>& used,
                            int original_count) {
@@ -257,17 +272,30 @@ class Builder {
       }
       PackedInt32Array reduced;
       reduced.resize(indices.size());
-      const size_t target = MAX(size_t(3), size_t(indices.size() * options_.triangle_ratio) / 3 * 3);
-      const unsigned int flags = options_.lock_border ? SurfaceTool::SIMPLIFY_LOCK_BORDER : 0;
+      const size_t target = MAX(
+          size_t(3), size_t(indices.size() * options_.triangle_ratio) / 3 * 3);
+      unsigned int flags =
+          options_.lock_border ? SurfaceTool::SIMPLIFY_LOCK_BORDER : 0;
+      const float error = options_.max_error > 0 ? options_.max_error : 0.02f;
+      if (options_.max_error > 0) {
+        flags |= SurfaceTool::SIMPLIFY_ERROR_ABSOLUTE;
+      }
       const size_t count = SurfaceTool::simplify_func(
           reinterpret_cast<unsigned int*>(reduced.ptrw()),
           reinterpret_cast<const unsigned int*>(indices.ptr()), indices.size(),
-          positions.data(), vertices.size(), sizeof(float) * 3, target, 0.02f,
+          positions.data(), vertices.size(), sizeof(float) * 3, target, error,
           flags, nullptr);
       if (count < 3 || count % 3) {
         return Ref<Mesh>();
       }
       reduced.resize(count);
+      // A 3D collapse can fold a height field in XZ while meeting its error
+      // bound. Keep the original topology of that surface if this occurs.
+      if (options_.preserve_heightfields &&
+          HasUpwardProjection(vertices, indices) &&
+          !HasUpwardProjection(vertices, reduced)) {
+        reduced = indices;
+      }
       if (!CompactArrays(arrays, reduced, vertices.size())) {
         return Ref<Mesh>();
       }

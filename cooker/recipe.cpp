@@ -890,51 +890,65 @@ struct Recipe {
 		s.require(shape.is_valid(), "collision shape construction failed");
 		return s.push_resource(shape);
 	}
-	static int minimum_visual(lua_State *p_state) {
-		auto &s = self(p_state);
-		s.arity(2);
-		Ref<Resource> resource;
-		if (lua_type(p_state, 1) == LUA_TSTRING) {
-			const String name = s.string(1);
-			s.require(s.inputs.has(name), "minimum_visual input is not declared");
-			resource = s.inputs[name];
-		} else {
-			resource = s.handle(1);
-		}
-		s.fields(2, {"triangle_ratio", "max_texture_size", "minimum_height", "lock_border"});
-		CookerMinimum::Options options;
-		s.field(2, "triangle_ratio");
-		if (!lua_isnil(p_state, -1)) options.triangle_ratio = s.number(-1);
-		lua_pop(p_state, 1);
-		s.field(2, "max_texture_size");
-		if (!lua_isnil(p_state, -1)) {
-			const double size = s.number(-1);
-			s.require(size >= 16 && size <= 1024 && size == int(size),
-				"max_texture_size must be an integer from 16 to 1024");
-			options.texture_size = int(size);
-		}
-		lua_pop(p_state, 1);
-		s.field(2, "minimum_height");
-		if (!lua_isnil(p_state, -1)) options.minimum_height = s.number(-1);
-		lua_pop(p_state, 1);
-		s.field(2, "lock_border");
-		if (!lua_isnil(p_state, -1)) {
-			s.require(lua_isboolean(p_state, -1), "lock_border must be boolean");
-			options.lock_border = lua_toboolean(p_state, -1);
-		}
-		lua_pop(p_state, 1);
-		s.require(options.triangle_ratio > 0 && options.triangle_ratio <= 1 &&
-			options.texture_size >= 16 && options.texture_size <= 1024 &&
-			options.minimum_height >= 0 && options.minimum_height <= 100,
-			"minimum_visual options are outside the supported range");
-		CookerMinimum::Builder builder(options);
-		Ref<Resource> output = builder.Build(resource);
-		s.require(output.is_valid(), "minimum_visual requires valid static geometry or material");
-		return s.push_resource(output);
-	}
-	static int primitive(lua_State *p_state) {
-		auto &s = self(p_state); s.arity(2);
-		String kind = s.string(1);
+  static int minimum_visual(lua_State* p_state) {
+    auto& s = self(p_state);
+    s.arity(2);
+    Ref<Resource> resource;
+    if (lua_type(p_state, 1) == LUA_TSTRING) {
+      const String name = s.string(1);
+      s.require(s.inputs.has(name), "minimum_visual input is not declared");
+      resource = s.inputs[name];
+    } else {
+      resource = s.handle(1);
+    }
+    s.fields(2, {"triangle_ratio", "max_texture_size", "minimum_height",
+                 "lock_border", "max_error", "preserve_heightfields"});
+    CookerMinimum::Options options;
+    options.preserve_heightfields =
+        s.boolean_field(2, "preserve_heightfields", false);
+    s.field(2, "max_error");
+    if (!lua_isnil(p_state, -1)) {
+      options.max_error = s.number(-1);
+      s.require(options.max_error > 0 && options.max_error <= 100000,
+                "max_error must be positive mesh units, at most 100000");
+    }
+    lua_pop(p_state, 1);
+    s.field(2, "triangle_ratio");
+    if (!lua_isnil(p_state, -1))
+      options.triangle_ratio = s.number(-1);
+    lua_pop(p_state, 1);
+    s.field(2, "max_texture_size");
+    if (!lua_isnil(p_state, -1)) {
+      const double size = s.number(-1);
+      s.require(size >= 16 && size <= 1024 && size == int(size),
+                "max_texture_size must be an integer from 16 to 1024");
+      options.texture_size = int(size);
+    }
+    lua_pop(p_state, 1);
+    s.field(2, "minimum_height");
+    if (!lua_isnil(p_state, -1))
+      options.minimum_height = s.number(-1);
+    lua_pop(p_state, 1);
+    s.field(2, "lock_border");
+    if (!lua_isnil(p_state, -1)) {
+      s.require(lua_isboolean(p_state, -1), "lock_border must be boolean");
+      options.lock_border = lua_toboolean(p_state, -1);
+    }
+    lua_pop(p_state, 1);
+    s.require(options.triangle_ratio > 0 && options.triangle_ratio <= 1 &&
+                  options.texture_size >= 16 && options.texture_size <= 1024 &&
+                  options.minimum_height >= 0 && options.minimum_height <= 100,
+              "minimum_visual options are outside the supported range");
+    CookerMinimum::Builder builder(options);
+    Ref<Resource> output = builder.Build(resource);
+    s.require(output.is_valid(),
+              "minimum_visual requires valid static geometry or material");
+    return s.push_resource(output);
+  }
+  static int primitive(lua_State* p_state) {
+    auto& s = self(p_state);
+    s.arity(2);
+    String kind = s.string(1);
 		Ref<Mesh> mesh;
 		if (kind == "box") {
 			s.fields(2, {"size"});
@@ -962,8 +976,8 @@ struct Recipe {
 			sphere->set_radial_segments(segments); sphere->set_rings(rings); mesh = sphere;
 		} else s.require(false, "unknown primitive; expected box, cylinder or sphere");
 		return s.push_resource(mesh);
-	}
-	static int mesh(lua_State *p_state) {
+  }
+  static int mesh(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
 		s.fields(1, {"vertices", "indices", "normals", "uvs"});
 		s.field(1, "vertices");
