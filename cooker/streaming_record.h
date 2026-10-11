@@ -227,7 +227,7 @@ inline Error MeasureTree(Node *node, const Transform3D &parent,
 				ERR_INVALID_DATA);
 		const AABB box = batch->get_mesh()->get_aabb();
 		result.instances += batch->get_instance_count();
-		const PackedFloat32Array buffer = batch->get_buffer();
+		const PackedFloat32Array buffer = batch->get("buffer");
 		const int stride = 12 + (batch->is_using_colors() ? 4 : 0) +
 				(batch->is_using_custom_data() ? 4 : 0);
 		ERR_FAIL_COND_V(batch->get_transform_format() != MultiMesh::TRANSFORM_3D ||
