@@ -167,7 +167,11 @@ struct Pipeline {
 		if (lua_gettop(state) != 1 || !host.string(1, root, 512) ||
 				root != "res://content") luaL_error(state, "pipeline.manifests requires the content inventory root");
 		Array steps;
+		const auto inventory_start = std::chrono::steady_clock::now();
 		if (!host.collect_manifests(root, steps, 0)) luaL_error(state, "%s", host.fault.utf8().get_data());
+		// Bounded native inventory I/O is not Luau execution. Preserve the
+		// remaining script budget when storage or another build is busy.
+		host.deadline += std::chrono::steady_clock::now() - inventory_start;
 		host.push_data(steps);
 		return 1;
 	}
