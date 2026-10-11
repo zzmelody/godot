@@ -900,7 +900,12 @@ struct Recipe {
 		if (!lua_isnil(p_state, -1)) options.triangle_ratio = s.number(-1);
 		lua_pop(p_state, 1);
 		s.field(2, "max_texture_size");
-		if (!lua_isnil(p_state, -1)) options.texture_size = int(s.number(-1));
+		if (!lua_isnil(p_state, -1)) {
+			const double size = s.number(-1);
+			s.require(size >= 16 && size <= 1024 && size == int(size),
+				"max_texture_size must be an integer from 16 to 1024");
+			options.texture_size = int(size);
+		}
 		lua_pop(p_state, 1);
 		s.field(2, "minimum_height");
 		if (!lua_isnil(p_state, -1)) options.minimum_height = s.number(-1);

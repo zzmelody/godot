@@ -11,6 +11,7 @@
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/shader.h"
 #include "scene/resources/surface_tool.h"
 
 namespace CookerMinimum {
@@ -57,6 +58,75 @@ class Builder {
   }
 
  private:
+  template <class Values>
+  static bool CompactValue(Variant& value, const std::vector<int>& used,
+                           int original_count) {
+    const Values original = value;
+    if (original.is_empty() || original.size() % original_count) {
+      return false;
+    }
+    const int stride = original.size() / original_count;
+    if (stride <= 0 || stride > 16) {
+      return false;
+    }
+    Values result;
+    result.resize(used.size() * stride);
+    for (size_t i = 0; i < used.size(); ++i) {
+      for (int component = 0; component < stride; ++component) {
+        result.set(i * stride + component,
+                   original[used[i] * stride + component]);
+      }
+    }
+    value = result;
+    return true;
+  }
+  static bool CompactArrays(Array& arrays, PackedInt32Array& indices,
+                            int original_count) {
+    std::vector<int> remap(original_count, -1), used;
+    used.reserve(original_count);
+    for (int i = 0; i < indices.size(); ++i) {
+      const int original = indices[i];
+      if (original < 0 || original >= original_count) {
+        return false;
+      }
+      if (remap[original] < 0) {
+        remap[original] = used.size();
+        used.push_back(original);
+      }
+      indices.set(i, remap[original]);
+    }
+    for (int slot = Mesh::ARRAY_VERTEX; slot <= Mesh::ARRAY_CUSTOM3; ++slot) {
+      Variant value = arrays[slot];
+      if (value.get_type() == Variant::NIL) {
+        continue;
+      }
+      bool valid = false;
+      switch (value.get_type()) {
+        case Variant::PACKED_VECTOR3_ARRAY:
+          valid = CompactValue<PackedVector3Array>(value, used, original_count);
+          break;
+        case Variant::PACKED_VECTOR2_ARRAY:
+          valid = CompactValue<PackedVector2Array>(value, used, original_count);
+          break;
+        case Variant::PACKED_COLOR_ARRAY:
+          valid = CompactValue<PackedColorArray>(value, used, original_count);
+          break;
+        case Variant::PACKED_FLOAT32_ARRAY:
+          valid = CompactValue<PackedFloat32Array>(value, used, original_count);
+          break;
+        case Variant::PACKED_BYTE_ARRAY:
+          valid = CompactValue<PackedByteArray>(value, used, original_count);
+          break;
+        default:
+          return false;
+      }
+      if (!valid) {
+        return false;
+      }
+      arrays[slot] = value;
+    }
+    return true;
+  }
   Ref<Texture2D> TextureValue(const Ref<Texture2D>& source) {
     const auto id = source->get_instance_id();
     if (textures_.count(id)) {
@@ -112,7 +182,38 @@ class Builder {
       }
       Ref<Material> next = value;
       if (next.is_valid()) {
-        result->set(property.name, MaterialValue(next));
+        const Ref<Material> minimum = MaterialValue(next);
+        if (minimum.is_null()) {
+          return Ref<Material>();
+        }
+        result->set(property.name, minimum);
+      }
+      Ref<Shader> shader = value;
+      if (shader.is_valid()) {
+        Ref<Shader> minimum;
+        minimum.instantiate();
+        minimum->set_code(shader->get_code());
+        List<StringName> names;
+        shader->get_default_texture_parameter_list(&names);
+        for (const auto& name : names) {
+          for (int index = 0; index <= 32; ++index) {
+            const Ref<Texture> original =
+                shader->get_default_texture_parameter(name, index);
+            if (original.is_null()) {
+              break;
+            }
+            const Ref<Texture2D> texture = original;
+            if (index == 32 || texture.is_null()) {
+              return Ref<Material>();
+            }
+            const Ref<Texture2D> reduced = TextureValue(texture);
+            if (reduced.is_null()) {
+              return Ref<Material>();
+            }
+            minimum->set_default_texture_parameter(name, reduced, index);
+          }
+        }
+        result->set(property.name, minimum);
       }
     }
     return result;
@@ -143,6 +244,11 @@ class Builder {
       if (indices.size() % 3 || !SurfaceTool::simplify_func) {
         return Ref<Mesh>();
       }
+      for (int i = 0; i < indices.size(); ++i) {
+        if (indices[i] < 0 || indices[i] >= vertices.size()) {
+          return Ref<Mesh>();
+        }
+      }
       std::vector<float> positions(size_t(vertices.size()) * 3);
       for (int i = 0; i < vertices.size(); ++i) {
         for (int axis = 0; axis < 3; ++axis) {
@@ -162,12 +268,23 @@ class Builder {
         return Ref<Mesh>();
       }
       reduced.resize(count);
+      if (!CompactArrays(arrays, reduced, vertices.size())) {
+        return Ref<Mesh>();
+      }
       arrays[Mesh::ARRAY_INDEX] = reduced;
       // Preserve normals, UVs, colors and tangent semantics. These static
       // outputs own new vertex data and never retain a source Mesh or Skin.
       arrays[Mesh::ARRAY_BONES] = Variant();
       arrays[Mesh::ARRAY_WEIGHTS] = Variant();
-      result->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+      uint64_t format = 0;
+      for (int custom = 0; custom < 4; ++custom) {
+        const int shift = Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT +
+                          custom * Mesh::ARRAY_FORMAT_CUSTOM_BITS;
+        format |= source->surface_get_format(surface) &
+                  (uint64_t(Mesh::ARRAY_FORMAT_CUSTOM_MASK) << shift);
+      }
+      result->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays,
+                                     Array(), Dictionary(), format);
       const Ref<Material> material = source->surface_get_material(surface);
       const Ref<Material> minimum = MaterialValue(material);
       if (material.is_valid() && minimum.is_null()) {
@@ -202,20 +319,29 @@ class Builder {
         auto* copy = memnew(MeshInstance3D);
         copy->set_mesh(MeshValue(mesh->get_mesh()));
         copy->set_material_override(MaterialValue(mesh->get_material_override()));
-        if (copy->get_mesh().is_null()) {
+        if (copy->get_mesh().is_null() ||
+            (mesh->get_material_override().is_valid() &&
+             copy->get_material_override().is_null())) {
           memdelete(copy);
           return false;
         }
         for (int surface = 0; surface < mesh->get_mesh()->get_surface_count(); ++surface) {
           copy->set_surface_override_material(surface,
               MaterialValue(mesh->get_surface_override_material(surface)));
+          if (mesh->get_surface_override_material(surface).is_valid() &&
+              copy->get_surface_override_material(surface).is_null()) {
+            memdelete(copy);
+            return false;
+          }
         }
         node = copy;
       }
     } else if (auto* multi = Object::cast_to<MultiMeshInstance3D>(source);
                multi && multi->get_multimesh().is_valid()) {
       const Ref<MultiMesh> original = multi->get_multimesh();
-      if (original->get_mesh().is_null()) {
+      if (original->get_mesh().is_null() ||
+          original->get_instance_count() > 1048576 ||
+          (instances_ += original->get_instance_count()) > 1048576) {
         return false;
       }
       if (original->get_mesh()->get_aabb().size.y >= options_.minimum_height) {
@@ -224,7 +350,9 @@ class Builder {
         auto* copy = memnew(MultiMeshInstance3D);
         copy->set_multimesh(batch);
         copy->set_material_override(MaterialValue(multi->get_material_override()));
-        if (batch->get_mesh().is_null()) {
+        if (batch->get_mesh().is_null() ||
+            (multi->get_material_override().is_valid() &&
+             copy->get_material_override().is_null())) {
           memdelete(copy);
           return false;
         }
@@ -245,7 +373,7 @@ class Builder {
     return true;
   }
   Options options_;
-  size_t nodes_ = 0;
+  size_t nodes_ = 0, instances_ = 0;
   std::map<ObjectID, Ref<Mesh>> meshes_;
   std::map<ObjectID, Ref<Material>> materials_;
   std::map<ObjectID, Ref<Texture2D>> textures_;

@@ -10,6 +10,7 @@
 #include "scene/3d/skeleton_3d.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/resources/texture.h"
+#include "scene/resources/shader.h"
 
 namespace CookerStreaming {
 inline Array VectorValue(const Vector3& value) {
@@ -25,6 +26,8 @@ struct Measure {
   bool geometry = false;
   uint64_t nodes = 0, geometry_bytes = 0, texture_bytes = 0;
   HashSet<ObjectID> resources;
+  String path;
+  Array costs;
 };
 
 inline Error MeasureValue(const Variant& value, Measure& result, int depth) {
@@ -36,10 +39,11 @@ inline Error MeasureValue(const Variant& value, Measure& result, int depth) {
     }
     ERR_FAIL_COND_V(result.resources.size() >= 65536, ERR_INVALID_DATA);
     result.resources.insert(resource->get_instance_id());
+    uint64_t geometry_bytes = 0, texture_bytes = 0;
     Ref<Mesh> mesh = resource;
     if (mesh.is_valid()) {
       for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
-        result.geometry_bytes +=
+        geometry_bytes +=
             uint64_t(mesh->surface_get_array_len(surface)) * 64 +
             uint64_t(mesh->surface_get_array_index_len(surface)) * 4;
       }
@@ -48,7 +52,43 @@ inline Error MeasureValue(const Variant& value, Measure& result, int depth) {
     if (texture.is_valid()) {
       const Ref<Image> image = texture->get_image();
       if (image.is_valid()) {
-        result.texture_bytes += image->get_data().size();
+        texture_bytes += image->get_data().size();
+      }
+    }
+    Ref<MultiMesh> multi = resource;
+    if (multi.is_valid()) {
+      geometry_bytes += uint64_t(multi->get_instance_count()) *
+          (multi->get_transform_format() == MultiMesh::TRANSFORM_3D ? 48 : 32);
+      geometry_bytes += uint64_t(multi->get_instance_count()) *
+          ((multi->is_using_colors() ? 16 : 0) +
+           (multi->is_using_custom_data() ? 16 : 0));
+    }
+    result.geometry_bytes += geometry_bytes;
+    result.texture_bytes += texture_bytes;
+    if (geometry_bytes || texture_bytes) {
+      Dictionary cost;
+      const String identity = resource->get_path().is_empty()
+          ? result.path + "#resource:" + itos(result.resources.size())
+          : resource->get_path();
+      cost["identity"] = result.path.get_base_dir().path_to_file(identity);
+      cost["geometry_bytes"] = int64_t(geometry_bytes);
+      cost["texture_bytes"] = int64_t(texture_bytes);
+      result.costs.push_back(cost);
+    }
+    Ref<Shader> shader = resource;
+    if (shader.is_valid()) {
+      List<StringName> names;
+      shader->get_default_texture_parameter_list(&names);
+      for (const auto& name : names) {
+        for (int index = 0; index < 32; ++index) {
+          const Ref<Texture> texture =
+              shader->get_default_texture_parameter(name, index);
+          if (texture.is_null()) {
+            break;
+          }
+          const auto error = MeasureValue(texture, result, depth + 1);
+          ERR_FAIL_COND_V(error != OK, error);
+        }
       }
     }
     List<PropertyInfo> properties;
@@ -128,6 +168,7 @@ inline Error Record(const String& path, Dictionary& output) {
       path, "", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
   ERR_FAIL_COND_V(resource.is_null() || error != OK, ERR_INVALID_DATA);
   Measure measure;
+  measure.path = path;
   error = MeasureValue(resource, measure, 0);
   ERR_FAIL_COND_V(error != OK, error);
   Ref<Mesh> mesh = resource;
@@ -170,6 +211,8 @@ inline Error Record(const String& path, Dictionary& output) {
       // gameplay pose remains in the separate simulation support resource.
       if (root->has_meta("character_simulation")) {
         measure.bounds = measure.bounds.grow(3);
+        output["simulation_resource"] =
+            root->get_meta("character_simulation_path", "");
       }
     }
     if (root) {
@@ -220,6 +263,7 @@ inline Error Record(const String& path, Dictionary& output) {
   output["nodes"] = int64_t(measure.nodes);
   output["geometry_bytes"] = int64_t(measure.geometry_bytes);
   output["texture_bytes"] = int64_t(measure.texture_bytes);
+  output["costs"] = measure.costs;
   output["dependencies"] = closure;
   output["layouts"] = layouts;
   return OK;
