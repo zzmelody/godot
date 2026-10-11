@@ -45,158 +45,165 @@ bool bone_track(const Ref<Animation>& p_animation, int p_track) {
              .begins_with("%GeneralSkeleton:");
 }
 
-Error PrepareBoneOverlays(Dictionary &job) {
-	if (!job.has("bone_overlays")) {
-		return OK;
-	}
-	ERR_FAIL_COND_V(job["bone_overlays"].get_type() != Variant::DICTIONARY,
-			ERR_INVALID_PARAMETER);
-	Dictionary config = Dictionary(job["bone_overlays"]).duplicate(true);
-	for (const char *field : { "reference_model", "target_model" }) {
-		ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
-				ERR_INVALID_PARAMETER);
-	}
-	ERR_FAIL_COND_V(
-			config.get("semantics", Variant()).get_type() != Variant::ARRAY ||
-					config.get("bones", Variant()).get_type() != Variant::ARRAY,
-			ERR_INVALID_PARAMETER);
-	// A pipeline prepares before fingerprinting; execute_job prepares again.
-	// Revalidate expanded inputs without treating mapping prefixes as files.
-	if (!config.has("source_from") && !config.has("source_to")) {
-		ERR_FAIL_COND_V(config.get("entries", Variant()).get_type() != Variant::ARRAY,
-				ERR_INVALID_PARAMETER);
-		const Array semantics = config["semantics"], entries = config["entries"];
-		ERR_FAIL_COND_V(entries.is_empty() || entries.size() > 256 ||
-						entries.size() != semantics.size(),
-				ERR_INVALID_PARAMETER);
-		for (int index = 0; index < entries.size(); ++index) {
-			ERR_FAIL_COND_V(entries[index].get_type() != Variant::DICTIONARY,
-					ERR_INVALID_DATA);
-			const Dictionary entry = entries[index];
-			ERR_FAIL_COND_V(entry.get("id", Variant()) != semantics[index] ||
-							!identifier(entry.get("id", "")) ||
-							entry.get("segments", Variant()).get_type() != Variant::ARRAY,
-					ERR_INVALID_DATA);
-			const Array segments = entry["segments"];
-			ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8, ERR_INVALID_DATA);
-			for (const Variant &value : segments) {
-				ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY, ERR_INVALID_DATA);
-				const Dictionary segment = value;
-				ERR_FAIL_COND_V(segment.get("source", Variant()).get_type() != Variant::STRING,
-						ERR_INVALID_DATA);
-				const String source = segment["source"];
-				const Error error = CookerFiles::check_path(source);
-				ERR_FAIL_COND_V(error != OK, error);
-				ERR_FAIL_COND_V(segment.get("sha256", "") != FileAccess::get_sha256(source),
-						ERR_INVALID_DATA);
-				const double duration = segment.get("duration", 0.0);
-				ERR_FAIL_COND_V(!Math::is_finite(duration) || duration < .01 || duration > 30,
-						ERR_INVALID_DATA);
-			}
-		}
-		return OK;
-	}
-	for (const char *field : { "source_from", "source_to" }) {
-		ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
-				ERR_INVALID_PARAMETER);
-	}
-	const String from = config.get("source_from", ""),
-				 to = config.get("source_to", "");
-	ERR_FAIL_COND_V(!from.ends_with("/") || !to.ends_with("/"),
-			ERR_INVALID_PARAMETER);
-	const Ref<AnimationLibrary> base =
-			ResourceLoader::load(job.get("base_library", ""), "AnimationLibrary");
-	ERR_FAIL_COND_V(base.is_null(), ERR_INVALID_DATA);
-	const Array semantics = config["semantics"];
-	ERR_FAIL_COND_V(semantics.is_empty() || semantics.size() > 256,
-			ERR_INVALID_PARAMETER);
-	Array entries;
-	HashSet<String> seen;
-	for (const Variant &value : semantics) {
-		ERR_FAIL_COND_V(value.get_type() != Variant::STRING || seen.has(value) ||
-						!identifier(value),
-				ERR_INVALID_PARAMETER);
-		const String id = value;
-		seen.insert(id);
-		Array segments;
-		if (base->has_animation(id)) {
-			segments = base->get_animation(id)->get_meta("source_segments", Array());
-		}
-		const Array replacements = job.get("clips", Array());
-		for (const Variant &replacement_value : replacements) {
-			ERR_FAIL_COND_V(replacement_value.get_type() != Variant::DICTIONARY,
-					ERR_INVALID_PARAMETER);
-			const Dictionary replacement = replacement_value;
-			if (String(replacement.get("id", "")) == id) {
-				segments = replacement.get("segments", Array());
-				break;
-			}
-		}
-		ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8,
-				ERR_INVALID_DATA);
-		Array mapped;
-		for (const Variant &segment_value : segments) {
-			ERR_FAIL_COND_V(segment_value.get_type() != Variant::DICTIONARY,
-					ERR_INVALID_DATA);
-			Dictionary segment = Dictionary(segment_value).duplicate(true);
-			const String source_path = segment.get("source", "");
-			ERR_FAIL_COND_V(
-					!source_path.begins_with(from) && !source_path.begins_with(to),
-					ERR_INVALID_DATA);
-			const Ref<AnimationLibrary> original =
-					ResourceLoader::load(source_path, "AnimationLibrary");
-			const StringName name = segment.get("animation", "mixamo_com");
-			ERR_FAIL_COND_V(original.is_null() || !original->has_animation(name),
-					ERR_INVALID_DATA);
-			const double begin = segment.get("begin", 0.0),
-						 end = segment.get("end", 1.0),
-						 speed = segment.get("speed", 1.0);
-			ERR_FAIL_COND_V(!Math::is_finite(begin) || !Math::is_finite(end) ||
-							!Math::is_finite(speed) || begin < 0 || end > 1 ||
-							begin >= end || speed < .1 || speed > 4,
-					ERR_INVALID_DATA);
-			segment["duration"] =
-					original->get_animation(name)->get_length() * (end - begin) / speed;
-			segment["source"] = source_path.begins_with(from)
-					? to + source_path.substr(from.length())
-					: source_path;
-			segment["sha256"] = FileAccess::get_sha256(segment["source"]);
-			ERR_FAIL_COND_V(String(segment["sha256"]).length() != 64,
-					ERR_INVALID_DATA);
-			mapped.push_back(segment);
-		}
-		Dictionary entry;
-		entry["id"] = id;
-		entry["segments"] = mapped;
-		entries.push_back(entry);
-	}
-	config["entries"] = entries;
-	// The expanded segments are the exact inputs. Prefixes are mapping rules,
-	// not whole-directory resource dependencies (nor valid trailing-slash paths).
-	config.erase("source_from");
-	config.erase("source_to");
-	job["bone_overlays"] = config;
-	return OK;
+Error PrepareBoneOverlays(Dictionary& job) {
+  if (!job.has("bone_overlays")) {
+    return OK;
+  }
+  ERR_FAIL_COND_V(job["bone_overlays"].get_type() != Variant::DICTIONARY,
+                  ERR_INVALID_PARAMETER);
+  Dictionary config = Dictionary(job["bone_overlays"]).duplicate(true);
+  for (const char* field : {"reference_model", "target_model"}) {
+    ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
+                    ERR_INVALID_PARAMETER);
+  }
+  ERR_FAIL_COND_V(
+      config.get("semantics", Variant()).get_type() != Variant::ARRAY ||
+          config.get("bones", Variant()).get_type() != Variant::ARRAY,
+      ERR_INVALID_PARAMETER);
+  // A pipeline prepares before fingerprinting; execute_job prepares again.
+  // Revalidate expanded inputs without treating mapping prefixes as files.
+  if (!config.has("source_from") && !config.has("source_to")) {
+    ERR_FAIL_COND_V(
+        config.get("entries", Variant()).get_type() != Variant::ARRAY,
+        ERR_INVALID_PARAMETER);
+    const Array semantics = config["semantics"], entries = config["entries"];
+    ERR_FAIL_COND_V(entries.is_empty() || entries.size() > 256 ||
+                        entries.size() != semantics.size(),
+                    ERR_INVALID_PARAMETER);
+    for (int index = 0; index < entries.size(); ++index) {
+      ERR_FAIL_COND_V(entries[index].get_type() != Variant::DICTIONARY,
+                      ERR_INVALID_DATA);
+      const Dictionary entry = entries[index];
+      ERR_FAIL_COND_V(
+          entry.get("id", Variant()) != semantics[index] ||
+              !identifier(entry.get("id", "")) ||
+              entry.get("segments", Variant()).get_type() != Variant::ARRAY,
+          ERR_INVALID_DATA);
+      const Array segments = entry["segments"];
+      ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8,
+                      ERR_INVALID_DATA);
+      for (const Variant& value : segments) {
+        ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY,
+                        ERR_INVALID_DATA);
+        const Dictionary segment = value;
+        ERR_FAIL_COND_V(
+            segment.get("source", Variant()).get_type() != Variant::STRING,
+            ERR_INVALID_DATA);
+        const String source = segment["source"];
+        const Error error = CookerFiles::check_path(source);
+        ERR_FAIL_COND_V(error != OK, error);
+        ERR_FAIL_COND_V(
+            segment.get("sha256", "") != FileAccess::get_sha256(source),
+            ERR_INVALID_DATA);
+        const double duration = segment.get("duration", 0.0);
+        ERR_FAIL_COND_V(
+            !Math::is_finite(duration) || duration < .01 || duration > 30,
+            ERR_INVALID_DATA);
+      }
+    }
+    return OK;
+  }
+  for (const char* field : {"source_from", "source_to"}) {
+    ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
+                    ERR_INVALID_PARAMETER);
+  }
+  const String from = config.get("source_from", ""),
+               to = config.get("source_to", "");
+  ERR_FAIL_COND_V(!from.ends_with("/") || !to.ends_with("/"),
+                  ERR_INVALID_PARAMETER);
+  const Ref<AnimationLibrary> base =
+      ResourceLoader::load(job.get("base_library", ""), "AnimationLibrary");
+  ERR_FAIL_COND_V(base.is_null(), ERR_INVALID_DATA);
+  const Array semantics = config["semantics"];
+  ERR_FAIL_COND_V(semantics.is_empty() || semantics.size() > 256,
+                  ERR_INVALID_PARAMETER);
+  Array entries;
+  HashSet<String> seen;
+  for (const Variant& value : semantics) {
+    ERR_FAIL_COND_V(value.get_type() != Variant::STRING || seen.has(value) ||
+                        !identifier(value),
+                    ERR_INVALID_PARAMETER);
+    const String id = value;
+    seen.insert(id);
+    Array segments;
+    if (base->has_animation(id)) {
+      segments = base->get_animation(id)->get_meta("source_segments", Array());
+    }
+    const Array replacements = job.get("clips", Array());
+    for (const Variant& replacement_value : replacements) {
+      ERR_FAIL_COND_V(replacement_value.get_type() != Variant::DICTIONARY,
+                      ERR_INVALID_PARAMETER);
+      const Dictionary replacement = replacement_value;
+      if (String(replacement.get("id", "")) == id) {
+        segments = replacement.get("segments", Array());
+        break;
+      }
+    }
+    ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8,
+                    ERR_INVALID_DATA);
+    Array mapped;
+    for (const Variant& segment_value : segments) {
+      ERR_FAIL_COND_V(segment_value.get_type() != Variant::DICTIONARY,
+                      ERR_INVALID_DATA);
+      Dictionary segment = Dictionary(segment_value).duplicate(true);
+      const String source_path = segment.get("source", "");
+      ERR_FAIL_COND_V(
+          !source_path.begins_with(from) && !source_path.begins_with(to),
+          ERR_INVALID_DATA);
+      const Ref<AnimationLibrary> original =
+          ResourceLoader::load(source_path, "AnimationLibrary");
+      const StringName name = segment.get("animation", "mixamo_com");
+      ERR_FAIL_COND_V(original.is_null() || !original->has_animation(name),
+                      ERR_INVALID_DATA);
+      const double begin = segment.get("begin", 0.0),
+                   end = segment.get("end", 1.0),
+                   speed = segment.get("speed", 1.0);
+      ERR_FAIL_COND_V(!Math::is_finite(begin) || !Math::is_finite(end) ||
+                          !Math::is_finite(speed) || begin < 0 || end > 1 ||
+                          begin >= end || speed < .1 || speed > 4,
+                      ERR_INVALID_DATA);
+      segment["duration"] =
+          original->get_animation(name)->get_length() * (end - begin) / speed;
+      segment["source"] = source_path.begins_with(from)
+                              ? to + source_path.substr(from.length())
+                              : source_path;
+      segment["sha256"] = FileAccess::get_sha256(segment["source"]);
+      ERR_FAIL_COND_V(String(segment["sha256"]).length() != 64,
+                      ERR_INVALID_DATA);
+      mapped.push_back(segment);
+    }
+    Dictionary entry;
+    entry["id"] = id;
+    entry["segments"] = mapped;
+    entries.push_back(entry);
+  }
+  config["entries"] = entries;
+  // The expanded segments are the exact inputs. Prefixes are mapping rules,
+  // not whole-directory resource dependencies (nor valid trailing-slash paths).
+  config.erase("source_from");
+  config.erase("source_to");
+  job["bone_overlays"] = config;
+  return OK;
 }
 
-Error ApplyBoneOverlays(const Dictionary &config,
-		const Ref<AnimationLibrary> &library) {
-	const Array bones = config["bones"], entries = config["entries"];
-	ERR_FAIL_COND_V(bones.is_empty() || bones.size() > 64, ERR_INVALID_PARAMETER);
-	HashSet<String> mask;
-	for (const Variant &value : bones) {
-		ERR_FAIL_COND_V(value.get_type() != Variant::STRING || mask.has(value),
-				ERR_INVALID_PARAMETER);
-		mask.insert(value);
-	}
-	uint64_t keys = 0;
-	for (const Variant &value : entries) {
-		const Dictionary entry = value;
-		const StringName id = entry["id"];
-		ERR_FAIL_COND_V(!library->has_animation(id), ERR_INVALID_DATA);
-		const Ref<Animation> original = library->get_animation(id);
-		Ref<Animation> result = original->duplicate();
-		for (int track = result->get_track_count() - 1; track >= 0; --track) {
+Error ApplyBoneOverlays(const Dictionary& config,
+                        const Ref<AnimationLibrary>& library) {
+  const Array bones = config["bones"], entries = config["entries"];
+  ERR_FAIL_COND_V(bones.is_empty() || bones.size() > 64, ERR_INVALID_PARAMETER);
+  HashSet<String> mask;
+  for (const Variant& value : bones) {
+    ERR_FAIL_COND_V(value.get_type() != Variant::STRING || mask.has(value),
+                    ERR_INVALID_PARAMETER);
+    mask.insert(value);
+  }
+  uint64_t keys = 0;
+  for (const Variant& value : entries) {
+    const Dictionary entry = value;
+    const StringName id = entry["id"];
+    ERR_FAIL_COND_V(!library->has_animation(id), ERR_INVALID_DATA);
+    const Ref<Animation> original = library->get_animation(id);
+    Ref<Animation> result = original->duplicate();
+    for (int track = result->get_track_count() - 1; track >= 0; --track) {
 			const NodePath path = result->track_get_path(track);
 			if (path.get_subname_count() == 1 && mask.has(path.get_subname(0))) {
 				result->remove_track(track);
@@ -278,8 +285,8 @@ Error ApplyBoneOverlays(const Dictionary &config,
 		library->remove_animation(id);
 		const Error error = library->add_animation(id, result);
 		ERR_FAIL_COND_V(error != OK, error);
-	}
-	return OK;
+  }
+  return OK;
 }
 NodePath mirrored_bone_path(const NodePath &p_path) {
 	const String path = String(p_path);
