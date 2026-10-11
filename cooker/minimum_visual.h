@@ -349,6 +349,7 @@ class Builder {
         batch->set_mesh(MeshValue(original->get_mesh()));
         auto* copy = memnew(MultiMeshInstance3D);
         copy->set_multimesh(batch);
+          copy->set_extra_cull_margin(multi->get_extra_cull_margin());
         copy->set_material_override(MaterialValue(multi->get_material_override()));
         if (batch->get_mesh().is_null() ||
             (multi->get_material_override().is_valid() &&

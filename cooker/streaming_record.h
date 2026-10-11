@@ -135,7 +135,7 @@ inline Error MeasureTree(Node* node, const Transform3D& parent,
   };
   if (const auto* mesh = Object::cast_to<MeshInstance3D>(node);
       mesh && mesh->get_mesh().is_valid()) {
-    add(transform.xform(mesh->get_mesh()->get_aabb()));
+    add(transform.xform(mesh->get_mesh()->get_aabb().grow(mesh->get_extra_cull_margin())));
   }
   if (const auto* multi = Object::cast_to<MultiMeshInstance3D>(node);
       multi && multi->get_multimesh().is_valid()) {
@@ -144,8 +144,13 @@ inline Error MeasureTree(Node* node, const Transform3D& parent,
                        batch->get_instance_count() > 1048576,
                    ERR_INVALID_DATA);
     const AABB box = batch->get_mesh()->get_aabb();
+    AABB local;
     for (int i = 0; i < batch->get_instance_count(); ++i) {
-      add((transform * batch->get_instance_transform(i)).xform(box));
+      const AABB instance = batch->get_instance_transform(i).xform(box);
+      local = i == 0 ? instance : local.merge(instance);
+    }
+    if (batch->get_instance_count()) {
+      add(transform.xform(local.grow(multi->get_extra_cull_margin())));
     }
   }
   List<PropertyInfo> properties;

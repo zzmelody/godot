@@ -1041,24 +1041,26 @@ struct Recipe {
 		int count = s.array(1, s.limits.max_instances - s.instances);
 		s.require(count > 0, "scene must contain at least one instance");
 		s.instances += count;
-		struct Batch { Ref<Mesh> mesh; Ref<Material> material; Vector<Transform3D> transforms; };
+		struct Batch { Ref<Mesh> mesh; Ref<Material> material; real_t cull_margin; Vector<Transform3D> transforms; };
 		std::vector<Batch> batches;
 		OwnedNode root(memnew(Node3D)); root->set_name("RecipeAsset");
 		for (int i = 0; i < count; ++i) {
 			lua_rawgeti(p_state, 1, i + 1); int item = lua_absindex(p_state, -1);
-			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "lightmap"});
+			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "lightmap", "cull_margin"});
 			s.field(item, "asset"); Ref<Resource> asset = s.handle(-1); lua_pop(p_state, 1);
 			s.field(item, "material"); Ref<Material> material;
 			if (!lua_isnil(p_state, -1)) { material = s.handle(-1); s.require(material.is_valid(), "material requires a Material handle"); }
 			lua_pop(p_state, 1);
 			Transform3D transform = s.transform(item);
+			const real_t cull_margin = s.number_field(item, "cull_margin", 0, 0, 32);
+			s.require(cull_margin >= 0 && cull_margin <= 32, "cull_margin must be in [0,32]");
 			Ref<Mesh> mesh = asset;
 			if (mesh.is_valid()) {
 				if (s.boolean_field(item, "lightmap", false)) {
 					auto *node = memnew(MeshInstance3D);
 					node->set_name(s.string_field(item, "name", "Mesh" + itos(i)));
 					s.require(!node->get_name().is_empty(), "lightmap mesh requires a name");
-					node->set_mesh(mesh); node->set_material_override(material); node->set_transform(transform);
+					node->set_mesh(mesh); node->set_material_override(material); node->set_transform(transform); node->set_extra_cull_margin(cull_margin);
 					node->set_gi_mode(GeometryInstance3D::GI_MODE_STATIC);
 					root->add_child(node); node->set_owner(root.get());
 					lua_pop(p_state, 1); continue;
@@ -1066,13 +1068,14 @@ struct Recipe {
 				s.field(item, "name"); s.require(lua_isnil(p_state, -1), "name is only valid for PackedScene instances"); lua_pop(p_state, 1);
 				s.field(item, "remove"); s.require(lua_isnil(p_state, -1), "remove is only valid for PackedScene instances"); lua_pop(p_state, 1);
 				size_t batch = 0;
-				while (batch < batches.size() && (batches[batch].mesh != mesh || batches[batch].material != material)) ++batch;
-				if (batch == batches.size()) batches.push_back({mesh, material, {}});
+				while (batch < batches.size() && (batches[batch].mesh != mesh || batches[batch].material != material || batches[batch].cull_margin != cull_margin)) ++batch;
+				if (batch == batches.size()) batches.push_back({mesh, material, cull_margin, {}});
 				batches[batch].transforms.push_back(transform);
 			} else {
 				Ref<PackedScene> packed = asset;
 				s.require(packed.is_valid(), "scene instances require Mesh or PackedScene handles");
 				s.require(material.is_null(), "PackedScene instances cannot use a material override");
+				s.require(cull_margin == 0, "PackedScene margins belong to their geometry nodes");
 				OwnedNode instance(packed->instantiate());
 				Node3D *instance_3d = Object::cast_to<Node3D>(instance.get());
 				s.require(instance_3d != nullptr, "PackedScene instance root must be Node3D");
@@ -1118,7 +1121,7 @@ struct Recipe {
 			multi->set_instance_count(batch.transforms.size());
 			for (int j = 0; j < batch.transforms.size(); ++j) multi->set_instance_transform(j, batch.transforms[j]);
 			auto *node = memnew(MultiMeshInstance3D);
-			node->set_name("Batch" + itos(i)); node->set_multimesh(multi); node->set_material_override(batch.material);
+			node->set_name("Batch" + itos(i)); node->set_multimesh(multi); node->set_material_override(batch.material); node->set_extra_cull_margin(batch.cull_margin);
 			root->add_child(node); node->set_owner(root.get());
 		}
 		int32_t next_scene_id = 1;
