@@ -59,7 +59,7 @@ inline Array VectorValue(const Vector3 &value) {
 
 struct Measure {
 	AABB bounds, collision_bounds;
-	bool geometry = false, collision = false;
+	bool geometry = false, collision = false, effect_valid = true;
 	uint64_t nodes = 0, geometry_bytes = 0, texture_bytes = 0;
 	uint64_t instances = 0, particle_systems = 0, declared_particles = 0;
 	HashSet<ObjectID> resources;
@@ -203,6 +203,13 @@ inline Error MeasureTree(Node *node, const Transform3D &parent,
 		Measure &result, int depth = 0) {
 	ERR_FAIL_COND_V(!node || depth >= 64 || ++result.nodes > 100000,
 			ERR_INVALID_DATA);
+	result.effect_valid = result.effect_valid &&
+			(node->is_class("Node3D") || node->is_class("GPUParticles3D") ||
+					node->is_class("MeshInstance3D") || node->is_class("MultiMeshInstance3D") ||
+					node->is_class("AnimationPlayer"));
+	if (const auto *particles = Object::cast_to<GPUParticles3D>(node)) {
+		result.effect_valid = result.effect_valid && particles->get_amount() <= 512;
+	}
 	const Ref<Script> script = node->get_script();
 	ERR_FAIL_COND_V(script.is_valid(), ERR_INVALID_DATA);
 	Transform3D transform = parent;
@@ -389,8 +396,13 @@ inline Error Record(const String &path, Dictionary &output,
 					layouts.clear();
 					break;
 				}
+				Transform3D parent;
+				if (const auto *spatial = Object::cast_to<Node3D>(root)) {
+					parent = spatial->get_transform();
+				}
+				const Transform3D pose = parent * child->get_transform();
 				Measure placement;
-				error = MeasureTree(child, Transform3D(), placement);
+				error = MeasureTree(child, parent, placement);
 				if (error != OK || !placement.geometry) {
 					layout_valid = false;
 					layouts.clear();
@@ -399,10 +411,10 @@ inline Error Record(const String &path, Dictionary &output,
 				Dictionary entry;
 				entry["name"] = String(child->get_name());
 				entry["resource"] = ReferencePath(path, child->get_scene_file_path());
-				entry["position"] = VectorValue(child->get_transform().origin);
+				entry["position"] = VectorValue(pose.origin);
 				Array basis;
 				for (int column = 0; column < 3; ++column) {
-					basis.push_back(VectorValue(child->get_transform().basis.get_column(column)));
+					basis.push_back(VectorValue(pose.basis.get_column(column)));
 				}
 				entry["basis"] = basis;
 				entry["minimum"] = VectorValue(placement.bounds.position);
@@ -466,6 +478,8 @@ inline Error Record(const String &path, Dictionary &output,
 	output["hash_algorithm"] = "md5";
 	output["md5"] = Digest(path, digests);
 	output["resource_type"] = String(resource->get_class());
+	output["effect_valid"] = scene.is_valid() && measure.effect_valid && measure.nodes <= 32 &&
+			measure.particle_systems <= 4 && measure.declared_particles <= 1024;
 	output["has_geometry"] = measure.geometry;
 	output["minimum"] = VectorValue(measure.bounds.position);
 	output["maximum"] = VectorValue(measure.bounds.get_end());
