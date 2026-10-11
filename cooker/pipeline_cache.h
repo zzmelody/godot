@@ -122,6 +122,11 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	Dictionary request;request["schema_version"]=3;request["toolchain_sha256"]=toolchain;request["job"]=job;request["dependencies"]=receipt.dependencies;
 	receipt.fingerprint=JSON::stringify(request,"",true).sha256_text();
 	if(!FileAccess::exists(output))return OK;
+	const bool manifest = String(job.get("operation", "")) == "asset-manifest";
+	if (manifest && CookerAtomicSave::replaceable.has(output)) {
+		// Metadata-only refreshes must also publish their current cache receipt.
+		return OK;
+	}
 	if(!FileAccess::exists(receipt.path) && rebuild_unverified) {
 		// Regenerate legacy bytes from this declared step; do not reuse them.
 		// The old file stays readable until the new result replaces it.
@@ -134,7 +139,14 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	// Generated assets have stable current paths. A changed Luau request or
 	// source invalidates its cache, but a modified output is still rejected.
 	// Only remove the exact verified output/receipt owned by this step.
-	ERR_FAIL_COND_V_MSG(String(prior.get("output_sha256",""))!=FileAccess::get_sha256(output),ERR_INVALID_DATA,"Cook cache output integrity failed: "+output);
+	const bool output_changed = String(prior.get("output_sha256", "")) != FileAccess::get_sha256(output);
+	if (manifest && output_changed) {
+		// Never reuse changed metadata. Regenerate it from this admitted Luau
+		// step and validated resources. Resource-output integrity stays strict.
+		CookerAtomicSave::replaceable.insert(output);
+		return OK;
+	}
+	ERR_FAIL_COND_V_MSG(output_changed,ERR_INVALID_DATA,"Cook cache output integrity failed: "+output);
 	const Dictionary prior_auxiliary = prior.get("auxiliary_outputs", Dictionary());
 	bool missing_auxiliary = false;
 	for (const Variant *key = receipt.auxiliary_outputs.next(); key; key = receipt.auxiliary_outputs.next(key)) {

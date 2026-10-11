@@ -1009,8 +1009,8 @@ Error execute_pipeline(Dictionary &r_result) {
 			continue;
 		}
 		if (manifests_only) {
-			condition = false;
-			verification = false;
+			condition = true;
+			verification = true;
 			CookerAtomicSave::replaceable.insert(job["output"]);
 		}
 		if (skip_pipeline_packs && operation == "pack") {
