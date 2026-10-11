@@ -40,10 +40,12 @@ Error RetargetAnimation(const String& reference_model,
     Node* reference;
     Node* target;
     ~Trees() {
-      if (reference)
+      if (reference) {
         memdelete(reference);
-      if (target)
+      }
+      if (target) {
         memdelete(target);
+      }
     }
   } trees{reference_root, target_root};
   ERR_FAIL_NULL_V(reference_root, ERR_CANT_CREATE);

@@ -46,8 +46,9 @@ bool bone_track(const Ref<Animation>& p_animation, int p_track) {
 }
 
 Error PrepareBoneOverlays(Dictionary& job) {
-  if (!job.has("bone_overlays"))
+  if (!job.has("bone_overlays")) {
     return OK;
+  }
   ERR_FAIL_COND_V(job["bone_overlays"].get_type() != Variant::DICTIONARY,
                   ERR_INVALID_PARAMETER);
   Dictionary config = Dictionary(job["bone_overlays"]).duplicate(true);
@@ -121,7 +122,8 @@ Error PrepareBoneOverlays(Dictionary& job) {
                               ? to + source_path.substr(from.length())
                               : source_path;
       segment["sha256"] = FileAccess::get_sha256(segment["source"]);
-      ERR_FAIL_COND_V(String(segment["sha256"]).length() != 64, ERR_INVALID_DATA);
+      ERR_FAIL_COND_V(String(segment["sha256"]).length() != 64,
+                      ERR_INVALID_DATA);
       mapped.push_back(segment);
     }
     Dictionary entry;
@@ -153,8 +155,9 @@ Error ApplyBoneOverlays(const Dictionary& config,
     Ref<Animation> result = original->duplicate();
     for (int track = result->get_track_count() - 1; track >= 0; --track) {
       const NodePath path = result->track_get_path(track);
-      if (path.get_subname_count() == 1 && mask.has(path.get_subname(0)))
+      if (path.get_subname_count() == 1 && mask.has(path.get_subname(0))) {
         result->remove_track(track);
+      }
     }
     const bool mirrored = result->get_meta("mirror_x", false);
     const Array segments = entry["segments"];
@@ -210,12 +213,14 @@ Error ApplyBoneOverlays(const Dictionary& config,
                                        : begin + phase * (end - begin)) *
                             source->get_length();
           Quaternion rotation = source->rotation_track_interpolate(track, at);
-          if (mirrored)
+          if (mirrored) {
             rotation =
                 Quaternion(rotation.x, -rotation.y, -rotation.z, rotation.w);
-          if (previous_count && blend > 0)
+          }
+          if (previous_count && blend > 0) {
             rotation = previous.slerp(
                 rotation, MIN(1.0, phase * duration / MIN(blend, duration)));
+          }
           result->rotation_track_insert_key(
               output_track, cursor + phase * duration, rotation.normalized());
         }
