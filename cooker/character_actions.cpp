@@ -334,6 +334,9 @@ Node3D *CopySimulationTree(Node *p_node, Node *p_owner) {
 	Node3D *result = nullptr;
 	if (auto *source = Object::cast_to<Skeleton3D>(p_node)) {
 		auto *skeleton = memnew(Skeleton3D);
+		// Position tracks use this multiplier during animation sampling. A
+		// value-only support skeleton must sample the same pelvis trajectory.
+		skeleton->set_motion_scale(source->get_motion_scale());
 		for (int bone = 0; bone < source->get_bone_count(); ++bone) {
 			skeleton->add_bone(source->get_bone_name(bone));
 		}
