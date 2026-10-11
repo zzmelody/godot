@@ -204,87 +204,87 @@ Error ApplyBoneOverlays(const Dictionary& config,
     const Ref<Animation> original = library->get_animation(id);
     Ref<Animation> result = original->duplicate();
     for (int track = result->get_track_count() - 1; track >= 0; --track) {
-			const NodePath path = result->track_get_path(track);
-			if (path.get_subname_count() == 1 && mask.has(path.get_subname(0))) {
-				result->remove_track(track);
-			}
-		}
-		const bool mirrored = result->get_meta("mirror_x", false);
-		const Array segments = entry["segments"];
-		double cursor = 0;
-		for (const Variant &segment_value : segments) {
-			const Dictionary segment = segment_value;
-			Ref<AnimationLibrary> source_library;
-			Error error = load_library(segment["source"], source_library);
-			ERR_FAIL_COND_V(error != OK, error);
-			const StringName name = segment.get("animation", "mixamo_com");
-			ERR_FAIL_COND_V(!source_library->has_animation(name), ERR_INVALID_DATA);
-			Ref<Animation> source = source_library->get_animation(name)->duplicate();
-			error = CookerRetarget::RetargetAnimation(
-					config["reference_model"], config["target_model"], source, bones);
-			ERR_FAIL_COND_V(error != OK, error);
-			const double begin = segment.get("begin", 0.0),
-						 end = segment.get("end", 1.0),
-						 duration = segment["duration"];
-			ERR_FAIL_COND_V(!Math::is_finite(duration) || duration < .01 ||
-							duration > 30 || cursor + duration > 30,
-					ERR_INVALID_DATA);
-			const bool reverse = segment.get("reverse", false);
-			const double hold = segment.get("hold_phase", 0.0),
-						 blend = segment.get("blend", .08);
-			ERR_FAIL_COND_V(!Math::is_finite(hold) || hold < 0 || hold > 1 ||
-							!Math::is_finite(blend) || blend < 0 || blend > 2,
-					ERR_INVALID_DATA);
-			const int samples = static_cast<int>(std::ceil(duration * 60));
-			for (int track = 0; track < source->get_track_count(); ++track) {
-				ERR_FAIL_COND_V(
-						source->track_get_type(track) != Animation::TYPE_ROTATION_3D,
-						ERR_INVALID_DATA);
-				const NodePath path =
-						mirrored ? mirrored_bone_path(source->track_get_path(track))
-								 : source->track_get_path(track);
-				int output_track =
-						result->find_track(path, Animation::TYPE_ROTATION_3D);
-				if (output_track < 0) {
-					output_track = result->add_track(Animation::TYPE_ROTATION_3D);
-					result->track_set_path(output_track, path);
-				}
-				const int previous_count = result->track_get_key_count(output_track);
-				const Quaternion previous =
-						previous_count ? Quaternion(result->track_get_key_value(
-												 output_track, previous_count - 1))
-									   : Quaternion();
-				keys += samples + 1;
-				ERR_FAIL_COND_V(keys > 4000000, ERR_OUT_OF_MEMORY);
-				for (int sample = 0; sample <= samples; ++sample) {
-					const double phase = static_cast<double>(sample) / samples;
-					const double at = (segment.has("hold_phase") ? hold
-													  : reverse	 ? end - phase * (end - begin)
-																 : begin + phase * (end - begin)) *
-							source->get_length();
-					Quaternion rotation = source->rotation_track_interpolate(track, at);
-					if (mirrored) {
-						rotation =
-								Quaternion(rotation.x, -rotation.y, -rotation.z, rotation.w);
-					}
-					if (previous_count && blend > 0) {
-						rotation = previous.slerp(
-								rotation, MIN(1.0, phase * duration / MIN(blend, duration)));
-					}
-					result->rotation_track_insert_key(
-							output_track, cursor + phase * duration, rotation.normalized());
-				}
-			}
-			cursor += duration;
-		}
-		ERR_FAIL_COND_V_MSG(
-				Math::abs(cursor - original->get_length()) > .0001, ERR_INVALID_DATA,
-				"Finger overlay changed action duration: " + String(id));
-		result->set_meta("bone_overlay_sources", segments);
-		result->set_meta("bone_overlay_bones", bones);
-		library->remove_animation(id);
-		const Error error = library->add_animation(id, result);
-		ERR_FAIL_COND_V(error != OK, error);
+      const NodePath path = result->track_get_path(track);
+      if (path.get_subname_count() == 1 && mask.has(path.get_subname(0))) {
+        result->remove_track(track);
+      }
+    }
+    const bool mirrored = result->get_meta("mirror_x", false);
+    const Array segments = entry["segments"];
+    double cursor = 0;
+    for (const Variant& segment_value : segments) {
+      const Dictionary segment = segment_value;
+      Ref<AnimationLibrary> source_library;
+      Error error = load_library(segment["source"], source_library);
+      ERR_FAIL_COND_V(error != OK, error);
+      const StringName name = segment.get("animation", "mixamo_com");
+      ERR_FAIL_COND_V(!source_library->has_animation(name), ERR_INVALID_DATA);
+      Ref<Animation> source = source_library->get_animation(name)->duplicate();
+      error = CookerRetarget::RetargetAnimation(
+          config["reference_model"], config["target_model"], source, bones);
+      ERR_FAIL_COND_V(error != OK, error);
+      const double begin = segment.get("begin", 0.0),
+                   end = segment.get("end", 1.0),
+                   duration = segment["duration"];
+      ERR_FAIL_COND_V(!Math::is_finite(duration) || duration < .01 ||
+                          duration > 30 || cursor + duration > 30,
+                      ERR_INVALID_DATA);
+      const bool reverse = segment.get("reverse", false);
+      const double hold = segment.get("hold_phase", 0.0),
+                   blend = segment.get("blend", .08);
+      ERR_FAIL_COND_V(!Math::is_finite(hold) || hold < 0 || hold > 1 ||
+                          !Math::is_finite(blend) || blend < 0 || blend > 2,
+                      ERR_INVALID_DATA);
+      const int samples = static_cast<int>(std::ceil(duration * 60));
+      for (int track = 0; track < source->get_track_count(); ++track) {
+        ERR_FAIL_COND_V(
+            source->track_get_type(track) != Animation::TYPE_ROTATION_3D,
+            ERR_INVALID_DATA);
+        const NodePath path =
+            mirrored ? mirrored_bone_path(source->track_get_path(track))
+                     : source->track_get_path(track);
+        int output_track =
+            result->find_track(path, Animation::TYPE_ROTATION_3D);
+        if (output_track < 0) {
+          output_track = result->add_track(Animation::TYPE_ROTATION_3D);
+          result->track_set_path(output_track, path);
+        }
+        const int previous_count = result->track_get_key_count(output_track);
+        const Quaternion previous =
+            previous_count ? Quaternion(result->track_get_key_value(
+                                 output_track, previous_count - 1))
+                           : Quaternion();
+        keys += samples + 1;
+        ERR_FAIL_COND_V(keys > 4000000, ERR_OUT_OF_MEMORY);
+        for (int sample = 0; sample <= samples; ++sample) {
+          const double phase = static_cast<double>(sample) / samples;
+          const double at = (segment.has("hold_phase") ? hold
+                             : reverse ? end - phase * (end - begin)
+                                       : begin + phase * (end - begin)) *
+                            source->get_length();
+          Quaternion rotation = source->rotation_track_interpolate(track, at);
+          if (mirrored) {
+            rotation =
+                Quaternion(rotation.x, -rotation.y, -rotation.z, rotation.w);
+          }
+          if (previous_count && blend > 0) {
+            rotation = previous.slerp(
+                rotation, MIN(1.0, phase * duration / MIN(blend, duration)));
+          }
+          result->rotation_track_insert_key(
+              output_track, cursor + phase * duration, rotation.normalized());
+        }
+      }
+      cursor += duration;
+    }
+    ERR_FAIL_COND_V_MSG(
+        Math::abs(cursor - original->get_length()) > .0001, ERR_INVALID_DATA,
+        "Finger overlay changed action duration: " + String(id));
+    result->set_meta("bone_overlay_sources", segments);
+    result->set_meta("bone_overlay_bones", bones);
+    library->remove_animation(id);
+    const Error error = library->add_animation(id, result);
+    ERR_FAIL_COND_V(error != OK, error);
   }
   return OK;
 }
