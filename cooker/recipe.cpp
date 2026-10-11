@@ -2,6 +2,7 @@
 #include "recipe.h"
 #include "asset_files.h"
 #include "atomic_save.h"
+#include "minimum_visual.h"
 
 #include "core/io/json.h"
 #include "core/io/image.h"
@@ -889,6 +890,36 @@ struct Recipe {
 		s.require(shape.is_valid(), "collision shape construction failed");
 		return s.push_resource(shape);
 	}
+	static int minimum_visual(lua_State *p_state) {
+		auto &s = self(p_state);
+		s.arity(2);
+		Ref<Resource> resource = s.handle(1);
+		s.fields(2, {"triangle_ratio", "max_texture_size", "minimum_height", "lock_border"});
+		CookerMinimum::Options options;
+		s.field(2, "triangle_ratio");
+		if (!lua_isnil(p_state, -1)) options.triangle_ratio = s.number(-1);
+		lua_pop(p_state, 1);
+		s.field(2, "max_texture_size");
+		if (!lua_isnil(p_state, -1)) options.texture_size = int(s.number(-1));
+		lua_pop(p_state, 1);
+		s.field(2, "minimum_height");
+		if (!lua_isnil(p_state, -1)) options.minimum_height = s.number(-1);
+		lua_pop(p_state, 1);
+		s.field(2, "lock_border");
+		if (!lua_isnil(p_state, -1)) {
+			s.require(lua_isboolean(p_state, -1), "lock_border must be boolean");
+			options.lock_border = lua_toboolean(p_state, -1);
+		}
+		lua_pop(p_state, 1);
+		s.require(options.triangle_ratio > 0 && options.triangle_ratio <= 1 &&
+			options.texture_size >= 16 && options.texture_size <= 1024 &&
+			options.minimum_height >= 0 && options.minimum_height <= 100,
+			"minimum_visual options are outside the supported range");
+		CookerMinimum::Builder builder(options);
+		Ref<Resource> output = builder.Build(resource);
+		s.require(output.is_valid(), "minimum_visual requires valid static geometry or material");
+		return s.push_resource(output);
+	}
 	static int primitive(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(2);
 		String kind = s.string(1);
@@ -1370,7 +1401,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"collision", collision}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"collision", collision}, {"minimum_visual", minimum_visual}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -1418,9 +1449,9 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 6; result["operation"] = "run-recipe";
+	result["api_version"] = 7; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "collision", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"primitive", "mesh", "collision", "minimum_visual", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }

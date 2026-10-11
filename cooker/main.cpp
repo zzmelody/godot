@@ -61,6 +61,7 @@
 #include "cooker/asset_files.h"
 #include "cooker/pipeline.h"
 #include "cooker/recipe.h"
+#include "cooker/streaming_record.h"
 #include "cooker/lightmap_bake.h"
 /*<<----- VEYA_COOKER: headless standard skeleton retarget jobs and processors. */
 #include "cooker/retarget.h"
@@ -356,6 +357,12 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 		record["path"] = relative;
 		record["bytes"] = int64_t(file->get_length());
 		record["sha256"] = FileAccess::get_sha256(path);
+		if (extension == "scn" || extension == "res") {
+			Dictionary streaming;
+			error = CookerStreaming::Record(path, streaming);
+			ERR_FAIL_COND_V(error != OK, error);
+			record["streaming"] = streaming;
+		}
 		records.push_back(record);
 		seen.insert(relative);
 		found_entry |= relative == entry;
