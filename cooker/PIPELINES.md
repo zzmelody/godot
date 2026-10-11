@@ -51,6 +51,21 @@ clock, random, `require`, bytecode-loading or engine-object API. The VM is limit
 to 16 MiB, 1 second, 256 steps, depth 16 and 65,536 converted values. Cooker
 converts the returned tables to native jobs and executes them sequentially.
 
+Resource input fingerprints use tagged `md5:<digest>` values. Luau source,
+parameters, executable identity and durable receipts retain real SHA-256.
+Asset manifests use `schema_version=2`, `hash_algorithm="md5"`, and lowercase
+32-character `files[].md5`. Streaming records use `version=2` and the same
+algorithm for roots and dependencies. MD5 has no reliable collision resistance.
+It checks ordinary damage and cache consistency; signed manifest identity does
+not repair that limit. Release-package byte validation retains SHA-256.
+
+`--manifests-only` executes only `asset-manifest` steps. Every listed output must
+already exist; a missing output fails. This mode does not generate geometry or
+rewrite resource bytes. `pipeline.manifests("res://content")` returns steps from
+existing generated manifests, with stable ordering and bounded, value-only
+metadata reads. It skips source, release and hidden directories and rejects
+links. Use the project maintenance pipeline, then rebuild native world locks.
+
 `pipeline.import(path)` reads a module's data-only `layout` export.
 `pipeline.import(path, "steps")` reads a dense array of job tables from a Cooker
 module under `content/cooker/`, `content/shared/cooker/`, or a package's
@@ -59,7 +74,8 @@ World packages may also import steps from their direct `modules/<id>/cooker/`,
 `props/<kind>/cooker/`, and `npcs/<id>/cooker/` directories. Extra intermediate
 directories do not create a package boundary.
 Imported data is read-only; copy jobs into a new array before appending steps.
-Both forms preserve module-count, source-byte, value-depth, cycle and symlink
+`pipeline.import(path, "data")` imports a bounded data-only return value.
+All forms preserve module-count, source-byte, value-depth, cycle and symlink
 guards. Step imports cannot load an authored gameplay module as a job graph.
 
 ```luau
