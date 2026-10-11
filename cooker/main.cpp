@@ -341,6 +341,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	Array declared = p_job["files"];
 	ERR_FAIL_COND_V(declared.is_empty() || declared.size() > 256, ERR_INVALID_PARAMETER);
 	Array records;
+	HashMap<String, String> resource_digests;
 	HashSet<String> seen;
 	bool found_entry = false;
 	for (const Variant &item : declared) {
@@ -357,10 +358,10 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 		Dictionary record;
 		record["path"] = relative;
 		record["bytes"] = int64_t(file->get_length());
-		record["md5"] = FileAccess::get_md5(path);
+		record["md5"] = CookerStreaming::Digest(path, resource_digests);
 		if (extension == "scn" || extension == "res") {
 			Dictionary streaming;
-			error = CookerStreaming::Record(path, streaming);
+			error = CookerStreaming::Record(path, streaming, resource_digests);
 			ERR_FAIL_COND_V(error != OK, error);
 			record["streaming"] = streaming;
 		}
@@ -949,6 +950,7 @@ Error execute_job_file(Dictionary &r_result) {
 	Dictionary job;
 	Error error = read_job(job);
 	ERR_FAIL_COND_V(error != OK, error);
+	ERR_FAIL_COND_V_MSG(manifests_only && String(job.get("operation", "")) != "asset-manifest", ERR_INVALID_PARAMETER, "--manifests-only accepts only asset-manifest jobs.");
 	return execute_job(job, r_result);
 }
 

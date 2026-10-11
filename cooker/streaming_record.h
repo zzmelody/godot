@@ -5,6 +5,7 @@
 #include "core/io/resource_loader.h"
 #include "core/object/script_language.h"
 #include "core/templates/hash_set.h"
+#include "core/templates/hash_map.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/skeleton_3d.h"
@@ -162,7 +163,18 @@ inline Error MeasureTree(Node* node, const Transform3D& parent,
   return OK;
 }
 
-inline Error Record(const String& path, Dictionary& output) {
+inline String Digest(const String& path, HashMap<String, String>& digests) {
+  const String key = path.simplify_path();
+  if (const String* cached = digests.getptr(key)) {
+    return *cached;
+  }
+  const String actual = FileAccess::get_md5(key);
+  digests.insert(key, actual);
+  return actual;
+}
+
+inline Error Record(const String& path, Dictionary& output,
+                    HashMap<String, String>& digests) {
   Error error = OK;
   const Ref<Resource> resource = ResourceLoader::load(
       path, "", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
@@ -234,7 +246,7 @@ inline Error Record(const String& path, Dictionary& output) {
     visited.insert(current);
     Dictionary dependency;
     dependency["path"] = path.get_base_dir().path_to_file(current);
-    dependency["md5"] = FileAccess::get_md5(current);
+    dependency["md5"] = Digest(current, digests);
     const Ref<FileAccess> file = FileAccess::open(current, FileAccess::READ);
     ERR_FAIL_COND_V(file.is_null(), ERR_FILE_CANT_READ);
     dependency["bytes"] = int64_t(file->get_length());
@@ -256,7 +268,7 @@ inline Error Record(const String& path, Dictionary& output) {
   }
   output["version"] = 2;
   output["hash_algorithm"] = "md5";
-  output["md5"] = FileAccess::get_md5(path);
+  output["md5"] = Digest(path, digests);
   output["resource_type"] = String(resource->get_class());
   output["has_geometry"] = measure.geometry;
   output["minimum"] = VectorValue(measure.bounds.position);
