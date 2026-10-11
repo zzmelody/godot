@@ -158,7 +158,7 @@ struct Pipeline {
 		if (!string(1,path,512)) return false;
 		String kind;
 		if (lua_gettop(L)==2) {if(!string(2,kind,16))return false;} else kind="layout";
-		if (kind!="layout" && kind!="steps") return fail("pipeline.import export must be layout or steps");
+		if (kind!="layout" && kind!="steps" && kind!="data") return fail("pipeline.import export must be layout, steps or data");
 		const bool package_cooker = path.begins_with("res://") && !CookerFiles::package_root_relative(path.trim_prefix("res://"), "cooker").is_empty();
 		const bool cooker_module = path.begins_with("res://content/cooker/") || package_cooker;
 		const bool content_module = cooker_module || path.begins_with("res://content/runtime/") || path.begins_with("res://content/worlds/") || path.begins_with("res://content/mod-worlds/");
