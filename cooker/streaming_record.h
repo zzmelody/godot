@@ -137,7 +137,7 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 		if (geometry_bytes || texture_bytes) {
 			Dictionary cost;
 			const String identity = resource->get_path().is_empty()
-					? result.path + "#resource:" + itos(result.resources.size())
+					? result.path + "#embedded"
 					: resource->get_path();
 			cost["identity"] = ReferencePath(result.path, identity);
 			cost["geometry_bytes"] = int64_t(geometry_bytes);
@@ -478,7 +478,17 @@ inline Error Record(const String &path, Dictionary &output,
 	output["declared_particles"] = int64_t(measure.declared_particles);
 	output["geometry_bytes"] = int64_t(measure.geometry_bytes);
 	output["texture_bytes"] = int64_t(measure.texture_bytes);
-	output["costs"] = measure.costs;
+	Dictionary combined_costs;
+	for (int i = 0; i < measure.costs.size(); ++i) {
+		const Dictionary cost = measure.costs[i];
+		const String identity = cost["identity"];
+		Dictionary sum = combined_costs.get(identity, Dictionary());
+		sum["identity"] = identity;
+		sum["geometry_bytes"] = int64_t(sum.get("geometry_bytes", 0)) + int64_t(cost["geometry_bytes"]);
+		sum["texture_bytes"] = int64_t(sum.get("texture_bytes", 0)) + int64_t(cost["texture_bytes"]);
+		combined_costs[identity] = sum;
+	}
+	output["costs"] = combined_costs.values();
 	output["dependencies"] = closure;
 	output["layouts"] = layouts;
 	output["layout_valid"] = layout_valid;
