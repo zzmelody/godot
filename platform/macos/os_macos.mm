@@ -1222,7 +1222,14 @@ OS_MacOS_NSApp::OS_MacOS_NSApp(const char *p_execpath, int p_argc, char **p_argv
 	[GodotApplication sharedApplication];
 
 	// In case we are unbundled, make us a proper UI application.
-	[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+	// Automated off-screen probes still need Metal but must not activate the
+	// app or move the user to the test window's macOS Space on launch.
+	const char *background_render = getenv("ANGE_MACOS_BACKGROUND_RENDER");
+	if (background_render && background_render[0] == '1' && background_render[1] == '\0') {
+		[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+	} else {
+		[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+	}
 
 	// Menu bar setup must go between sharedApplication above and
 	// finishLaunching below, in order to properly emulate the behavior

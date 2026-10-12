@@ -1720,7 +1720,9 @@ DisplayServerEnums::WindowID DisplayServerMacOS::create_sub_window(DisplayServer
 void DisplayServerMacOS::show_window(DisplayServerEnums::WindowID p_id) {
 	WindowData &wd = windows[p_id];
 
-	if (p_id == DisplayServerEnums::MAIN_WINDOW_ID) {
+	// A no-focus window must not activate the app (and switch macOS Spaces).
+	// It is still shown below via orderFront, so off-screen rendering works.
+	if (p_id == DisplayServerEnums::MAIN_WINDOW_ID && !wd.no_focus) {
 		[GodotApp activateApplication];
 	}
 

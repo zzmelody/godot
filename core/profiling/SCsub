@@ -104,6 +104,10 @@ elif env["profiler_path"]:
     print("profiler is required if profiler_path is set. Aborting.")
     Exit(255)
 
+# Keep the internal extension entry point alive under macOS dead_strip.
+if env["profiler"] == "tracy" and env["platform"] == "macos" and env["arch"] == "arm64":
+    env.Append(LINKFLAGS=["-Wl,-u,_ange_tracy_get_api_v1"])
+
 env.CommandNoCache(
     "profiling.gen.h",
     [
