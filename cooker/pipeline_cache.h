@@ -8,7 +8,7 @@
 #include "core/os/os.h"
 
 namespace CookerCache {
-inline constexpr int MAX_MANIFEST_FILES = 1024;
+inline constexpr int MAX_MANIFEST_FILES = 2048;
 inline bool force_rebuild = false;
 struct Receipt { String path, output, fingerprint; Dictionary dependencies, auxiliary_outputs; };
 // Materials, shaders, shader includes and textures reached *through* another
@@ -149,6 +149,14 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	}
 	ERR_FAIL_COND_V_MSG(output_changed,ERR_INVALID_DATA,"Cook cache output integrity failed: "+output);
 	const Dictionary prior_auxiliary = prior.get("auxiliary_outputs", Dictionary());
+	if (bool(job.get("external_render_resources", false))) {
+		ERR_FAIL_COND_V(prior_auxiliary.size() > 256, ERR_INVALID_DATA);
+		for (const Variant *key = prior_auxiliary.next(); key; key = prior_auxiliary.next(key)) {
+			const String path = *key;
+			ERR_FAIL_COND_V(!path.begins_with(output.get_base_dir().path_join("render-resources") + "/") || path.get_extension() != "res", ERR_INVALID_DATA);
+			receipt.auxiliary_outputs[path] = "";
+		}
+	}
 	bool missing_auxiliary = false;
 	for (const Variant *key = receipt.auxiliary_outputs.next(); key; key = receipt.auxiliary_outputs.next(key)) {
 		const String path = *key;

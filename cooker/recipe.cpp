@@ -3,6 +3,7 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "minimum_visual.h"
+#include "render_dependencies.h"
 
 #include "core/io/json.h"
 #include "core/io/image.h"
@@ -1534,7 +1535,7 @@ Dictionary capabilities() {
 Error run(const Dictionary &p_job, Dictionary &r_result) {
 	for (const Variant *key = p_job.next(); key; key = p_job.next(key)) {
 		String name = *key;
-		if (name != "operation" && name != "source" && name != "output" && name != "parameters" && name != "inputs" && name != "seed" && name != "limits") return reject(r_result, "Unknown recipe job field: " + name);
+		if (name != "operation" && name != "source" && name != "output" && name != "parameters" && name != "inputs" && name != "seed" && name != "limits" && name != "external_render_resources") return reject(r_result, "Unknown recipe job field: " + name);
 	}
 	if (p_job.get("source", Variant()).get_type() != Variant::STRING || p_job.get("output", Variant()).get_type() != Variant::STRING) return reject(r_result, "source and output must be strings");
 	String source = p_job["source"], output = p_job["output"];
@@ -1544,6 +1545,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	if (error == OK) error = CookerFiles::check_path(output, true);
 	if (error != OK) return reject(r_result, "recipe path rejected", error);
 	if (CookerAtomicSave::occupied(output) || DirAccess::dir_exists_absolute(output)) return reject(r_result, "recipe output already exists; use a new revision", ERR_ALREADY_EXISTS);
+	if (p_job.has("external_render_resources") && p_job["external_render_resources"].get_type() != Variant::BOOL) return reject(r_result, "external_render_resources must be boolean");
 	Recipe recipe;
 	for (const char *key : {"parameters", "inputs", "limits"}) if (p_job.has(key) && p_job[key].get_type() != Variant::DICTIONARY) return reject(r_result, String(key) + " must be an object");
 	recipe.parameters = p_job.get("parameters", Dictionary());
@@ -1631,6 +1633,12 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	if (error != OK) return reject(r_result, "cannot create output directory", error);
 	// Godot seeds built-in subresource IDs from the save path. Keep the private
 	// staging path stable so identical Luau inputs/seed produce identical bytes.
+	if (bool(p_job.get("external_render_resources", false))) {
+		Array render_outputs;
+		error = CookerRender::save(scene, output.get_base_dir(), render_outputs, uint64_t(recipe.limits.output_mb) * 1024 * 1024);
+		if (error != OK) return reject(r_result, "cannot publish shared render resources", error);
+		r_result["render_outputs"] = render_outputs;
+	}
 	String temporary = output.get_basename() + ".recipe-tmp." + output.get_extension();
 	// An interrupted earlier run may leave this staging file; the per-output
 	// lock guarantees no live writer owns it.
