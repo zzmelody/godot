@@ -339,7 +339,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS);
 	String base = output.get_base_dir();
 	Array declared = p_job["files"];
-	ERR_FAIL_COND_V(declared.is_empty() || declared.size() > 256, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(declared.is_empty() || declared.size() > CookerCache::MAX_MANIFEST_FILES, ERR_INVALID_PARAMETER);
 	Array records;
 	HashMap<String, String> resource_digests;
 	HashSet<String> seen;
