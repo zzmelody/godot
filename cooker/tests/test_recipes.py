@@ -489,6 +489,22 @@ return cooker.input("visual")''', inputs={"visual": selected["output"]},
             if row["path"].endswith(".scn"):
                 self.assertTrue(any("render-resources/" in entry["path"] for entry in row["streaming"]["dependencies"]))
 
+    def test_shared_render_cache_checks_auxiliary_files(self):
+        original = self.recipe('local mesh=cooker.primitive("box",{}); return cooker.scene({{asset=mesh}})',
+                               output="res://content/worlds/fixture/generated/original.scn")
+        (self.project / "fragment.luau").write_text('return cooker.scene({{asset=cooker.input("visual"),keep={"Batch0"}}})')
+        code = 'return {{operation="run-recipe",source="res://fragment.luau",inputs={visual="'+original["output"]+'"},output="res://content/worlds/fixture/generated/parts/part.scn",external_render_resources=true}}'
+        first = self.pipeline(code)["steps"][0]
+        shared = self.project / first["render_outputs"][0].removeprefix("res://")
+        expected = shared.read_bytes()
+        self.assertTrue(self.pipeline(code)["steps"][0]["skipped"])
+        shared.unlink()  # This isolated fixture owns the resource.
+        restored = self.pipeline(code)["steps"][0]
+        self.assertFalse(restored.get("skipped", False))
+        self.assertEqual(shared.read_bytes(), expected)
+        shared.write_bytes(b"changed dependency")
+        self.pipeline(code, success=False)
+
     def test_large_bounded_fragment_manifest(self):
         source = self.recipe(output="res://content/worlds/fixture/generated/model/fragments/part_0.res")
         directory = self.project / "content/worlds/fixture/generated/model/fragments"

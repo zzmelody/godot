@@ -324,7 +324,10 @@ public:
 	virtual RID material_create_from_shader(RID p_next_pass, int p_render_priority, RID p_shader) override {
 		RID material = RSG::material_storage->material_allocate();
 		bool using_server_thread = Thread::get_caller_id() == server_thread;
-		if (using_server_thread || RSG::rasterizer->can_create_resources_async()) {
+		// Material initialization changes shader owners and deferred update lists.
+		// Keep those mutations on the render thread while loaders construct shared
+		// scene dependencies. Mesh and texture uploads retain their async path.
+		if (using_server_thread) {
 			if (using_server_thread) {
 				command_queue.flush_if_pending();
 			}
