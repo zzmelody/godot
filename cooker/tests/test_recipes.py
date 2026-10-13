@@ -450,6 +450,24 @@ return cooker.scene({
         self.recipe('return cooker.scene({{asset=cooker.input("base"),remove={"Missing"}}})',
                     inputs={"base": base["output"]}, output="res://content/worlds/fixture/generated/bad-removal.scn", success=False)
 
+    def test_selected_children_keep_transforms_and_reject_invalid_names(self):
+        source = self.recipe('''local mesh=cooker.primitive("box",{size={2,4,2}})
+return cooker.scene({{asset=mesh,lightmap=true,name="First",position={-64,2,0},scale={2,1,3}},
+ {asset=mesh,lightmap=true,name="Second",position={64,2,0}}})''',
+                             output="res://content/worlds/fixture/generated/select/source.scn")
+        selected = self.recipe('''local source=cooker.input("visual")
+local names=cooker.child_names(source)
+assert(#names==2 and names[1]=="First" and names[2]=="Second")
+return cooker.scene({{asset=source,keep={names[1]}}})''',
+                               inputs={"visual": source["output"]},
+                               output="res://content/worlds/fixture/generated/select/first.scn")
+        self.recipe('''local box=cooker.bounds(cooker.input("visual"))
+assert(box.min[1]==-66 and box.max[1]==-62 and box.max[3]==3)
+return cooker.input("visual")''', inputs={"visual": selected["output"]})
+        for keep in ('{}', '{"Missing"}', '{"First","First"}', '{"../First"}'):
+            self.recipe('return cooker.scene({{asset=cooker.input("visual"),keep='+keep+'}})',
+                        inputs={"visual": source["output"]}, success=False)
+
     def test_input_shader_include_provenance(self):
         directory = self.project / "content/worlds/fixture/generated"
         directory.mkdir(parents=True)

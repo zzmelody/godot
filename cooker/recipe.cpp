@@ -1060,7 +1060,7 @@ struct Recipe {
 		OwnedNode root(memnew(Node3D)); root->set_name("RecipeAsset");
 		for (int i = 0; i < count; ++i) {
 			lua_rawgeti(p_state, 1, i + 1); int item = lua_absindex(p_state, -1);
-			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "lightmap", "cull_margin"});
+			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "keep", "lightmap", "cull_margin"});
 			s.field(item, "asset"); Ref<Resource> asset = s.handle(-1); lua_pop(p_state, 1);
 			s.field(item, "material"); Ref<Material> material;
 			if (!lua_isnil(p_state, -1)) { material = s.handle(-1); s.require(material.is_valid(), "material requires a Material handle"); }
@@ -1081,6 +1081,7 @@ struct Recipe {
 				}
 				s.field(item, "name"); s.require(lua_isnil(p_state, -1), "name is only valid for PackedScene instances"); lua_pop(p_state, 1);
 				s.field(item, "remove"); s.require(lua_isnil(p_state, -1), "remove is only valid for PackedScene instances"); lua_pop(p_state, 1);
+				s.field(item, "keep"); s.require(lua_isnil(p_state, -1), "keep is only valid for PackedScene instances"); lua_pop(p_state, 1);
 				size_t batch = 0;
 				while (batch < batches.size() && (batches[batch].mesh != mesh || batches[batch].material != material || batches[batch].cull_margin != cull_margin)) ++batch;
 				if (batch == batches.size()) batches.push_back({mesh, material, cull_margin, {}});
@@ -1115,15 +1116,42 @@ struct Recipe {
 						s.require(!path.is_empty() && !path.begins_with("/") && path.find("..") == -1, "invalid removal path");
 						Node *removed = instance->get_node_or_null(NodePath(path));
 						s.require(removed && removed != instance.get() && removed->get_parent(), "PackedScene removal path was not found");
-						removed->get_parent()->remove_child(removed); memdelete(removed);
+						removed->get_parent()->remove_child(removed);
+						memdelete(removed);
 					}
+				}
+				lua_pop(p_state, 1);
+				s.field(item, "keep");
+				if (!lua_isnil(p_state, -1)) {
+					const int keep_count = s.array(-1, 128);
+					s.require(keep_count > 0, "keep requires at least one child");
+					HashSet<StringName> keep;
+					for (int keep_index = 0; keep_index < keep_count; ++keep_index) {
+						lua_rawgeti(p_state, -1, keep_index + 1);
+						const String name = s.string(-1);
+						lua_pop(p_state, 1);
+						s.require(!name.is_empty() && name.validate_node_name() == name && !keep.has(name), "keep requires unique direct child names");
+						Node *child = instance->get_node_or_null(NodePath(name));
+						s.require(child && child->get_parent() == instance.get(), "PackedScene keep child was not found");
+						keep.insert(name);
+					}
+					for (int child = instance->get_child_count() - 1; child >= 0; --child) {
+						Node *node = instance->get_child(child);
+						if (!keep.has(node->get_name())) {
+							instance->remove_child(node);
+							memdelete(node);
+						}
+					}
+					localize = true;
 				}
 				lua_pop(p_state, 1);
 				root->add_child(instance.get());
 				if (localize) {
 					instance->set_scene_file_path(String());
 					make_scene_local(instance.get(), root.get());
-				} else instance->set_owner(root.get());
+				} else {
+					instance->set_owner(root.get());
+				}
 				instance.release();
 			}
 			lua_pop(p_state, 1);
@@ -1317,8 +1345,26 @@ struct Recipe {
 	}
 	// Top-level Node3D children of a PackedScene: name, root-space transform and
 	// transformed bounds. Lets a recipe derive anchors from a cooked layout.
+	static int child_names(lua_State *p_state) {
+		auto &s = self(p_state);
+		s.arity(1);
+		Ref<PackedScene> packed = s.handle(1);
+		s.require(packed.is_valid(), "child_names requires a PackedScene handle");
+		OwnedNode root(packed->instantiate());
+		s.require(root != nullptr, "could not instantiate PackedScene for child names");
+		const int count = root->get_child_count();
+		s.require(count <= 65536, "child_names exceeds 65536 children");
+		lua_createtable(p_state, count, 0);
+		for (int index = 0; index < count; ++index) {
+			const CharString name = String(root->get_child(index)->get_name()).utf8();
+			lua_pushlstring(p_state, name.get_data(), name.length());
+			lua_rawseti(p_state, -2, index + 1);
+		}
+		return 1;
+	}
 	static int children(lua_State *p_state) {
-		auto &s = self(p_state); s.arity(1);
+		auto &s = self(p_state);
+		s.arity(1);
 		Ref<PackedScene> packed = s.handle(1);
 		s.require(packed.is_valid(), "children requires a PackedScene handle");
 		OwnedNode root(packed->instantiate());
@@ -1430,7 +1476,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"collision", collision}, {"minimum_visual", minimum_visual}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"collision", collision}, {"minimum_visual", minimum_visual}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"child_names", child_names}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -1478,9 +1524,9 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 7; result["operation"] = "run-recipe";
+	result["api_version"] = 8; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "collision", "minimum_visual", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"primitive", "mesh", "collision", "minimum_visual", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "child_names", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }

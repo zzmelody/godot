@@ -247,3 +247,15 @@ asset. Windows recipe execution, a fresh full clean engine build, and Veya's
 automatic process/IPC orchestration have not been verified/implemented here.
 
 Streaming bounds use actual transformed Mesh and MultiMesh geometry. They include the declared cull margin before the parent transform. A spatial cell is an index and must not replace the geometric AABB.
+
+
+## Bounded static fragments (recipe API 8)
+
+`child_names(scene)` returns at most 65536 direct child names. It does not
+calculate geometric bounds. Luau chooses a fragment's names and passes
+`keep={...}` to a PackedScene entry of `scene()`. The list contains 1..128
+unique direct child names. Missing names, paths, duplicates and empty lists
+fail. Selected subtrees retain their complete transforms, geometry and cull
+margins. `keep` localizes the selected nodes; the output does not instance the
+complete source scene. This is preparation partitioning, not a simulation,
+entity or spatial culling boundary.
