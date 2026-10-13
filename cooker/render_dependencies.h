@@ -84,7 +84,7 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 					error = CookerAtomicSave::publish(temporary, path);
 					ERR_FAIL_COND_V(error != OK, error);
 				}
-				resource->take_over_path(path);
+				resource->set_path(path, true);
 			}
 			r_outputs.push_back(path);
 		}

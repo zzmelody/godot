@@ -469,6 +469,26 @@ return cooker.input("visual")''', inputs={"visual": selected["output"]},
             self.recipe('return cooker.scene({{asset=cooker.input("visual"),keep='+keep+'}})',
                         inputs={"visual": source["output"]}, success=False)
 
+    def test_static_fragments_share_render_dependencies(self):
+        original = self.recipe('local mesh=cooker.primitive("box",{}); return cooker.scene({{asset=mesh}})',
+                               output="res://content/worlds/fixture/generated/original.scn")
+        outputs = []
+        for index in range(2):
+            result = self.recipe('return cooker.scene({{asset=cooker.input("visual"),keep={"Batch0"}}})',
+                                 inputs={"visual": original["output"]}, external_render_resources=True,
+                                 output=f"res://content/worlds/fixture/generated/fragments/part_{index}.scn")
+            outputs.append(result["render_outputs"])
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertEqual(len(outputs[0]), 1)
+        manifest = self.job({"operation":"asset-manifest",
+                            "output":"res://content/worlds/fixture/generated/fragments/asset.manifest.json",
+                            "asset_id":"shared-fragments", "revision":1,"kind":"world","entry":"part_0.scn",
+                            "files":["part_0.scn","part_1.scn"],"include_render_dependencies":True})
+        self.assertEqual(len(manifest["files"]), 3)
+        for row in manifest["files"]:
+            if row["path"].endswith(".scn"):
+                self.assertTrue(any("render-resources/" in entry["path"] for entry in row["streaming"]["dependencies"]))
+
     def test_large_bounded_fragment_manifest(self):
         source = self.recipe(output="res://content/worlds/fixture/generated/model/fragments/part_0.res")
         directory = self.project / "content/worlds/fixture/generated/model/fragments"
@@ -483,7 +503,7 @@ return {{operation="asset-manifest",output="res://content/worlds/fixture/generat
         first = self.pipeline(code)
         self.assertEqual(len(first["steps"][0]["files"]), 300)
         self.assertTrue(self.pipeline(code)["steps"][0]["skipped"])
-        self.pipeline(code.replace("0,299", "0,1024"), success=False)
+        self.pipeline(code.replace("0,299", "0,2048"), success=False)
 
     def test_input_shader_include_provenance(self):
         directory = self.project / "content/worlds/fixture/generated"

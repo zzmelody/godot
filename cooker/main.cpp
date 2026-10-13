@@ -315,7 +315,7 @@ bool valid_asset_id(const String &p_value) {
 Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	for (const Variant *key = p_job.next(); key; key = p_job.next(key)) {
 		String name = *key;
-		ERR_FAIL_COND_V(name != "operation" && name != "output" && name != "asset_id" && name != "revision" && name != "kind" && name != "entry" && name != "files" && name != "source" && name != "generator" && name != "provenance", ERR_INVALID_PARAMETER);
+		ERR_FAIL_COND_V(name != "operation" && name != "output" && name != "asset_id" && name != "revision" && name != "kind" && name != "entry" && name != "files" && name != "source" && name != "generator" && name != "provenance" && name != "include_render_dependencies", ERR_INVALID_PARAMETER);
 	}
 	for (const char *name : { "output", "asset_id", "kind", "entry" }) {
 		ERR_FAIL_COND_V(p_job.get(name, Variant()).get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
