@@ -8,6 +8,7 @@
 #include "core/os/os.h"
 
 namespace CookerCache {
+inline constexpr int MAX_MANIFEST_FILES = 1024;
 inline bool force_rebuild = false;
 struct Receipt { String path, output, fingerprint; Dictionary dependencies, auxiliary_outputs; };
 // Materials, shaders, shader includes and textures reached *through* another
@@ -72,7 +73,7 @@ inline Error read(const String &path,Dictionary &out, uint64_t maximum_bytes = 1
 inline Error validate_manifest_files(const String &path) {
 	Dictionary manifest;Error error=read(path,manifest, 16 * 1024 * 1024);ERR_FAIL_COND_V(error!=OK,error);
 	ERR_FAIL_COND_V(int64_t(manifest.get("schema_version", 0)) != 2 || String(manifest.get("hash_algorithm", "")) != "md5" || manifest.get("files",Variant()).get_type()!=Variant::ARRAY,ERR_INVALID_DATA);
-	const Array files=manifest["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>256,ERR_INVALID_DATA);
+	const Array files=manifest["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>MAX_MANIFEST_FILES,ERR_INVALID_DATA);
 	const String base=path.get_base_dir();HashSet<String> seen;
 	for(const Variant &value:files) {
 		ERR_FAIL_COND_V(value.get_type()!=Variant::DICTIONARY,ERR_INVALID_DATA);
@@ -107,7 +108,7 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	ERR_FAIL_COND_V(error!=OK,error);
 	if(String(job.get("operation",""))=="asset-manifest") {
 		ERR_FAIL_COND_V(job.get("files",Variant()).get_type()!=Variant::ARRAY,ERR_INVALID_PARAMETER);
-		const Array files=job["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>256,ERR_INVALID_PARAMETER);
+		const Array files=job["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>MAX_MANIFEST_FILES,ERR_INVALID_PARAMETER);
 		for(const Variant &entry:files) {
 			ERR_FAIL_COND_V(entry.get_type()!=Variant::STRING,ERR_INVALID_PARAMETER);
 			const String relative=entry;ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.contains(":"),ERR_INVALID_PARAMETER);
