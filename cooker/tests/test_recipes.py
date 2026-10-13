@@ -40,7 +40,7 @@ class RecipeTests(unittest.TestCase):
         lines = [line for line in run.stdout.splitlines() if line.startswith('{')]
         self.assertTrue(lines, run.stdout + run.stderr)
         result = json.loads(lines[-1])
-        self.assertEqual(result["ok"], success, result)
+        self.assertEqual(result["ok"], success, str(result) + run.stderr)
         self.assertEqual(run.returncode == 0, success, run.stdout + run.stderr)
         if success:
             self.assertNotIn("ERROR:", run.stdout + run.stderr)
@@ -480,10 +480,10 @@ return cooker.input("visual")''', inputs={"visual": selected["output"]},
             outputs.append(result["render_outputs"])
         self.assertEqual(outputs[0], outputs[1])
         self.assertEqual(len(outputs[0]), 1)
-        manifest = self.job({"operation":"asset-manifest",
-                            "output":"res://content/worlds/fixture/generated/fragments/asset.manifest.json",
-                            "asset_id":"shared-fragments", "revision":1,"kind":"world","entry":"part_0.scn",
-                            "files":["part_0.scn","part_1.scn"],"include_render_dependencies":True})
+        manifest = self.pipeline('''return {{operation="asset-manifest",
+ output="res://content/worlds/fixture/generated/fragments/asset.manifest.json",asset_id="shared-fragments",
+ revision=1,kind="world",entry="part_0.scn",files={"part_0.scn","part_1.scn"},include_render_dependencies=true}}
+''')["steps"][0]
         self.assertEqual(len(manifest["files"]), 3)
         for row in manifest["files"]:
             if row["path"].endswith(".scn"):
