@@ -323,21 +323,20 @@ public:
 
 	virtual RID material_create_from_shader(RID p_next_pass, int p_render_priority, RID p_shader) override {
 		RID material = RSG::material_storage->material_allocate();
+		// Initialize the thread-safe RID before publishing it. Shader owners and
+		// deferred material lists are updated only on the render thread.
 		bool using_server_thread = Thread::get_caller_id() == server_thread;
-		// Material initialization changes shader owners and deferred update lists.
-		// Keep those mutations on the render thread while loaders construct shared
-		// scene dependencies. Mesh and texture uploads retain their async path.
-		if (using_server_thread) {
-			if (using_server_thread) {
-				command_queue.flush_if_pending();
-			}
-
+		if (using_server_thread || RSG::rasterizer->can_create_resources_async()) {
 			RSG::material_storage->material_initialize(material);
+		} else {
+			command_queue.push(RSG::material_storage, &RendererMaterialStorage::material_initialize, material);
+		}
+		if (using_server_thread) {
+			command_queue.flush_if_pending();
 			RSG::material_storage->material_set_next_pass(material, p_next_pass);
 			RSG::material_storage->material_set_render_priority(material, p_render_priority);
 			RSG::material_storage->material_set_shader(material, p_shader);
 		} else {
-			command_queue.push(RSG::material_storage, &RendererMaterialStorage::material_initialize, material);
 			command_queue.push(RSG::material_storage, &RendererMaterialStorage::material_set_next_pass, material, p_next_pass);
 			command_queue.push(RSG::material_storage, &RendererMaterialStorage::material_set_render_priority, material, p_render_priority);
 			command_queue.push(RSG::material_storage, &RendererMaterialStorage::material_set_shader, material, p_shader);
