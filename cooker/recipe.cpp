@@ -1492,7 +1492,7 @@ struct Recipe {
 		Node *root = nullptr;
 		Transform3D parent;
 		if (lua_gettop(p_state) == 2) {
-			const String child_name = String::utf8(s.string(2).c_str());
+			const String child_name = s.string(2);
 			s.require(!child_name.is_empty() && child_name.length() <= 96 && !child_name.contains("/") && !child_name.contains(".."), "parts child must be a bounded direct child name");
 			auto found = s.part_roots.find(packed->get_instance_id());
 			if (found == s.part_roots.end()) {
