@@ -439,6 +439,7 @@ inline Error Record(const String &path, Dictionary &output,
 		ERR_FAIL_COND_V(error != OK, error);
 	}
 	Array closure;
+	Array graph;
 	HashSet<String> visited;
 	Vector<String> pending;
 	pending.push_back(path);
@@ -458,6 +459,7 @@ inline Error Record(const String &path, Dictionary &output,
 		dependency["bytes"] = int64_t(file->get_length());
 		closure.push_back(dependency);
 		List<String> dependencies;
+		Array direct;
 		ResourceLoader::get_dependencies(current, &dependencies, true);
 		for (const String &reference : dependencies) {
 			const PackedStringArray parts = reference.split("::");
@@ -469,8 +471,14 @@ inline Error Record(const String &path, Dictionary &output,
 			if (next.is_relative_path()) {
 				next = current.get_base_dir().path_join(next);
 			}
-			pending.push_back(next.simplify_path());
+			next = next.simplify_path();
+			direct.push_back(ReferencePath(path, next));
+			pending.push_back(next);
 		}
+		Dictionary entry;
+		entry["path"] = ReferencePath(path, current);
+		entry["dependencies"] = direct;
+		graph.push_back(entry);
 	}
 	output["version"] = 2;
 	output["admission_profile_version"] = 1;
@@ -504,6 +512,8 @@ inline Error Record(const String &path, Dictionary &output,
 	}
 	output["costs"] = combined_costs.values();
 	output["dependencies"] = closure;
+	output["dependency_graph_version"] = 1;
+	output["dependency_graph"] = graph;
 	output["layouts"] = layouts;
 	output["layout_valid"] = layout_valid;
 	return OK;

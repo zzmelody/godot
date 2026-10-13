@@ -908,8 +908,11 @@ struct Recipe {
       resource = s.handle(1);
     }
     s.fields(2, {"triangle_ratio", "max_texture_size", "minimum_height",
-                 "lock_border", "max_error", "preserve_heightfields"});
+                 "lock_border", "max_error", "preserve_heightfields",
+                 "compress_color_textures"});
     CookerMinimum::Options options;
+    options.compress_color_textures =
+        s.boolean_field(2, "compress_color_textures", false);
     options.preserve_heightfields =
         s.boolean_field(2, "preserve_heightfields", false);
     s.field(2, "max_error");

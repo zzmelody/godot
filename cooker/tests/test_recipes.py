@@ -501,6 +501,26 @@ return cooker.scene({{asset=mesh,lightmap=true,name="Leaf"}})''',
         for row in manifest["files"]:
             if row["path"].endswith(".scn"):
                 self.assertTrue(any("render-resources/" in entry["path"] for entry in row["streaming"]["dependencies"]))
+                graph = row["streaming"]["dependency_graph"]
+                self.assertEqual(row["streaming"]["dependency_graph_version"], 1)
+                self.assertEqual({entry["path"] for entry in graph},
+                                 {entry["path"] for entry in row["streaming"]["dependencies"]})
+                self.assertTrue(any(entry["dependencies"] == [] for entry in graph))
+
+    def test_minimum_color_texture_compression_survives_resource_save(self):
+        source = self.recipe('''local texture=cooker.procedural_texture({kind="soft-noise",size=64,seed=17})
+local material=cooker.material({albedo_texture=texture})
+return cooker.scene({{asset=cooker.primitive("box",{}),material=material}})''',
+                             output="res://content/worlds/fixture/generated/original.scn")
+        minimum = self.recipe('''return cooker.minimum_visual("visual",{
+ triangle_ratio=1,max_texture_size=32,compress_color_textures=true})''',
+                              inputs={"visual": source["output"]},
+                              output="res://content/worlds/fixture/generated/minimum.scn")
+        report = self.job({"operation": "validate-resource", "source": minimum["output"],
+                           "type": "PackedScene"})
+        self.assertEqual(report["node_count"], 2)
+        saved = self.project / minimum["output"].removeprefix("res://")
+        self.assertIn(b"PortableCompressedTexture2D", saved.read_bytes())
 
     def test_shared_render_cache_checks_auxiliary_files(self):
         original = self.recipe('local mesh=cooker.primitive("box",{}); return cooker.scene({{asset=mesh}})',

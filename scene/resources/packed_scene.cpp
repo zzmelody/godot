@@ -37,6 +37,7 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
+#include "core/profiling/profiling.h"
 #include "core/templates/local_vector.h"
 #include "core/variant/callable_bind.h"
 #include "scene/2d/node_2d.h"
@@ -153,6 +154,7 @@ static Node *_find_node_by_id(Node *p_owner, Node *p_node, int32_t p_id) {
 }
 
 Node *SceneState::instantiate(GenEditState p_edit_state) const {
+	GodotProfileZone("Veya/Engine/Scene/instantiate");
 	// Nodes where instantiation failed (because something is missing.)
 	List<Node *> stray_instances;
 
@@ -315,7 +317,11 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 			}
 		} else {
 			// Node belongs to this scene and must be created.
-			Object *obj = ClassDB::instantiate(snames[n.type]);
+			Object *obj = nullptr;
+			{
+				GodotProfileZone("Veya/Engine/Scene/create_node");
+				obj = ClassDB::instantiate(snames[n.type]);
+			}
 
 			node = Object::cast_to<Node>(obj);
 
@@ -499,6 +505,7 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 						}
 
 						if (set_valid) {
+							GodotProfileZone("Veya/Engine/Scene/set_property");
 							node->set(snames[nprops[j].name], value, &valid);
 						}
 						if (p_edit_state == GEN_EDIT_STATE_INSTANCE && value.get_type() != Variant::OBJECT) {
@@ -713,6 +720,7 @@ Variant SceneState::make_local_resource(Variant &p_value, const SceneState::Node
 	if (res.is_null() || !res->is_local_to_scene()) {
 		return p_value;
 	}
+	GodotProfileZone("Veya/Engine/Scene/local_resource_copy");
 
 	Node *base = (p_i == 0 || p_node->is_instance()) ? p_node : (p_node->get_owner() ? p_node->get_owner() : p_ret_nodes[0]);
 

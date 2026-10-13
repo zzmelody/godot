@@ -11,6 +11,7 @@
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/portable_compressed_texture.h"
 #include "scene/resources/shader.h"
 #include "scene/resources/surface_tool.h"
 
@@ -22,6 +23,7 @@ struct Options {
   // Zero keeps relative error. A positive value limits error in mesh units.
   double max_error = 0;
   bool preserve_heightfields = false;
+  bool compress_color_textures = false;
 };
 
 class Builder {
@@ -160,7 +162,25 @@ class Builder {
     image->resize(MAX(1, int(image->get_width() * scale)),
                   MAX(1, int(image->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
     image->generate_mipmaps();
-    Ref<Texture2D> result = ImageTexture::create_from_image(image);
+    Ref<Texture2D> result;
+    if (options_.compress_color_textures && !options_.preserve_heightfields &&
+        (image->get_format() == Image::FORMAT_RGB8 ||
+         image->get_format() == Image::FORMAT_RGBA8)) {
+      Ref<PortableCompressedTexture2D> compressed;
+      compressed.instantiate();
+      // The Cooker must retain the compressed payload until ResourceSaver has
+      // serialized it. Runtime loading does not retain a decoded Image copy.
+      compressed->set_keep_compressed_buffer(true);
+      compressed->create_from_image(
+          image, PortableCompressedTexture2D::COMPRESSION_MODE_BPTC);
+      if (compressed->get_width() != image->get_width() ||
+          compressed->get_height() != image->get_height()) {
+        return Ref<Texture2D>();
+      }
+      result = compressed;
+    } else {
+      result = ImageTexture::create_from_image(image);
+    }
     textures_.emplace(id, result);
     return result;
   }
