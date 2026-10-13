@@ -359,6 +359,11 @@ struct Recipe {
 		for (int i = 0; i < p_node->get_child_count(); ++i) collect_bounds(p_node->get_child(i), transform, r_bounds, r_has_bounds);
 	}
 	static void make_scene_local(Node *p_node, Node *p_owner) {
+		// Owned descendants must be serialized once. Keeping a nested scene
+		// identity would instantiate it again before restoring the local nodes.
+		p_node->set_scene_file_path(String());
+		p_node->set_scene_instance_state(Ref<SceneState>());
+		p_node->set_scene_inherited_state(Ref<SceneState>());
 		p_node->set_owner(p_owner);
 		for (int i = 0; i < p_node->get_child_count(); ++i) {
 			Node *child = p_node->get_child(i);

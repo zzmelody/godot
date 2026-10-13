@@ -469,6 +469,19 @@ return cooker.input("visual")''', inputs={"visual": selected["output"]},
             self.recipe('return cooker.scene({{asset=cooker.input("visual"),keep='+keep+'}})',
                         inputs={"visual": source["output"]}, success=False)
 
+    def test_selected_nested_scenes_do_not_reinstantiate_owned_children(self):
+        leaf = self.recipe('''local mesh=cooker.primitive("box",{})
+return cooker.scene({{asset=mesh,lightmap=true,name="Leaf"}})''',
+                           output="res://content/worlds/fixture/generated/nested/leaf.scn")
+        branch = self.recipe('return cooker.scene({{asset=cooker.input("leaf"),name="Branch"}})',
+                             inputs={"leaf": leaf["output"]},
+                             output="res://content/worlds/fixture/generated/nested/branch.scn")
+        selected = self.recipe('return cooker.scene({{asset=cooker.input("branch"),keep={"Branch"}}})',
+                               inputs={"branch": branch["output"]},
+                               output="res://content/worlds/fixture/generated/nested/selected.scn")
+        report = self.job({"operation": "validate-resource", "source": selected["output"], "type": "PackedScene"})
+        self.assertEqual(report["node_count"], 4)
+
     def test_static_fragments_share_render_dependencies(self):
         original = self.recipe('local mesh=cooker.primitive("box",{}); return cooker.scene({{asset=mesh}})',
                                output="res://content/worlds/fixture/generated/original.scn")
