@@ -519,8 +519,31 @@ return cooker.scene({{asset=cooker.primitive("box",{}),material=material}})''',
         report = self.job({"operation": "validate-resource", "source": minimum["output"],
                            "type": "PackedScene"})
         self.assertEqual(report["node_count"], 2)
-        saved = self.project / minimum["output"].removeprefix("res://")
-        self.assertIn(b"PortableCompressedTexture2D", saved.read_bytes())
+        self.assertIsNotNone(REFERENCE, "compression round trip needs --reference-godot")
+        with (self.project / "project.godot").open("a", encoding="utf-8") as project:
+            project.write("config/disable_project_settings_override=false\n")
+        script = self.project / "inspect_minimum.gd"
+        script.write_text('''extends SceneTree
+func _initialize():
+    var scene = load("'''+minimum["output"]+'''").instantiate()
+    var geometry = scene.get_child(0) as GeometryInstance3D
+    var mesh = geometry.mesh if geometry is MeshInstance3D else geometry.multimesh.mesh
+    var material = geometry.material_override as BaseMaterial3D
+    if material == null:
+        material = mesh.surface_get_material(0) as BaseMaterial3D
+    var texture = material.get_texture(BaseMaterial3D.TEXTURE_ALBEDO)
+    var valid = texture is PortableCompressedTexture2D and texture.get_width() == 32
+    valid = valid and texture.get_compression_mode() == PortableCompressedTexture2D.COMPRESSION_MODE_BPTC
+    scene.free()
+    print("MINIMUM_TEXTURE_ROUND_TRIP:", valid)
+    quit(0 if valid else 1)
+''', encoding="utf-8")
+        checked = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                  "--script", "res://inspect_minimum.gd", "--quit-after", "20"],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout+checked.stderr)
+        self.assertIn("MINIMUM_TEXTURE_ROUND_TRIP:true", checked.stdout,
+                      checked.stdout+checked.stderr)
 
     def test_shared_render_cache_checks_auxiliary_files(self):
         original = self.recipe('local mesh=cooker.primitive("box",{}); return cooker.scene({{asset=mesh}})',
