@@ -756,6 +756,8 @@ Error ResourceLoaderBinary::load() {
 		//set properties
 
 		Dictionary missing_resource_properties;
+		Dictionary deferred_texture_properties;
+		const bool portable_texture = res->is_class("PortableCompressedTexture2D");
 
 		for (int j = 0; j < pc; j++) {
 			StringName name = _get_string();
@@ -811,8 +813,20 @@ Error ResourceLoaderBinary::load() {
 			}
 
 			if (set_valid) {
-				res->set(name, value);
+				if (portable_texture && (name == "_data" || name == "size_override")) {
+					deferred_texture_properties[name] = value;
+				} else {
+					res->set(name, value);
+				}
 			}
+		}
+		// Older files store _data before the retention flag. Preserve that flag
+		// before decoding, then restore the authored size after texture creation.
+		if (deferred_texture_properties.has("_data")) {
+			res->set("_data", deferred_texture_properties["_data"]);
+		}
+		if (deferred_texture_properties.has("size_override")) {
+			res->set("size_override", deferred_texture_properties["size_override"]);
 		}
 
 		if (missing_resource.is_valid()) {

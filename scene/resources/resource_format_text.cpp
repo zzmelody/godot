@@ -638,6 +638,8 @@ Error ResourceLoaderText::load() {
 		}
 
 		Dictionary missing_resource_properties;
+		Dictionary deferred_texture_properties;
+		const bool portable_texture = res->is_class("PortableCompressedTexture2D");
 
 		while (true) {
 			String assign;
@@ -692,7 +694,11 @@ Error ResourceLoaderText::load() {
 					}
 
 					if (set_valid) {
-						res->set(assign, value);
+						if (portable_texture && (assign == "_data" || assign == "size_override")) {
+							deferred_texture_properties[assign] = value;
+						} else {
+							res->set(assign, value);
+						}
 					}
 				}
 				//it's assignment
@@ -705,6 +711,13 @@ Error ResourceLoaderText::load() {
 				_printerr();
 				return error;
 			}
+		}
+
+		if (deferred_texture_properties.has("_data")) {
+			res->set("_data", deferred_texture_properties["_data"]);
+		}
+		if (deferred_texture_properties.has("size_override")) {
+			res->set("size_override", deferred_texture_properties["size_override"]);
 		}
 
 		if (missing_resource.is_valid()) {
@@ -767,6 +780,8 @@ Error ResourceLoaderText::load() {
 		}
 
 		Dictionary missing_resource_properties;
+		Dictionary deferred_texture_properties;
+		const bool portable_texture = resource->is_class("PortableCompressedTexture2D");
 
 		while (true) {
 			String assign;
@@ -833,7 +848,11 @@ Error ResourceLoaderText::load() {
 				}
 
 				if (set_valid) {
-					resource->set(assign, value);
+					if (portable_texture && (assign == "_data" || assign == "size_override")) {
+						deferred_texture_properties[assign] = value;
+					} else {
+						resource->set(assign, value);
+					}
 				}
 				//it's assignment
 			} else if (!next_tag.name.is_empty()) {
@@ -847,6 +866,12 @@ Error ResourceLoaderText::load() {
 		}
 
 		resource_current++;
+		if (deferred_texture_properties.has("_data")) {
+			resource->set("_data", deferred_texture_properties["_data"]);
+		}
+		if (deferred_texture_properties.has("size_override")) {
+			resource->set("size_override", deferred_texture_properties["size_override"]);
+		}
 
 		if (progress && resources_total > 0) {
 			*progress = resource_current / float(resources_total);

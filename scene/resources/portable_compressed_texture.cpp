@@ -326,7 +326,9 @@ bool PortableCompressedTexture2D::is_pixel_opaque(int p_x, int p_y) const {
 
 void PortableCompressedTexture2D::set_size_override(const Size2 &p_size) {
 	size_override = p_size;
-	RenderingServer::get_singleton()->texture_set_size_override(texture, size_override.width, size_override.height);
+	if (texture.is_valid()) {
+		RenderingServer::get_singleton()->texture_set_size_override(texture, size_override.width, size_override.height);
+	}
 }
 
 Size2 PortableCompressedTexture2D::get_size_override() const {
@@ -385,9 +387,10 @@ void PortableCompressedTexture2D::_bind_methods() {
 	ClassDB::bind_static_method("PortableCompressedTexture2D", D_METHOD("set_keep_all_compressed_buffers", "keep"), &PortableCompressedTexture2D::set_keep_all_compressed_buffers);
 	ClassDB::bind_static_method("PortableCompressedTexture2D", D_METHOD("is_keeping_all_compressed_buffers"), &PortableCompressedTexture2D::is_keeping_all_compressed_buffers);
 
+	// Duplication must select payload retention before assigning compressed data.
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "keep_compressed_buffer"), "set_keep_compressed_buffer", "is_keeping_compressed_buffer");
 	ADD_PROPERTY(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR | PROPERTY_USAGE_INTERNAL), "_set_data", "_get_data");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "size_override", PROPERTY_HINT_NONE, "suffix:px"), "set_size_override", "get_size_override");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "keep_compressed_buffer"), "set_keep_compressed_buffer", "is_keeping_compressed_buffer");
 
 	BIND_ENUM_CONSTANT(COMPRESSION_MODE_LOSSLESS);
 	BIND_ENUM_CONSTANT(COMPRESSION_MODE_LOSSY);
