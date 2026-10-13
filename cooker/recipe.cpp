@@ -100,6 +100,8 @@ struct Recipe {
 	// Decoded float rasters, keyed by handle id. Images stay opaque to Luau.
 	struct FieldView { int width = 0, height = 0, channels = 0; double origin_x = 0, origin_z = 0, cell = 1; std::vector<float> data; };
 	std::map<size_t, FieldView> field_views;
+	std::map<ObjectID, OwnedNode> part_roots;
+	std::map<ObjectID, size_t> part_handles;
 
 	~Recipe() { if (L) lua_close(L); }
 	static Recipe &self(lua_State *p_state) { return *static_cast<Recipe *>(lua_callbacks(p_state)->userdata); }
@@ -1482,13 +1484,35 @@ struct Recipe {
 	// cooked models into MultiMesh. material is the node or single-surface
 	// override, else absent (the mesh's own surface materials apply).
 	static int parts(lua_State *p_state) {
-		auto &s = self(p_state); s.arity(1);
+		auto &s = self(p_state); s.check_budget();
+		s.require(lua_gettop(p_state) == 1 || lua_gettop(p_state) == 2, "parts accepts a scene and optional direct child name");
 		Ref<PackedScene> packed = s.handle(1);
 		s.require(packed.is_valid(), "parts requires a PackedScene handle");
-		OwnedNode root(packed->instantiate());
-		s.require(root != nullptr, "could not instantiate PackedScene for parts");
+		OwnedNode owned;
+		Node *root = nullptr;
+		Transform3D parent;
+		if (lua_gettop(p_state) == 2) {
+			const String child_name = String::utf8(s.string(2).c_str());
+			s.require(!child_name.is_empty() && child_name.length() <= 96 && !child_name.contains("/") && !child_name.contains(".."), "parts child must be a bounded direct child name");
+			auto found = s.part_roots.find(packed->get_instance_id());
+			if (found == s.part_roots.end()) {
+				s.require(s.part_roots.size() < 64, "parts scene cache exceeds 64 inputs");
+				found = s.part_roots.emplace(packed->get_instance_id(), OwnedNode(packed->instantiate())).first;
+			}
+			s.require(found->second != nullptr, "could not instantiate PackedScene for parts");
+			if (Node3D *node = Object::cast_to<Node3D>(found->second.get())) parent = node->get_transform();
+			for (int child = 0; child < found->second->get_child_count(); ++child) {
+				Node *candidate = found->second->get_child(child);
+				if (String(candidate->get_name()) == child_name) root = candidate;
+			}
+			s.require(root != nullptr, "parts direct child does not exist");
+		} else {
+			owned.reset(packed->instantiate());
+			root = owned.get();
+			s.require(root != nullptr, "could not instantiate PackedScene for parts");
+		}
 		std::vector<Part> found;
-		collect_parts(root.get(), Transform3D(), found, 0);
+		collect_parts(root, parent, found, 0);
 		s.require(!found.empty() && found.size() <= 64, "parts requires 1..64 mesh instances");
 		lua_createtable(p_state, found.size(), 0);
 		for (size_t i = 0; i < found.size(); ++i) {
@@ -1496,8 +1520,17 @@ struct Recipe {
 			s.require(transform.basis.is_finite() && std::abs(transform.basis.determinant()) > 1e-12, "part transform must be invertible");
 			const Ref<Material> &material = found[i].material;
 			lua_createtable(p_state, 0, 4);
-			s.push_resource(found[i].mesh); lua_setfield(p_state, -2, "mesh");
-			if (material.is_valid()) { s.push_resource(material); lua_setfield(p_state, -2, "material"); }
+			const auto push = [&s](const Ref<Resource> &resource) {
+				const auto cached = s.part_handles.find(resource->get_instance_id());
+				if (cached == s.part_handles.end()) {
+					s.push_resource(resource);
+					s.part_handles.emplace(resource->get_instance_id(), s.resources.size() - 1);
+				} else {
+					*static_cast<size_t *>(lua_newuserdatatagged(s.L, sizeof(size_t), HANDLE_TAG)) = cached->second;
+				}
+			};
+			push(found[i].mesh); lua_setfield(p_state, -2, "mesh");
+			if (material.is_valid()) { push(material); lua_setfield(p_state, -2, "material"); }
 			s.push_vector(transform.origin); lua_setfield(p_state, -2, "position");
 			lua_createtable(p_state, 3, 0);
 			for (int c = 0; c < 3; ++c) { s.push_vector(transform.basis.get_column(c)); lua_rawseti(p_state, -2, c + 1); }
@@ -1591,9 +1624,9 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 8; result["operation"] = "run-recipe";
+	result["api_version"] = 9; result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"primitive", "mesh", "collision", "minimum_visual", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "child_names", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : {"resource_index", "primitive", "mesh", "collision", "minimum_visual", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "child_names", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
 	result["apis"] = apis;
 	return result;
 }

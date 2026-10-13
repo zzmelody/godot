@@ -1,4 +1,4 @@
-# Cooker Luau recipe API v6
+# Cooker Luau recipe API v9
 
 Veya GI additions: `atmosphere` accepts `sdfgi_enabled`, `sdfgi_cascades`
 (4/6/8), `sdfgi_cell_size` (.25..8), `sdfgi_occlusion`, `sdfgi_read_sky`,
@@ -113,7 +113,8 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 | `points({kinds={...},labels={...},points={{kind=,habitat=,position=,normal=,radius=},...}})` | Point set (v6), at most 16,384 per recipe; may be empty (metadata `count` is authoritative, an empty set stores one zero row). `kind` is a 1-based index into `kinds`; `habitat` is 0 (none) or a 1-based index into `labels`; normal defaults to up and is normalized; radius 0..64. Stored as a three-column `FORMAT_RGBAF` `Image`, one row per point: `(x,y,z,radius)`, `(nx,ny,nz,kind)`, `(habitat,0,0,0)`. |
 
 | `children(scene)` | Top-level Node3D children of a PackedScene handle (<= 4096): `{name,position,basis={x,y,z columns},min,max}` in root space; bounds include the child's transformed meshes and MultiMeshes. |
-| `parts(scene)` | 1..64 MeshInstance3D descendants and MultiMesh instances as `{mesh,material,position,basis}` in root space, so cooked models can be batched into MultiMesh by `scene()`. `material` is the node or single-surface override, otherwise absent (the mesh's surface materials apply). |
+| `parts(scene, child?)` | 1..64 MeshInstance3D descendants and MultiMesh instances as `{mesh,material,position,basis}` in root space. An optional direct child name selects one subtree. The recipe retains at most 64 selected scene roots and reuses mesh/material handles. Missing children and paths are rejected. |
+| `resource_index(rows)` | Up to 100000 unique resource candidates. Each row declares `id`, `kind`, complete `position`/`basis`, collider `size`/`offset` and `blocking`. IDs are stable identifiers of at most 96 characters. The returned Resource holds value metadata and an explicit memory estimate. |
 
 A job declares at most 64 `inputs` (v6; previously 32), still bounded by `input_mb`.
 
