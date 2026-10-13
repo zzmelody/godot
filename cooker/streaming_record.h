@@ -132,6 +132,11 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 		if (multi.is_valid()) {
 			geometry_bytes = uint64_t(multi->get_instance_count()) * 80 + 1024;
 		}
+		if (resource->has_meta("veya_resource_index_bytes")) {
+			const int64_t bytes = resource->get_meta("veya_resource_index_bytes");
+			ERR_FAIL_COND_V(bytes < 0 || bytes > 51200000, ERR_INVALID_DATA);
+			geometry_bytes += uint64_t(bytes);
+		}
 		result.geometry_bytes += geometry_bytes;
 		result.texture_bytes += texture_bytes;
 		if (geometry_bytes || texture_bytes) {

@@ -1064,12 +1064,12 @@ struct Recipe {
 		int count = s.array(1, s.limits.max_instances - s.instances);
 		s.require(count > 0, "scene must contain at least one instance");
 		s.instances += count;
-		struct Batch { Ref<Mesh> mesh; Ref<Material> material; real_t cull_margin; Vector<Transform3D> transforms; };
+		struct Batch { Ref<Mesh> mesh; Ref<Material> material; real_t cull_margin; Vector<Transform3D> transforms; Array resources; };
 		std::vector<Batch> batches;
 		OwnedNode root(memnew(Node3D)); root->set_name("RecipeAsset");
 		for (int i = 0; i < count; ++i) {
 			lua_rawgeti(p_state, 1, i + 1); int item = lua_absindex(p_state, -1);
-			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "keep", "lightmap", "cull_margin"});
+			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "keep", "lightmap", "cull_margin", "resource_id", "resource_kind", "resource_pose", "resource_collider", "resource_stage"});
 			s.field(item, "asset"); Ref<Resource> asset = s.handle(-1); lua_pop(p_state, 1);
 			s.field(item, "material"); Ref<Material> material;
 			if (!lua_isnil(p_state, -1)) { material = s.handle(-1); s.require(material.is_valid(), "material requires a Material handle"); }
@@ -1093,7 +1093,33 @@ struct Recipe {
 				s.field(item, "keep"); s.require(lua_isnil(p_state, -1), "keep is only valid for PackedScene instances"); lua_pop(p_state, 1);
 				size_t batch = 0;
 				while (batch < batches.size() && (batches[batch].mesh != mesh || batches[batch].material != material || batches[batch].cull_margin != cull_margin)) ++batch;
-				if (batch == batches.size()) batches.push_back({mesh, material, cull_margin, {}});
+				if (batch == batches.size()) batches.push_back({mesh, material, cull_margin, {}, {}});
+				const String identity = s.string_field(item, "resource_id", "");
+				if (!identity.is_empty()) {
+					s.require(identity.length() <= 96 && identity.is_valid_identifier(), "invalid resource_id");
+					const String kind = s.string_field(item, "resource_kind", "");
+					s.require(!kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(), "invalid resource_kind");
+					Dictionary record;
+					record["id"] = identity;
+					record["kind"] = kind;
+					record["index"] = batches[batch].transforms.size();
+					record["stage"] = int(s.number_field(item, "resource_stage", 0, 0, 1));
+					s.field(item, "resource_pose");
+					s.require(lua_istable(p_state, -1), "resource_pose requires a complete transform");
+					record["pose"] = s.transform(lua_absindex(p_state, -1));
+					lua_pop(p_state, 1);
+					s.field(item, "resource_collider");
+					s.require(lua_istable(p_state, -1), "resource_collider requires size and offset");
+					record["size"] = s.vector_field(-1, "size", Vector3(1, 1, 1));
+					record["offset"] = s.vector_field(-1, "offset", Vector3());
+					record["blocking"] = s.boolean_field(-1, "blocking", false);
+					lua_pop(p_state, 1);
+					record["member_pose"] = transform;
+					batches[batch].resources.push_back(record);
+					if (int(record["stage"]) != 0) {
+						transform.basis = Basis(Vector3(), Vector3(), Vector3());
+					}
+				}
 				batches[batch].transforms.push_back(transform);
 			} else {
 				Ref<PackedScene> packed = asset;
@@ -1173,6 +1199,7 @@ struct Recipe {
 			for (int j = 0; j < batch.transforms.size(); ++j) multi->set_instance_transform(j, batch.transforms[j]);
 			auto *node = memnew(MultiMeshInstance3D);
 			node->set_name("Batch" + itos(i)); node->set_multimesh(multi); node->set_material_override(batch.material); node->set_extra_cull_margin(batch.cull_margin);
+			if (!batch.resources.is_empty()) node->set_meta("veya_resources", batch.resources);
 			root->add_child(node); node->set_owner(root.get());
 		}
 		int32_t next_scene_id = 1;
@@ -1180,6 +1207,37 @@ struct Recipe {
 		Ref<PackedScene> scene; scene.instantiate();
 		s.require(scene->pack(root.get()) == OK, "could not pack recipe scene");
 		return s.push_resource(scene);
+	}
+	static int resource_index(lua_State *p_state) {
+		auto &s = self(p_state); s.arity(1);
+		const int count = s.array(1, 100000);
+		Array entries;
+		HashSet<String> identities;
+		for (int i = 0; i < count; ++i) {
+			lua_rawgeti(p_state, 1, i + 1);
+			const int row = lua_absindex(p_state, -1);
+			s.fields(row, {"id", "kind", "position", "basis", "size", "offset", "blocking"});
+			const String id = s.string_field(row, "id", "");
+			const String kind = s.string_field(row, "kind", "");
+			s.require(!id.is_empty() && id.length() <= 96 && id.is_valid_identifier() && !identities.has(id), "resource_index requires unique stable IDs");
+			s.require(!kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(), "resource_index requires an explicit kind");
+			identities.insert(id);
+			Dictionary entry;
+			entry["id"] = id;
+			entry["kind"] = kind;
+			entry["pose"] = s.transform(row);
+			const Vector3 size = s.vector_field(row, "size", Vector3(1, 1, 1));
+			s.require(size.x > 0 && size.y > 0 && size.z > 0, "resource_index collider extents must be positive");
+			entry["size"] = size;
+			entry["offset"] = s.vector_field(row, "offset", Vector3());
+			entry["blocking"] = s.boolean_field(row, "blocking", false);
+			entries.push_back(entry);
+			lua_pop(p_state, 1);
+		}
+		Ref<Resource> index; index.instantiate();
+		index->set_meta("veya_resource_index", entries);
+		index->set_meta("veya_resource_index_bytes", int64_t(count) * 512);
+		return s.push_resource(index);
 	}
 	static int lightmap_scene(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
@@ -1485,7 +1543,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"collision", collision}, {"minimum_visual", minimum_visual}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"child_names", child_names}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = {{"resource_index", resource_index}, {"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"collision", collision}, {"minimum_visual", minimum_visual}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"child_names", child_names}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");

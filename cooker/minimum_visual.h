@@ -409,6 +409,9 @@ class Builder {
       }
     }
     if (node) {
+      if (source->has_meta("veya_resources")) {
+        node->set_meta("veya_resources", source->get_meta("veya_resources"));
+      }
       node->set_name("Minimum_" + itos(nodes_));
       node->set_transform(transform);
       destination->add_child(node);
