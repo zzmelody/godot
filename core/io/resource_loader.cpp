@@ -30,6 +30,9 @@
 
 #include "resource_loader.h"
 
+// Veya: measure actual loader work on the worker that executes it.
+#include "core/profiling/profiling.h"
+
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/core_bind.h"
@@ -273,6 +276,14 @@ ResourceLoader::LoadToken::~LoadToken() {
 }
 
 Ref<Resource> ResourceLoader::_load(const String &p_path, const String &p_original_path, const String &p_type_hint, CacheMode p_cache_mode, Error *r_error, bool p_use_sub_threads, float *r_progress) {
+
+#if defined(GODOT_USE_TRACY)
+	ZoneNamedN(load_zone, "Veya/Engine/Resource/decode", true);
+	if (TracyIsConnected) {
+		const CharString path = p_path.utf8();
+		load_zone.Text(path.get_data(), MIN(path.length(), 384));
+	}
+#endif
 	const String &original_path = p_original_path.is_empty() ? p_path : p_original_path;
 	load_nesting++;
 
