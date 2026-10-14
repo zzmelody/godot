@@ -10,7 +10,7 @@ inline bool is_payload(const String &p_path) {
 	const String extension = p_path.get_extension().to_lower();
 	return extension == "png" || extension == "wav" || extension == "ogg" || extension == "mp3" ||
 			extension == "otf" || extension == "ttf" || extension == "woff2" ||
-			extension == "gdshader" || extension == "gdshaderinc" || extension == "uid";
+			extension == "gdshader" || extension == "gdshaderinc" || extension == "uid" || extension == "txt";
 }
 
 inline Error stage(const Dictionary &p_job, Dictionary &r_result) {
@@ -64,7 +64,7 @@ inline Error stage(const Dictionary &p_job, Dictionary &r_result) {
 	if (error != OK) CookerAtomicSave::discard_stale(temporary);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
-	r_result["bytes"] = int64_t(bytes);
+	r_result["bytes"] = int64_t(data.size());
 	r_result["sha256"] = FileAccess::get_sha256(output);
 	return OK;
 }
