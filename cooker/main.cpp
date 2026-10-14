@@ -831,29 +831,12 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			CookerAtomicSave::discard_stale(imported_path);
 			return error;
 		}
-		if (maximum_texture_dimension > 0) {
-			Ref<PackedScene> imported = ResourceLoader::load(imported_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
-			ERR_FAIL_COND_V(imported.is_null() || error != OK, ERR_INVALID_DATA);
-			Node *root = imported->instantiate();
-			ERR_FAIL_NULL_V(root, ERR_CANT_CREATE);
-			HashMap<ObjectID, Ref<Texture2D>> textures;
-			HashSet<ObjectID> materials;
-			int resized_count = 0;
-			error = resize_scene_textures(root, maximum_texture_dimension, textures, materials, resized_count);
-			if (error == OK) {
-				Ref<PackedScene> resized;
-				resized.instantiate();
-				error = resized->pack(root);
-				if (error == OK) error = ResourceSaver::save(resized, imported_path, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
-			}
-			memdelete(root);
-			if (error != OK) {
-				DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(imported_path));
-				return error;
-			}
-			r_result["textures_resized"] = resized_count;
-			r_result["max_texture_dimension"] = maximum_texture_dimension;
-		}
+		Ref<Resource> imported = ResourceLoader::load(imported_path, type, ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
+		ERR_FAIL_COND_V(imported.is_null() || error != OK, ERR_INVALID_DATA);
+		error = CookerAtomicSave::save_resource(imported, imported_path,
+				ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
+		ERR_FAIL_COND_V(error != OK, error);
+		r_result["max_texture_dimension"] = maximum_texture_dimension;
 		error = CookerAtomicSave::publish(imported_path, published_path);
 		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(staging_dir));
 		ERR_FAIL_COND_V(error != OK, error);

@@ -92,7 +92,6 @@ class Builder {
       // and grid dimensions are part of the authored geometry contract.
       if (image->get_format() == Image::FORMAT_RF ||
           image->get_format() == Image::FORMAT_RGF ||
-          image->get_format() == Image::FORMAT_RGBF ||
           image->get_format() == Image::FORMAT_RGBAF) {
         return OK;
       }
@@ -114,8 +113,11 @@ class Builder {
       Ref<PortableCompressedTexture2D> compressed;
       compressed.instantiate();
       compressed->set_keep_compressed_buffer(true);
+      const bool hdr = image->get_format() == Image::FORMAT_RGBF ||
+                       image->get_format() == Image::FORMAT_RGBH;
       compressed->create_from_image(
-          image, PortableCompressedTexture2D::COMPRESSION_MODE_BASIS_UNIVERSAL,
+          image, hdr ? PortableCompressedTexture2D::COMPRESSION_MODE_BPTC
+                     : PortableCompressedTexture2D::COMPRESSION_MODE_BASIS_UNIVERSAL,
           normal);
       if (compressed->get_width() != image->get_width() ||
           compressed->get_height() != image->get_height()) {
