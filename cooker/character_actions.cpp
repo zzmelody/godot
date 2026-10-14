@@ -467,6 +467,7 @@ Error calibrate_gait(const Dictionary &p_config, const Ref<Animation> &p_animati
 	Vector<double> velocities;
 	PackedFloat32Array weights[2];
 	double peak_backward[2] = { 0, 0 };
+	int reverse_stance_samples = 0;
 	int origin = 0;
 	for (int sample = 0; sample < samples; ++sample) {
 		if (points[0][sample].dot(direction) > points[0][origin].dot(direction)) origin = sample;
@@ -475,6 +476,7 @@ Error calibrate_gait(const Dictionary &p_config, const Ref<Animation> &p_animati
 			const double backward = -(points[side][sample + 1] - points[side][sample]).dot(direction) * samples / p_animation->get_length();
 			peak_backward[side] = MAX(peak_backward[side], backward);
 			const double release = CLAMP((lift - planted_height) / (release_height - planted_height), 0.0, 1.0);
+			if (backward < -.1 && release < .1) ++reverse_stance_samples;
 			// Contact requires the foot to travel backwards relative to the body.
 			// This releases the low swing foot before its forward sweep/landing.
 			const double contact = backward > .05 ? 1 - release * release * (3 - 2 * release) : 0;
@@ -483,7 +485,7 @@ Error calibrate_gait(const Dictionary &p_config, const Ref<Animation> &p_animati
 		}
 	}
 	ERR_FAIL_COND_V_MSG(velocities.size() < 4, ERR_INVALID_DATA, "Gait has insufficient stance samples; check direction: " + model_path +
-			" samples=" + itos(velocities.size()) + " backward=" + rtos(peak_backward[0]) + "," + rtos(peak_backward[1]) +
+			" samples=" + itos(velocities.size()) + " reverse_samples=" + itos(reverse_stance_samples) + " backward=" + rtos(peak_backward[0]) + "," + rtos(peak_backward[1]) +
 			" lift=" + rtos(maximum[0] - minimum[0]) + "," + rtos(maximum[1] - minimum[1]));
 	std::sort(velocities.ptrw(), velocities.ptrw() + velocities.size());
 	const double reference_speed = velocities[velocities.size() / 2];
