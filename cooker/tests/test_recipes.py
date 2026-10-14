@@ -560,6 +560,44 @@ func _initialize():
         self.assertIn("MINIMUM_TEXTURE_ROUND_TRIP:true", checked.stdout,
                       checked.stdout+checked.stderr)
 
+    def test_minimum_materials_share_external_shader(self):
+        (self.project / "shared.gdshader").write_text(
+            "shader_type spatial; uniform vec4 tint; void fragment(){ALBEDO=tint.rgb;}")
+        for name, color in (("a", "1,0,0,1"), ("b", "0,1,0,1")):
+            (self.project / f"{name}.tres").write_text(
+                '[gd_resource type="ShaderMaterial" load_steps=2 format=3]\n'
+                '[ext_resource type="Shader" path="res://shared.gdshader" id="1"]\n'
+                f'[resource]\nshader=ExtResource("1")\nshader_parameter/tint=Color({color})\n')
+        original = self.recipe('''local mesh=cooker.primitive("box",{})
+return cooker.scene({{asset=mesh,material=cooker.input("a")},
+ {asset=mesh,material=cooker.input("b"),position={3,0,0}}})''',
+                               inputs={"a": "res://a.tres", "b": "res://b.tres"},
+                               output="res://content/worlds/fixture/generated/source.scn")
+        minimum = self.recipe('return cooker.minimum_visual("visual",{triangle_ratio=1})',
+                              inputs={"visual": original["output"]},
+                              external_render_resources=True,
+                              output="res://content/worlds/fixture/generated/minimum/model.scn")
+        self.assertIsNotNone(REFERENCE)
+        with (self.project / "project.godot").open("a") as project:
+            project.write("config/disable_project_settings_override=false\n")
+        (self.project / "inspect_shader.gd").write_text('''extends SceneTree
+func _initialize():
+    var scene = load("'''+minimum["output"]+'''").instantiate()
+    var first = scene.get_child(0).material_override as ShaderMaterial
+    var second = scene.get_child(1).material_override as ShaderMaterial
+    var valid = first != null and second != null and first != second
+    valid = valid and first.shader == second.shader and not first.shader.resource_path.is_empty()
+    valid = valid and first.get_shader_parameter("tint") != second.get_shader_parameter("tint")
+    scene.free()
+    print("MINIMUM_SHARED_SHADER:", valid)
+    quit(0 if valid else 1)
+''')
+        inspected = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                    "--script", "res://inspect_shader.gd"],
+                                   capture_output=True, text=True, timeout=30)
+        self.assertEqual(inspected.returncode, 0, inspected.stdout+inspected.stderr)
+        self.assertIn("MINIMUM_SHARED_SHADER:true", inspected.stdout)
+
     def test_shared_render_cache_checks_auxiliary_files(self):
         original = self.recipe('local mesh=cooker.primitive("box",{}); return cooker.scene({{asset=mesh}})',
                                output="res://content/worlds/fixture/generated/original.scn")
