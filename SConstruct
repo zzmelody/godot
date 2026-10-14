@@ -564,10 +564,9 @@ if env.debug_features and not env["veya_cooker"] and env["veya_debug_tracy"] and
     env["profiler"] = "tracy"
     env["profiler_path"] = str(tracy_source)
     env["profiler_record_on_demand"] = True
-    # Tracy's application-wide callstack sampler is supported by the pinned
-    # client on Windows, but not on macOS. Instruments remains the macOS sampler.
-    if env["platform"] == "windows":
-        env["profiler_sample_callstack"] = True
+    # Keep the declared profiler_sample_callstack default. Explicit sampling
+    # remains available for investigations; ordinary timing captures must not
+    # unwind a native stack for every engine zone.
 # /*>>----- VEYA_TRACY */
 
 if env["optimize"] == "auto":
