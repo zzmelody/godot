@@ -2,6 +2,7 @@
 #pragma once
 #include "asset_files.h"
 #include "atomic_save.h"
+#include "core/io/config_file.h"
 
 namespace CookerSource {
 // Bootstrap PNGs, native fonts and shader source are already runtime formats.
@@ -63,6 +64,15 @@ inline Error stage(const Dictionary &p_job, Dictionary &r_result) {
 	if (error == OK) error = CookerAtomicSave::publish(temporary, output);
 	if (error != OK) CookerAtomicSave::discard_stale(temporary);
 	ERR_FAIL_COND_V(error != OK, error);
+	if (source.get_extension().to_lower() == "png") {
+		Ref<ConfigFile> configuration;
+		configuration.instantiate();
+		configuration->set_value("params", "compress/mode", 2);
+		configuration->set_value("params", "mipmaps/generate", true);
+		configuration->set_value("params", "process/size_limit", CookerTextures::maximum_dimension);
+		error = configuration->save(output + ".import");
+		ERR_FAIL_COND_V(error != OK, error);
+	}
 	r_result["output"] = output;
 	r_result["bytes"] = int64_t(data.size());
 	r_result["sha256"] = FileAccess::get_sha256(output);
