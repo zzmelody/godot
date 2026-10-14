@@ -56,7 +56,7 @@ bool ground_signal_track(const Ref<Animation>& animation, int track) {
 	}
 	const StringName property = path.get_subname(0);
 	const bool stride = property == StringName("stride_length");
-  if (!stride && property != StringName("left_contact") && property != StringName("right_contact") && property != StringName("cycle_weight")) {
+  if (!stride && property != StringName("left_contact") && property != StringName("right_contact") && property != StringName("cycle_weight") && property != StringName("moving_weight")) {
 		return false;
 	}
   if (animation->track_get_key_count(track) > 1801) return false;
@@ -1027,7 +1027,7 @@ Error PrepareGroundCycles(const Dictionary &job, const Ref<AnimationLibrary> &li
 			prepared->track_set_path(track, NodePath(side ? "CharacterPoseSignals:right_contact" : "CharacterPoseSignals:left_contact"));
 			prepared->value_track_set_update_mode(track, Animation::UPDATE_CONTINUOUS);
 			for (int sample = 0; sample <= 60; ++sample) {
-				double contact = 1;
+        double contact = 0;
 				if (!neutral) {
 					ERR_FAIL_COND_V(curve.size() < 8, ERR_INVALID_DATA);
 					const double point = Math::fposmod(origin + sample / 60.0, 1.0) * curve.size();
@@ -1050,6 +1050,11 @@ Error PrepareGroundCycles(const Dictionary &job, const Ref<AnimationLibrary> &li
     prepared->value_track_set_update_mode(weight_track, Animation::UPDATE_CONTINUOUS);
     prepared->track_insert_key(weight_track, 0, 1.0);
     prepared->track_insert_key(weight_track, 1, 1.0);
+    const int moving_track = prepared->add_track(Animation::TYPE_VALUE);
+    prepared->track_set_path(moving_track, NodePath("CharacterPoseSignals:moving_weight"));
+    prepared->value_track_set_update_mode(moving_track, Animation::UPDATE_CONTINUOUS);
+    prepared->track_insert_key(moving_track, 0, neutral ? 0.0 : 1.0);
+    prepared->track_insert_key(moving_track, 1, neutral ? 0.0 : 1.0);
 		gait["phase_origin"] = 0.0;
 		gait["left_contact"] = contacts[0];
 		gait["right_contact"] = contacts[1];
