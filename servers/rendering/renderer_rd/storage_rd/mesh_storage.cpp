@@ -1702,9 +1702,14 @@ void MeshStorage::_multimesh_set_mesh(RID p_multimesh, RID p_mesh) {
 	if (multimesh->data_cache.size()) {
 		//we have a data cache, just mark it dirt
 		_multimesh_mark_all_dirty(multimesh, false, true);
-	} else if (multimesh->instances) {
+	} else if (multimesh->instances && multimesh->custom_aabb == AABB()) {
 		//need to re-create AABB unfortunately, calling this has a penalty
+		// A custom AABB replaces automatic bounds, so never read the instance buffer back for it.
 		if (multimesh->buffer_set) {
+#ifdef DEBUG_ENABLED
+			// Test evidence for the zero-readback contract; debug templates only.
+			print_line("MM_AUTO_AABB_READBACK multimesh=" + itos(p_multimesh.get_id()) + " instances=" + itos(multimesh->instances));
+#endif
 			Vector<uint8_t> buffer = RD::get_singleton()->buffer_get_data(multimesh->buffer);
 			const uint8_t *r = buffer.ptr() + multimesh->motion_vectors_current_offset * multimesh->stride_cache * sizeof(float);
 			const float *data = reinterpret_cast<const float *>(r);
