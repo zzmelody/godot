@@ -44,146 +44,172 @@ bool bone_track(const Ref<Animation>& p_animation, int p_track) {
          String(p_animation->track_get_path(p_track))
              .begins_with("%GeneralSkeleton:");
 }
+bool ground_signal_track(const Ref<Animation>& animation, int track) {
+	if (animation->track_get_type(track) != Animation::TYPE_VALUE ||
+			animation->value_track_get_update_mode(track) != Animation::UPDATE_CONTINUOUS) {
+		return false;
+	}
+	const NodePath path = animation->track_get_path(track);
+	if (path.get_name_count() != 1 || path.get_name(0) != StringName("CharacterPoseSignals") ||
+			path.get_subname_count() != 1) {
+		return false;
+	}
+	const StringName property = path.get_subname(0);
+	const bool stride = property == StringName("stride_length");
+	if (!stride && property != StringName("left_contact") && property != StringName("right_contact")) {
+		return false;
+	}
+	for (int key = 0; key < animation->track_get_key_count(track); ++key) {
+		const Variant value = animation->track_get_key_value(track, key);
+		const double time = animation->track_get_key_time(track, key);
+		if (value.get_type() != Variant::FLOAT || !Math::is_finite(double(value)) ||
+				double(value) < 0 || double(value) > (stride ? 20 : 1) ||
+				!Math::is_finite(time) || time < 0 || time > animation->get_length() + .0001) {
+			return false;
+		}
+	}
+	return animation->track_get_key_count(track) > 0;
+}
 
-Error PrepareBoneOverlays(Dictionary& job) {
-  if (!job.has("bone_overlays")) {
-    return OK;
-  }
-  ERR_FAIL_COND_V(job["bone_overlays"].get_type() != Variant::DICTIONARY,
-                  ERR_INVALID_PARAMETER);
-  Dictionary config = Dictionary(job["bone_overlays"]).duplicate(true);
-  for (const char* field : {"reference_model", "target_model"}) {
-    ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
-                    ERR_INVALID_PARAMETER);
-  }
-  ERR_FAIL_COND_V(
-      config.get("semantics", Variant()).get_type() != Variant::ARRAY ||
-          config.get("bones", Variant()).get_type() != Variant::ARRAY,
-      ERR_INVALID_PARAMETER);
-  // A pipeline prepares before fingerprinting; execute_job prepares again.
-  // Revalidate expanded inputs without treating mapping prefixes as files.
-  if (!config.has("source_from") && !config.has("source_to")) {
-    ERR_FAIL_COND_V(
-        config.get("entries", Variant()).get_type() != Variant::ARRAY,
-        ERR_INVALID_PARAMETER);
-    const Array semantics = config["semantics"], entries = config["entries"];
-    ERR_FAIL_COND_V(entries.is_empty() || entries.size() > 256 ||
-                        entries.size() != semantics.size(),
-                    ERR_INVALID_PARAMETER);
-    for (int index = 0; index < entries.size(); ++index) {
-      ERR_FAIL_COND_V(entries[index].get_type() != Variant::DICTIONARY,
-                      ERR_INVALID_DATA);
-      const Dictionary entry = entries[index];
-      ERR_FAIL_COND_V(
-          entry.get("id", Variant()) != semantics[index] ||
-              !identifier(entry.get("id", "")) ||
-              entry.get("segments", Variant()).get_type() != Variant::ARRAY,
-          ERR_INVALID_DATA);
-      const Array segments = entry["segments"];
-      ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8,
-                      ERR_INVALID_DATA);
-      for (const Variant& value : segments) {
-        ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY,
-                        ERR_INVALID_DATA);
-        const Dictionary segment = value;
-        ERR_FAIL_COND_V(
-            segment.get("source", Variant()).get_type() != Variant::STRING,
-            ERR_INVALID_DATA);
-        const String source = segment["source"];
-        const Error error = CookerFiles::check_path(source);
-        ERR_FAIL_COND_V(error != OK, error);
-        ERR_FAIL_COND_V(
-            segment.get("sha256", "") != FileAccess::get_sha256(source),
-            ERR_INVALID_DATA);
-        const double duration = segment.get("duration", 0.0);
-        ERR_FAIL_COND_V(
-            !Math::is_finite(duration) || duration < .01 || duration > 30,
-            ERR_INVALID_DATA);
-      }
-    }
-    return OK;
-  }
-  for (const char* field : {"source_from", "source_to"}) {
-    ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
-                    ERR_INVALID_PARAMETER);
-  }
-  const String from = config.get("source_from", ""),
-               to = config.get("source_to", "");
-  ERR_FAIL_COND_V(!from.ends_with("/") || !to.ends_with("/"),
-                  ERR_INVALID_PARAMETER);
-  const Ref<AnimationLibrary> base =
-      ResourceLoader::load(job.get("base_library", ""), "AnimationLibrary");
-  ERR_FAIL_COND_V(base.is_null(), ERR_INVALID_DATA);
-  const Array semantics = config["semantics"];
-  ERR_FAIL_COND_V(semantics.is_empty() || semantics.size() > 256,
-                  ERR_INVALID_PARAMETER);
-  Array entries;
-  HashSet<String> seen;
-  for (const Variant& value : semantics) {
-    ERR_FAIL_COND_V(value.get_type() != Variant::STRING || seen.has(value) ||
-                        !identifier(value),
-                    ERR_INVALID_PARAMETER);
-    const String id = value;
-    seen.insert(id);
-    Array segments;
-    if (base->has_animation(id)) {
-      segments = base->get_animation(id)->get_meta("source_segments", Array());
-    }
-    const Array replacements = job.get("clips", Array());
-    for (const Variant& replacement_value : replacements) {
-      ERR_FAIL_COND_V(replacement_value.get_type() != Variant::DICTIONARY,
-                      ERR_INVALID_PARAMETER);
-      const Dictionary replacement = replacement_value;
-      if (String(replacement.get("id", "")) == id) {
-        segments = replacement.get("segments", Array());
-        break;
-      }
-    }
-    ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8,
-                    ERR_INVALID_DATA);
-    Array mapped;
-    for (const Variant& segment_value : segments) {
-      ERR_FAIL_COND_V(segment_value.get_type() != Variant::DICTIONARY,
-                      ERR_INVALID_DATA);
-      Dictionary segment = Dictionary(segment_value).duplicate(true);
-      const String source_path = segment.get("source", "");
-      ERR_FAIL_COND_V(
-          !source_path.begins_with(from) && !source_path.begins_with(to),
-          ERR_INVALID_DATA);
-      const Ref<AnimationLibrary> original =
-          ResourceLoader::load(source_path, "AnimationLibrary");
-      const StringName name = segment.get("animation", "mixamo_com");
-      ERR_FAIL_COND_V(original.is_null() || !original->has_animation(name),
-                      ERR_INVALID_DATA);
-      const double begin = segment.get("begin", 0.0),
-                   end = segment.get("end", 1.0),
-                   speed = segment.get("speed", 1.0);
-      ERR_FAIL_COND_V(!Math::is_finite(begin) || !Math::is_finite(end) ||
-                          !Math::is_finite(speed) || begin < 0 || end > 1 ||
-                          begin >= end || speed < .1 || speed > 4,
-                      ERR_INVALID_DATA);
-      segment["duration"] =
-          original->get_animation(name)->get_length() * (end - begin) / speed;
-      segment["source"] = source_path.begins_with(from)
-                              ? to + source_path.substr(from.length())
-                              : source_path;
-      segment["sha256"] = FileAccess::get_sha256(segment["source"]);
-      ERR_FAIL_COND_V(String(segment["sha256"]).length() != 64,
-                      ERR_INVALID_DATA);
-      mapped.push_back(segment);
-    }
-    Dictionary entry;
-    entry["id"] = id;
-    entry["segments"] = mapped;
-    entries.push_back(entry);
-  }
-  config["entries"] = entries;
-  // The expanded segments are the exact inputs. Prefixes are mapping rules,
-  // not whole-directory resource dependencies (nor valid trailing-slash paths).
-  config.erase("source_from");
-  config.erase("source_to");
-  job["bone_overlays"] = config;
-  return OK;
+Error PrepareBoneOverlays(Dictionary &job) {
+	if (!job.has("bone_overlays")) {
+		return OK;
+	}
+	ERR_FAIL_COND_V(job["bone_overlays"].get_type() != Variant::DICTIONARY,
+			ERR_INVALID_PARAMETER);
+	Dictionary config = Dictionary(job["bone_overlays"]).duplicate(true);
+	for (const char *field : { "reference_model", "target_model" }) {
+		ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
+				ERR_INVALID_PARAMETER);
+	}
+	ERR_FAIL_COND_V(
+			config.get("semantics", Variant()).get_type() != Variant::ARRAY ||
+					config.get("bones", Variant()).get_type() != Variant::ARRAY,
+			ERR_INVALID_PARAMETER);
+	// A pipeline prepares before fingerprinting; execute_job prepares again.
+	// Revalidate expanded inputs without treating mapping prefixes as files.
+	if (!config.has("source_from") && !config.has("source_to")) {
+		ERR_FAIL_COND_V(
+				config.get("entries", Variant()).get_type() != Variant::ARRAY,
+				ERR_INVALID_PARAMETER);
+		const Array semantics = config["semantics"], entries = config["entries"];
+		ERR_FAIL_COND_V(entries.is_empty() || entries.size() > 256 ||
+						entries.size() != semantics.size(),
+				ERR_INVALID_PARAMETER);
+		for (int index = 0; index < entries.size(); ++index) {
+			ERR_FAIL_COND_V(entries[index].get_type() != Variant::DICTIONARY,
+					ERR_INVALID_DATA);
+			const Dictionary entry = entries[index];
+			ERR_FAIL_COND_V(
+					entry.get("id", Variant()) != semantics[index] ||
+							!identifier(entry.get("id", "")) ||
+							entry.get("segments", Variant()).get_type() != Variant::ARRAY,
+					ERR_INVALID_DATA);
+			const Array segments = entry["segments"];
+			ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8,
+					ERR_INVALID_DATA);
+			for (const Variant &value : segments) {
+				ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY,
+						ERR_INVALID_DATA);
+				const Dictionary segment = value;
+				ERR_FAIL_COND_V(
+						segment.get("source", Variant()).get_type() != Variant::STRING,
+						ERR_INVALID_DATA);
+				const String source = segment["source"];
+				const Error error = CookerFiles::check_path(source);
+				ERR_FAIL_COND_V(error != OK, error);
+				ERR_FAIL_COND_V(
+						segment.get("sha256", "") != FileAccess::get_sha256(source),
+						ERR_INVALID_DATA);
+				const double duration = segment.get("duration", 0.0);
+				ERR_FAIL_COND_V(
+						!Math::is_finite(duration) || duration < .01 || duration > 30,
+						ERR_INVALID_DATA);
+			}
+		}
+		return OK;
+	}
+	for (const char *field : { "source_from", "source_to" }) {
+		ERR_FAIL_COND_V(config.get(field, Variant()).get_type() != Variant::STRING,
+				ERR_INVALID_PARAMETER);
+	}
+	const String from = config.get("source_from", ""),
+				 to = config.get("source_to", "");
+	ERR_FAIL_COND_V(!from.ends_with("/") || !to.ends_with("/"),
+			ERR_INVALID_PARAMETER);
+	const Ref<AnimationLibrary> base =
+			ResourceLoader::load(job.get("base_library", ""), "AnimationLibrary");
+	ERR_FAIL_COND_V(base.is_null(), ERR_INVALID_DATA);
+	const Array semantics = config["semantics"];
+	ERR_FAIL_COND_V(semantics.is_empty() || semantics.size() > 256,
+			ERR_INVALID_PARAMETER);
+	Array entries;
+	HashSet<String> seen;
+	for (const Variant &value : semantics) {
+		ERR_FAIL_COND_V(value.get_type() != Variant::STRING || seen.has(value) ||
+						!identifier(value),
+				ERR_INVALID_PARAMETER);
+		const String id = value;
+		seen.insert(id);
+		Array segments;
+		if (base->has_animation(id)) {
+			segments = base->get_animation(id)->get_meta("source_segments", Array());
+		}
+		const Array replacements = job.get("clips", Array());
+		for (const Variant &replacement_value : replacements) {
+			ERR_FAIL_COND_V(replacement_value.get_type() != Variant::DICTIONARY,
+					ERR_INVALID_PARAMETER);
+			const Dictionary replacement = replacement_value;
+			if (String(replacement.get("id", "")) == id) {
+				segments = replacement.get("segments", Array());
+				break;
+			}
+		}
+		ERR_FAIL_COND_V(segments.is_empty() || segments.size() > 8,
+				ERR_INVALID_DATA);
+		Array mapped;
+		for (const Variant &segment_value : segments) {
+			ERR_FAIL_COND_V(segment_value.get_type() != Variant::DICTIONARY,
+					ERR_INVALID_DATA);
+			Dictionary segment = Dictionary(segment_value).duplicate(true);
+			const String source_path = segment.get("source", "");
+			ERR_FAIL_COND_V(
+					!source_path.begins_with(from) && !source_path.begins_with(to),
+					ERR_INVALID_DATA);
+			const Ref<AnimationLibrary> original =
+					ResourceLoader::load(source_path, "AnimationLibrary");
+			const StringName name = segment.get("animation", "mixamo_com");
+			ERR_FAIL_COND_V(original.is_null() || !original->has_animation(name),
+					ERR_INVALID_DATA);
+			const double begin = segment.get("begin", 0.0),
+						 end = segment.get("end", 1.0),
+						 speed = segment.get("speed", 1.0);
+			ERR_FAIL_COND_V(!Math::is_finite(begin) || !Math::is_finite(end) ||
+							!Math::is_finite(speed) || begin < 0 || end > 1 ||
+							begin >= end || speed < .1 || speed > 4,
+					ERR_INVALID_DATA);
+			segment["duration"] =
+					original->get_animation(name)->get_length() * (end - begin) / speed;
+			segment["source"] = source_path.begins_with(from)
+					? to + source_path.substr(from.length())
+					: source_path;
+			segment["sha256"] = FileAccess::get_sha256(segment["source"]);
+			ERR_FAIL_COND_V(String(segment["sha256"]).length() != 64,
+					ERR_INVALID_DATA);
+			mapped.push_back(segment);
+		}
+		Dictionary entry;
+		entry["id"] = id;
+		entry["segments"] = mapped;
+		entries.push_back(entry);
+	}
+	config["entries"] = entries;
+	// The expanded segments are the exact inputs. Prefixes are mapping rules,
+	// not whole-directory resource dependencies (nor valid trailing-slash paths).
+	config.erase("source_from");
+	config.erase("source_to");
+	job["bone_overlays"] = config;
+	return OK;
 }
 
 Error ApplyBoneOverlays(const Dictionary& config,
@@ -899,25 +925,145 @@ Error prepare_compose_job(Dictionary &r_job) {
 		}
 		ERR_FAIL_COND_V_MSG((mapped == 0) != keep.has(name) || (mapped != 0 && mapped != sources.size()), ERR_INVALID_DATA,
 				"Source substitution must cover every segment, or explicitly retain the semantic: " + String(name));
-		if (mapped == 0) continue;
+		if (mapped == 0) {
+			continue;
+		}
 		Dictionary clip;
-		clip["id"] = String(name); clip["replace_existing"] = true;
-		clip["segments"] = segments; clip["reference_segments"] = sources;
+		clip["id"] = String(name);
+		clip["replace_existing"] = true;
+		clip["segments"] = segments;
+		clip["reference_segments"] = sources;
 		clip["loop"] = original->get_loop_mode() != Animation::LOOP_NONE;
 		clip["mirror_x"] = original->get_meta("mirror_x", false);
 		clip["mirror_bones"] = original->get_meta("mirror_bones", Array());
-		if (original->has_meta("socket_motion_provenance")) clip["socket_motion"] = original->get_meta("socket_motion_provenance");
+		if (original->has_meta("socket_motion_provenance")) {
+			clip["socket_motion"] = original->get_meta("socket_motion_provenance");
+		}
 		clip["rotation_offsets"] = original->get_meta("rotation_offsets", Array());
 		clip["hips_position_offsets"] = original->get_meta("hips_position_offsets", Array());
-		if (original->has_meta("align_hips_to")) clip["align_hips_to"] = original->get_meta("align_hips_to");
-		if (original->has_meta("align_hips_axes")) clip["align_hips_axes"] = original->get_meta("align_hips_axes");
-		if (original->has_meta("limb_paths")) clip["limb_paths"] = original->get_meta("limb_paths");
+		if (original->has_meta("align_hips_to")) {
+			clip["align_hips_to"] = original->get_meta("align_hips_to");
+		}
+		if (original->has_meta("align_hips_axes")) {
+			clip["align_hips_axes"] = original->get_meta("align_hips_axes");
+		}
+		if (original->has_meta("limb_paths")) {
+			clip["limb_paths"] = original->get_meta("limb_paths");
+		}
 		clip["visual_status"] = "body_baked_requires_runtime_review";
 		clips.push_back(clip);
 	}
 	ERR_FAIL_COND_V(clips.is_empty() || clips.size() != int(r_job.get("expected_replaced", 0)), ERR_INVALID_DATA);
 	r_job["clips"] = clips;
 	r_job.erase("source_remap"); // Expanded paths and old provenance are now cache dependencies.
+	return OK;
+}
+
+Error PrepareGroundCycles(const Dictionary &job, const Ref<AnimationLibrary> &library) {
+	if (!job.has("ground_cycles")) {
+		return OK;
+	}
+	ERR_FAIL_COND_V(job["ground_cycles"].get_type() != Variant::ARRAY ||
+					!job.has("target_model"),
+			ERR_INVALID_PARAMETER);
+	const Array cycles = job["ground_cycles"];
+	ERR_FAIL_COND_V(cycles.is_empty() || cycles.size() > 16, ERR_INVALID_PARAMETER);
+	Array catalog = library->get_meta("character_catalog", Array());
+	for (const Variant &value : cycles) {
+		ERR_FAIL_COND_V(value.get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		const Dictionary config = value;
+		const String id = config.get("id", ""), source_id = config.get("source", "");
+		const bool neutral = config.get("neutral", false);
+		ERR_FAIL_COND_V(!identifier(id) || !identifier(source_id) ||
+						library->has_animation(id) || !library->has_animation(source_id),
+				ERR_INVALID_PARAMETER);
+		Ref<Animation> source = library->get_animation(source_id)->duplicate();
+		Dictionary gait;
+		if (!neutral) {
+			Dictionary calibration;
+			calibration["model"] = job["target_model"];
+			calibration["direction"] = config.get("direction", Array());
+			calibration["nominal_speed"] = config.get("speed", 1.5);
+			Error error = calibrate_gait(calibration, source);
+			ERR_FAIL_COND_V_MSG(error != OK, error, "Ground cycle calibration failed: " + id);
+			gait = source->get_meta("locomotion_gait");
+		}
+		const double source_length = source->get_length();
+		const double origin = neutral ? 0.0 : double(gait.get("phase_origin", 0.0));
+		const double stride = neutral ? 0.0 : double(gait.get("reference_speed", 0.0)) * source_length;
+		ERR_FAIL_COND_V(source_length <= 0 || stride > 20, ERR_INVALID_DATA);
+		Ref<Animation> prepared;
+		prepared.instantiate();
+		prepared->set_length(1);
+		prepared->set_loop_mode(Animation::LOOP_LINEAR);
+		prepared->set_step(1.0 / 60);
+		for (int track = 0; track < source->get_track_count(); ++track) {
+			ERR_FAIL_COND_V(!bone_track(source, track), ERR_INVALID_DATA);
+			const auto type = source->track_get_type(track);
+			const int output_track = prepared->add_track(type);
+			prepared->track_set_path(output_track, source->track_get_path(track));
+			for (int sample = 0; sample <= 60; ++sample) {
+				const double phase = Math::fposmod(origin + sample / 60.0, 1.0);
+				const double time = neutral ? 0.0 : phase * source_length;
+				const Variant pose = type == Animation::TYPE_ROTATION_3D
+						? Variant(source->rotation_track_interpolate(track, time))
+						: type == Animation::TYPE_POSITION_3D
+						? Variant(source->position_track_interpolate(track, time))
+						: Variant(source->scale_track_interpolate(track, time));
+				prepared->track_insert_key(output_track, sample / 60.0, pose);
+			}
+		}
+		PackedFloat32Array contacts[2];
+		for (int side = 0; side < 2; ++side) {
+			const PackedFloat32Array curve = gait.get(side ? "right_contact" : "left_contact", PackedFloat32Array());
+			const int track = prepared->add_track(Animation::TYPE_VALUE);
+			prepared->track_set_path(track, NodePath(side ? "CharacterPoseSignals:right_contact" : "CharacterPoseSignals:left_contact"));
+			prepared->value_track_set_update_mode(track, Animation::UPDATE_CONTINUOUS);
+			for (int sample = 0; sample <= 60; ++sample) {
+				double contact = 1;
+				if (!neutral) {
+					ERR_FAIL_COND_V(curve.size() < 8, ERR_INVALID_DATA);
+					const double point = Math::fposmod(origin + sample / 60.0, 1.0) * curve.size();
+					const int first = int(Math::floor(point)) % curve.size();
+					contact = Math::lerp(double(curve[first]), double(curve[(first + 1) % curve.size()]), point - Math::floor(point));
+				}
+				prepared->track_insert_key(track, sample / 60.0, contact);
+				if (sample < 60) {
+					contacts[side].push_back(contact);
+				}
+			}
+		}
+		const int stride_track = prepared->add_track(Animation::TYPE_VALUE);
+		prepared->track_set_path(stride_track, NodePath("CharacterPoseSignals:stride_length"));
+		prepared->value_track_set_update_mode(stride_track, Animation::UPDATE_CONTINUOUS);
+		prepared->track_insert_key(stride_track, 0, stride);
+		prepared->track_insert_key(stride_track, 1, stride);
+		gait["phase_origin"] = 0.0;
+		gait["left_contact"] = contacts[0];
+		gait["right_contact"] = contacts[1];
+		gait["reference_speed"] = stride;
+		gait["nominal_speed"] = config.get("speed", 0.0);
+		prepared->set_meta("ground_cycle", true);
+		prepared->set_meta("ground_stride_length", stride);
+		prepared->set_meta("locomotion_gait", gait);
+		prepared->set_meta("character_semantic", id);
+		prepared->set_meta("source_segments", source->get_meta("source_segments", Array()));
+		prepared->set_meta("ground_source_semantic", source_id);
+		prepared->set_meta("ground_source_duration", source_length);
+		prepared->set_meta("ground_source_phase", origin);
+		prepared->set_meta("visual_status", "phase_aligned_ground_requires_runtime_review");
+		Error error = library->add_animation(id, prepared);
+		ERR_FAIL_COND_V(error != OK, error);
+		Dictionary record;
+		record["id"] = id;
+		record["seconds"] = 1.0;
+		record["ground_source_semantic"] = source_id;
+		record["ground_source_phase"] = origin;
+		record["ground_stride_length"] = stride;
+		record["sources"] = source->get_meta("source_segments", Array());
+		catalog.push_back(record);
+	}
+	library->set_meta("character_catalog", catalog);
 	return OK;
 }
 
@@ -1195,6 +1341,8 @@ Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
   }
   if (bool(p_job.get("preserve_base_hips", false)))
     library->set_meta("source_replaced_ids", replaced_ids);
+  error = PrepareGroundCycles(p_job, library);
+  ERR_FAIL_COND_V(error != OK, error);
   error = CookerAtomicSave::save_resource(
       library, output,
       ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
@@ -1293,6 +1441,7 @@ Error assemble(const Dictionary &p_job, Dictionary &r_result) {
 		for (const StringName &clip : clips) {
 			const Ref<Animation> animation = library->get_animation(clip);
 			for (int track = 0; track < animation->get_track_count(); ++track) {
+				if (ground_signal_track(animation, track)) continue;
 				ERR_FAIL_COND_V_MSG(!bone_track(animation, track), ERR_INVALID_DATA, "Simulation animation must contain bone tracks only: " + String(clip));
 				const NodePath path = animation->track_get_path(track);
 				ERR_FAIL_COND_V(path.get_subname_count() != 1 || skeleton->find_bone(path.get_subname(0)) < 0, ERR_INVALID_DATA);
@@ -1388,6 +1537,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
                       ERR_INVALID_DATA);
       int fingers = 0;
       for (int track = 0; track < animation->get_track_count(); ++track) {
+        if (ground_signal_track(animation, track)) continue;
         const NodePath path = animation->track_get_path(track);
         const auto type = animation->track_get_type(track);
         ERR_FAIL_COND_V(
@@ -1428,7 +1578,7 @@ Error validate(const Dictionary &p_job, Dictionary &r_result) {
         animation->get_length() <= 0 || animation->get_track_count() < 10,
         ERR_INVALID_DATA);
     for (int i = 0; i < animation->get_track_count(); ++i)
-      ERR_FAIL_COND_V(!bone_track(animation, i), ERR_INVALID_DATA);
+      ERR_FAIL_COND_V(!bone_track(animation, i) && !ground_signal_track(animation, i), ERR_INVALID_DATA);
     row["status"] = animation->get_meta("visual_status", "unverified");
     row["seconds"] = animation->get_length();
     row["loop"] = animation->get_loop_mode() != Animation::LOOP_NONE;
