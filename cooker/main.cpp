@@ -431,6 +431,10 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 
 Error execute_job(const Dictionary &job, Dictionary &r_result) {
 	Error error = OK;
+	const int maximum_texture_dimension = job.get("max_texture_dimension", 1024);
+	ERR_FAIL_COND_V(maximum_texture_dimension < 64 || maximum_texture_dimension > 2048 ||
+			(maximum_texture_dimension & (maximum_texture_dimension - 1)) != 0, ERR_INVALID_PARAMETER);
+	CookerTextures::JobScope texture_scope(job);
 	ERR_FAIL_COND_V(!job.has("operation") || job["operation"].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 	for (const char *name : { "options" }) {
 		ERR_FAIL_COND_V(job.has(name) && job[name].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
@@ -703,7 +707,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 	if (operation == "import-texture") {
 		String source = job.get("source", "");
 		String output = job.get("output", "");
-		String compression = job.get("compression", "lossless");
+		String compression = job.get("compression", "basisu");
 		ERR_FAIL_COND_V(source.is_empty() || output.is_empty(), ERR_INVALID_PARAMETER);
 		PortableCompressedTexture2D::CompressionMode mode;
 		if (compression == "lossless") {
@@ -728,11 +732,11 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		bool normal = job.get("normal_map", false);
 		// Source scans remain immutable; their runtime resolution belongs to the
 		// Luau pipeline. Resize before mip generation and GPU compression.
-		if (job.has("max_texture_dimension")) {
-			const Variant value = job["max_texture_dimension"];
+		{
+			const Variant value = job.get("max_texture_dimension", 1024);
 			ERR_FAIL_COND_V(value.get_type() != Variant::INT && value.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
 			const double number = value;
-			ERR_FAIL_COND_V(!Math::is_finite(number) || number != Math::floor(number) || number < 256 || number > 8192, ERR_INVALID_PARAMETER);
+			ERR_FAIL_COND_V(!Math::is_finite(number) || number != Math::floor(number) || number < 64 || number > 2048, ERR_INVALID_PARAMETER);
 			const int maximum = int(number);
 			ERR_FAIL_COND_V((maximum & (maximum - 1)) != 0, ERR_INVALID_PARAMETER);
 			r_result["source_width"] = image->get_width();
@@ -744,7 +748,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			}
 			r_result["max_texture_dimension"] = maximum;
 		}
-		if (bool(job.get("mipmaps", true))) {
+		{
 			error = image->generate_mipmaps(normal);
 			ERR_FAIL_COND_V(error != OK, error);
 		}
@@ -772,7 +776,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		if (extension == "usd" || extension == "usda" || extension == "usdc") return CookerUsd::import_scene(job, r_result);
 		ERR_FAIL_COND_V(extension != "gltf" && extension != "glb" && extension != "fbx" && extension != "obj", ERR_UNAVAILABLE);
 		ERR_FAIL_COND_V(type != "PackedScene" && type != "ArrayMesh" && type != "AnimationLibrary" && type != "MeshLibrary", ERR_INVALID_PARAMETER);
-		int maximum_texture_dimension = 0;
+		int maximum_texture_dimension = 1024;
 		if (job.has("max_texture_dimension")) {
 			const Variant dimension = job["max_texture_dimension"];
 			ERR_FAIL_COND_V(type != "PackedScene" || (dimension.get_type() != Variant::INT && dimension.get_type() != Variant::FLOAT), ERR_INVALID_PARAMETER);

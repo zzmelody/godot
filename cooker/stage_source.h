@@ -8,7 +8,8 @@ namespace CookerSource {
 // Transport their original bytes; do not turn staging into another importer.
 inline bool is_payload(const String &p_path) {
 	const String extension = p_path.get_extension().to_lower();
-	return extension == "png" || extension == "otf" || extension == "ttf" || extension == "woff2" ||
+	return extension == "png" || extension == "wav" || extension == "ogg" || extension == "mp3" ||
+			extension == "otf" || extension == "ttf" || extension == "woff2" ||
 			extension == "gdshader" || extension == "gdshaderinc" || extension == "uid";
 }
 
@@ -24,18 +25,31 @@ inline Error stage(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(error != OK, error);
 	error = CookerFiles::check_path(output, true);
 	ERR_FAIL_COND_V(error != OK, error);
-	const String package_root = CookerFiles::package_root_relative(source.trim_prefix("res://"), "source");
+	const String package_root = CookerFiles::package_root_relative(source.trim_prefix("res://"), "raw");
 	ERR_FAIL_COND_V(package_root.is_empty(), ERR_UNAUTHORIZED);
 	const String package = "res://" + package_root;
-	ERR_FAIL_COND_V(!output.begins_with(package + "/generated/"), ERR_UNAUTHORIZED);
+	ERR_FAIL_COND_V(!output.begins_with(package + "/runtime/"), ERR_UNAUTHORIZED);
 	ERR_FAIL_COND_V(!is_payload(source) || source.get_extension() != output.get_extension(), ERR_UNAVAILABLE);
 	ERR_FAIL_COND_V(CookerAtomicSave::occupied(output), ERR_ALREADY_EXISTS);
 	Ref<FileAccess> input = FileAccess::open(source, FileAccess::READ, &error);
 	ERR_FAIL_COND_V(input.is_null() || error != OK, ERR_FILE_CANT_READ);
 	const uint64_t bytes = input->get_length();
 	ERR_FAIL_COND_V(bytes == 0 || bytes > 64 * 1024 * 1024, ERR_PARAMETER_RANGE_ERROR);
-	const PackedByteArray data = input->get_buffer(bytes);
+	PackedByteArray data = input->get_buffer(bytes);
 	ERR_FAIL_COND_V(uint64_t(data.size()) != bytes, ERR_FILE_CANT_READ);
+	if (source.get_extension().to_lower() == "png") {
+		Ref<Image> image;
+		image.instantiate();
+		error = image->load_png_from_buffer(data);
+		ERR_FAIL_COND_V(error != OK, error);
+		const int maximum = CookerTextures::maximum_dimension;
+		if (MAX(image->get_width(), image->get_height()) > maximum) {
+			error = CookerTextures::PrepareImage(image, maximum, false);
+			ERR_FAIL_COND_V(error != OK, error);
+			image->clear_mipmaps();
+			data = image->save_png_to_buffer();
+		}
+	}
 	error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 	ERR_FAIL_COND_V(error != OK, error);
 	const String temporary = output + ".partial";

@@ -18,6 +18,10 @@ namespace CookerFiles {
 // Only the shared package, a world package, or one direct module package owns
 // cooker/source/generated directories. Intermediate folders are not packages.
 inline String package_root_relative(const String &p_relative, const String &p_directory) {
+	const String project_assets = "assets/" + p_directory;
+	if (p_relative == project_assets || p_relative.begins_with(project_assets + "/")) {
+		return "assets";
+	}
 	const String shared = "content/shared/" + p_directory;
 	if (p_relative == shared || p_relative.begins_with(shared + "/")) {
 		return "content/shared";
@@ -31,6 +35,9 @@ inline String package_root_relative(const String &p_relative, const String &p_di
 			return String();
 		}
 		const String world = String(root) + parts[0];
+		if (parts.size() >= 3 && parts[1] == "assets" && parts[2] == p_directory) {
+			return world + "/assets";
+		}
 		if (parts[1] == p_directory) {
 			return world;
 		}
@@ -44,7 +51,7 @@ inline String package_root_relative(const String &p_relative, const String &p_di
 
 inline bool is_generated_relative(const String &p_relative) {
 	// Pack directory roots may name generated itself, without a trailing slash.
-	return !package_root_relative(p_relative, "generated").is_empty();
+	return !package_root_relative(p_relative, "runtime").is_empty();
 }
 
 inline bool is_generated(const String &p_path) {

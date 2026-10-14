@@ -23,7 +23,7 @@ struct Options {
   // Zero keeps relative error. A positive value limits error in mesh units.
   double max_error = 0;
   bool preserve_heightfields = false;
-  bool compress_color_textures = false;
+  bool compress_color_textures = true;
 };
 
 class Builder {

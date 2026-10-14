@@ -2,6 +2,7 @@
 #include "pipeline.h"
 
 #include "asset_files.h"
+#include "stage_source.h"
 
 #include "core/io/file_access.h"
 #include "core/io/json.h"
@@ -116,6 +117,8 @@ struct Pipeline {
 		lua_setfield(p_state, -2, "import");
 		lua_pushcfunction(p_state, manifest_steps, "pipeline.manifests");
 		lua_setfield(p_state, -2, "manifests");
+		lua_pushcfunction(p_state, stage_sources, "pipeline.stage_sources");
+		lua_setfield(p_state, -2, "stage_sources");
 		lua_setreadonly(p_state, -1, true);
 		lua_setglobal(p_state, "pipeline");
 		luaL_sandbox(p_state);
@@ -129,7 +132,7 @@ struct Pipeline {
 		Ref<DirAccess> directory = DirAccess::open(path);
 		if (directory.is_null()) return fail("manifest inventory directory missing");
 		for (const String &name : directory->get_files()) {
-			if (name != "asset.manifest.json" || !path.contains("/generated/")) continue;
+			if (name != "asset.manifest.json" || !path.contains("/assets/runtime/")) continue;
 			const String file = path.path_join(name);
 			if (directory->is_link(name) || CookerFiles::check_path(file) != OK) return fail("manifest inventory path rejected");
 			Ref<FileAccess> input = FileAccess::open(file, FileAccess::READ);
@@ -155,7 +158,7 @@ struct Pipeline {
 			steps.push_back(step);
 		}
 		for (const String &name : directory->get_directories()) {
-			if (name.begins_with(".") || name == "source" || name == "releases") continue;
+			if (name.begins_with(".") || name == "raw" || name == "releases") continue;
 			if (directory->is_link(name)) return fail("manifest inventory links forbidden");
 			if (!collect_manifests(path.path_join(name), steps, depth + 1)) return false;
 		}
@@ -168,10 +171,47 @@ struct Pipeline {
 				root != "res://content") luaL_error(state, "pipeline.manifests requires the content inventory root");
 		Array steps;
 		const auto inventory_start = std::chrono::steady_clock::now();
-		if (!host.collect_manifests(root, steps, 0)) luaL_error(state, "%s", host.fault.utf8().get_data());
+		if (!host.collect_manifests(root, steps, 0) ||
+				!host.collect_manifests("res://assets/runtime", steps, 0)) luaL_error(state, "%s", host.fault.utf8().get_data());
 		// Bounded native inventory I/O is not Luau execution. Preserve the
 		// remaining script budget when storage or another build is busy.
 		host.deadline += std::chrono::steady_clock::now() - inventory_start;
+		host.push_data(steps);
+		return 1;
+	}
+
+	bool collect_sources(const String &source, const String &output, Array &steps, int depth) {
+		if (depth > 16 || steps.size() > MAX_STEPS) return fail("source inventory limit exceeded");
+		Ref<DirAccess> directory = DirAccess::open(source);
+		if (directory.is_null()) return fail("source inventory directory missing: " + source);
+		for (const String &name : directory->get_files()) {
+			const String file = source.path_join(name);
+			if (!CookerSource::is_payload(file)) continue;
+			if (directory->is_link(name) || CookerFiles::check_path(file) != OK) return fail("source inventory path rejected");
+			Dictionary step;
+			step["operation"] = "stage-source";
+			step["source"] = file;
+			step["output"] = output.path_join(name);
+			step["if_missing"] = true;
+			step["verify_cache"] = true;
+			steps.push_back(step);
+		}
+		for (const String &name : directory->get_directories()) {
+			if (directory->is_link(name)) return fail("source inventory links forbidden");
+			if (!collect_sources(source.path_join(name), output.path_join(name), steps, depth + 1)) return false;
+		}
+		return true;
+	}
+	static int stage_sources(lua_State *state) {
+		auto &host = self(state);
+		String source, output;
+		if (lua_gettop(state) != 2 || !host.string(1, source, 512) || !host.string(2, output, 512) ||
+				CookerFiles::package_root_relative(source.trim_prefix("res://"), "raw").is_empty() ||
+				!CookerFiles::is_generated(output)) luaL_error(state, "pipeline.stage_sources requires raw and runtime directories");
+		Array steps;
+		const auto start = std::chrono::steady_clock::now();
+		if (!host.collect_sources(source, output, steps, 0)) luaL_error(state, "%s", host.fault.utf8().get_data());
+		host.deadline += std::chrono::steady_clock::now() - start;
 		host.push_data(steps);
 		return 1;
 	}

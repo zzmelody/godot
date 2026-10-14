@@ -6,6 +6,7 @@
 #include "core/io/resource_saver.h"
 #include "core/os/os.h"
 #include "core/templates/hash_set.h"
+#include "texture_policy.h"
 #ifdef WINDOWS_ENABLED
 #include <windows.h>
 #endif
@@ -72,11 +73,16 @@ inline void discard_stale(const String &p_staging) {
 }
 
 inline Error save_resource(const Ref<Resource> &p_resource, const String &p_path, uint32_t p_flags) {
+	CookerTextures::Builder textures;
+	Variant normalized = p_resource;
+	Error texture_error = textures.Normalize(normalized);
+	ERR_FAIL_COND_V(texture_error != OK, texture_error);
+	const Ref<Resource> resource = normalized;
 	const String staging = staging_path(p_path);
 	discard_stale(staging);
 	Error error = DirAccess::make_dir_recursive_absolute(p_path.get_base_dir());
 	ERR_FAIL_COND_V(error != OK, error);
-	error = ResourceSaver::save(p_resource, staging, p_flags);
+	error = ResourceSaver::save(resource, staging, p_flags);
 	if (error != OK) {
 		discard_stale(staging);
 		return error;
