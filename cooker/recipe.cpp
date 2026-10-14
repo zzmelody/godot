@@ -897,8 +897,8 @@ struct Recipe {
 			float achieved_error = 0;
 			if (lua_gettop(p_state) == 3 && !lua_isnil(p_state, 3)) {
 				s.fields(3, {"ratio", "max_error"});
-				const double ratio = s.number_field(3, "ratio", 1);
-				max_error = s.number_field(3, "max_error", 0);
+				const double ratio = s.number_field(3, "ratio", 1, 0, 1);
+				max_error = s.number_field(3, "max_error", 0, 0, 0.05);
 				s.require(std::isfinite(ratio) && ratio > 0 && ratio <= 1 &&
                               std::isfinite(max_error) && max_error > 0 &&
                               max_error <= 0.05,
