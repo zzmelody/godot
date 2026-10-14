@@ -61,6 +61,8 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 	Error error = DirAccess::make_dir_recursive_absolute(directory);
 	ERR_FAIL_COND_V(error != OK, error);
 	uint64_t total_bytes = 0;
+	HashMap<String, Ref<Resource>> canonical;
+	HashMap<ObjectID, Ref<Resource>> aliases;
 	// Publish shaders, then materials, then meshes. Scenes can reuse the same
 	// shader instead of parsing and compiling a private copy per material.
 	for (int phase = 0; phase < 3; ++phase) {
@@ -69,6 +71,16 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 			const Ref<Shader> shader = resource;
 			const int resource_phase = shader.is_valid() ? 0 : material.is_valid() ? 1 : 2;
 			if (resource_phase != phase) continue;
+			if (const Ref<ShaderMaterial> shader_material = resource; shader_material.is_valid()) {
+				const Ref<Shader> original = shader_material->get_shader();
+				if (original.is_valid() && aliases.has(original->get_instance_id())) shader_material->set_shader(aliases[original->get_instance_id()]);
+			}
+			if (const Ref<Mesh> mesh = resource; mesh.is_valid()) {
+				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
+					const Ref<Material> original = mesh->surface_get_material(surface);
+					if (original.is_valid() && aliases.has(original->get_instance_id())) mesh->surface_set_material(surface, aliases[original->get_instance_id()]);
+				}
+			}
 			String path = resource->get_path();
 			if (!path.begins_with(directory + "/")) {
 				// Recipe-created materials and meshes can have no source path.
@@ -97,11 +109,48 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 					error = CookerAtomicSave::publish(temporary, path);
 					ERR_FAIL_COND_V(error != OK, error);
 				}
+			}
+			if (canonical.has(path)) {
+				aliases[resource->get_instance_id()] = canonical[path];
+			} else {
 				resource->set_path(path, true);
+				canonical[path] = resource;
+				aliases[resource->get_instance_id()] = resource;
 			}
 			r_outputs.push_back(path);
 		}
 	}
+	// set_path(take_over=true) on two equivalent objects clears the first
+	// object's path. Rebind the scene to one owner instead of embedding it again.
+	root = p_scene->instantiate();
+	ERR_FAIL_NULL_V(root, ERR_INVALID_DATA);
+	pending.push_back(root);
+	while (!pending.is_empty()) {
+		Node *node = pending[pending.size() - 1];
+		pending.resize(pending.size() - 1);
+		for (int child = 0; child < node->get_child_count(); ++child) pending.push_back(node->get_child(child));
+		if (auto *instance = Object::cast_to<MeshInstance3D>(node)) {
+			const Ref<Mesh> original = instance->get_mesh();
+			if (original.is_valid() && aliases.has(original->get_instance_id())) instance->set_mesh(aliases[original->get_instance_id()]);
+			for (int surface = 0; surface < instance->get_surface_override_material_count(); ++surface) {
+				const Ref<Material> original_material = instance->get_surface_override_material(surface);
+				if (original_material.is_valid() && aliases.has(original_material->get_instance_id())) instance->set_surface_override_material(surface, aliases[original_material->get_instance_id()]);
+			}
+		}
+		if (auto *batch = Object::cast_to<MultiMeshInstance3D>(node); batch && batch->get_multimesh().is_valid()) {
+			const Ref<Mesh> original = batch->get_multimesh()->get_mesh();
+			if (original.is_valid() && aliases.has(original->get_instance_id())) batch->get_multimesh()->set_mesh(aliases[original->get_instance_id()]);
+		}
+		if (auto *geometry = Object::cast_to<GeometryInstance3D>(node)) {
+			const Ref<Material> original = geometry->get_material_override();
+			if (original.is_valid() && aliases.has(original->get_instance_id())) geometry->set_material_override(aliases[original->get_instance_id()]);
+			const Ref<Material> overlay = geometry->get_material_overlay();
+			if (overlay.is_valid() && aliases.has(overlay->get_instance_id())) geometry->set_material_overlay(aliases[overlay->get_instance_id()]);
+		}
+	}
+	error = p_scene->pack(root);
+	memdelete(root);
+	ERR_FAIL_COND_V(error != OK, error);
 	return OK;
 }
 } // namespace CookerRender
