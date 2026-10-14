@@ -509,7 +509,7 @@ return cooker.scene({{asset=mesh,lightmap=true,name="Leaf"}})''',
 
     def test_recipe_created_render_dependencies_have_stable_byte_identity(self):
         source = '''local mesh=cooker.primitive("box",{})
-local material=cooker.material({albedo={0.2,0.4,0.6,1}})
+local material=cooker.material({color={0.2,0.4,0.6}})
 return cooker.scene({{asset=mesh,material=material}})'''
         outputs = []
         for index in range(2):
