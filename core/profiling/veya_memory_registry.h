@@ -37,6 +37,13 @@ public:
 			++overflows;
 			return false;
 		}
+		// Keep empty slots so both insertion and back-shift deletion stay
+		// bounded under pressure. An exhausted diagnostic index must not turn
+		// every allocation into a scan of millions of entries.
+		if (live >= capacity - (capacity >> 2)) {
+			++overflows;
+			return false;
+		}
 		size_t slot = Hash(p_entry.pointer) & (capacity - 1);
 		for (size_t visited = 0; visited < capacity; ++visited) {
 			auto &entry = entries[slot];

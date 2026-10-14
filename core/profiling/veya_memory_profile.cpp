@@ -13,7 +13,7 @@
 #include <tracy/TracyC.h>
 
 namespace {
-constexpr size_t kRegistryCapacity = 1u << 22;
+constexpr size_t kRegistryCapacity = 1u << 24;
 const char *const kNames[] = { "Godot", "Veya C++", "Flecs", "Luau runtime", "Luau descriptor", "Luau configuration", "Luau agent", "RmlUi C++" };
 std::mutex memory_mutex;
 VeyaMemoryRegistry registry;
