@@ -144,7 +144,7 @@ class Builder {
     }
     return true;
   }
-  Ref<Texture2D> TextureValue(const Ref<Texture2D>& source) {
+  Ref<Texture2D> TextureValue(const Ref<Texture2D>& source, bool normal = false) {
     const auto id = source->get_instance_id();
     if (textures_.count(id)) {
       return textures_.at(id);
@@ -161,7 +161,7 @@ class Builder {
                                     MAX(image->get_width(), image->get_height()));
     image->resize(MAX(1, int(image->get_width() * scale)),
                   MAX(1, int(image->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
-    image->generate_mipmaps();
+    image->generate_mipmaps(normal);
     Ref<Texture2D> result;
     if (options_.compress_color_textures && !options_.preserve_heightfields &&
         (image->get_format() == Image::FORMAT_RGB8 ||
@@ -172,7 +172,8 @@ class Builder {
       // serialized it. Runtime loading does not retain a decoded Image copy.
       compressed->set_keep_compressed_buffer(true);
       compressed->create_from_image(
-          image, PortableCompressedTexture2D::COMPRESSION_MODE_BPTC);
+          image, PortableCompressedTexture2D::COMPRESSION_MODE_BASIS_UNIVERSAL,
+          normal);
       if (compressed->get_width() != image->get_width() ||
           compressed->get_height() != image->get_height()) {
         return Ref<Texture2D>();
@@ -209,7 +210,8 @@ class Builder {
       }
       Ref<Texture2D> texture = value;
       if (texture.is_valid()) {
-        const Ref<Texture2D> minimum = TextureValue(texture);
+        const Ref<Texture2D> minimum =
+            TextureValue(texture, String(property.name).contains("normal"));
         if (minimum.is_null()) {
           return Ref<Material>();
         }

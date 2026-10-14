@@ -27,8 +27,8 @@
 
 namespace CookerStreaming {
 inline String PackageRoot(const String &path) {
-	if (path.begins_with("res://content/shared/")) {
-		return "res://content/shared/";
+	if (path.begins_with("res://assets/runtime/")) {
+		return "res://assets/runtime/";
 	}
 	for (const char *prefix : { "res://content/worlds/",
 				 "res://content/mod-worlds/" }) {
