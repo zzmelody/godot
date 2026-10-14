@@ -13,7 +13,7 @@
 #include <tracy/TracyC.h>
 
 namespace {
-constexpr size_t kRegistryCapacity = 1u << 24;
+constexpr size_t kRegistryCapacity = 1u << 22;
 const char *const kNames[] = { "Godot", "Veya C++", "Flecs", "Luau runtime", "Luau descriptor", "Luau configuration", "Luau agent", "RmlUi C++" };
 std::mutex memory_mutex;
 VeyaMemoryRegistry registry;
@@ -74,7 +74,13 @@ void AllocateLocked(const void *p_pointer, size_t p_bytes, uint32_t p_domain) {
 	++pool.allocations;
 	pool.allocated_bytes += p_bytes;
 	const uint64_t connection = Connection();
-	const bool sample = connection && registry.Sample(reinterpret_cast<uintptr_t>(p_pointer), p_bytes, counters.sample_every, counters.large_threshold);
+	const bool selected = registry.Sample(reinterpret_cast<uintptr_t>(p_pointer), p_bytes, counters.sample_every, counters.large_threshold);
+	// Godot owns its total memory counters. Store only selected Godot blocks,
+	// rather than millions of small engine bookkeeping allocations.
+	if (p_domain == 0 && !selected) {
+		return;
+	}
+	const bool sample = connection && selected;
 	if (!registry.Insert({ reinterpret_cast<uintptr_t>(p_pointer), p_bytes, sample ? connection : 0, p_domain })) {
 		return;
 	}
@@ -90,13 +96,20 @@ void FreeLocked(const void *p_pointer, uint32_t p_domain) {
 	if (!p_pointer || p_domain >= counters.domain_count) {
 		return;
 	}
+	if (p_domain == 0) {
+		++counters.domains[0].frees;
+	}
 	VeyaMemoryEntry entry;
 	if (!registry.Remove(reinterpret_cast<uintptr_t>(p_pointer), entry)) {
-		++counters.domains[p_domain].unmatched_frees;
+		if (p_domain != 0) {
+			++counters.domains[p_domain].unmatched_frees;
+		}
 		return;
 	}
 	auto &pool = counters.domains[entry.domain];
-	++pool.frees;
+	if (entry.domain != 0) {
+		++pool.frees;
+	}
 	pool.live_bytes -= entry.bytes;
 	if (entry.connection && entry.connection == Connection()) {
 		___tracy_emit_memory_free_named(p_pointer, 1, kNames[entry.domain]);
