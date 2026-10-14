@@ -1,7 +1,7 @@
 # Cooker Luau recipe API v9
 
 `run-recipe` accepts `external_render_resources=true` for static fragments.
-The host saves Mesh and Material resources under the output's
+The host saves Shader, Material and Mesh resources under the output's
 `render-resources/` directory. Scene and render output sizes remain bounded by
 `limits.output_mb`. Use `include_render_dependencies=true` in the owning
 asset-manifest step. Recipe-created resources without a source path use a fixed
