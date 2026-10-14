@@ -139,6 +139,20 @@ public:
 		bool extend_to_title = false;
 		bool hide_from_capture = false;
 
+		// Wallpaper presentation owns a reversible snapshot of this window.
+		bool wallpaper = false;
+		bool wallpaper_input = false;
+		NSRect wallpaper_frame = {};
+		NSInteger wallpaper_level = 0;
+		NSWindowCollectionBehavior wallpaper_collection = 0;
+		bool wallpaper_ignores_mouse = false;
+		bool wallpaper_shadow = false;
+		bool wallpaper_hides = false;
+		bool wallpaper_borderless = false;
+		bool wallpaper_no_focus = false;
+		bool wallpaper_on_top = false;
+		bool wallpaper_minimized = false;
+
 		HDROutput hdr_output;
 
 		Rect2i parent_safe_rect;
@@ -353,6 +367,10 @@ public:
 
 	virtual void window_set_mode(DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 	virtual DisplayServerEnums::WindowMode window_get_mode(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
+
+	virtual Error window_set_wallpaper_parent(int64_t p_parent, int64_t p_after, const Rect2i &p_rect, bool p_layered, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
+	virtual Error window_restore_wallpaper(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
+	virtual void window_set_wallpaper_input(bool p_enabled, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 
 	virtual bool window_is_maximize_allowed(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
 

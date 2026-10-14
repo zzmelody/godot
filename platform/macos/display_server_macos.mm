@@ -280,6 +280,11 @@ DisplayServerEnums::WindowID DisplayServerMacOS::_create_window(DisplayServerEnu
 }
 
 void DisplayServerMacOS::_update_window_style(WindowData p_wd, DisplayServerEnums::WindowID p_window) {
+	if (p_wd.wallpaper) {
+		[p_wd.window_object setLevel:CGWindowLevelForKey(kCGDesktopWindowLevelKey) + 1];
+		[p_wd.window_object setHidesOnDeactivate:NO];
+		return;
+	}
 	bool borderless_full = false;
 
 	if (p_wd.borderless) {
@@ -2158,7 +2163,8 @@ void DisplayServerMacOS::window_set_size(const Size2i p_size, DisplayServerEnums
 	ERR_FAIL_COND(!windows.has(p_window));
 	WindowData &wd = windows[p_window];
 
-	if (NSEqualRects([wd.window_object frame], [[wd.window_object screen] visibleFrame])) {
+	// Wallpaper must resize a previously maximized window to the desktop union.
+	if (!wd.wallpaper && NSEqualRects([wd.window_object frame], [[wd.window_object screen] visibleFrame])) {
 		return;
 	}
 
@@ -2195,6 +2201,81 @@ Size2i DisplayServerMacOS::window_get_size_with_decorations(DisplayServerEnums::
 	const WindowData &wd = windows[p_window];
 	NSRect frame = [wd.window_object frame];
 	return Size2i(frame.size.width, frame.size.height) * screen_get_max_scale();
+}
+
+Error DisplayServerMacOS::window_set_wallpaper_parent(int64_t p_parent, int64_t p_after, const Rect2i &p_rect, bool p_layered, DisplayServerEnums::WindowID p_window) {
+	_THREAD_SAFE_METHOD_
+	ERR_FAIL_COND_V(![NSThread isMainThread] || !windows.has(p_window), ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_rect.size.x <= 0 || p_rect.size.y <= 0, ERR_INVALID_PARAMETER);
+	WindowData &wd = windows[p_window];
+	// Native fullscreen transitions are asynchronous. Refuse before touching
+	// the window; the player can first return to ordinary window mode.
+	ERR_FAIL_COND_V(wd.fs_transition || wd.fullscreen, ERR_BUSY);
+	if (!wd.wallpaper) {
+		wd.wallpaper_frame = [wd.window_object frame];
+		wd.wallpaper_level = [wd.window_object level];
+		wd.wallpaper_collection = [wd.window_object collectionBehavior];
+		wd.wallpaper_ignores_mouse = [wd.window_object ignoresMouseEvents];
+		wd.wallpaper_shadow = [wd.window_object hasShadow];
+		wd.wallpaper_hides = [wd.window_object hidesOnDeactivate];
+		wd.wallpaper_borderless = wd.borderless;
+		wd.wallpaper_no_focus = wd.no_focus;
+		wd.wallpaper_on_top = wd.on_top;
+		wd.wallpaper_minimized = [wd.window_object isMiniaturized];
+		wd.wallpaper = true;
+	}
+	if ([wd.window_object isMiniaturized]) {
+		[wd.window_object deminiaturize:nil];
+	}
+	release_pressed_events();
+	window_set_flag(DisplayServerEnums::WINDOW_FLAG_ALWAYS_ON_TOP, false, p_window);
+	window_set_flag(DisplayServerEnums::WINDOW_FLAG_NO_FOCUS, true, p_window);
+	window_set_flag(DisplayServerEnums::WINDOW_FLAG_BORDERLESS, true, p_window);
+	// The backend reports Godot desktop coordinates in screen_get_max_scale
+	// pixels. Use the same coordinate conversion as ordinary window methods.
+	window_set_size(p_rect.size, p_window);
+	window_set_position(p_rect.position, p_window);
+	[wd.window_object setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle];
+	[wd.window_object setIgnoresMouseEvents:YES];
+	[wd.window_object setHasShadow:NO];
+	[wd.window_object setHidesOnDeactivate:NO];
+	[wd.window_object setLevel:CGWindowLevelForKey(kCGDesktopWindowLevelKey) + 1];
+	[wd.window_object orderFrontRegardless];
+	return OK;
+}
+
+Error DisplayServerMacOS::window_restore_wallpaper(DisplayServerEnums::WindowID p_window) {
+	_THREAD_SAFE_METHOD_
+	ERR_FAIL_COND_V(![NSThread isMainThread] || !windows.has(p_window), ERR_INVALID_PARAMETER);
+	WindowData &wd = windows[p_window];
+	if (!wd.wallpaper) {
+		return OK;
+	}
+	wd.wallpaper_input = false;
+	wd.wallpaper = false;
+	window_set_flag(DisplayServerEnums::WINDOW_FLAG_BORDERLESS, wd.wallpaper_borderless, p_window);
+	window_set_flag(DisplayServerEnums::WINDOW_FLAG_NO_FOCUS, wd.wallpaper_no_focus, p_window);
+	window_set_flag(DisplayServerEnums::WINDOW_FLAG_ALWAYS_ON_TOP, wd.wallpaper_on_top, p_window);
+	[wd.window_object setCollectionBehavior:wd.wallpaper_collection];
+	[wd.window_object setIgnoresMouseEvents:wd.wallpaper_ignores_mouse];
+	[wd.window_object setHasShadow:wd.wallpaper_shadow];
+	[wd.window_object setHidesOnDeactivate:wd.wallpaper_hides];
+	[wd.window_object setLevel:wd.wallpaper_level];
+	[wd.window_object setFrame:wd.wallpaper_frame display:YES];
+	if (wd.wallpaper_minimized) {
+		[wd.window_object miniaturize:nil];
+	} else if (!wd.no_focus) {
+		[wd.window_object makeKeyAndOrderFront:nil];
+	}
+	return OK;
+}
+
+void DisplayServerMacOS::window_set_wallpaper_input(bool p_enabled, DisplayServerEnums::WindowID p_window) {
+	_THREAD_SAFE_METHOD_
+	ERR_FAIL_COND(!windows.has(p_window));
+	// CGEventTap in the value-only backend supplies relative camera motion.
+	// Never enable native hit testing or capture on the Finder desktop window.
+	windows[p_window].wallpaper_input = p_enabled && windows[p_window].wallpaper;
 }
 
 void DisplayServerMacOS::window_set_mode(DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::WindowID p_window) {
@@ -3224,7 +3305,7 @@ void DisplayServerMacOS::_process_events(bool p_pump) {
 
 	for (KeyValue<DisplayServerEnums::WindowID, WindowData> &E : windows) {
 		WindowData &wd = E.value;
-		if (wd.mpass) {
+		if (wd.wallpaper || wd.mpass) {
 			if (![wd.window_object ignoresMouseEvents]) {
 				[wd.window_object setIgnoresMouseEvents:YES];
 			}
