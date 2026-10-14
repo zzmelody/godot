@@ -50,7 +50,7 @@ bool ground_signal_track(const Ref<Animation>& animation, int track) {
 		return false;
 	}
 	const NodePath path = animation->track_get_path(track);
-	if (path.get_name_count() != 1 || path.get_name(0) != StringName("CharacterPoseSignals") ||
+  if (path.is_absolute() || path.get_name_count() != 1 || path.get_name(0) != StringName("CharacterPoseSignals") ||
 			path.get_subname_count() != 1) {
 		return false;
 	}
@@ -59,7 +59,8 @@ bool ground_signal_track(const Ref<Animation>& animation, int track) {
   if (!stride && property != StringName("left_contact") && property != StringName("right_contact") && property != StringName("cycle_weight")) {
 		return false;
 	}
-	for (int key = 0; key < animation->track_get_key_count(track); ++key) {
+  if (animation->track_get_key_count(track) > 1801) return false;
+  for (int key = 0; key < animation->track_get_key_count(track); ++key) {
 		const Variant value = animation->track_get_key_value(track, key);
 		const double time = animation->track_get_key_time(track, key);
 		if (value.get_type() != Variant::FLOAT || !Math::is_finite(double(value)) ||
