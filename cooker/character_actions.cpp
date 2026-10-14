@@ -56,7 +56,7 @@ bool ground_signal_track(const Ref<Animation>& animation, int track) {
 	}
 	const StringName property = path.get_subname(0);
 	const bool stride = property == StringName("stride_length");
-	if (!stride && property != StringName("left_contact") && property != StringName("right_contact")) {
+  if (!stride && property != StringName("left_contact") && property != StringName("right_contact") && property != StringName("cycle_weight")) {
 		return false;
 	}
 	for (int key = 0; key < animation->track_get_key_count(track); ++key) {
@@ -1044,6 +1044,11 @@ Error PrepareGroundCycles(const Dictionary &job, const Ref<AnimationLibrary> &li
 		prepared->value_track_set_update_mode(stride_track, Animation::UPDATE_CONTINUOUS);
 		prepared->track_insert_key(stride_track, 0, stride);
 		prepared->track_insert_key(stride_track, 1, stride);
+    const int weight_track = prepared->add_track(Animation::TYPE_VALUE);
+    prepared->track_set_path(weight_track, NodePath("CharacterPoseSignals:cycle_weight"));
+    prepared->value_track_set_update_mode(weight_track, Animation::UPDATE_CONTINUOUS);
+    prepared->track_insert_key(weight_track, 0, 1.0);
+    prepared->track_insert_key(weight_track, 1, 1.0);
 		gait["phase_origin"] = 0.0;
 		gait["left_contact"] = contacts[0];
 		gait["right_contact"] = contacts[1];
