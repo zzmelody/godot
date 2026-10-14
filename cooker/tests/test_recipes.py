@@ -568,10 +568,14 @@ func _initialize():
                 '[gd_resource type="ShaderMaterial" load_steps=2 format=3]\n'
                 '[ext_resource type="Shader" path="res://shared.gdshader" id="1"]\n'
                 f'[resource]\nshader=ExtResource("1")\nshader_parameter/tint=Color({color})\n')
+            self.job({"operation": "save-resource", "source": f"res://{name}.tres",
+                      "output": f"res://content/worlds/fixture/generated/{name}.res",
+                      "type": "ShaderMaterial"})
         original = self.recipe('''local mesh=cooker.primitive("box",{})
 return cooker.scene({{asset=mesh,material=cooker.input("a")},
  {asset=mesh,material=cooker.input("b"),position={3,0,0}}})''',
-                               inputs={"a": "res://a.tres", "b": "res://b.tres"},
+                               inputs={"a": "res://content/worlds/fixture/generated/a.res",
+                                       "b": "res://content/worlds/fixture/generated/b.res"},
                                output="res://content/worlds/fixture/generated/source.scn")
         minimum = self.recipe('return cooker.minimum_visual("visual",{triangle_ratio=1})',
                               inputs={"visual": original["output"]},
