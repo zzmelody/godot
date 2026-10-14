@@ -1,5 +1,14 @@
 # Cooker Luau recipe API v9
 
+`run-recipe` accepts `external_render_resources=true` for static fragments.
+The host saves Mesh and Material resources under the output's
+`render-resources/` directory. Scene and render output sizes remain bounded by
+`limits.output_mb`. Use `include_render_dependencies=true` in the owning
+asset-manifest step. Recipe-created resources without a source path use a fixed
+private staging path and the MD5 of saved bytes as their final filename. No
+ObjectID enters a persistent identity. The scene keeps its original transforms
+and MultiMesh batches. These outputs must remain in the module's assets closure.
+
 Veya GI additions: `atmosphere` accepts `sdfgi_enabled`, `sdfgi_cascades`
 (4/6/8), `sdfgi_cell_size` (.25..8), `sdfgi_occlusion`, `sdfgi_read_sky`,
 `sdfgi_bounce` (0...5), `sdfgi_energy` (0..2), and normal/probe bias (.1..4).

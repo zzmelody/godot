@@ -507,6 +507,21 @@ return cooker.scene({{asset=mesh,lightmap=true,name="Leaf"}})''',
                                  {entry["path"] for entry in row["streaming"]["dependencies"]})
                 self.assertTrue(any(entry["dependencies"] == [] for entry in graph))
 
+    def test_recipe_created_render_dependencies_have_stable_byte_identity(self):
+        source = '''local mesh=cooker.primitive("box",{})
+local material=cooker.material({albedo={0.2,0.4,0.6,1}})
+return cooker.scene({{asset=mesh,material=material}})'''
+        outputs = []
+        for index in range(2):
+            result = self.recipe(source, external_render_resources=True,
+                                 output=f"res://content/worlds/fixture/generated/anonymous/part_{index}.scn")
+            outputs.append(sorted(result["render_outputs"]))
+            checked = self.job({"operation": "validate-resource", "source": result["output"],
+                                "type": "PackedScene"})
+            self.assertEqual(checked["node_count"], 2)
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertEqual(len(outputs[0]), 2)
+
     def test_minimum_color_texture_compression_survives_resource_save(self):
         source = self.recipe('''local texture=cooker.procedural_texture({kind="soft-noise",size=64,seed=17})
 local material=cooker.material({albedo_texture=texture})

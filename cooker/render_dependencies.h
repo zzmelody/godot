@@ -61,8 +61,11 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 			if (material.is_valid() != (phase == 0)) continue;
 			String path = resource->get_path();
 			if (!path.begins_with(directory + "/")) {
-				ERR_FAIL_COND_V(path.is_empty(), ERR_INVALID_DATA);
-				const String temporary = directory.path_join(path.sha256_text() + ".partial.res");
+				// Recipe-created materials and meshes can have no source path.
+				// A fixed staging path keeps serialization independent of ObjectID
+				// and discovery order; the saved bytes provide their final identity.
+				const String stem = path.is_empty() ? (material.is_valid() ? "anonymous-material" : "anonymous-mesh") : path.sha256_text();
+				const String temporary = directory.path_join(stem + ".partial.res");
 				CookerOutputLock::Guard lock(temporary);
 				ERR_FAIL_COND_V(!lock.acquired(), ERR_BUSY);
 				CookerAtomicSave::discard_stale(temporary);
