@@ -505,7 +505,13 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 						}
 
 						if (set_valid) {
-							GodotProfileZone("Veya/Engine/Scene/set_property");
+							GodotProfileZoneGroupedFirst(_veya_property, "Veya/Engine/Scene/set_property");
+#ifdef GODOT_USE_TRACY
+							if (TracyIsConnected) {
+								const CharString context = (node->get_class() + "/" + String(snames[nprops[j].name])).utf8();
+								ZoneTextV(__godot_tracy_zone__veya_property, context.get_data(), context.length());
+							}
+#endif
 							node->set(snames[nprops[j].name], value, &valid);
 						}
 						if (p_edit_state == GEN_EDIT_STATE_INSTANCE && value.get_type() != Variant::OBJECT) {
