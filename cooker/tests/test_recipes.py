@@ -562,12 +562,12 @@ func _initialize():
 
     def test_minimum_materials_share_external_shader(self):
         (self.project / "shared.gdshader").write_text(
-            "shader_type spatial; uniform vec4 tint; void fragment(){ALBEDO=tint.rgb;}")
-        for name, color in (("a", "1,0,0,1"), ("b", "0,1,0,1")):
+            "shader_type spatial; void fragment(){ALBEDO=vec3(0.5);}")
+        for name, priority in (("a", 1), ("b", 2)):
             (self.project / f"{name}.tres").write_text(
                 '[gd_resource type="ShaderMaterial" load_steps=2 format=3]\n'
                 '[ext_resource type="Shader" path="res://shared.gdshader" id="1"]\n'
-                f'[resource]\nshader=ExtResource("1")\nshader_parameter/tint=Color({color})\n')
+                f'[resource]\nshader=ExtResource("1")\nrender_priority={priority}\n')
             self.job({"operation": "save-resource", "source": f"res://{name}.tres",
                       "output": f"res://content/worlds/fixture/generated/{name}.res",
                       "type": "ShaderMaterial"})
@@ -591,7 +591,7 @@ func _initialize():
     var second = scene.get_child(1).material_override as ShaderMaterial
     var valid = first != null and second != null and first != second
     valid = valid and first.shader == second.shader and not first.shader.resource_path.is_empty()
-    valid = valid and first.get_shader_parameter("tint") != second.get_shader_parameter("tint")
+    valid = valid and first.render_priority == 1 and second.render_priority == 2
     scene.free()
     print("MINIMUM_SHARED_SHADER:", valid)
     quit(0 if valid else 1)
