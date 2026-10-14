@@ -6,6 +6,8 @@
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/material.h"
+#include "scene/resources/shader.h"
 
 namespace CookerRender {
 struct PathOrder {
@@ -45,6 +47,12 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 		}
 	}
 	memdelete(root);
+	Vector<Ref<Shader>> shaders;
+	for (const KeyValue<ObjectID, Ref<Resource>> &entry : resources) {
+		const Ref<ShaderMaterial> material = entry.value;
+		if (material.is_valid() && material->get_shader().is_valid()) shaders.push_back(material->get_shader());
+	}
+	for (const Ref<Shader> &shader : shaders) resources[shader->get_instance_id()] = shader;
 	ERR_FAIL_COND_V(resources.size() > 256, ERR_INVALID_DATA);
 	Vector<Ref<Resource>> ordered;
 	for (const KeyValue<ObjectID, Ref<Resource>> &entry : resources) ordered.push_back(entry.value);
@@ -53,18 +61,20 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 	Error error = DirAccess::make_dir_recursive_absolute(directory);
 	ERR_FAIL_COND_V(error != OK, error);
 	uint64_t total_bytes = 0;
-	// Publish materials first. Meshes then reference them instead of embedding
-	// another copy of their shaders and textures in each fragment.
-	for (int phase = 0; phase < 2; ++phase) {
+	// Publish shaders, then materials, then meshes. Scenes can reuse the same
+	// shader instead of parsing and compiling a private copy per material.
+	for (int phase = 0; phase < 3; ++phase) {
 		for (const Ref<Resource> &resource : ordered) {
 			const Ref<Material> material = resource;
-			if (material.is_valid() != (phase == 0)) continue;
+			const Ref<Shader> shader = resource;
+			const int resource_phase = shader.is_valid() ? 0 : material.is_valid() ? 1 : 2;
+			if (resource_phase != phase) continue;
 			String path = resource->get_path();
 			if (!path.begins_with(directory + "/")) {
 				// Recipe-created materials and meshes can have no source path.
 				// A fixed staging path keeps serialization independent of ObjectID
 				// and discovery order; the saved bytes provide their final identity.
-				const String stem = path.is_empty() ? (material.is_valid() ? "anonymous-material" : "anonymous-mesh") : path.sha256_text();
+				const String stem = path.is_empty() ? (shader.is_valid() ? "anonymous-shader" : material.is_valid() ? "anonymous-material" : "anonymous-mesh") : path.sha256_text();
 				const String temporary = directory.path_join(stem + ".partial.res");
 				CookerOutputLock::Guard lock(temporary);
 				ERR_FAIL_COND_V(!lock.acquired(), ERR_BUSY);

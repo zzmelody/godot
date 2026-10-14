@@ -226,6 +226,12 @@ class Builder {
       Ref<Shader> shader = value;
       if (shader.is_valid()) {
         Ref<Shader> minimum;
+        const auto shader_id = shader->get_instance_id();
+        const auto cached_shader = shaders_.find(shader_id);
+        if (cached_shader != shaders_.end()) {
+          result->set(property.name, cached_shader->second);
+          continue;
+        }
         minimum.instantiate();
         minimum->set_code(shader->get_code());
         List<StringName> names;
@@ -248,6 +254,7 @@ class Builder {
             minimum->set_default_texture_parameter(name, reduced, index);
           }
         }
+        shaders_.emplace(shader_id, minimum);
         result->set(property.name, minimum);
       }
     }
@@ -428,6 +435,7 @@ class Builder {
   size_t nodes_ = 0, instances_ = 0;
   std::map<ObjectID, Ref<Mesh>> meshes_;
   std::map<ObjectID, Ref<Material>> materials_;
+  std::map<ObjectID, Ref<Shader>> shaders_;
   std::map<ObjectID, Ref<Texture2D>> textures_;
 };
 }  // namespace CookerMinimum
