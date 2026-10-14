@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/profiling/profiling.gen.h" // IWYU pragma: keep.
+#include "core/profiling/veya_memory_profile.h"
 
 // This header provides profiling primitives (implemented as macros) for various backends.
 // See the "No profiling" branch at the bottom for a short description of the functions.
@@ -84,9 +85,9 @@ const SourceLocationData *intern_source_location(const void *p_function_ptr, con
 #ifdef GODOT_PROFILER_TRACK_MEMORY
 #define GodotProfileAlloc(m_ptr, m_size) \
 	GODOT_GCC_WARNING_PUSH_AND_IGNORE("-Wmaybe-uninitialized") \
-	TracyAlloc(m_ptr, m_size); \
+	VeyaProfileMemoryAllocate(m_ptr, m_size); \
 	GODOT_GCC_WARNING_POP
-#define GodotProfileFree(m_ptr) TracyFree(m_ptr)
+#define GodotProfileFree(m_ptr) VeyaProfileMemoryFree(m_ptr)
 #else
 #define GodotProfileAlloc(m_ptr, m_size)
 #define GodotProfileFree(m_ptr)
@@ -270,3 +271,7 @@ void godot_cleanup_profiler();
 #define GodotProfileZoneScriptSystemCall(m_ptr, m_file, m_function, m_name, m_line)
 
 #endif
+
+// Preserve the original allocator. Recording serializes successful realloc
+// transitions, and leaves the old allocation intact when realloc fails.
+#define GodotProfileRealloc(m_ptr, m_size) VeyaProfileMemoryReallocate(m_ptr, m_size, realloc)

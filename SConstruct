@@ -563,6 +563,8 @@ if env.debug_features and not env["veya_cooker"] and env["veya_debug_tracy"] and
         Exit(255)
     env["profiler"] = "tracy"
     env["profiler_path"] = str(tracy_source)
+    # The runtime flag keeps normal debug timing free of allocation tracing.
+    env["profiler_track_memory"] = True
     env["profiler_record_on_demand"] = True
     # Keep the declared profiler_sample_callstack default. Explicit sampling
     # remains available for investigations; ordinary timing captures must not
