@@ -2,6 +2,7 @@
 #include "recipe.h"
 #include "asset_files.h"
 #include "atomic_save.h"
+#include "collision_support.h"
 #include "minimum_visual.h"
 #include "render_dependencies.h"
 
@@ -869,11 +870,14 @@ struct Recipe {
 	}
 	static int collision(lua_State *p_state) {
 		auto &s = self(p_state);
-		s.arity(2);
+		s.require(lua_gettop(p_state) == 2 || lua_gettop(p_state) == 3,
+                  "collision expects mesh, kind and optional simplification");
 		Ref<Mesh> mesh = s.handle(1);
 		s.require(mesh.is_valid(), "collision requires a Mesh handle");
 		const String kind = s.string(2);
 		s.require(kind == "trimesh" || kind == "convex", "collision kind must be trimesh or convex");
+		s.require(lua_gettop(p_state) == 2 || lua_isnil(p_state, 3) || kind == "trimesh",
+                  "collision simplification requires trimesh");
 		const Vector<Face3> triangles = mesh->get_faces();
 		s.require(!triangles.is_empty(), "collision requires complete triangle faces");
 		s.require(triangles.size() <= int64_t(s.limits.max_vertices) * 2, "collision triangle budget exceeded");
@@ -888,9 +892,30 @@ struct Recipe {
 		}
 		Ref<Shape3D> shape;
 		if (kind == "trimesh") {
+			const int original_faces = faces.size();
+			double max_error = 0;
+			float achieved_error = 0;
+			if (lua_gettop(p_state) == 3 && !lua_isnil(p_state, 3)) {
+				s.fields(3, {"ratio", "max_error"});
+				const double ratio = s.number_field(3, "ratio", 1);
+				max_error = s.number_field(3, "max_error", 0);
+				s.require(std::isfinite(ratio) && ratio > 0 && ratio <= 1 &&
+                              std::isfinite(max_error) && max_error > 0 &&
+                              max_error <= 0.05,
+                          "collision simplification limits are invalid");
+				achieved_error = cooker_collision::Simplify(faces, ratio, max_error);
+			}
 			Ref<ConcavePolygonShape3D> concave;
 			concave.instantiate();
 			concave->set_faces(faces);
+			Dictionary support;
+			support["version"] = 1;
+			support["source_triangles"] = original_faces / 3;
+			support["triangles"] = faces.size() / 3;
+			support["maximum_error_metres"] = max_error;
+			support["achieved_error_metres"] = achieved_error;
+			support["locked_borders"] = true;
+			concave->set_meta("veya_collision_support", support);
 			shape = concave;
 		} else {
 			shape = mesh->create_convex_shape(true, false);

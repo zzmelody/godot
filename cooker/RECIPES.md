@@ -269,3 +269,7 @@ fail. Selected subtrees retain their complete transforms, geometry and cull
 margins. `keep` localizes the selected nodes; the output does not instance the
 complete source scene. This is preparation partitioning, not a simulation,
 entity or spatial culling boundary.
+
+## Collision support simplification
+
+`cooker.collision(mesh, "trimesh", {ratio = 0.35, max_error = 0.01})` emits a standalone read-only Shape. `max_error` is the meshoptimizer metric in local metres, bounded above by 0.05. Chunk borders stay fixed. Omitting the options keeps exact triangles. Navigation stays on its separately admitted source. Shape metadata records source/output triangle counts and achieved error.
