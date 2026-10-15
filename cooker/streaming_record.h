@@ -1,6 +1,7 @@
 #pragma once
 /*<<----- VEYA_COOKER: Value-only admission profile with conservative runtime accounting. */
 
+#include "character_actions.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
@@ -13,6 +14,7 @@
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/3d/skeleton_3d.h"
+#include "scene/animation/animation_player.h"
 #include "scene/resources/3d/box_shape_3d.h"
 #include "scene/resources/3d/capsule_shape_3d.h"
 #include "scene/resources/3d/concave_polygon_shape_3d.h"
@@ -394,29 +396,158 @@ inline Transform3D Axes(Skeleton3D *skeleton) {
 	}
 	return result;
 }
-inline Error CheckSupport(Node *root, const String &path, String &support_path) {
-	const Ref<PackedScene> support = root->get_meta("character_simulation", Variant());
-	const String relative = root->get_meta("character_simulation_path", "");
-	ERR_FAIL_COND_V(support.is_null() || relative.is_empty() || relative != relative.get_file() ||
-					!relative.ends_with(".scn") || support->get_path() != path.get_base_dir().path_join(relative),
-			ERR_INVALID_DATA);
-	Node *support_root = support->instantiate();
-	Skeleton3D *detailed = Skeleton(root);
-	Skeleton3D *simulation = Skeleton(support_root);
-	bool matching = detailed && simulation && detailed->get_bone_count() > 0 &&
-			detailed->get_bone_count() <= 128 &&
-			detailed->get_bone_count() == simulation->get_bone_count() &&
-			Math::is_equal_approx(detailed->get_motion_scale(), simulation->get_motion_scale()) &&
-			Axes(detailed).is_equal_approx(Axes(simulation));
-	for (int bone = 0; matching && bone < detailed->get_bone_count(); ++bone) {
-		matching = detailed->get_bone_name(bone) == simulation->get_bone_name(bone) &&
-				detailed->get_bone_parent(bone) == simulation->get_bone_parent(bone) &&
-				detailed->get_bone_rest(bone).is_equal_approx(simulation->get_bone_rest(bone));
-	}
-	if (support_root) {
-		memdelete(support_root);
-	}
-	ERR_FAIL_COND_V(!matching, ERR_INVALID_DATA);
+inline bool SupportValuesValid(const Variant& value, HashSet<ObjectID>& seen,
+                               int depth) {
+  if (depth >= 32) {
+    return false;
+  }
+  if (value.get_type() == Variant::OBJECT) {
+    const Ref<Resource> resource = value;
+    if (resource.is_null()) {
+      return static_cast<Object*>(value) == nullptr;
+    }
+    const ObjectID id = resource->get_instance_id();
+    if (seen.has(id)) {
+      return true;
+    }
+    seen.insert(id);
+    const StringName type = resource->get_class_name();
+    if (seen.size() > 4096 || (type != "PackedScene" && type != "Animation" &&
+                               type != "AnimationLibrary" && type != "Curve")) {
+      return false;
+    }
+    List<PropertyInfo> properties;
+    resource->get_property_list(&properties);
+    for (const PropertyInfo& property : properties) {
+      if ((property.usage & PROPERTY_USAGE_STORAGE) &&
+          !SupportValuesValid(resource->get(property.name), seen, depth + 1)) {
+        return false;
+      }
+    }
+  } else if (value.get_type() == Variant::ARRAY) {
+    const Array values = value;
+    if (values.size() > 16384) {
+      return false;
+    }
+    for (int index = 0; index < values.size(); ++index) {
+      if (!SupportValuesValid(values[index], seen, depth + 1)) {
+        return false;
+      }
+    }
+  } else if (value.get_type() == Variant::DICTIONARY) {
+    const Dictionary values = value;
+    if (values.size() > 16384) {
+      return false;
+    }
+    for (const Variant& key : values.keys()) {
+      if (!SupportValuesValid(values[key], seen, depth + 1)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+inline bool SupportTreeValid(Node* root, int& nodes) {
+  const StringName type = root->get_class_name();
+  if (root->get_script_instance() || ++nodes > 256 ||
+      (type != "Node3D" && type != "Skeleton3D" && type != "BoneAttachment3D" &&
+       type != "AnimationPlayer")) {
+    return false;
+  }
+  for (int index = 0; index < root->get_child_count(); ++index) {
+    if (!SupportTreeValid(root->get_child(index), nodes)) {
+      return false;
+    }
+  }
+  return true;
+}
+inline AnimationPlayer* SupportPlayer(Node* root) {
+  if (auto* player = Object::cast_to<AnimationPlayer>(root)) {
+    return player;
+  }
+  for (int index = 0; index < root->get_child_count(); ++index) {
+    if (auto* player = SupportPlayer(root->get_child(index))) {
+      return player;
+    }
+  }
+  return nullptr;
+}
+inline Error CheckSupportResource(const Ref<PackedScene>& resource,
+                                  Node* root) {
+  int nodes = 0;
+  HashSet<ObjectID> seen;
+  ERR_FAIL_COND_V(!root || !SupportValuesValid(resource, seen, 0) ||
+                      !SupportTreeValid(root, nodes),
+                  ERR_INVALID_DATA);
+  Skeleton3D* skeleton = Skeleton(root);
+  AnimationPlayer* player = SupportPlayer(root);
+  ERR_FAIL_COND_V(!skeleton || !player ||
+                      !bool(root->get_meta("veya_simulation_support", false)) ||
+                      skeleton->get_bone_count() <= 0 ||
+                      skeleton->get_bone_count() > 128 ||
+                      !Math::is_finite(skeleton->get_motion_scale()) ||
+                      skeleton->get_motion_scale() <= 0 ||
+                      !player->has_animation("character/move.idle"),
+                  ERR_INVALID_DATA);
+  LocalVector<StringName> animations;
+  player->get_animation_list(&animations);
+  for (const StringName& name : animations) {
+    const Ref<Animation> animation = player->get_animation(name);
+    ERR_FAIL_COND_V(animation.is_null() || animation->get_track_count() > 512,
+                    ERR_INVALID_DATA);
+    for (int track = 0; track < animation->get_track_count(); ++track) {
+      if (CookerCharacter::IsGroundSignalTrack(animation, track)) {
+        continue;
+      }
+      const auto type = animation->track_get_type(track);
+      const NodePath path = animation->track_get_path(track);
+      Node* target = player->get_node_or_null(player->get_root_node());
+      if (target && path.get_name_count() > 0) {
+        target =
+            target->get_node_or_null(NodePath(path.get_concatenated_names()));
+      }
+      ERR_FAIL_COND_V((type != Animation::TYPE_POSITION_3D &&
+                       type != Animation::TYPE_ROTATION_3D &&
+                       type != Animation::TYPE_SCALE_3D) ||
+                          path.get_subname_count() != 1 || target != skeleton ||
+                          skeleton->find_bone(path.get_subname(0)) < 0 ||
+                          animation->track_get_key_count(track) > 1000000,
+                      ERR_INVALID_DATA);
+    }
+  }
+  return OK;
+}
+inline Error CheckSupport(Node* root, const String& path,
+                          String& support_path) {
+  const Ref<PackedScene> support =
+      root->get_meta("character_simulation", Variant());
+  const String relative = root->get_meta("character_simulation_path", "");
+  ERR_FAIL_COND_V(
+      support.is_null() || relative.is_empty() ||
+          relative != relative.get_file() || !relative.ends_with(".scn") ||
+          support->get_path() != path.get_base_dir().path_join(relative),
+      ERR_INVALID_DATA);
+  Node* support_root = support->instantiate();
+  Skeleton3D* detailed = Skeleton(root);
+  Skeleton3D* simulation = Skeleton(support_root);
+  bool matching = CheckSupportResource(support, support_root) == OK &&
+                  detailed && simulation && detailed->get_bone_count() > 0 &&
+                  detailed->get_bone_count() <= 128 &&
+                  detailed->get_bone_count() == simulation->get_bone_count() &&
+                  Math::is_equal_approx(detailed->get_motion_scale(),
+                                        simulation->get_motion_scale()) &&
+                  Axes(detailed).is_equal_approx(Axes(simulation));
+  for (int bone = 0; matching && bone < detailed->get_bone_count(); ++bone) {
+    matching =
+        detailed->get_bone_name(bone) == simulation->get_bone_name(bone) &&
+        detailed->get_bone_parent(bone) == simulation->get_bone_parent(bone) &&
+        detailed->get_bone_rest(bone).is_equal_approx(
+            simulation->get_bone_rest(bone));
+  }
+  if (support_root) {
+    memdelete(support_root);
+  }
+  ERR_FAIL_COND_V(!matching, ERR_INVALID_DATA);
 	support_path = support->get_path();
 	return OK;
 }
@@ -442,23 +573,29 @@ inline Error Record(const String &path, Dictionary &output,
 	if (scene.is_valid()) {
 		Node *root = scene->instantiate();
 		error = MeasureTree(root, Transform3D(), measure);
+		if (error == OK && bool(root->get_meta("veya_simulation_support", false))) {
+			error = CheckSupportResource(scene, root);
+			if (error == OK) {
+				output["simulation_support_valid"] = true;
+			}
+		}
 		if (error == OK) {
 			layout_valid = true;
 			for (int i = 0; i < root->get_child_count(); ++i) {
 				auto *child = Object::cast_to<Node3D>(root->get_child(i));
-				if (!child || child->get_scene_file_path().is_empty()) {
-					layout_valid = false;
-					layouts.clear();
-					break;
-				}
-				Transform3D parent;
-				if (const auto *spatial = Object::cast_to<Node3D>(root)) {
-					parent = spatial->get_transform();
-				}
-				const Transform3D pose = parent * child->get_transform();
-				Measure placement;
-				error = MeasureTree(child, parent, placement);
-				if (error != OK || !placement.geometry) {
+        if (!child || child->get_scene_file_path().is_empty()) {
+          layout_valid = false;
+          layouts.clear();
+          break;
+        }
+        Transform3D parent;
+        if (const auto* spatial = Object::cast_to<Node3D>(root)) {
+          parent = spatial->get_transform();
+        }
+        const Transform3D pose = parent * child->get_transform();
+        Measure placement;
+        error = MeasureTree(child, parent, placement);
+        if (error != OK || !placement.geometry) {
 					layout_valid = false;
 					layouts.clear();
 					break;

@@ -940,6 +940,9 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			ERR_FAIL_NULL_V(root, ERR_CANT_CREATE);
 			r_result["root_type"] = root->get_class();
 			inspect_node(root, r_result);
+			if (bool(root->get_meta("veya_simulation_support", false))) {
+				error = CookerStreaming::CheckSupportResource(scene, root);
+			}
 			if (job.has("max_texture_dimension")) {
 				HashSet<ObjectID> textures;
 				int count = 0, maximum = 0;

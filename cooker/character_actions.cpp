@@ -865,6 +865,9 @@ Error apply_hips_position_offsets(const Array &p_offsets, const Ref<Animation> &
 	return OK;
 }
 }  // namespace
+bool IsGroundSignalTrack(const Ref<Animation>& animation, int track) {
+  return ground_signal_track(animation, track);
+}
 
 Error prepare_compose_job(Dictionary &r_job) {
 	const Error overlay_error = PrepareBoneOverlays(r_job);
