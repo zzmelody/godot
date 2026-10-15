@@ -19,6 +19,7 @@
 #include "scene/resources/3d/capsule_shape_3d.h"
 #include "scene/resources/3d/concave_polygon_shape_3d.h"
 #include "scene/resources/3d/convex_polygon_shape_3d.h"
+#include "scene/resources/3d/height_map_shape_3d.h"
 #include "scene/resources/3d/sphere_shape_3d.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/packed_scene.h"
@@ -115,6 +116,7 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 		}
 		Ref<ConcavePolygonShape3D> concave = resource;
 		Ref<ConvexPolygonShape3D> convex = resource;
+    Ref<HeightMapShape3D> heightfield = resource;
 		if (concave.is_valid()) {
       const PackedVector3Array faces = concave->get_faces();
       ERR_FAIL_COND_V(faces.is_empty() || faces.size() % 3 != 0,
@@ -123,6 +125,16 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
         ERR_FAIL_COND_V(!vertex.is_finite(), ERR_INVALID_DATA);
       }
       geometry_bytes = uint64_t(faces.size()) * 64 + 1024;
+    } else if (heightfield.is_valid()) {
+      const Vector<real_t> data = heightfield->get_map_data();
+      const int width = heightfield->get_map_width();
+      ERR_FAIL_COND_V(width < 4 || width != heightfield->get_map_depth() ||
+                          data.size() != width * width, ERR_INVALID_DATA);
+      for (real_t value : data) {
+        ERR_FAIL_COND_V(!Math::is_finite(value), ERR_INVALID_DATA);
+      }
+      // Conservative data/backend accounting, not measured physics memory.
+      geometry_bytes = uint64_t(data.size()) * 16 + 1024;
     } else if (convex.is_valid()) {
 			geometry_bytes = uint64_t(convex->get_points().size()) * 64 + 1024;
 		}
@@ -325,6 +337,7 @@ inline Error MeasureTree(Node *node, const Transform3D &parent,
 		const Ref<CapsuleShape3D> capsule = shape;
 		const Ref<ConvexPolygonShape3D> convex = shape;
 		const Ref<ConcavePolygonShape3D> concave = shape;
+		const Ref<HeightMapShape3D> heightfield = shape;
 		if (cube.is_valid()) {
 			box = AABB(-cube->get_size() / 2, cube->get_size());
 		} else if (sphere.is_valid()) {
@@ -333,6 +346,12 @@ inline Error MeasureTree(Node *node, const Transform3D &parent,
 		} else if (capsule.is_valid()) {
 			const Vector3 size(capsule->get_radius() * 2, capsule->get_height(), capsule->get_radius() * 2);
 			box = AABB(-size / 2, size);
+		} else if (heightfield.is_valid()) {
+      const double half = (heightfield->get_map_width() - 1) * 0.5;
+      box = AABB(Vector3(-half, heightfield->get_min_height(), -half),
+                 Vector3(half * 2,
+                         heightfield->get_max_height() - heightfield->get_min_height(),
+                         half * 2));
 		} else {
 			const PackedVector3Array points = convex.is_valid() ? convex->get_points() : concave.is_valid() ? concave->get_faces()
 																											: PackedVector3Array();
@@ -567,6 +586,13 @@ inline Error Record(const String &path, Dictionary &output,
 		measure.bounds = mesh->get_aabb();
 		measure.geometry = true;
 	}
+  if (Ref<HeightMapShape3D> heightfield = resource; heightfield.is_valid()) {
+    const double half = (heightfield->get_map_width() - 1) * 0.5;
+    measure.collision_bounds = AABB(
+        Vector3(-half, heightfield->get_min_height(), -half),
+        Vector3(half * 2, heightfield->get_max_height() - heightfield->get_min_height(), half * 2));
+    measure.collision = true;
+  }
 	Array layouts;
 	bool layout_valid = false;
 	Ref<PackedScene> scene = resource;

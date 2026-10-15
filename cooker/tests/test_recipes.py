@@ -523,6 +523,73 @@ return cooker.scene({{asset=mesh,material=material}})'''
         self.assertEqual(outputs[0], outputs[1])
         self.assertEqual(len(outputs[0]), 2)
 
+    def test_heightmap_preserves_grid_and_triangle_diagonal(self):
+        source = self.recipe('''local vertices,indices={},{}
+for z=0,4 do
+ for x=0,4 do table.insert(vertices,{(x-2)*1.25,x*z*.5,(z-2)*1.25}) end
+end
+for z=0,3 do
+ for x=0,3 do
+  local a=z*5+x+1
+  for _,i in {a,a+1,a+6,a,a+6,a+5} do table.insert(indices,i) end
+ end
+end
+return cooker.mesh({vertices=vertices,indices=indices})''',
+                             output="res://content/worlds/fixture/assets/runtime/terrain/test/grid.res")
+        heightmap = self.recipe('''return cooker.collision(cooker.input("mesh"),"heightmap",{
+ width=5,cell_size=1.25,max_error=.2})''',
+                                inputs={"mesh": source["output"]},
+                                output="res://content/worlds/fixture/assets/runtime/terrain/test/support.res")
+        self.assertIsNotNone(REFERENCE)
+        with (self.project / "project.godot").open("a") as project:
+            project.write("config/disable_project_settings_override=false\n")
+        (self.project / "inspect_heightmap.gd").write_text('''extends SceneTree
+func _initialize():
+    call_deferred("inspect")
+func inspect():
+    var shape = load("'''+heightmap["output"]+'''") as HeightMapShape3D
+    var original = load("'''+source["output"]+'''") as Mesh
+    var valid = shape != null and shape.map_width == 5 and shape.map_depth == 5
+    valid = valid and shape.map_data.size() == 25
+    valid = valid and shape.get_meta("veya_collision_support").quarter_turn
+    valid = valid and shape.get_meta("veya_collision_support").achieved_error_metres == 0
+    var body = StaticBody3D.new()
+    var node = CollisionShape3D.new()
+    node.shape = shape
+    node.rotation.y = PI/2
+    node.scale = Vector3(1.25,1,1.25)
+    body.add_child(node)
+    root.add_child(body)
+    var control = StaticBody3D.new()
+    var control_shape = CollisionShape3D.new()
+    control_shape.shape = original.create_trimesh_shape()
+    control.add_child(control_shape)
+    control.position.x = 15
+    root.add_child(control)
+    await physics_frame
+    await physics_frame
+    var space = root.world_3d.direct_space_state
+    for p in [Vector2(-1.9,-2.1),Vector2(-.3,.4),Vector2(.2,-.5),Vector2(1.8,1.6)]:
+        var a = space.intersect_ray(PhysicsRayQueryParameters3D.create(Vector3(p.x,20,p.y),Vector3(p.x,-20,p.y)))
+        var b = space.intersect_ray(PhysicsRayQueryParameters3D.create(Vector3(p.x+15,20,p.y),Vector3(p.x+15,-20,p.y)))
+        valid = valid and not a.is_empty() and not b.is_empty()
+        if not a.is_empty() and not b.is_empty():
+            valid = valid and abs(a.position.y-b.position.y)<.0001
+    body.free()
+    control.free()
+    print("HEIGHTMAP_SURFACE:",valid)
+    quit(0 if valid else 1)
+''')
+        checked = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                  "--script", "res://inspect_heightmap.gd"],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout+checked.stderr)
+        self.assertIn("HEIGHTMAP_SURFACE:true", checked.stdout)
+        self.recipe('''return cooker.collision(cooker.input("mesh"),"heightmap",{
+ width=4,cell_size=1.25,max_error=.2})''', success=False,
+                    inputs={"mesh": source["output"]},
+                    output="res://content/worlds/fixture/assets/runtime/terrain/test/invalid.res")
+
     def test_minimum_color_texture_compression_survives_resource_save(self):
         source = self.recipe('''local texture=cooker.procedural_texture({kind="soft-noise",size=64,seed=17})
 local material=cooker.material({albedo_texture=texture})

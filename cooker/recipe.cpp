@@ -3,6 +3,7 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "collision_support.h"
+#include "heightfield_support.h"
 #include "minimum_visual.h"
 #include "render_dependencies.h"
 
@@ -877,7 +878,19 @@ struct Recipe {
 		Ref<Mesh> mesh = s.handle(1);
 		s.require(mesh.is_valid(), "collision requires a Mesh handle");
 		const String kind = s.string(2);
-		s.require(kind == "trimesh" || kind == "convex", "collision kind must be trimesh or convex");
+		if (kind == "heightmap") {
+			s.require(lua_gettop(p_state) == 3, "heightmap requires grid options");
+			s.fields(3, {"width", "cell_size", "max_error"});
+			const double width = s.number_field(3, "width", 0, 4, 1025);
+			const double cell_size = s.number_field(3, "cell_size", 0, 0, 1000);
+			const double max_error = s.number_field(3, "max_error", 0, 0, 0.2);
+			s.require(width == std::floor(width), "heightmap width must be integral");
+			Ref<HeightMapShape3D> heightfield;
+			s.require(cooker_heightfield::Build(mesh, int(width), cell_size,
+					max_error, heightfield) == OK, "invalid heightmap grid or surface");
+			return s.push_resource(heightfield);
+		}
+		s.require(kind == "trimesh" || kind == "convex", "collision kind must be trimesh, convex or heightmap");
 		s.require(lua_gettop(p_state) == 2 || lua_isnil(p_state, 3) || kind == "trimesh",
                   "collision simplification requires trimesh");
 		const Vector<Face3> triangles = mesh->get_faces();
