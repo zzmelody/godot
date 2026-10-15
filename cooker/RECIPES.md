@@ -123,7 +123,7 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 
 | `children(scene)` | Top-level Node3D children of a PackedScene handle (<= 4096): `{name,position,basis={x,y,z columns},min,max}` in root space; bounds include the child's transformed meshes and MultiMeshes. |
 | `parts(scene, child?)` | 1..64 MeshInstance3D descendants and MultiMesh instances as `{mesh,material,position,basis}` in root space. An optional direct child name selects one subtree. The recipe retains at most 64 selected scene roots and reuses mesh/material handles. Missing children and paths are rejected. |
-| `resource_index(rows)` | Up to 100000 unique resource candidates. Each row declares `id`, `kind`, complete `position`/`basis`, collider `size`/`offset` and `blocking`. IDs are stable identifiers of at most 96 characters. The returned Resource holds value metadata and an explicit memory estimate. |
+| `resource_index(rows)` | Up to 100000 unique resource candidates. Each row declares `id`, `kind`, complete `position`/`basis`, collider `size`/`offset` and `blocking`. IDs are stable identifiers of at most 96 characters. The returned Resource holds a format-1 typed block (`PackedStringArray` IDs/kinds, `PackedFloat64Array` position/basis/size/offset, and `PackedByteArray` blocking), plus an explicit memory estimate. All 18 numeric values per row are finite; the basis is nondegenerate and collider sizes are positive. Regenerate previous Array/Dictionary records offline; the game does not convert them. |
 
 A job declares at most 64 `inputs` (v6; previously 32), still bounded by `input_mb`.
 

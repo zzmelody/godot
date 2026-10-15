@@ -1238,33 +1238,65 @@ struct Recipe {
 	static int resource_index(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
 		const int count = s.array(1, 100000);
-		Array entries;
-		HashSet<String> identities;
-		for (int i = 0; i < count; ++i) {
-			lua_rawgeti(p_state, 1, i + 1);
-			const int row = lua_absindex(p_state, -1);
-			s.fields(row, {"id", "kind", "position", "basis", "size", "offset", "blocking"});
-			const String id = s.string_field(row, "id", "");
-			const String kind = s.string_field(row, "kind", "");
-			s.require(!id.is_empty() && id.length() <= 96 && id.is_valid_identifier() && !identities.has(id), "resource_index requires unique stable IDs");
-			s.require(!kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(), "resource_index requires an explicit kind");
-			identities.insert(id);
-			Dictionary entry;
-			entry["id"] = id;
-			entry["kind"] = kind;
-			entry["pose"] = s.transform(row);
-			const Vector3 size = s.vector_field(row, "size", Vector3(1, 1, 1));
-			s.require(size.x > 0 && size.y > 0 && size.z > 0, "resource_index collider extents must be positive");
-			entry["size"] = size;
-			entry["offset"] = s.vector_field(row, "offset", Vector3());
-			entry["blocking"] = s.boolean_field(row, "blocking", false);
-			entries.push_back(entry);
-			lua_pop(p_state, 1);
-		}
-		Ref<Resource> index; index.instantiate();
-		index->set_meta("veya_resource_index", entries);
-		index->set_meta("veya_resource_index_bytes", int64_t(count) * 512);
-		return s.push_resource(index);
+    PackedStringArray ids, kinds;
+    PackedFloat64Array values;
+    PackedByteArray blocking;
+    ids.resize(count);
+    kinds.resize(count);
+    values.resize(int64_t(count) * 18);
+    blocking.resize(count);
+    HashSet<String> identities;
+    for (int i = 0; i < count; ++i) {
+      lua_rawgeti(p_state, 1, i + 1);
+      const int row = lua_absindex(p_state, -1);
+      s.fields(row, {"id", "kind", "position", "basis", "size", "offset",
+                     "blocking"});
+      const String id = s.string_field(row, "id", "");
+      const String kind = s.string_field(row, "kind", "");
+      s.require(!id.is_empty() && id.length() <= 96 &&
+                    id.is_valid_identifier() && !identities.has(id),
+                "resource_index requires unique stable IDs");
+      s.require(
+          !kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(),
+          "resource_index requires an explicit kind");
+      identities.insert(id);
+      ids.set(i, id);
+      kinds.set(i, kind);
+      const Transform3D pose = s.transform(row);
+      const Vector3 size = s.vector_field(row, "size", Vector3(1, 1, 1));
+      const Vector3 offset = s.vector_field(row, "offset", Vector3());
+      s.require(pose.is_finite() &&
+                    Math::abs(pose.basis.determinant()) >= 1e-9 &&
+                    size.is_finite() && offset.is_finite() && size.x > 0 &&
+                    size.y > 0 && size.z > 0,
+                "resource_index requires a finite pose and positive collider "
+                "extents");
+      const Vector3 vectors[] = {pose.origin,
+                                 pose.basis.get_column(0),
+                                 pose.basis.get_column(1),
+                                 pose.basis.get_column(2),
+                                 size,
+                                 offset};
+      for (int vector = 0; vector < 6; ++vector) {
+        for (int axis = 0; axis < 3; ++axis) {
+          values.set(int64_t(i) * 18 + vector * 3 + axis,
+                     vectors[vector][axis]);
+        }
+      }
+      blocking.set(i, s.boolean_field(row, "blocking", false));
+      lua_pop(p_state, 1);
+    }
+    Dictionary entries;
+    entries["format"] = 1;
+    entries["ids"] = ids;
+    entries["kinds"] = kinds;
+    entries["values"] = values;
+    entries["blocking"] = blocking;
+    Ref<Resource> index;
+    index.instantiate();
+    index->set_meta("veya_resource_index", entries);
+    index->set_meta("veya_resource_index_bytes", int64_t(count) * 512);
+    return s.push_resource(index);
 	}
 	static int lightmap_scene(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);

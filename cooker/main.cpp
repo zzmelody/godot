@@ -87,6 +87,7 @@ bool skip_pipeline_packs = false;
 bool plan_pipeline_only = false;
 bool manifests_only = false;
 String expected_pipeline_plan;
+HashSet<String> selected_steps;
 bool initialized = false;
 
 Dictionary capabilities() {
@@ -389,7 +390,12 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 			Dictionary streaming;
 			error = CookerStreaming::Record(path, streaming, resource_digests);
 			ERR_FAIL_COND_V(error != OK, error);
-			record["streaming"] = streaming;
+      if ((kind == "effect" || kind == "vfx") &&
+          String(streaming.get("resource_type", "")) == "PackedScene") {
+        ERR_FAIL_COND_V(!bool(streaming.get("effect_valid", false)),
+                        ERR_INVALID_DATA);
+      }
+      record["streaming"] = streaming;
 		}
 		records.push_back(record);
 		seen.insert(relative);
@@ -994,9 +1000,32 @@ Error execute_pipeline(Dictionary &r_result) {
 		return ERR_BUSY;
 	}
 	Array reports;
-	for (int index = 0; index < steps.size(); ++index) {
+  if (!selected_steps.is_empty()) {
+    HashSet<String> found;
+    for (const Dictionary& step : steps) {
+      const String name = step.get("name", "");
+      if (selected_steps.has(name)) {
+        found.insert(name);
+      }
+    }
+    ERR_FAIL_COND_V_MSG(found.size() != selected_steps.size(),
+                        ERR_INVALID_PARAMETER,
+                        "A selected pipeline step does not exist.");
+  }
+  for (int index = 0; index < steps.size(); ++index) {
 		Dictionary job = steps[index];
-		Dictionary report;
+    if (!selected_steps.is_empty() &&
+        !selected_steps.has(String(job.get("name", "")))) {
+      Dictionary skipped;
+      skipped["index"] = index;
+      skipped["name"] = job.get("name", "");
+      skipped["ok"] = true;
+      skipped["skipped"] = true;
+      skipped["reason"] = "step_not_selected";
+      reports.push_back(skipped);
+      continue;
+    }
+    Dictionary report;
 		report["index"] = index;
 		Variant label = job.get("name", Variant());
 		ERR_FAIL_COND_V(label.get_type() != Variant::NIL && label.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
@@ -1190,14 +1219,17 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			skip_pipeline_packs = true;
 		} else if (arg == "--force") {
 			CookerCache::force_rebuild = true;
-		} else if (arg == "--manifests-only") {
-			manifests_only = true;
-		} else if (arg == "--plan") {
-			plan_pipeline_only = true;
-		} else if (arg == "--expected-plan" && i + 1 < argc) {
-			expected_pipeline_plan = String::utf8(argv[++i]);
-		} else if ((arg == "--path" || arg == "--job" || arg == "--pipeline") && i + 1 < argc) {
-			String value = String::utf8(argv[++i]);
+    } else if (arg == "--step" && i + 1 < argc) {
+      selected_steps.insert(String::utf8(argv[++i]));
+    } else if (arg == "--manifests-only") {
+      manifests_only = true;
+    } else if (arg == "--plan") {
+      plan_pipeline_only = true;
+    } else if (arg == "--expected-plan" && i + 1 < argc) {
+      expected_pipeline_plan = String::utf8(argv[++i]);
+    } else if ((arg == "--path" || arg == "--job" || arg == "--pipeline") &&
+               i + 1 < argc) {
+      String value = String::utf8(argv[++i]);
 			if (arg == "--path") {
 				project_path = value;
 			} else if (arg == "--job") {
@@ -1207,20 +1239,22 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 				pipeline_path = value;
 				command = "pipeline";
 			}
-		} else if (arg == "--headless" || arg == "--editor" || arg == "--quit") {
-			// Always headless, always tools-enabled, always exits after one batch.
-		} else {
-			ERR_PRINT("Unsupported Cooker argument: " + arg);
+    } else if (arg == "--headless" || arg == "--editor" || arg == "--quit") {
+      // Always headless, always tools-enabled, always exits after one batch.
+    } else {
+      ERR_PRINT("Unsupported Cooker argument: " + arg);
 			command = "invalid";
-		}
-	}
+    }
+  }
 	if (command == "job" || command == "pipeline") {
-		if (command != "pipeline" && (plan_pipeline_only || !expected_pipeline_plan.is_empty())) {
-			command = "invalid";
+    if (command != "pipeline" &&
+        (plan_pipeline_only || !expected_pipeline_plan.is_empty() ||
+         !selected_steps.is_empty())) {
+      command = "invalid";
 			ERR_PRINT("--plan and --expected-plan require --pipeline.");
 			return OK;
-		}
-		if (command != "pipeline" && skip_pipeline_packs) {
+    }
+    if (command != "pipeline" && skip_pipeline_packs) {
 			command = "invalid";
 			ERR_PRINT("--no-pack requires --pipeline.");
 			return OK;

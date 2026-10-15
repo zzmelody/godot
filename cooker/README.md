@@ -93,7 +93,7 @@ behavior.
 
 ```text
 veya_cooke[.exe] --capabilities
-veya_cooke[.exe] --path PROJECT --pipeline res://path/to/asset.pipeline.luau
+veya_cooke[.exe] --path PROJECT --pipeline res://path/to/asset.pipeline.luau [--step EXACT_NAME ...]
 veya_cooke[.exe] --path PROJECT --job JOB.json
 ```
 
@@ -219,3 +219,5 @@ Do not move importer code or signing private keys into the exported Veya client.
 
 The parent project documents reasons, integration and actual verification in
 `docs/asset-cooker-fork.md`.
+
+`--step` selects exact named steps from the existing Luau pipeline. All names are resolved before execution; an unknown selection fails without running a step. This supports rebuilding affected typed resource indexes without regenerating unrelated models/textures. Refresh the normal asset-manifest graph after selected producer steps.

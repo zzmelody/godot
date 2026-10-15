@@ -114,8 +114,14 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 		Ref<ConcavePolygonShape3D> concave = resource;
 		Ref<ConvexPolygonShape3D> convex = resource;
 		if (concave.is_valid()) {
-			geometry_bytes = uint64_t(concave->get_faces().size()) * 64 + 1024;
-		} else if (convex.is_valid()) {
+      const PackedVector3Array faces = concave->get_faces();
+      ERR_FAIL_COND_V(faces.is_empty() || faces.size() % 3 != 0,
+                      ERR_INVALID_DATA);
+      for (const Vector3& vertex : faces) {
+        ERR_FAIL_COND_V(!vertex.is_finite(), ERR_INVALID_DATA);
+      }
+      geometry_bytes = uint64_t(faces.size()) * 64 + 1024;
+    } else if (convex.is_valid()) {
 			geometry_bytes = uint64_t(convex->get_points().size()) * 64 + 1024;
 		}
 		Ref<LightmapGIData> lightmap = resource;
@@ -136,7 +142,51 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 			const int64_t bytes = resource->get_meta("veya_resource_index_bytes");
 			ERR_FAIL_COND_V(bytes < 0 || bytes > 51200000, ERR_INVALID_DATA);
 			geometry_bytes += uint64_t(bytes);
-		}
+      const Variant encoded =
+          resource->get_meta("veya_resource_index", Variant());
+      ERR_FAIL_COND_V(encoded.get_type() != Variant::DICTIONARY,
+                      ERR_INVALID_DATA);
+      const Dictionary block = encoded;
+      ERR_FAIL_COND_V(int64_t(block.get("format", 0)) != 1 ||
+                          block.get("ids", Variant()).get_type() !=
+                              Variant::PACKED_STRING_ARRAY ||
+                          block.get("kinds", Variant()).get_type() !=
+                              Variant::PACKED_STRING_ARRAY ||
+                          block.get("values", Variant()).get_type() !=
+                              Variant::PACKED_FLOAT64_ARRAY ||
+                          block.get("blocking", Variant()).get_type() !=
+                              Variant::PACKED_BYTE_ARRAY,
+                      ERR_INVALID_DATA);
+      const PackedStringArray ids = block["ids"], kinds = block["kinds"];
+      const PackedFloat64Array values = block["values"];
+      const PackedByteArray blocking = block["blocking"];
+      ERR_FAIL_COND_V(ids.size() > 100000 || kinds.size() != ids.size() ||
+                          blocking.size() != ids.size() ||
+                          values.size() != ids.size() * 18,
+                      ERR_INVALID_DATA);
+      HashSet<String> identities;
+      for (int64_t row = 0; row < ids.size(); ++row) {
+        ERR_FAIL_COND_V(
+            ids[row].is_empty() || ids[row].length() > 96 ||
+                !ids[row].is_valid_identifier() || identities.has(ids[row]) ||
+                kinds[row].is_empty() || kinds[row].length() > 48 ||
+                !kinds[row].is_valid_identifier() || blocking[row] > 1,
+            ERR_INVALID_DATA);
+        identities.insert(ids[row]);
+        Vector3 vectors[6];
+        for (int vector = 0; vector < 6; ++vector) {
+          for (int axis = 0; axis < 3; ++axis) {
+            vectors[vector][axis] = values[row * 18 + vector * 3 + axis];
+          }
+          ERR_FAIL_COND_V(!vectors[vector].is_finite(), ERR_INVALID_DATA);
+        }
+        ERR_FAIL_COND_V(
+            Math::abs(Basis(vectors[1], vectors[2], vectors[3]).determinant()) <
+                    1e-9 ||
+                vectors[4].x <= 0 || vectors[4].y <= 0 || vectors[4].z <= 0,
+            ERR_INVALID_DATA);
+      }
+    }
 		result.geometry_bytes += geometry_bytes;
 		result.texture_bytes += texture_bytes;
 		if (geometry_bytes || texture_bytes) {
