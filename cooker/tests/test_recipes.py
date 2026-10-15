@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import random
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -526,11 +527,11 @@ return cooker.scene({{asset=mesh,material=material}})'''
         source = self.recipe('''local texture=cooker.procedural_texture({kind="soft-noise",size=64,seed=17})
 local material=cooker.material({albedo_texture=texture})
 return cooker.scene({{asset=cooker.primitive("box",{}),material=material}})''',
-                             output="res://content/worlds/fixture/generated/original.scn")
+                             output="res://content/worlds/fixture/assets/runtime/material/minimum-test/original.scn")
         minimum = self.recipe('''return cooker.minimum_visual("visual",{
  triangle_ratio=1,max_texture_size=32,compress_color_textures=true})''',
                               inputs={"visual": source["output"]},
-                              output="res://content/worlds/fixture/generated/minimum.scn")
+                              output="res://content/worlds/fixture/assets/runtime/material/minimum-test/minimum.scn")
         report = self.job({"operation": "validate-resource", "source": minimum["output"],
                            "type": "PackedScene"})
         self.assertEqual(report["node_count"], 2)
@@ -548,7 +549,7 @@ func _initialize():
         material = mesh.surface_get_material(0) as BaseMaterial3D
     var texture = material.get_texture(BaseMaterial3D.TEXTURE_ALBEDO)
     var valid = texture is PortableCompressedTexture2D and texture.get_width() == 32
-    valid = valid and texture.get_compression_mode() == PortableCompressedTexture2D.COMPRESSION_MODE_BPTC
+    valid = valid and texture.get_compression_mode() == PortableCompressedTexture2D.COMPRESSION_MODE_BASIS_UNIVERSAL
     scene.free()
     print("MINIMUM_TEXTURE_ROUND_TRIP:", valid)
     quit(0 if valid else 1)
@@ -559,6 +560,98 @@ func _initialize():
         self.assertEqual(checked.returncode, 0, checked.stdout+checked.stderr)
         self.assertIn("MINIMUM_TEXTURE_ROUND_TRIP:true", checked.stdout,
                       checked.stdout+checked.stderr)
+
+    def test_minimum_channel_compression_preserves_float_data(self):
+        directory = self.project / "content/worlds/fixture/assets/runtime/material/minimum-test"
+        directory.mkdir(parents=True)
+        textures = {
+            "mask": ("RedGreen", bytes([64, 192]) * (64 * 64)),
+            "normal_map": ("RedGreen", bytes([128, 128]) * (64 * 64)),
+            "roughness": ("Red8", bytes([96]) * (64 * 64)),
+            "field": ("RGFloat", struct.pack("<ff", 0.125, 3.5) * (64 * 64)),
+        }
+        for name, (image_format, payload) in textures.items():
+            (directory / f"{name}.tres").write_text(
+                '[gd_resource type="ImageTexture" load_steps=2 format=3]\n'
+                '[sub_resource type="Image" id="Image"]\n'
+                'data = {"width":64,"height":64,"mipmaps":false,'
+                f'"format":"{image_format}","data":PackedByteArray('
+                + ','.join(map(str, payload)) + ')}\n'
+                '[resource]\nimage=SubResource("Image")\n')
+        (directory / "ground.tres").write_text(
+            '[gd_resource type="ShaderMaterial" load_steps=6 format=3]\n'
+            + ''.join(f'[ext_resource type="Texture2D" path="{name}.tres" id="{name}"]\n'
+                      for name in textures)
+            + '[sub_resource type="Shader" id="Shader"]\n'
+              'code="shader_type spatial; uniform sampler2D mask; '
+              'uniform sampler2D normal_map : hint_normal; '
+              'uniform sampler2D roughness; uniform sampler2D field;"\n'
+              '[resource]\nshader=SubResource("Shader")\n'
+            + ''.join(f'shader_parameter/{name}=ExtResource("{name}")\n' for name in textures))
+        minimum = self.recipe('''return cooker.minimum_visual("material",{
+ max_texture_size=32,compress_color_textures=true})''',
+                              inputs={"material": "res://content/worlds/fixture/assets/runtime/material/minimum-test/ground.tres"},
+                              output="res://content/worlds/fixture/assets/runtime/material/minimum-test/ground-minimum.res")
+        self.assertIsNotNone(REFERENCE)
+        with (self.project / "project.godot").open("a") as project:
+            project.write("config/disable_project_settings_override=false\n")
+        (self.project / "inspect_channels.gd").write_text('''extends SceneTree
+func _initialize():
+    var material = load("'''+minimum["output"]+'''") as ShaderMaterial
+    var valid = material != null
+    for name in ["mask", "normal_map", "roughness"]:
+        var texture = material.get_shader_parameter(name)
+        valid = valid and texture is PortableCompressedTexture2D
+        valid = valid and texture.get_width() == 32 and texture.get_height() == 32
+        if texture is PortableCompressedTexture2D:
+            valid = valid and texture.get_compression_mode() == PortableCompressedTexture2D.COMPRESSION_MODE_BASIS_UNIVERSAL
+    var source = load("res://content/worlds/fixture/assets/runtime/material/minimum-test/field.tres").get_image()
+    var field = material.get_shader_parameter("field").get_image()
+    valid = valid and field.get_format() == source.get_format()
+    valid = valid and field.get_size() == source.get_size()
+    valid = valid and field.get_data() == source.get_data()
+    print("MINIMUM_CHANNELS_AND_FIELD:", valid)
+    quit(0 if valid else 1)
+''')
+        inspected = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                    "--script", "res://inspect_channels.gd"],
+                                   capture_output=True, text=True, timeout=30)
+        self.assertEqual(inspected.returncode, 0, inspected.stdout+inspected.stderr)
+        self.assertIn("MINIMUM_CHANNELS_AND_FIELD:true", inspected.stdout)
+
+    def test_scenes_reuse_saved_minimum_material(self):
+        original = self.recipe('return cooker.material({roughness=0.37})',
+                               output="res://content/worlds/fixture/assets/runtime/material/minimum-test/original.res")
+        material = self.recipe('return cooker.minimum_visual("material",{max_texture_size=32})',
+                               inputs={"material": original["output"]},
+                               output="res://content/worlds/fixture/assets/runtime/material/minimum-test/ground-minimum.res")
+        scenes = []
+        for index in range(2):
+            result = self.recipe('''return cooker.scene({{
+ asset=cooker.primitive("box",{}),material=cooker.input("material")}})''',
+                                 inputs={"material": material["output"]},
+                                 output=f"res://content/worlds/fixture/assets/runtime/material/minimum-test/chunk-{index}.scn")
+            scenes.append(result["output"])
+        self.assertIsNotNone(REFERENCE)
+        with (self.project / "project.godot").open("a") as project:
+            project.write("config/disable_project_settings_override=false\n")
+        (self.project / "inspect_shared_material.gd").write_text('''extends SceneTree
+func _initialize():
+    var first = load("'''+scenes[0]+'''").instantiate()
+    var second = load("'''+scenes[1]+'''").instantiate()
+    var material = load("'''+material["output"]+'''")
+    var valid = first.get_child(0).material_override == material
+    valid = valid and second.get_child(0).material_override == material
+    first.free()
+    second.free()
+    print("MINIMUM_SHARED_MATERIAL:", valid)
+    quit(0 if valid else 1)
+''')
+        inspected = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                    "--script", "res://inspect_shared_material.gd"],
+                                   capture_output=True, text=True, timeout=30)
+        self.assertEqual(inspected.returncode, 0, inspected.stdout+inspected.stderr)
+        self.assertIn("MINIMUM_SHARED_MATERIAL:true", inspected.stdout)
 
     def test_minimum_materials_share_external_shader(self):
         (self.project / "shared.gdshader").write_text(

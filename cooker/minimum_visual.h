@@ -157,6 +157,13 @@ class Builder {
     if (image->is_compressed() && image->decompress() != OK) {
       return Ref<Texture2D>();
     }
+    // Float fields carry authored data. Keep their grid, precision and mip
+    // payload instead of treating them as a distant display texture.
+    const Image::Format format = image->get_format();
+    if (format >= Image::FORMAT_RF && format <= Image::FORMAT_RGBAH) {
+      textures_.emplace(id, source);
+      return source;
+    }
     const double scale = MIN(1.0, double(options_.texture_size) /
                                     MAX(image->get_width(), image->get_height()));
     image->resize(MAX(1, int(image->get_width() * scale)),
@@ -164,8 +171,7 @@ class Builder {
     image->generate_mipmaps(normal);
     Ref<Texture2D> result;
     if (options_.compress_color_textures && !options_.preserve_heightfields &&
-        (image->get_format() == Image::FORMAT_RGB8 ||
-         image->get_format() == Image::FORMAT_RGBA8)) {
+        format >= Image::FORMAT_L8 && format <= Image::FORMAT_RGBA8) {
       Ref<PortableCompressedTexture2D> compressed;
       compressed.instantiate();
       // The Cooker must retain the compressed payload until ResourceSaver has
