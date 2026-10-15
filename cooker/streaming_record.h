@@ -252,7 +252,9 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 		}
 	} else if (value.get_type() == Variant::ARRAY) {
 		const Array values = value;
-		ERR_FAIL_COND_V(values.size() > 16384, ERR_INVALID_DATA);
+		// PackedScene storage arrays grow with the number of spatial batches.
+		// Keep them bounded without rejecting valid, finely clustered scenes.
+		ERR_FAIL_COND_V(values.size() > 262144, ERR_INVALID_DATA);
 		for (const Variant &child : values) {
 			const auto error = MeasureValue(child, result, depth + 1);
 			ERR_FAIL_COND_V(error != OK, error);
