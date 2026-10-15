@@ -3,6 +3,7 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "retarget.h"
+#include "streaming_record.h"
 #include "core/io/json.h"
 #include "core/io/resource_saver.h"
 #include "scene/3d/bone_attachment_3d.h"
@@ -1141,11 +1142,10 @@ Error PartitionAnimations(const Dictionary& job, Dictionary& result) {
     const Ref<Animation> animation = source->get_animation(name);
     ERR_FAIL_COND_V(animation.is_null() || animation->get_length() <= 0,
                     ERR_INVALID_DATA);
-    int64_t bytes = 4096;
-    for (int track = 0; track < animation->get_track_count(); ++track) {
-      bytes += 192 + int64_t(animation->track_get_key_count(track)) * 32;
-    }
-    costs.write[owner] += bytes;
+    CookerStreaming::Measure measure;
+    error = CookerStreaming::MeasureValue(animation, measure, 0);
+    ERR_FAIL_COND_V(error != OK, error);
+    costs.write[owner] += measure.geometry_bytes + measure.texture_bytes;
     Dictionary record;
     record["id"] = id;
     record["seconds"] = animation->get_length();
