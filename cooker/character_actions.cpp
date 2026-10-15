@@ -1142,6 +1142,11 @@ Error PartitionAnimations(const Dictionary& job, Dictionary& result) {
     const Ref<Animation> animation = source->get_animation(name);
     ERR_FAIL_COND_V(animation.is_null() || animation->get_length() <= 0,
                     ERR_INVALID_DATA);
+    for (int track = 0; track < animation->get_track_count(); ++track) {
+      ERR_FAIL_COND_V(
+          animation->track_get_type(track) == Animation::TYPE_METHOD,
+          ERR_INVALID_DATA);
+    }
     CookerStreaming::Measure measure;
     error = CookerStreaming::MeasureValue(animation, measure, 0);
     ERR_FAIL_COND_V(error != OK, error);
