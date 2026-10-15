@@ -1087,12 +1087,113 @@ Error PrepareGroundCycles(const Dictionary &job, const Ref<AnimationLibrary> &li
 	return OK;
 }
 
-Error compose_animation(const Dictionary &p_job, Dictionary &r_result) {
-	ERR_FAIL_COND_V(p_job.get("clips", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
-	const Array clips = p_job["clips"];
-	ERR_FAIL_COND_V(clips.is_empty() || clips.size() > 256, ERR_PARAMETER_RANGE_ERROR);
-	const String output = p_job.get("output", "");
-	Error error = output_path(output, "res");
+namespace {
+// Cook-time partition only. Copy whole Animation values without sampling or
+// editing curves. Runtime groups must not point back to a monolithic library.
+Error PartitionAnimations(const Dictionary& job, Dictionary& result) {
+  const Array groups = job.get("groups", Array());
+  const int selected = job.get("select_group", -1);
+  ERR_FAIL_COND_V(groups.is_empty() || groups.size() > 16 || selected < 0 ||
+                      selected >= groups.size(),
+                  ERR_INVALID_PARAMETER);
+  Ref<AnimationLibrary> source;
+  Error error = load_library(job.get("base_library", ""), source);
+  ERR_FAIL_COND_V(error != OK, error);
+  LocalVector<StringName> names;
+  source->get_animation_list(&names);
+  ERR_FAIL_COND_V(names.is_empty() || names.size() > 256, ERR_INVALID_DATA);
+  Array catalog;
+  Array group_records;
+  Vector<int64_t> costs;
+  costs.resize(groups.size());
+  for (int index = 0; index < costs.size(); ++index) {
+    costs.write[index] = 0;
+  }
+  HashSet<String> outputs;
+  for (const Dictionary& group : groups) {
+    const String path = group.get("output", "");
+    ERR_FAIL_COND_V(CookerFiles::check_path(path, true) != OK ||
+                        path.get_extension() != "res" || outputs.has(path),
+                    ERR_INVALID_PARAMETER);
+    outputs.insert(path);
+    Dictionary record;
+    record["path"] = path;
+    group_records.push_back(record);
+  }
+  Ref<AnimationLibrary> partition;
+  partition.instantiate();
+  for (const StringName& name : names) {
+    const String id = name;
+    int owner = -1;
+    for (int index = 0; index < groups.size(); ++index) {
+      const Dictionary group = groups[index];
+      const Array ids = group.get("ids", Array());
+      bool matches = ids.has(id);
+      for (const String& prefix : Array(group.get("prefixes", Array()))) {
+        matches |= id.begins_with(prefix);
+      }
+      if (matches || bool(group.get("remaining", false))) {
+        owner = index;
+        break;
+      }
+    }
+    ERR_FAIL_COND_V(owner < 0, ERR_INVALID_DATA);
+    const Ref<Animation> animation = source->get_animation(name);
+    ERR_FAIL_COND_V(animation.is_null() || animation->get_length() <= 0,
+                    ERR_INVALID_DATA);
+    int64_t bytes = 4096;
+    for (int track = 0; track < animation->get_track_count(); ++track) {
+      bytes += 192 + int64_t(animation->track_get_key_count(track)) * 32;
+    }
+    costs.write[owner] += bytes;
+    Dictionary record;
+    record["id"] = id;
+    record["seconds"] = animation->get_length();
+    record["loop"] = animation->get_loop_mode() != Animation::LOOP_NONE;
+    record["group"] = owner;
+    catalog.push_back(record);
+    if (owner == selected) {
+      // Deep duplication also localizes socket-motion/Curve subresources.
+      // Saving a subresource of the old .res would retain its whole parent.
+      Ref<Animation> copied = animation->duplicate(true);
+      error = partition->add_animation(name, copied);
+      ERR_FAIL_COND_V(error != OK, error);
+    }
+  }
+  for (int index = 0; index < group_records.size(); ++index) {
+    Dictionary record = group_records[index];
+    record["bytes"] = MAX(int64_t(4096), costs[index]);
+  }
+  const Dictionary group = groups[selected];
+  const String output = job.get("output", "");
+  ERR_FAIL_COND_V(output != String(group["output"]), ERR_INVALID_PARAMETER);
+  error = output_path(output, "res");
+  ERR_FAIL_COND_V(error != OK, error);
+  partition->set_meta("character_stream_revision", 1);
+  partition->set_meta("character_stream_catalog", catalog);
+  partition->set_meta("character_stream_groups", group_records);
+  error = CookerAtomicSave::save_resource(
+      partition, output,
+      ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+  ERR_FAIL_COND_V(error != OK, error);
+  result["output"] = output;
+  result["catalog_clips"] = names.size();
+  result["group"] = selected;
+  result["estimated_bytes"] = costs[selected];
+  return OK;
+}
+}  // namespace
+Error compose_animation(const Dictionary& p_job, Dictionary& r_result) {
+  if (p_job.has("select_group")) {
+    return PartitionAnimations(p_job, r_result);
+  }
+  ERR_FAIL_COND_V(p_job.get("clips", Variant()).get_type() != Variant::ARRAY,
+                  ERR_INVALID_PARAMETER);
+  const Array clips = p_job["clips"];
+  ERR_FAIL_COND_V(clips.is_empty() || clips.size() > 256,
+                  ERR_PARAMETER_RANGE_ERROR);
+  const String output = p_job.get("output", "");
+  Error error = output_path(output, "res");
 	ERR_FAIL_COND_V(error != OK, error);
 	Ref<AnimationLibrary> library;
 	library.instantiate();
