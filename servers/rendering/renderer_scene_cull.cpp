@@ -725,6 +725,7 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 				geom->geometry_instance = scene_render->geometry_instance_create(p_base);
 
 				ERR_FAIL_NULL(geom->geometry_instance);
+				geom->geometry_instance->set_gpu_occlusion_margin(instance->ignore_all_culling || instance->ignore_occlusion_culling ? -1.0f : instance->gpu_occlusion_margin);
 
 				geom->geometry_instance->set_skeleton(instance->skeleton);
 				geom->geometry_instance->set_material_override(instance->material_override);
@@ -1154,10 +1155,26 @@ void RendererSceneCull::instance_set_extra_visibility_margin(RID p_instance, rea
 	_instance_queue_update(instance, true, false);
 }
 
+void RendererSceneCull::instance_geometry_set_gpu_occlusion_margin(RID p_instance, float p_margin) {
+	Instance *instance = instance_owner.get_or_null(p_instance);
+	ERR_FAIL_NULL(instance);
+	ERR_FAIL_COND(!Math::is_finite(p_margin) || p_margin < -1.0f);
+	const bool changed = instance->gpu_occlusion_margin != p_margin;
+	instance->gpu_occlusion_margin = p_margin;
+	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
+		InstanceGeometryData *geometry = static_cast<InstanceGeometryData *>(instance->base_data);
+		geometry->geometry_instance->set_gpu_occlusion_margin(instance->ignore_all_culling || instance->ignore_occlusion_culling ? -1.0f : p_margin);
+	}
+	if (changed) {
+		_instance_queue_update(instance, true, false);
+	}
+}
+
 void RendererSceneCull::instance_set_ignore_culling(RID p_instance, bool p_enabled) {
 	Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(instance);
 	instance->ignore_all_culling = p_enabled;
+	instance_geometry_set_gpu_occlusion_margin(p_instance, instance->gpu_occlusion_margin);
 
 	if (instance->scenario && instance->array_index >= 0) {
 		InstanceData &idata = instance->scenario->instance_data[instance->array_index];
@@ -1303,6 +1320,7 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 		} break;
 		case RSE::INSTANCE_FLAG_IGNORE_OCCLUSION_CULLING: {
 			instance->ignore_occlusion_culling = p_enabled;
+			instance_geometry_set_gpu_occlusion_margin(p_instance, instance->gpu_occlusion_margin);
 
 			if (instance->scenario && instance->array_index >= 0) {
 				InstanceData &idata = instance->scenario->instance_data[instance->array_index];
@@ -1703,6 +1721,9 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 
 	AABB new_aabb;
 	new_aabb = instance_xform->xform(p_instance->aabb);
+	if (p_instance->gpu_occlusion_margin > 0) {
+		new_aabb.grow_by(p_instance->gpu_occlusion_margin);
+	}
 	p_instance->transformed_aabb = new_aabb;
 
 	if ((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) {

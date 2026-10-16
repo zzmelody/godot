@@ -970,6 +970,7 @@ public:
 	FUNC2(instance_attach_skeleton, RID, RID)
 
 	FUNC2(instance_set_extra_visibility_margin, RID, real_t)
+	FUNC2(instance_geometry_set_gpu_occlusion_margin, RID, float)
 	FUNC2(instance_set_visibility_parent, RID, RID)
 
 	FUNC2(instance_set_ignore_culling, RID, bool)

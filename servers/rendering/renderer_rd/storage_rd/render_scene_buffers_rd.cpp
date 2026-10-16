@@ -55,6 +55,8 @@ bool RenderSceneBuffersRD::composite_mobile_ao(RID p_ao, RID p_guide, int p_algo
 	return get_custom_data(SNAME("mobile_fog"))->composite_mobile_ao(p_ao, p_guide, p_algorithm, p_view, p_radius, p_intensity, p_max_distance);
 }
 void RenderSceneBuffersRD::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("configure_gpu_occlusion", "mode", "epoch"), &RenderSceneBuffersRD::configure_gpu_occlusion);
+	ClassDB::bind_method(D_METHOD("get_gpu_occlusion_statistics"), &RenderSceneBuffersRD::get_gpu_occlusion_statistics);
 	ClassDB::bind_method(D_METHOD("composite_mobile_ao", "ao", "guide", "algorithm", "view", "radius", "intensity", "max_distance"), &RenderSceneBuffersRD::composite_mobile_ao);
 	ClassDB::bind_method(D_METHOD("has_texture", "context", "name"), &RenderSceneBuffersRD::has_texture);
 	ClassDB::bind_method(D_METHOD("create_texture", "context", "name", "data_format", "usage_bits", "texture_samples", "size", "layers", "mipmaps", "unique", "discardable"), &RenderSceneBuffersRD::create_texture);
@@ -87,6 +89,36 @@ void RenderSceneBuffersRD::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_screen_space_aa"), &RenderSceneBuffersRD::get_screen_space_aa);
 	ClassDB::bind_method(D_METHOD("get_use_taa"), &RenderSceneBuffersRD::get_use_taa);
 	ClassDB::bind_method(D_METHOD("get_use_debanding"), &RenderSceneBuffersRD::get_use_debanding);
+}
+
+void RenderSceneBuffersRD::configure_gpu_occlusion(int p_mode, uint64_t p_epoch) {
+	ERR_FAIL_COND(p_mode < 0 || p_mode > 2);
+	if (gpu_occlusion_epoch != p_epoch) {
+		gpu_occlusion_statistics.clear();
+	}
+	gpu_occlusion_mode = p_mode;
+	gpu_occlusion_epoch = p_epoch;
+	gpu_occlusion_statistics["configured_mode"] = p_mode;
+	gpu_occlusion_statistics["epoch"] = p_epoch;
+}
+
+void RenderSceneBuffersRD::gpu_occlusion_readback(const PackedByteArray &p_bytes, uint64_t p_epoch, uint32_t p_candidates, uint32_t p_batches) {
+	if (p_epoch != gpu_occlusion_epoch || p_bytes.size() != int64_t(p_batches) * 60) {
+		return;
+	}
+	uint64_t early = 0, recovered = 0, visible = 0;
+	for (uint32_t i = 0; i < p_batches; ++i) {
+		uint32_t values[15];
+		memcpy(values, p_bytes.ptr() + i * 60, sizeof(values));
+		early += values[1];
+		recovered += values[6];
+		visible += values[11];
+	}
+	gpu_occlusion_statistics["candidates"] = p_candidates;
+	gpu_occlusion_statistics["early_visible"] = early;
+	gpu_occlusion_statistics["recovered"] = recovered;
+	gpu_occlusion_statistics["visible"] = visible;
+	gpu_occlusion_statistics["occluded"] = uint64_t(p_candidates) - MIN(uint64_t(p_candidates), visible);
 }
 
 void RenderSceneBuffersRD::update_sizes(NamedTexture &p_named_texture) {

@@ -65,6 +65,7 @@ public:
 	virtual void reset_motion_vectors() = 0;
 
 	virtual Transform3D get_transform() = 0;
+	virtual void set_gpu_occlusion_margin(float p_margin) {}
 	virtual AABB get_aabb() = 0;
 
 	virtual void clear_light_instances() = 0;
@@ -89,6 +90,9 @@ public:
 	RID mesh_instance;
 
 	Transform3D transform;
+	// -1 disables GPU culling; positive values bound vertex motion in world meters.
+	float gpu_occlusion_margin = 0.0f;
+	virtual void set_gpu_occlusion_margin(float p_margin) override { gpu_occlusion_margin = p_margin; }
 	bool mirror = false;
 	AABB transformed_aabb;
 	bool non_uniform_scale = false;

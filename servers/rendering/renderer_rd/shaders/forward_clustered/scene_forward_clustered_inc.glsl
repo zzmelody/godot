@@ -28,6 +28,10 @@ layout(push_constant, std430) uniform DrawCall {
 	uint uv_offset;
 	uint multimesh_motion_vectors_current_offset;
 	uint multimesh_motion_vectors_previous_offset;
+	uint gpu_visibility_offset;
+	uint gpu_visibility_padding_0;
+	uint gpu_visibility_padding_1;
+	uint gpu_visibility_padding_2;
 #ifdef UBERSHADER
 	uint sc_packed_0;
 	uint sc_packed_1;
@@ -379,6 +383,10 @@ layout(set = 1, binding = 2, std430) buffer restrict readonly InstanceDataBuffer
 	InstanceData data[];
 }
 instances;
+
+layout(set = 1, binding = 40, std430) readonly buffer GpuVisibleInstances {
+	uint indices[];
+} gpu_visible_instances;
 
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
 

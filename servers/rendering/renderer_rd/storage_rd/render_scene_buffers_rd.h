@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/templates/hash_map.h"
+#include "core/variant/dictionary.h"
 #include "servers/rendering/renderer_rd/effects/vrs.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_buffer_custom_data_rd.h"
@@ -68,6 +69,9 @@ class RenderSceneBuffersRD : public RenderSceneBuffers {
 
 private:
 	bool can_be_storage = true;
+	int gpu_occlusion_mode = 0;
+	uint64_t gpu_occlusion_epoch = 0;
+	Dictionary gpu_occlusion_statistics;
 	bool force_hdr = false;
 	uint32_t max_cluster_elements = 512;
 	RD::DataFormat preferred_data_format = RD::DATA_FORMAT_MAX;
@@ -182,6 +186,13 @@ protected:
 	static void _bind_methods();
 
 public:
+	// Render-thread configuration. An epoch change invalidates camera history.
+	void configure_gpu_occlusion(int p_mode, uint64_t p_epoch);
+	int get_gpu_occlusion_mode() const { return gpu_occlusion_mode; }
+	uint64_t get_gpu_occlusion_epoch() const { return gpu_occlusion_epoch; }
+	Dictionary get_gpu_occlusion_statistics() const { return gpu_occlusion_statistics; }
+	void set_gpu_occlusion_statistics(const Dictionary &p_statistics) { gpu_occlusion_statistics = p_statistics; }
+	void gpu_occlusion_readback(const PackedByteArray &p_bytes, uint64_t p_epoch, uint32_t p_candidates, uint32_t p_batches);
 	bool composite_mobile_ao(RID p_ao, RID p_guide, int p_algorithm, int p_view, float p_radius, float p_intensity, float p_max_distance);
 	RenderSceneBuffersRD();
 	virtual ~RenderSceneBuffersRD();

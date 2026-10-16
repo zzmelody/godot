@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "gpu_occlusion.h"
+
 #include "core/templates/paged_allocator.h"
 #include "servers/rendering/multi_uma_buffer.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
@@ -102,6 +104,8 @@ public:
 
 	public:
 		ClusterBuilderRD *cluster_builder = nullptr;
+		RendererRD::GpuOcclusion *gpu_occlusion = nullptr;
+		uint64_t gpu_occlusion_frames = 0;
 
 		struct SSEffectsData {
 			Projection ssil_last_frame_projections[RendererSceneRender::MAX_RENDER_VIEWS];
@@ -220,6 +224,9 @@ private:
 	struct RenderElementInfo;
 
 	struct RenderListParameters {
+		RendererRD::GpuOcclusion *gpu_occlusion = nullptr;
+		uint32_t gpu_occlusion_phase = 2;
+		bool gpu_occlusion_surface_lookup = false;
 		GeometryInstanceSurfaceDataCache **elements = nullptr;
 		RenderElementInfo *element_info = nullptr;
 		int element_count = 0;
@@ -328,6 +335,8 @@ private:
 			uint32_t uv_offset; //packed
 			uint32_t multimesh_motion_vectors_current_offset;
 			uint32_t multimesh_motion_vectors_previous_offset;
+			uint32_t gpu_visibility_offset = UINT32_MAX;
+			uint32_t gpu_visibility_padding[3] = {};
 			PushConstantUbershader ubershader;
 		};
 
@@ -476,6 +485,8 @@ private:
 
 	void _fill_instance_data(RenderListType p_render_list, int *p_render_info = nullptr, uint32_t p_offset = 0, int32_t p_max_elements = -1, bool p_update_buffer = true);
 	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false);
+	RendererRD::GpuOcclusion *active_gpu_occlusion = nullptr;
+	void _prepare_gpu_occlusion(RenderDataRD *p_render_data, PassMode p_depth_mode);
 
 	HashMap<Size2i, RID> sdfgi_framebuffer_size_cache;
 

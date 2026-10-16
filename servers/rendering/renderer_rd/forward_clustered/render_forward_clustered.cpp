@@ -31,6 +31,7 @@
 #include "render_forward_clustered.h"
 
 #include "core/config/project_settings.h"
+#include "core/object/callable_mp.h"
 #include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
@@ -111,6 +112,10 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_tempor
 #endif
 
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
+	if (gpu_occlusion) {
+		memdelete(gpu_occlusion);
+		gpu_occlusion = nullptr;
+	}
 	// JIC, should already have been cleared
 	if (render_buffers) {
 		render_buffers->clear_context(RB_SCOPE_FORWARD_CLUSTERED);
@@ -342,6 +347,16 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 	for (uint32_t i = p_from_element; i < p_to_element; i++) {
 		const GeometryInstanceSurfaceDataCache *surf = p_params->elements[i];
 		const RenderElementInfo &element_info = p_params->element_info[i];
+		int32_t gpu_batch = p_params->gpu_occlusion && i < p_params->gpu_occlusion->element_batches.size() ? p_params->gpu_occlusion->element_batches[i] : -1;
+		if (p_params->gpu_occlusion && p_params->gpu_occlusion_surface_lookup) {
+			const uint32_t *batch = p_params->gpu_occlusion->surface_batches.getptr(surf);
+			gpu_batch = batch ? int32_t(*batch) : -1;
+		}
+		if (p_params->gpu_occlusion && p_params->gpu_occlusion_phase == 1 && gpu_batch < 0) {
+			i += element_info.repeat - 1;
+			continue;
+		}
+		push_constant.gpu_visibility_offset = gpu_batch >= 0 ? p_params->gpu_occlusion->get_index_offset(gpu_batch, p_params->gpu_occlusion_phase) : UINT32_MAX;
 
 		if (p_pass_mode == PASS_MODE_COLOR && surf->color_pass_inclusion_mask && (p_color_pass_flags & surf->color_pass_inclusion_mask) == 0) {
 			// Some surfaces can be repeated in multiple render lists. We exclude them from being rendered on the color pass based on the
@@ -608,6 +623,8 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 					WARN_PRINT("Indirect draws are not supported when emulating point size.");
 				}
 				RD::get_singleton()->draw_list_draw(draw_list, false, mesh_storage->mesh_surface_get_vertex_count(mesh_surface), instance_count * 6);
+			} else if (gpu_batch >= 0) {
+				RD::get_singleton()->draw_list_draw_indirect(draw_list, index_array_rd.is_valid(), p_params->gpu_occlusion->get_commands(), p_params->gpu_occlusion->get_command_offset(gpu_batch, p_params->gpu_occlusion_phase), 1, 0);
 			} else if (indirect) {
 				RD::get_singleton()->draw_list_draw_indirect(draw_list, index_array_rd.is_valid(), mesh_storage->_multimesh_get_command_buffer_rd_rid(surf->owner->data->base), surf->surface_index * sizeof(uint32_t) * mesh_storage->INDIRECT_MULTIMESH_COMMAND_STRIDE, 1, 0);
 			} else {
@@ -1711,7 +1728,118 @@ void RenderForwardClustered::_process_sss(Ref<RenderSceneBuffersRD> p_render_buf
 	}
 }
 
+void RenderForwardClustered::_prepare_gpu_occlusion(RenderDataRD *p_render_data, PassMode p_depth_mode) {
+	Ref<RenderSceneBuffersRD> buffers = p_render_data->render_buffers;
+	if (!buffers->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED)) {
+		return;
+	}
+	Ref<RenderBufferDataForwardClustered> data = buffers->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
+	Dictionary statistics = buffers->get_gpu_occlusion_statistics();
+	statistics["active"] = false;
+	if (buffers->get_gpu_occlusion_mode() == 0 || buffers->get_view_count() != 1 || p_render_data->reflection_probe.is_valid() || get_debug_draw_mode() != RSE::VIEWPORT_DEBUG_DRAW_DISABLED) {
+		statistics["fallback_reason"] = buffers->get_gpu_occlusion_mode() == 0 ? "disabled" : "unsupported_view";
+		buffers->set_gpu_occlusion_statistics(statistics);
+		if (data->gpu_occlusion) {
+			memdelete(data->gpu_occlusion);
+			data->gpu_occlusion = nullptr;
+		}
+		return;
+	}
+	if (!data->gpu_occlusion) {
+		data->gpu_occlusion = memnew(RendererRD::GpuOcclusion);
+	}
+	RendererRD::GpuOcclusion *gpu = data->gpu_occlusion;
+	auto &list = render_list[RENDER_LIST_OPAQUE];
+	gpu->begin(list.elements.size());
+	RendererRD::MeshStorage *storage = RendererRD::MeshStorage::get_singleton();
+	uint32_t draw_groups = 0;
+	for (uint32_t i = 0; i < list.elements.size();) {
+		++draw_groups;
+		GeometryInstanceSurfaceDataCache *surface = list.elements[i];
+		GeometryInstanceForwardClustered *owner = surface->owner;
+		const RenderElementInfo &info = list.element_info[i];
+		uint32_t element = i;
+		i += info.repeat;
+		const auto *shader = surface->shader;
+		// Retain the native path for deformed meshes,
+		// externally managed indirect draws, and materials with unbounded output.
+		if (!shader || owner->instance_count == 0 || owner->mesh_instance.is_valid() || owner->gpu_occlusion_margin < 0 ||
+				(owner->base_flags & (INSTANCE_DATA_FLAG_PARTICLES | INSTANCE_DATA_FLAG_MULTIMESH_FORMAT_2D | INSTANCE_DATA_FLAG_MULTIMESH_INDIRECT)) ||
+				!(surface->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH) || shader->uses_position || shader->writes_modelview_or_projection ||
+				shader->uses_z_clip_scale || shader->uses_point_size || shader->stencil_enabled || shader->uses_screen_texture || shader->uses_depth_texture || shader->uses_normal_texture ||
+				(shader->uses_vertex && owner->gpu_occlusion_margin <= 0) || (shader->uses_alpha_pass() && !shader->uses_alpha_antialiasing) ||
+				(info.repeat > 1 && (shader->uses_vertex || shader->uses_alpha_pass()))) {
+			continue;
+		}
+		RendererRD::GpuOcclusion::Batch batch;
+		batch.model = owner->transform;
+		batch.margin = owner->gpu_occlusion_margin;
+		if (batch.margin > 0) {
+			if (Math::is_zero_approx(owner->transform.basis.determinant())) {
+				continue;
+			}
+			const Basis inverse = owner->transform.basis.inverse();
+			// Bounds stay conservative under non-uniform scale and shear. The
+			// declaration is in world meters; the shader expands object space.
+			batch.margin *= Math::sqrt(inverse.get_column(0).length_squared() + inverse.get_column(1).length_squared() + inverse.get_column(2).length_squared());
+			if (!Math::is_finite(batch.margin)) {
+				continue;
+			}
+		}
+		batch.multimesh = bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH);
+		batch.bounds = batch.multimesh ? storage->mesh_surface_get_aabb(surface->surface) : owner->data->aabb;
+		if (batch.multimesh) {
+			batch.transforms = storage->_multimesh_get_buffer_rd_rid(owner->data->base);
+			if (batch.transforms.is_null()) {
+				continue;
+			}
+			batch.count = storage->multimesh_get_instances_to_draw(owner->data->base);
+			batch.stride = 3 + bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR) + bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA);
+			uint32_t previous_offset;
+			storage->_multimesh_get_motion_vectors_offsets(owner->data->base, batch.transform_offset, previous_offset);
+		} else if (info.repeat > 1) {
+			bool supported = true;
+			for (uint32_t member = element; member < element + info.repeat; ++member) {
+				supported = supported && list.elements[member]->owner->gpu_occlusion_margin >= 0 && list.elements[member]->owner->store_transform_cache;
+			}
+			if (!supported) {
+				continue;
+			}
+			batch.multimesh = true; // Same packed 3x4 prefix in InstanceData.
+			batch.model = Transform3D();
+			batch.bounds = storage->mesh_surface_get_aabb(surface->surface);
+			batch.margin = 0;
+			batch.count = info.repeat;
+			batch.transforms = scene_state.instance_buffer[RENDER_LIST_OPAQUE]._get(0);
+			batch.dynamic_transforms = true;
+			batch.stride = sizeof(SceneState::InstanceData) / (sizeof(float) * 4);
+			batch.transform_offset = element;
+		}
+		void *depth_surface = p_depth_mode == PASS_MODE_DEPTH ? surface->surface_shadow : surface->surface;
+		batch.depth_vertices = storage->mesh_surface_get_draw_count(depth_surface, info.lod_index);
+		batch.color_vertices = storage->mesh_surface_get_draw_count(surface->surface, info.lod_index);
+		uint32_t old_count = gpu->batches.size();
+		gpu->add(element, batch);
+		if (gpu->batches.size() != old_count) {
+			gpu->surface_batches.insert(surface, old_count);
+		}
+	}
+	Projection correction;
+	correction.set_depth_correction(p_render_data->scene_data->flip_y);
+	correction.add_jitter_offset(p_render_data->scene_data->taa_jitter);
+	Projection view_projection = correction * p_render_data->scene_data->cam_projection * Projection(p_render_data->scene_data->cam_transform.affine_inverse());
+	if (gpu->prepare(buffers->get_internal_size(), buffers->get_gpu_occlusion_epoch(), view_projection, p_render_data->scene_data->cam_projection)) {
+		active_gpu_occlusion = gpu;
+	}
+	statistics["active"] = active_gpu_occlusion != nullptr;
+	statistics["fallback_reason"] = active_gpu_occlusion ? "" : "no_eligible_batches_or_allocation_failed";
+	statistics["draw_groups"] = draw_groups;
+	statistics["fallback_draw_groups"] = draw_groups - gpu->batches.size();
+	buffers->set_gpu_occlusion_statistics(statistics);
+}
+
 void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) {
+	active_gpu_occlusion = nullptr;
 	GodotProfileZone("Render/ForwardClustered");
 	scene_state.used_uniform_buffer_count = 0;
 
@@ -2141,6 +2269,12 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool using_ssao = depth_pre_pass && !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_ssao_enabled(p_render_data->environment);
 
 	if (depth_pre_pass) { //depth pre pass
+		_prepare_gpu_occlusion(p_render_data, depth_pass_mode);
+		bool apply_gpu_occlusion = active_gpu_occlusion && rb->get_gpu_occlusion_mode() == 2;
+		if (active_gpu_occlusion) {
+			RENDER_TIMESTAMP("GPU Occlusion Predict");
+			active_gpu_occlusion->cull(0);
+		}
 		bool needs_pre_resolve = _needs_post_prepass_render(p_render_data, using_sdfgi || using_voxelgi);
 		if (needs_pre_resolve) {
 			RENDER_TIMESTAMP("GI + Render Depth Pre-Pass (Parallel)");
@@ -2163,7 +2297,34 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, depth_pass_mode, 0, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
 		{
 			GodotProfileZone("Render/Submit/depth");
+			render_list_params.gpu_occlusion = apply_gpu_occlusion ? active_gpu_occlusion : nullptr;
+			render_list_params.gpu_occlusion_phase = 0;
 			_render_list_with_draw_list(&render_list_params, depth_framebuffer, RD::DrawFlags(needs_pre_resolve ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_ALL), depth_pass_clear, 0.0f, 0u, p_render_data->render_region);
+		}
+		if (active_gpu_occlusion) {
+			RID depth_source = use_msaa ? rb->get_depth_msaa(0) : rb->get_depth_texture(0);
+			RENDER_TIMESTAMP("GPU Occlusion Current Hi-Z");
+			active_gpu_occlusion->build_hierarchy(depth_source, use_msaa);
+			RENDER_TIMESTAMP("GPU Occlusion Recovery");
+			active_gpu_occlusion->cull(1);
+			if (apply_gpu_occlusion) {
+				RENDER_TIMESTAMP("GPU Occlusion Recovery Depth");
+				render_list_params.gpu_occlusion_phase = 1;
+				_render_list_with_draw_list(&render_list_params, depth_framebuffer, RD::DRAW_DEFAULT_ALL, depth_pass_clear, 0.0f, 0u, p_render_data->render_region);
+				RENDER_TIMESTAMP("GPU Occlusion Final Hi-Z");
+				active_gpu_occlusion->build_hierarchy(depth_source, use_msaa);
+			}
+			active_gpu_occlusion->finish();
+			Dictionary statistics = rb->get_gpu_occlusion_statistics();
+			statistics["mode"] = rb->get_gpu_occlusion_mode();
+			statistics["batches"] = active_gpu_occlusion->batches.size();
+			statistics["buffer_bytes"] = active_gpu_occlusion->get_buffer_bytes();
+			statistics["hierarchy_bytes"] = active_gpu_occlusion->get_hierarchy_bytes();
+			statistics["max_candidates"] = RendererRD::GpuOcclusion::MAX_CANDIDATES;
+			rb->set_gpu_occlusion_statistics(statistics);
+			if (++rb_data->gpu_occlusion_frames % 60 == 0) {
+				RD::get_singleton()->buffer_get_data_async(active_gpu_occlusion->get_commands(), callable_mp(rb.ptr(), &RenderSceneBuffersRD::gpu_occlusion_readback).bind(rb->get_gpu_occlusion_epoch(), active_gpu_occlusion->get_candidate_count(), active_gpu_occlusion->batches.size()), 0, active_gpu_occlusion->batches.size() * 60);
+			}
 		}
 
 		RD::get_singleton()->draw_command_end_label();
@@ -2247,6 +2408,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			uint32_t opaque_color_pass_flags = using_motion_pass ? (color_pass_flags & ~uint32_t(COLOR_PASS_FLAG_MOTION_VECTORS)) : color_pass_flags;
 			RID opaque_framebuffer = using_motion_pass ? rb_data->get_color_pass_fb(opaque_color_pass_flags) : color_framebuffer;
 			RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, PASS_MODE_COLOR, opaque_color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
+			render_list_params.gpu_occlusion = rb->get_gpu_occlusion_mode() == 2 ? active_gpu_occlusion : nullptr;
 			GodotProfileZone("Render/Submit/opaque");
 			_render_list_with_draw_list(&render_list_params, opaque_framebuffer, RD::DrawFlags(load_color ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_COLOR_ALL) | (depth_pre_pass ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_DEPTH), c, 0.0f, 0u, p_render_data->render_region);
 		}
@@ -2453,6 +2615,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		RID alpha_framebuffer = rb_data.is_valid() ? rb_data->get_color_pass_fb(transparent_color_pass_flags) : color_only_framebuffer;
 		RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR, transparent_color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
+		render_list_params.gpu_occlusion = rb->get_gpu_occlusion_mode() == 2 ? active_gpu_occlusion : nullptr;
+		render_list_params.gpu_occlusion_surface_lookup = true;
 		GodotProfileZone("Render/Submit/alpha");
 		_render_list_with_draw_list(&render_list_params, alpha_framebuffer, RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0u, p_render_data->render_region);
 	}
@@ -3809,6 +3973,7 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		uniforms.push_back(u);
 	}
 
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 40, { active_gpu_occlusion ? active_gpu_occlusion->get_indices() : scene_shader.default_vec4_xform_buffer }));
 	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.default_shader_rd, RENDER_PASS_UNIFORM_SET, uniforms);
 }
 
@@ -4025,6 +4190,7 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		ERR_FAIL_COND_V(scene_shader.default_shader_sdfgi_rd.is_null(), RID());
 	}
 
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 40, { scene_shader.default_vec4_xform_buffer }));
 	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.default_shader_sdfgi_rd, RENDER_PASS_UNIFORM_SET, uniforms);
 }
 

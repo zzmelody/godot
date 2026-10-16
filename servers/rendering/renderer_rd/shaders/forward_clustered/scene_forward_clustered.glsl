@@ -213,6 +213,10 @@ vec3 double_add_vec3(vec3 base_a, vec3 prec_a, vec3 base_b, vec3 prec_b, out vec
 }
 #endif
 
+uint source_instance_index() {
+	return draw_call.gpu_visibility_offset == 0xffffffffu ? uint(INSTANCE_INDEX) : gpu_visible_instances.indices[draw_call.gpu_visibility_offset + uint(INSTANCE_INDEX)];
+}
+
 uint multimesh_stride() {
 	uint stride = sc_multimesh_format_2d() ? 2 : 3;
 	stride += sc_multimesh_has_color() ? 1 : 0;
@@ -311,7 +315,7 @@ void vertex_shader(vec3 vertex_input,
 
 #else
 		uint stride = multimesh_stride();
-		uint offset = stride * (INSTANCE_INDEX + multimesh_offset);
+		uint offset = stride * (source_instance_index() + multimesh_offset);
 
 		if (sc_multimesh_format_2d()) {
 			matrix = mat4(transforms.data[offset + 0], transforms.data[offset + 1], vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0));
@@ -769,7 +773,7 @@ void _unpack_vertex_attributes(vec4 p_vertex_in, vec3 p_compressed_aabb_position
 void main() {
 	uint instance_index = draw_call.instance_index;
 	if (!sc_multimesh()) {
-		instance_index += INSTANCE_INDEX;
+		instance_index += source_instance_index();
 	}
 
 	instance_index_interp = instance_index;
