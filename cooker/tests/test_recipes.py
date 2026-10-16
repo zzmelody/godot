@@ -644,6 +644,130 @@ func _initialize():
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
         self.assertIn("MINIMUM_PRECOMPUTED_LODS:true", checked.stdout)
 
+    def test_covered_lods_keep_disconnected_leaves_and_calibrated_distances(self):
+        source = self.recipe('''local vertices, indices = {}, {}
+for leaf = 0, 15 do
+    local first = #vertices
+    for y = 0, 4 do
+        for x = 0, 4 do
+            table.insert(vertices, {leaf % 4 * 2 + x / 4,
+                math.floor(leaf / 4) * 2 + y / 4, leaf % 2 * .3})
+        end
+    end
+    for y = 0, 3 do
+        for x = 0, 3 do
+            local a = first + y * 5 + x + 1
+            for _, index in {a,a+1,a+6,a,a+6,a+5} do
+                table.insert(indices,index)
+            end
+        end
+    end
+end
+return cooker.mesh({vertices=vertices,indices=indices})''',
+                             output="res://assets/runtime/model/leaves/source.res")
+        covered = self.recipe('''return cooker.minimum_visual("mesh",{
+ triangle_ratio=1,max_texture_size=32,lod_triangle_ratios={.5,.2,.03},
+ lod_screen_errors={.2,.4,.8},lod_minimum_coverage=.99})''',
+                              inputs={"mesh": source["output"]},
+                              output="res://assets/runtime/model/leaves/covered.res")
+        minimum = self.recipe('''return cooker.minimum_visual("mesh",{
+ triangle_ratio=.05,max_texture_size=16,lod_triangle_ratios={.01}})''',
+                              inputs={"mesh": covered["output"]},
+                              output="res://assets/runtime/model/leaves/minimum.res")
+        self.assertIsNotNone(REFERENCE, "LOD readback requires the Veya editor")
+        script = self.project / "inspect_covered_lods.gd"
+        script.write_text('''extends SceneTree
+func _initialize():
+    var source = load("'''+source["output"]+'''")
+    var covered = load("'''+covered["output"]+'''")
+    var minimum = load("'''+minimum["output"]+'''")
+    var first = ImporterMesh.from_mesh(covered)
+    var last = ImporterMesh.from_mesh(minimum)
+    assert(first.get_surface_lod_count(0) > 0)
+    assert(first.get_surface_lod_count(0) == last.get_surface_lod_count(0))
+    var points = covered.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+    var final_points = minimum.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+    var base = covered.surface_get_arrays(0)[Mesh.ARRAY_INDEX]
+    var final_base = minimum.surface_get_arrays(0)[Mesh.ARRAY_INDEX]
+    assert(base.size() == source.surface_get_array_index_len(0))
+    assert(final_base.size() == base.size())
+    for i in base.size():
+        assert(points[base[i]].is_equal_approx(final_points[final_base[i]]))
+    for level in first.get_surface_lod_count(0):
+        var indices = first.get_surface_lod_indices(0,level)
+        var final_indices = last.get_surface_lod_indices(0,level)
+        assert(indices.size() < base.size() and indices.size() == final_indices.size())
+        var distance = first.get_surface_lod_size(0,level)
+        assert(abs(distance-.2)<.00001 or abs(distance-.4)<.00001 or abs(distance-.8)<.00001)
+        assert(is_equal_approx(distance,last.get_surface_lod_size(0,level)))
+        var represented = {}
+        for i in range(0,indices.size(),3):
+            var a = points[indices[i]]
+            var b = points[indices[i+1]]
+            var c = points[indices[i+2]]
+            # A triangle cannot bridge separate authored leaves.
+            assert(max(a.x,max(b.x,c.x))-min(a.x,min(b.x,c.x))<=1.001)
+            assert(max(a.y,max(b.y,c.y))-min(a.y,min(b.y,c.y))<=1.001)
+            represented[Vector2i(int(a.x/2),int(a.y/2))] = true
+        assert(represented.size()==16)
+        for i in indices.size():
+            assert(points[indices[i]].is_equal_approx(final_points[final_indices[i]]))
+    print("COVERED_LODS:true")
+    quit()
+''', encoding="utf-8")
+        checked = subprocess.run(
+            [str(REFERENCE), "--headless", "--path", str(self.project),
+             "--script", "res://inspect_covered_lods.gd", "--quit-after", "20"],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("COVERED_LODS:true", checked.stdout, checked.stderr)
+
+    def test_covered_lods_preserve_shared_material_dependencies(self):
+        material = self.recipe('return cooker.material({color={.2,.4,.3}})',
+                               output="res://assets/runtime/material/shared/paint.res")
+        source = self.recipe('''return cooker.scene({{
+ asset=cooker.primitive("sphere",{radius=2,segments=24,rings=12}),
+ material=cooker.input("paint")}})''', inputs={"paint":material["output"]},
+                             output="res://assets/runtime/model/shared/source.scn")
+        covered = self.recipe('''return cooker.minimum_visual("visual",{
+ triangle_ratio=1,max_texture_size=32,lod_triangle_ratios={.8},
+ lod_screen_errors={.3},lod_minimum_coverage=.95,preserve_materials=true})''',
+                              inputs={"visual":source["output"]},
+                              output="res://assets/runtime/model/shared/lods.scn")
+        self.assertIsNotNone(REFERENCE, "Shared material readback requires the Veya editor")
+        script = self.project / "inspect_lod_material.gd"
+        script.write_text('''extends SceneTree
+func _initialize():
+    var expected=load("'''+material["output"]+'''")
+    var scene=load("'''+covered["output"]+'''").instantiate()
+    var multi=scene.find_children("*","MultiMeshInstance3D",true,false)[0]
+    assert(multi.material_override==expected)
+    scene.free()
+    print("SHARED_LOD_MATERIAL:true")
+    quit()
+''', encoding="utf-8")
+        checked = subprocess.run(
+            [str(REFERENCE), "--headless", "--path", str(self.project),
+             "--script", "res://inspect_lod_material.gd", "--quit-after", "20"],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("SHARED_LOD_MATERIAL:true", checked.stdout, checked.stderr)
+
+    def test_covered_lods_reject_incomplete_or_invalid_policy(self):
+        source = self.recipe(BOX, output="res://assets/runtime/model/policy/source.res")
+        for policy in (
+            "lod_screen_errors={.2},lod_minimum_coverage=.95",
+            "lod_triangle_ratios={.5},lod_screen_errors={.2,.4},lod_minimum_coverage=.95",
+            "lod_triangle_ratios={.5,.2},lod_screen_errors={.4,.2},lod_minimum_coverage=.95",
+            "lod_triangle_ratios={.5},lod_screen_errors={.2}",
+            "lod_triangle_ratios={.5},lod_minimum_coverage=.95",
+            "lod_triangle_ratios={.5},lod_screen_errors={.2},lod_minimum_coverage=1.01",
+        ):
+            with self.subTest(policy=policy):
+                self.recipe('return cooker.minimum_visual("mesh",{'+policy+'})',
+                            success=False, inputs={"mesh":source["output"]},
+                            output=f"res://assets/runtime/model/policy/invalid-{self.index}.res")
+
     def test_minimum_builds_far_lods_for_disconnected_geometry(self):
         source = self.recipe('''local vertices, indices = {}, {}
 for y = 0, 3 do

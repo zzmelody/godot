@@ -951,7 +951,9 @@ struct Recipe {
     }
     s.fields(2, {"triangle_ratio", "max_texture_size", "minimum_height",
                  "lock_border", "max_error", "preserve_heightfields",
-                 "compress_color_textures", "lod_triangle_ratios"});
+                 "compress_color_textures", "lod_triangle_ratios",
+                 "lod_screen_errors", "lod_minimum_coverage",
+                 "lod_coverage_scale", "preserve_materials"});
     CookerMinimum::Options options;
     s.field(2, "lod_triangle_ratios");
     if (!lua_isnil(p_state, -1)) {
@@ -969,6 +971,40 @@ struct Recipe {
       }
     }
     lua_pop(p_state, 1);
+    s.field(2, "lod_screen_errors");
+    if (!lua_isnil(p_state, -1)) {
+      const int count = s.array(-1, 8);
+      s.require(
+          count > 0 && size_t(count) == options.lod_triangle_ratios.size(),
+          "lod_screen_errors must match lod_triangle_ratios");
+      double previous_error = 0;
+      for (int level = 0; level < count; ++level) {
+        lua_rawgeti(p_state, -1, level + 1);
+        const double error = s.number(-1);
+        s.require(error > previous_error && error <= 100000,
+                  "lod_screen_errors must be positive and increase strictly");
+        options.lod_screen_errors.push_back(error);
+        previous_error = error;
+        lua_pop(p_state, 1);
+      }
+    }
+    lua_pop(p_state, 1);
+    s.field(2, "lod_minimum_coverage");
+    if (!lua_isnil(p_state, -1)) {
+      options.lod_minimum_coverage = s.number(-1);
+      s.require(options.lod_minimum_coverage >= 0.5 &&
+                    options.lod_minimum_coverage <= 1,
+                "lod_minimum_coverage must be within [0.5,1]");
+    }
+    lua_pop(p_state, 1);
+    s.require(
+        options.lod_screen_errors.empty() ==
+            (options.lod_minimum_coverage == 0),
+        "covered LODs require screen errors and minimum coverage together");
+    options.lod_coverage_scale =
+        s.number_field(2, "lod_coverage_scale", 1, 0.0001, 10000);
+    options.preserve_materials =
+        s.boolean_field(2, "preserve_materials", false);
     options.compress_color_textures =
         s.boolean_field(2, "compress_color_textures", false);
     options.preserve_heightfields =

@@ -50,6 +50,24 @@ and do not lock borders, so callers must restrict them to standalone distant
 models. Protected upward height-field surfaces do not use this path. Ratios
 are targets; inspect published levels for achieved counts.
 
+`lod_screen_errors` and `lod_minimum_coverage` enable conservative LODs instead.
+Errors must be positive, strictly increasing and paired with the triangle ratios.
+Coverage must be within [0.5,1]. This mode retains the input base geometry and
+regenerates levels with topology-aware edge collapse, ignoring unsafe source LODs.
+Each level must satisfy the symmetric coverage-difference bound in sixteen
+orthographic views (eight azimuths, elevations zero and thirty degrees).
+Views sample twice the projected size at that level's screen error, capped at
+256 pixels. `lod_coverage_scale` defaults to one and accounts for authored
+instance normalization when coverage is evaluated for a MultiMesh batch.
+Unsafe levels are omitted. The output mesh owns a `veya_covered_lods=1` marker;
+downstream minimum builders preserve its base geometry, levels and screen errors
+while reducing textures. The caller calibrates errors for its reference camera
+and authored model scale. Runtime still selects ordinary ArrayMesh LODs.
+
+`preserve_materials=true` retains existing material references during geometry
+LOD preparation. It defaults to false. Detailed models use this option to retain
+their published shared textures; independent texture minimums leave it false.
+
 This option is Cooker-only. Omission retains the previous path below. No game
 renderer, runtime LOD selection or resource format changes are required.
 

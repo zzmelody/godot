@@ -5,6 +5,7 @@
 
 #include "core/io/image.h"
 #include "core/object/script_language.h"
+#include "lod_silhouette.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/skeleton_3d.h"
@@ -31,6 +32,12 @@ struct Options {
   // Explicit far-mesh targets relative to the input surface. Empty keeps the
   // existing minimum path. These levels may remove disconnected components.
   std::vector<double> lod_triangle_ratios;
+  // Explicit local-space screen errors, paired with ratios. Coverage mode uses
+  // topology-aware simplification and rejects silhouette loss in sixteen views.
+  std::vector<double> lod_screen_errors;
+  double lod_minimum_coverage = 0;
+  double lod_coverage_scale = 1;
+  bool preserve_materials = false;
 };
 
 class Builder {
@@ -204,6 +211,37 @@ class Builder {
     return result;
   }
 
+  Dictionary BuildCoveredLods(const PackedVector3Array& vertices,
+                              const PackedInt32Array& indices,
+                              const std::vector<float>& positions) const {
+    Dictionary result;
+    int previous_count = indices.size();
+    for (size_t level = 0; level < options_.lod_triangle_ratios.size();
+         ++level) {
+      const size_t target = MAX(
+          size_t(3),
+          size_t(indices.size() * options_.lod_triangle_ratios[level]) / 3 * 3);
+      PackedInt32Array selected;
+      selected.resize(indices.size());
+      // Regular edge collapses never join disconnected leaf components.
+      const size_t count = meshopt_simplify(
+          reinterpret_cast<unsigned int*>(selected.ptrw()),
+          reinterpret_cast<const unsigned int*>(indices.ptr()), indices.size(),
+          positions.data(), vertices.size(), sizeof(float) * 3, target, 0.01f);
+      selected.resize(count);
+      const CookerLod::Silhouette silhouette(
+          vertices, indices,
+          2 * options_.lod_coverage_scale / options_.lod_screen_errors[level]);
+      if (count < 3 || count >= size_t(previous_count) ||
+          !silhouette.Accepts(selected, options_.lod_minimum_coverage)) {
+        continue;
+      }
+      result[options_.lod_screen_errors[level]] = selected;
+      previous_count = count;
+    }
+    return result;
+  }
+
   static bool CompactLods(Array& arrays, PackedInt32Array& indices,
                           Dictionary& lods, int original_count) {
     const int base_count = indices.size();
@@ -276,6 +314,11 @@ class Builder {
   Ref<Material> MaterialValue(const Ref<Material>& source) {
     if (source.is_null()) {
       return Ref<Material>();
+    }
+    if (options_.preserve_materials) {
+      // LOD preparation can share existing published materials. Texture-only
+      // minimum builders leave this false and keep their independent payloads.
+      return source;
     }
     const auto id = source->get_instance_id();
     if (materials_.count(id)) {
@@ -360,9 +403,13 @@ class Builder {
     result.instantiate();
     bool source_has_lods = false;
     bool protected_heightfield = false;
+    const bool covered_lods = options_.lod_minimum_coverage > 0;
+    const bool preserve_lods =
+        source->get_meta("veya_covered_lods", 0) == Variant(1);
     for (int surface = 0; surface < source->get_surface_count(); ++surface) {
       source_has_lods |= !source->surface_get_lods(surface).is_empty();
-      if (source->surface_get_primitive_type(surface) != Mesh::PRIMITIVE_TRIANGLES) {
+      if (source->surface_get_primitive_type(surface) !=
+          Mesh::PRIMITIVE_TRIANGLES) {
         return Ref<Mesh>();
       }
       Array arrays = source->surface_get_arrays(surface).duplicate();
@@ -396,7 +443,10 @@ class Builder {
       PackedInt32Array reduced;
       reduced.resize(indices.size());
       const size_t target = MAX(
-          size_t(3), size_t(indices.size() * options_.triangle_ratio) / 3 * 3);
+          size_t(3), size_t(indices.size() * ((covered_lods || preserve_lods)
+                                                  ? 1.0
+                                                  : options_.triangle_ratio)) /
+                         3 * 3);
       unsigned int flags =
           options_.lock_border ? SurfaceTool::SIMPLIFY_LOCK_BORDER : 0;
       const float error = options_.max_error > 0 ? options_.max_error : 0.02f;
@@ -413,6 +463,11 @@ class Builder {
         return Ref<Mesh>();
       }
       reduced.resize(count);
+      if (covered_lods || preserve_lods) {
+        // A downstream texture-only minimum must not replace validated crowns
+        // or recalibrate their published screen errors.
+        reduced = indices;
+      }
       // A 3D collapse can fold a height field in XZ while meeting its error
       // bound. Keep the original topology of that surface if this occurs.
       if (options_.preserve_heightfields &&
@@ -421,9 +476,13 @@ class Builder {
         reduced = indices;
       }
       Dictionary lods;
-      if (!options_.lod_triangle_ratios.empty() &&
-          !(options_.preserve_heightfields &&
-            HasUpwardProjection(vertices, indices))) {
+      if (covered_lods) {
+        lods = BuildCoveredLods(vertices, indices, positions);
+      } else if (preserve_lods) {
+        lods = source->surface_get_lods(surface);
+      } else if (!options_.lod_triangle_ratios.empty() &&
+                 !(options_.preserve_heightfields &&
+                   HasUpwardProjection(vertices, indices))) {
         lods = BuildLods(source, surface, indices, positions, reduced.size(),
                          reduction_error);
       }
@@ -458,7 +517,7 @@ class Builder {
       return Ref<Mesh>();
     }
     if (options_.lod_triangle_ratios.empty() && source_has_lods &&
-        !protected_heightfield) {
+        !protected_heightfield && !preserve_lods && !covered_lods) {
       // Minimum compaction changes vertex indices, so the source LOD indices
       // cannot be copied. Generate new levels after the final arrays exist.
       // Keep this work in Cooker; runtime only selects the published levels.
@@ -468,6 +527,9 @@ class Builder {
       if (result.is_null()) {
         return Ref<Mesh>();
       }
+    }
+    if (covered_lods || preserve_lods) {
+      result->set_meta("veya_covered_lods", 1);
     }
     meshes_.emplace(id, result);
     return result;
