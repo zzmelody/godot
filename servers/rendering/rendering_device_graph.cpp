@@ -30,6 +30,8 @@
 
 #include "rendering_device_graph.h"
 
+#include "core/profiling/profiling.h"
+
 #define PRINT_RENDER_GRAPH 0
 #define FORCE_FULL_ACCESS_BITS 0
 #define PRINT_RESOURCE_TRACKER_TOTAL 0
@@ -852,6 +854,9 @@ void RenderingDeviceGraph::_run_raytracing_list_command(RDD::CommandBufferID p_c
 }
 
 void RenderingDeviceGraph::_run_compute_list_command(RDD::CommandBufferID p_command_buffer, const uint8_t *p_instruction_data, uint32_t p_instruction_data_size) {
+	GodotProfileZoneGroupedFirst(encode_compute, "Render/Graph/encode_compute_list");
+	GodotProfileZoneGroupedValue(encode_compute, p_instruction_data_size);
+
 	uint32_t instruction_data_cursor = 0;
 	while (instruction_data_cursor < p_instruction_data_size) {
 		DEV_ASSERT((instruction_data_cursor + sizeof(ComputeListInstruction)) <= p_instruction_data_size);
@@ -900,6 +905,8 @@ void RenderingDeviceGraph::_run_compute_list_command(RDD::CommandBufferID p_comm
 }
 
 void RenderingDeviceGraph::_get_draw_list_render_pass_and_framebuffer(const RecordedDrawListCommand *p_draw_list_command, RDD::RenderPassID &r_render_pass, RDD::FramebufferID &r_framebuffer) {
+	GodotProfileZone("Render/Graph/framebuffer_lookup");
+
 	DEV_ASSERT(p_draw_list_command->trackers_count <= 21 && "Max number of attachments that can be encoded into the key.");
 
 	// Build a unique key from the load and store ops for each attachment.
@@ -936,6 +943,9 @@ static uint32_t draw_list_total_size = 0;
 #endif
 
 void RenderingDeviceGraph::_run_draw_list_command(RDD::CommandBufferID p_command_buffer, const uint8_t *p_instruction_data, uint32_t p_instruction_data_size) {
+	GodotProfileZoneGroupedFirst(encode_draw, "Render/Graph/encode_draw_list");
+	GodotProfileZoneGroupedValue(encode_draw, p_instruction_data_size);
+
 #if PRINT_DRAW_LIST_STATS
 	draw_list_total_size += p_instruction_data_size;
 #endif
@@ -1074,6 +1084,8 @@ void RenderingDeviceGraph::_add_draw_list_begin(FramebufferCache *p_framebuffer_
 }
 
 void RenderingDeviceGraph::_run_secondary_command_buffer_task(const SecondaryCommandBuffer *p_secondary) {
+	GodotProfileZone("Render/Graph/secondary_encode");
+
 	driver->command_buffer_begin_secondary(p_secondary->command_buffer, p_secondary->render_pass, 0, p_secondary->framebuffer);
 	_run_draw_list_command(p_secondary->command_buffer, p_secondary->instruction_data.ptr(), p_secondary->instruction_data.size());
 	driver->command_buffer_end(p_secondary->command_buffer);
@@ -1090,6 +1102,9 @@ void RenderingDeviceGraph::_wait_for_secondary_command_buffer_tasks() {
 }
 
 void RenderingDeviceGraph::_run_render_commands(int32_t p_level, const RecordedCommandSort *p_sorted_commands, uint32_t p_sorted_commands_count, RDD::CommandBufferID &r_command_buffer, CommandBufferPool &r_command_buffer_pool, int32_t &r_current_label_index, int32_t &r_current_label_level) {
+	GodotProfileZoneGroupedFirst(encode_batch, "Render/Graph/encode_batch");
+	GodotProfileZoneGroupedValue(encode_batch, p_sorted_commands_count);
+
 	driver->command_group_begin(r_command_buffer);
 	for (uint32_t i = 0; i < p_sorted_commands_count; i++) {
 		const uint32_t command_index = p_sorted_commands[i].index;
@@ -1198,9 +1213,15 @@ void RenderingDeviceGraph::_run_render_commands(int32_t p_level, const RecordedC
 				}
 
 				if (framebuffer && render_pass) {
-					driver->command_begin_render_pass(r_command_buffer, render_pass, framebuffer, draw_list_command->command_buffer_type, draw_list_command->region, clear_values);
+					{
+						GodotProfileZone("Render/Graph/draw_pass_begin");
+						driver->command_begin_render_pass(r_command_buffer, render_pass, framebuffer, draw_list_command->command_buffer_type, draw_list_command->region, clear_values);
+					}
 					_run_draw_list_command(r_command_buffer, draw_list_command->instruction_data(), draw_list_command->instruction_data_size);
-					driver->command_end_render_pass(r_command_buffer);
+					{
+						GodotProfileZone("Render/Graph/draw_pass_end");
+						driver->command_end_render_pass(r_command_buffer);
+					}
 				}
 			} break;
 			case RecordedCommand::TYPE_TEXTURE_CLEAR_COLOR: {
@@ -1250,6 +1271,7 @@ void RenderingDeviceGraph::_run_label_command_change(RDD::CommandBufferID p_comm
 		// Ignore any label operations if no labels were pushed.
 		return;
 	}
+	GodotProfileZone("Render/Graph/labels");
 
 	if (p_ignore_previous_value || p_new_label_index != r_current_label_index || p_new_level != r_current_label_level) {
 		if (!p_ignore_previous_value && (p_use_label_for_empty || r_current_label_index >= 0 || r_current_label_level >= 0)) {
@@ -1350,6 +1372,8 @@ void RenderingDeviceGraph::_boost_priority_for_render_commands(RecordedCommandSo
 	if (p_sorted_commands_count == 0) {
 		return;
 	}
+	GodotProfileZoneGroupedFirst(reprioritize, "Render/Graph/reprioritize");
+	GodotProfileZoneGroupedValue(reprioritize, p_sorted_commands_count);
 
 	const uint32_t boosted_priority_value = 0;
 	if (r_boosted_priority > 0) {
@@ -1376,6 +1400,8 @@ void RenderingDeviceGraph::_group_barriers_for_render_commands(RDD::CommandBuffe
 	if (!driver_honors_barriers) {
 		return;
 	}
+	GodotProfileZoneGroupedFirst(barriers, "Render/Graph/barriers_collect");
+	GodotProfileZoneGroupedValue(barriers, p_sorted_commands_count);
 
 	barrier_group.clear();
 	barrier_group.src_stages = RDD::PIPELINE_STAGE_TOP_OF_PIPE_BIT;
@@ -1459,6 +1485,7 @@ void RenderingDeviceGraph::_group_barriers_for_render_commands(RDD::CommandBuffe
 #endif
 	const VectorView<RDD::AccelerationStructureBarrier> acceleration_structure_barriers = !are_acceleration_structure_barriers_empty ? barrier_group.acceleration_structure_barriers : VectorView<RDD::AccelerationStructureBarrier>();
 
+	GodotProfileZoneGrouped(barriers, "Render/Graph/barriers_emit");
 	driver->command_pipeline_barrier(p_command_buffer, barrier_group.src_stages, barrier_group.dst_stages, memory_barriers, buffer_barriers, texture_barriers, acceleration_structure_barriers);
 
 	bool separate_texture_barriers = !barrier_group.normalization_barriers.is_empty() && !barrier_group.transition_barriers.is_empty();
@@ -2605,6 +2632,8 @@ void RenderingDeviceGraph::end(bool p_reorder_commands, bool p_full_barriers, RD
 		// No commands have been logged, do nothing.
 		return;
 	}
+	GodotProfileZoneGroupedFirst(graph_end, "Render/Graph/topology");
+	GodotProfileZoneGroupedValue(graph_end, command_count);
 
 	thread_local LocalVector<RecordedCommandSort> commands_sorted;
 	if (p_reorder_commands) {
@@ -2716,7 +2745,10 @@ void RenderingDeviceGraph::end(bool p_reorder_commands, bool p_full_barriers, RD
 		}
 	}
 
+	GodotProfileZoneGrouped(graph_end, "Render/Graph/secondary_wait");
+	GodotProfileZoneGroupedValue(graph_end, frames[frame].secondary_command_buffers_used);
 	_wait_for_secondary_command_buffer_tasks();
+	GodotProfileZoneGrouped(graph_end, "Render/Graph/record_commands");
 
 	if (command_count > 0) {
 		int32_t current_label_index = -1;
@@ -2738,7 +2770,11 @@ void RenderingDeviceGraph::end(bool p_reorder_commands, bool p_full_barriers, RD
 			_print_render_commands(commands_sorted.ptr(), command_count);
 #endif
 
-			commands_sorted.sort();
+			{
+				GodotProfileZoneGroupedFirst(sort_commands, "Render/Graph/sort");
+				GodotProfileZoneGroupedValue(sort_commands, commands_sorted.size());
+				commands_sorted.sort();
+			}
 
 #if PRINT_RENDER_GRAPH
 			print_line("AFTER SORT");
