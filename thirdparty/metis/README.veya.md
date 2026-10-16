@@ -9,7 +9,7 @@ sources.json 是 SCons 和原生接口目标共同使用的源文件清单。
 索引为 int32，实数为 float32。构建定义 USE_GKRAND、USE_GKREGEX、NDEBUG 和 NDEBUG2。
 MSVC 另使用原生 TLS，并在 GKlib.h 中补充 io.h、process.h 和 pid_t。
 metis.h 的四个整数范围宏增加未定义检查，避免覆盖现代 MSVC 的 stdint.h。
-除这两个头文件外，取得的 C／H 文件保留上游原字节。
+除这两个头文件的补丁外，C／H 内容保持上游版本；Git 按引擎规则将换行保存为 LF。
 
 USE_GKRAND 使用库内随机数实现，避免其他 Cooker 任务改变 CRT 随机状态。
 调用端使用固定种子 4321，并串行保护随机数及信号注册的全局状态。
