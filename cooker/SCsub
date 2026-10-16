@@ -60,7 +60,11 @@ metis_sources += [str(metis_root / "gklib" / name) for name in metis_lock["gklib
 metis_library = metis_env.add_library("#cooker/metis", metis_sources)
 geometry_env = recipe_env.Clone()
 geometry_env.Append(CPPPATH=[str(metis_root / "include")])
-geometry_library = geometry_env.add_library("#cooker/virtual_geometry", ["#cooker/virtual_geometry/graph_partitioner.cpp"])
+geometry_library = geometry_env.add_library("#cooker/virtual_geometry", [
+    "#cooker/virtual_geometry/graph_partitioner.cpp",
+    "#cooker/virtual_geometry/triangle_topology.cpp",
+    "#cooker/virtual_geometry/leaf_clusters.cpp",
+])
 recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp", "#cooker/usd_import.cpp"])
 # Portable USD transport is Cooker-only; no PXR runtime or Python dependency.
 usd_env = luau_env.Clone()
