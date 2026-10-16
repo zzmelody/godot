@@ -1,5 +1,7 @@
 #include "triangle_topology.h"
 
+#include "graph_locality.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -183,18 +185,10 @@ TopologyError build_adjacency(const TriangleMeshInput &p_input, TriangleTopology
 	return TopologyError::OK;
 }
 
-uint32_t morton_bits(uint32_t p_value) {
-	uint32_t result = 0;
-	for (uint32_t bit = 0; bit < 10; ++bit) {
-		result |= ((p_value >> bit) & 1u) << (bit * 3);
-	}
-	return result;
-}
-
-void spatial_order(const TriangleMeshInput &p_input, std::vector<Center> &r_centers, std::vector<uint32_t> &r_order) {
+void spatial_data(const TriangleMeshInput &p_input, std::vector<Center> &r_centers, Center &r_lower, Center &r_upper) {
 	const uint32_t count = static_cast<uint32_t>(p_input.materials.size());
-	Center lower = { INFINITY, INFINITY, INFINITY };
-	Center upper = { -INFINITY, -INFINITY, -INFINITY };
+	r_lower = { INFINITY, INFINITY, INFINITY };
+	r_upper = { -INFINITY, -INFINITY, -INFINITY };
 	r_centers.resize(count);
 	for (uint32_t triangle = 0; triangle < count; ++triangle) {
 		for (size_t axis = 0; axis < 3; ++axis) {
@@ -202,97 +196,31 @@ void spatial_order(const TriangleMeshInput &p_input, std::vector<Center> &r_cent
 			for (size_t side = 0; side < 3; ++side) {
 				const double value = p_input.positions[p_input.indices[triangle * 3 + side]][axis];
 				sum += value;
-				lower[axis] = std::min(lower[axis], value);
-				upper[axis] = std::max(upper[axis], value);
+				r_lower[axis] = std::min(r_lower[axis], value);
+				r_upper[axis] = std::max(r_upper[axis], value);
 			}
 			r_centers[triangle][axis] = sum / 3.0;
 		}
 	}
-	const double extent = std::max({ upper[0] - lower[0], upper[1] - lower[1], upper[2] - lower[2] });
-	std::vector<uint32_t> keys(count, 0);
-	for (uint32_t triangle = 0; triangle < count; ++triangle) {
-		for (uint32_t axis = 0; axis < 3; ++axis) {
-			const double scaled = (r_centers[triangle][axis] - lower[axis]) / extent * 1023.0;
-			keys[triangle] |= morton_bits(static_cast<uint32_t>(std::clamp(scaled, 0.0, 1023.0))) << axis;
-		}
-	}
-	r_order.resize(count);
-	std::iota(r_order.begin(), r_order.end(), 0u);
-	std::sort(r_order.begin(), r_order.end(), [&](uint32_t p_left, uint32_t p_right) {
-		return keys[p_left] != keys[p_right] ? keys[p_left] < keys[p_right] : p_left < p_right;
-	});
-}
-
-std::vector<std::pair<uint32_t, uint32_t>> locality_links(const std::vector<Center> &p_centers, const std::vector<uint32_t> &p_materials, const std::vector<uint32_t> &p_order, Islands &r_islands) {
-	const uint32_t count = static_cast<uint32_t>(p_order.size());
-	std::vector<uint32_t> island_ids(count);
-	std::vector<uint32_t> run_begin(count);
-	std::vector<uint32_t> run_end(count);
-	for (uint32_t triangle = 0; triangle < count; ++triangle) {
-		island_ids[triangle] = r_islands.find(triangle);
-	}
-	for (uint32_t begin = 0; begin < count;) {
-		uint32_t end = begin + 1;
-		while (end < count && island_ids[p_order[end]] == island_ids[p_order[begin]]) {
-			++end;
-		}
-		for (uint32_t index = begin; index < end; ++index) {
-			run_begin[index] = begin;
-			run_end[index] = end;
-		}
-		begin = end;
-	}
-	std::vector<std::pair<uint32_t, uint32_t>> links;
-	for (uint32_t index = 0; index < count; ++index) {
-		if (run_end[index] - run_begin[index] >= 128) {
-			continue;
-		}
-		const uint32_t triangle = p_order[index];
-		std::pair<double, uint32_t> closest[5];
-		for (auto &candidate : closest) {
-			candidate = { std::numeric_limits<double>::infinity(), UINT32_MAX };
-		}
-		for (int direction : { -1, 1 }) {
-			int64_t cursor = index;
-			for (uint32_t iteration = 0; iteration < 16; ++iteration) {
-				cursor += direction;
-				if (cursor < 0 || cursor >= count) {
-					break;
-				}
-				const uint32_t other = p_order[static_cast<size_t>(cursor)];
-				if (island_ids[triangle] == island_ids[other] || p_materials[triangle] != p_materials[other]) {
-					cursor = direction < 0 ? run_begin[static_cast<size_t>(cursor)] : run_end[static_cast<size_t>(cursor)] - 1;
-					continue;
-				}
-				double distance = 0;
-				for (size_t axis = 0; axis < 3; ++axis) {
-					const double delta = p_centers[triangle][axis] - p_centers[other][axis];
-					distance += delta * delta;
-				}
-				std::pair<double, uint32_t> candidate = { distance, other };
-				for (auto &slot : closest) {
-					if (candidate.first < slot.first) {
-						std::swap(candidate, slot);
-					}
-				}
-			}
-		}
-		for (const auto &candidate : closest) {
-			if (candidate.second != UINT32_MAX) {
-				links.emplace_back(std::min(triangle, candidate.second), std::max(triangle, candidate.second));
-			}
-		}
-	}
-	std::sort(links.begin(), links.end());
-	links.erase(std::unique(links.begin(), links.end()), links.end());
-	return links;
 }
 
 TopologyError build_graph(const TriangleMeshInput &p_input, TriangleTopology &r_topology, Islands &r_islands) {
 	std::vector<Center> centers;
-	spatial_order(p_input, centers, r_topology.graph_to_triangle);
-	const auto links = locality_links(centers, p_input.materials, r_topology.graph_to_triangle, r_islands);
 	const uint32_t count = static_cast<uint32_t>(p_input.materials.size());
+	Center lower;
+	Center upper;
+	spatial_data(p_input, centers, lower, upper);
+	std::vector<uint32_t> islands(count);
+	for (uint32_t triangle = 0; triangle < count; ++triangle) {
+		islands[triangle] = r_islands.find(triangle);
+	}
+	GraphLocality locality;
+	const LocalityError result = build_graph_locality(centers, islands, p_input.materials, lower, upper, locality);
+	if (result != LocalityError::OK) {
+		return result == LocalityError::MEMORY ? TopologyError::MEMORY : TopologyError::INVALID_INPUT;
+	}
+	r_topology.graph_to_triangle = std::move(locality.order);
+	const auto &links = locality.links;
 	std::vector<uint32_t> inverse(count);
 	for (uint32_t index = 0; index < count; ++index) {
 		inverse[r_topology.graph_to_triangle[index]] = index;

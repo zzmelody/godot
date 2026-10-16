@@ -27,6 +27,8 @@ enum class LeafError {
 	TOPOLOGY,
 	PARTITION,
 	MEMORY,
+	INVALID_EXTERNAL_EDGES,
+	EDGE_COUNT_LIMIT,
 };
 
 struct LeafResult {
@@ -39,7 +41,8 @@ struct LeafResult {
 // No simplification, attribute modification or encoded 256-vertex/64-material
 // constraint occurs here. Input/old output survive refusal; no borrowed state
 // escapes. The output owns source identity maps, not references to source arrays.
-LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafClusters &r_leaves, TriangleValidation p_validation = TriangleValidation::SOURCE);
+// Inherited counts are added to the new split boundaries. Empty means none.
+LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafClusters &r_leaves, TriangleValidation p_validation = TriangleValidation::SOURCE, const std::vector<uint32_t> &p_inherited_edges = {});
 
 } // namespace VirtualGeometry
 

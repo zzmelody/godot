@@ -8,7 +8,7 @@
 namespace VirtualGeometry {
 namespace {
 
-void materialize_leaves(const TriangleMeshInput &p_input, const TriangleTopology &p_topology, const GraphPartition &p_partition, MeshLeafClusters &r_leaves) {
+bool materialize_leaves(const TriangleMeshInput &p_input, const TriangleTopology &p_topology, const GraphPartition &p_partition, const std::vector<uint32_t> &p_inherited_edges, MeshLeafClusters &r_leaves) {
 	r_leaves.clusters.resize(p_partition.ranges.size());
 	r_leaves.triangle_cluster.resize(p_input.materials.size());
 	for (uint32_t cluster = 0; cluster < p_partition.ranges.size(); ++cluster) {
@@ -48,23 +48,30 @@ void materialize_leaves(const TriangleMeshInput &p_input, const TriangleTopology
 					}
 				}
 				leaf.indices.push_back(remap[source_vertex]);
-				uint32_t external = 0;
+				uint64_t external = p_inherited_edges.empty() ? 0 : p_inherited_edges[corner];
 				for (uint32_t edge = p_topology.edge_offsets[corner]; edge < p_topology.edge_offsets[corner + 1]; ++edge) {
 					const uint32_t other = p_topology.adjacent_edges[edge] / 3;
 					external += r_leaves.triangle_cluster[other] != cluster ? 1u : 0u;
 				}
-				leaf.external_edges.push_back(external);
+				if (external > UINT32_MAX) {
+					return false;
+				}
+				leaf.external_edges.push_back(static_cast<uint32_t>(external));
 			}
 		}
 		for (uint32_t source_vertex : leaf.source_vertices) {
 			remap[source_vertex] = UINT32_MAX;
 		}
 	}
+	return true;
 }
 
 } // namespace
 
-LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafClusters &r_leaves, TriangleValidation p_validation) {
+LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafClusters &r_leaves, TriangleValidation p_validation, const std::vector<uint32_t> &p_inherited_edges) {
+	if (!p_inherited_edges.empty() && p_inherited_edges.size() != p_input.indices.size()) {
+		return { LeafError::INVALID_EXTERNAL_EDGES };
+	}
 	try {
 		TriangleTopology topology;
 		const TopologyError topology_result = build_triangle_topology(p_input, topology, p_validation);
@@ -77,7 +84,9 @@ LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafCluster
 			return { LeafError::PARTITION, TopologyError::OK, partition_result };
 		}
 		MeshLeafClusters candidate;
-		materialize_leaves(p_input, topology, partition, candidate);
+		if (!materialize_leaves(p_input, topology, partition, p_inherited_edges, candidate)) {
+			return { LeafError::EDGE_COUNT_LIMIT };
+		}
 		r_leaves = std::move(candidate);
 		return {};
 	} catch (const std::bad_alloc &) {
