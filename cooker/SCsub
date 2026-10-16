@@ -44,6 +44,23 @@ for component in lock["components"]:
         if name.endswith(".cpp"):
             objects += luau_env.Object(target="#cooker/luau_objects/" + name[:-4], source=str(source / name))
 luau_library = luau_env.add_library("#cooker/luau_recipe_vm", objects)
+# METIS is an offline geometry dependency. Never add it to core/scene sources.
+metis_root = Path(env.Dir("#thirdparty/metis").abspath)
+metis_lock = json.loads((metis_root / "sources.json").read_text())
+metis_env = env.Clone()
+metis_env.disable_warnings()
+metis_env.Append(CPPPATH=[str(metis_root / name) for name in ("include", "libmetis", "gklib")])
+metis_env.Append(CPPDEFINES=["USE_GKRAND", "USE_GKREGEX", "NDEBUG", "NDEBUG2"])
+if env.msvc:
+    metis_env.Append(CPPDEFINES=["WIN32", "_CRT_SECURE_NO_WARNINGS", ("__thread", "__declspec(thread)")])
+else:
+    metis_env.Append(CCFLAGS=["-fno-strict-aliasing"])
+metis_sources = [str(metis_root / "libmetis" / name) for name in metis_lock["metis_sources"]]
+metis_sources += [str(metis_root / "gklib" / name) for name in metis_lock["gklib_sources"]]
+metis_library = metis_env.add_library("#cooker/metis", metis_sources)
+geometry_env = recipe_env.Clone()
+geometry_env.Append(CPPPATH=[str(metis_root / "include")])
+geometry_library = geometry_env.add_library("#cooker/virtual_geometry", ["#cooker/virtual_geometry/graph_partitioner.cpp"])
 recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp", "#cooker/usd_import.cpp"])
 # Portable USD transport is Cooker-only; no PXR runtime or Python dependency.
 usd_env = luau_env.Clone()
@@ -60,5 +77,5 @@ tydra/obj-export tydra/usd-export tydra/shader-network tydra/render-data tydra/t
 usd_sources = ["#thirdparty/tinyusdz/src/" + name + ".cc" for name in usd_names]
 usd_sources += ["#thirdparty/tinyusdz/src/integerCoding.cpp", "#thirdparty/tinyusdz/src/lz4/lz4.c"]
 usd_library = usd_env.add_library("#cooker/static_usd", usd_sources)
-env.Prepend(LIBS=[recipe_library, luau_library, usd_library])
+env.Prepend(LIBS=[recipe_library, geometry_library, metis_library, luau_library, usd_library])
 # /*>>----- VEYA_COOKER */

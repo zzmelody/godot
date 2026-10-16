@@ -729,6 +729,16 @@ Files extracted from upstream repository:
 - `LICENSE.md`
 
 
+## metis
+
+- Upstream: https://github.com/KarypisLab/METIS and https://github.com/KarypisLab/GKlib
+- Version: METIS 5.1.0 (`c9032886f6073478d1013b4b2d75d59071530394`), GKlib `62de20c7f97c719abdc96d7c3e266a1f7cb52bc5`
+- License: Apache-2.0, LGPL-2.1-or-later (regex), BSD notices (random and Microsoft integer headers)
+- Scope: Cooker and native interface contracts only; not linked into editor/templates.
+
+See `metis/README.veya.md` for the source inventory, compiler settings and local MSVC patches.
+
+
 ## mingw-std-threads
 
 - Upstream: https://github.com/meganz/mingw-std-threads
