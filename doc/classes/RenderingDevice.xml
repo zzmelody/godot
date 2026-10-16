@@ -2834,6 +2834,9 @@
 		<constant name="SUPPORTS_IMAGE_ATOMIC_32_BIT" value="7" enum="Features">
 			Support for 32-bit image atomic operations.
 		</constant>
+		<constant name="SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX" value="16" enum="Features">
+			Support for unsigned 64-bit atomic minimum and maximum on storage buffers in both compute and fragment shaders. The integer and atomic device features are enabled when this feature is reported. This does not imply support for 64-bit image atomics or threadgroup atomics.
+		</constant>
 		<constant name="SUPPORTS_RAY_QUERY" value="11" enum="Features">
 			Support for ray query extension.
 

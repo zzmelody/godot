@@ -1038,6 +1038,8 @@ public:
 		SUPPORTS_HDR_OUTPUT,
 		SUPPORTS_RASTERIZATION_RATE_MAP,
 		SUPPORTS_GPU_MAPPABLE_BUFFER,
+		// Unsigned 64-bit storage-buffer min/max in both compute and fragment stages.
+		SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX,
 	};
 
 	enum SubgroupOperations {

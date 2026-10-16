@@ -570,6 +570,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 	_register_requested_device_extension(VK_QCOM_FRAGMENT_DENSITY_MAP_OFFSET_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME, false);
+	_register_requested_device_extension(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_16BIT_STORAGE_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, false);
@@ -903,6 +904,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		void *next_features = nullptr;
 		VkPhysicalDeviceVulkan12Features device_features_vk_1_2 = {};
 		VkPhysicalDeviceShaderFloat16Int8FeaturesKHR shader_features = {};
+		VkPhysicalDeviceShaderAtomicInt64Features atomic_int64_features = {};
 		VkPhysicalDeviceBufferDeviceAddressFeaturesKHR buffer_device_address_features = {};
 		VkPhysicalDeviceVulkanMemoryModelFeaturesKHR vulkan_memory_model_features = {};
 		VkPhysicalDeviceFragmentShadingRateFeaturesKHR fsr_features = {};
@@ -923,6 +925,11 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			device_features_vk_1_2.pNext = next_features;
 			next_features = &device_features_vk_1_2;
 		} else {
+			if (enabled_device_extension_names.has(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) {
+				atomic_int64_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
+				atomic_int64_features.pNext = next_features;
+				next_features = &atomic_int64_features;
+			}
 			if (enabled_device_extension_names.has(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
 				shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR;
 				shader_features.pNext = next_features;
@@ -1012,6 +1019,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		functions.GetPhysicalDeviceFeatures2(physical_device, &device_features_2);
 
 		if (use_1_2_features) {
+			buffer_atomic_int64_support = device_features_vk_1_2.shaderBufferInt64Atomics;
 #ifdef MACOS_ENABLED
 			ERR_FAIL_COND_V_MSG(!device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing, ERR_CANT_CREATE, "Your GPU doesn't support shaderSampledImageArrayNonUniformIndexing which is required to use the Vulkan-based renderers in Godot.");
 #endif
@@ -1027,6 +1035,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 				vulkan_memory_model_device_scope_support = device_features_vk_1_2.vulkanMemoryModelDeviceScope;
 			}
 		} else {
+			buffer_atomic_int64_support = atomic_int64_features.shaderBufferInt64Atomics;
 			if (enabled_device_extension_names.has(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
 				shader_capabilities.shader_float16_is_supported = shader_features.shaderFloat16;
 				shader_capabilities.shader_int8_is_supported = shader_features.shaderInt8;
@@ -1337,6 +1346,13 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 	}
 
 	void *create_info_next = nullptr;
+	VkPhysicalDeviceShaderAtomicInt64Features atomic_int64_features = {};
+	if (buffer_atomic_int64_support && requested_device_features.shaderInt64) {
+		atomic_int64_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
+		atomic_int64_features.pNext = create_info_next;
+		atomic_int64_features.shaderBufferInt64Atomics = VK_TRUE;
+		create_info_next = &atomic_int64_features;
+	}
 	VkPhysicalDeviceShaderFloat16Int8FeaturesKHR shader_features = {};
 	shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR;
 	shader_features.pNext = create_info_next;
@@ -7392,6 +7408,8 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 			return true;
 		case SUPPORTS_BUFFER_DEVICE_ADDRESS:
 			return buffer_device_address_support;
+		case SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX:
+			return buffer_atomic_int64_support && requested_device_features.shaderInt64 && requested_device_features.fragmentStoresAndAtomics;
 		case SUPPORTS_IMAGE_ATOMIC_32_BIT:
 #if (defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
 			// MoltenVK has previously had issues with 32-bit atomics on images.
