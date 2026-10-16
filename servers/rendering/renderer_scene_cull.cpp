@@ -35,6 +35,7 @@
 #include "core/math/geometry_3d.h"
 #include "core/object/callable_mp.h"
 #include "core/object/worker_thread_pool.h"
+#include "core/profiling/profiling.h"
 #include "servers/rendering/rendering_light_culler.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_default.h"
@@ -2668,6 +2669,9 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 }
 
 void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_camera, RID p_scenario, RID p_viewport, Size2 p_viewport_size, uint32_t p_jitter_phase_count, float p_screen_mesh_lod_threshold, RID p_shadow_atlas, Ref<XRInterface> &p_xr_interface, float p_window_output_max_value, RenderingServerTypes::RenderInfo *r_render_info) {
+	GodotProfileZoneGroupedFirst(camera_profile, "Render/Camera");
+	GodotProfileZoneGroupedValue(camera_profile, p_viewport.get_id());
+	GodotProfileZoneGroupedFirst(camera_stage, "Render/Camera/setup");
 #ifndef _3D_DISABLED
 
 	Camera *camera = camera_owner.get_or_null(p_camera);
@@ -2778,13 +2782,17 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 
 	RENDER_TIMESTAMP("Update Occlusion Buffer")
 	// For now just cull on the first camera
+	GodotProfileZoneGrouped(camera_stage, "Render/Camera/occlusion_update");
 	RendererSceneOcclusionCull::get_singleton()->buffer_update(p_viewport, camera_data.main_transform, camera_data.main_projection, camera_data.is_orthogonal);
 
+	GodotProfileZoneGrouped(camera_stage, "Render/Camera/scene");
 	_render_scene(&camera_data, p_render_buffers, environment, camera->attributes, compositor, camera->visible_layers, p_scenario, p_viewport, p_shadow_atlas, RID(), -1, p_screen_mesh_lod_threshold, p_window_output_max_value, true, r_render_info);
 #endif
 }
 
 void RendererSceneCull::_visibility_cull_threaded(uint32_t p_thread, VisibilityCullData *cull_data) {
+	GodotProfileZoneGroupedFirst(worker, "Render/Visibility/worker");
+	GodotProfileZoneGroupedValue(worker, cull_data->viewport.get_id());
 	uint32_t total_threads = WorkerThreadPool::get_singleton()->get_thread_count();
 	uint32_t bin_from = p_thread * cull_data->cull_count / total_threads;
 	uint32_t bin_to = (p_thread + 1 == total_threads) ? cull_data->cull_count : ((p_thread + 1) * cull_data->cull_count / total_threads);
@@ -2793,6 +2801,8 @@ void RendererSceneCull::_visibility_cull_threaded(uint32_t p_thread, VisibilityC
 }
 
 void RendererSceneCull::_visibility_cull(const VisibilityCullData &cull_data, uint64_t p_from, uint64_t p_to) {
+	GodotProfileZoneGroupedFirst(range, "Render/Visibility/range");
+	GodotProfileZoneGroupedValue(range, p_to - p_from);
 	Scenario *scenario = cull_data.scenario;
 	for (unsigned int i = p_from; i < p_to; i++) {
 		InstanceVisibilityData &vd = scenario->instance_visibility[i];
@@ -2881,6 +2891,8 @@ bool RendererSceneCull::_visibility_parent_check(const CullData &p_cull_data, co
 }
 
 void RendererSceneCull::_scene_cull_threaded(uint32_t p_thread, CullData *cull_data) {
+	GodotProfileZoneGroupedFirst(worker, "Render/Cull/worker");
+	GodotProfileZoneGroupedValue(worker, cull_data->viewport.get_id());
 	uint32_t cull_total = cull_data->scenario->instance_data.size();
 	uint32_t total_threads = WorkerThreadPool::get_singleton()->get_thread_count();
 	uint32_t cull_from = p_thread * cull_total / total_threads;
@@ -2890,6 +2902,8 @@ void RendererSceneCull::_scene_cull_threaded(uint32_t p_thread, CullData *cull_d
 }
 
 void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cull_result, uint64_t p_from, uint64_t p_to) {
+	GodotProfileZoneGroupedFirst(range, "Render/Cull/range");
+	GodotProfileZoneGroupedValue(range, p_to - p_from);
 	uint64_t frame_number = RSG::rasterizer->get_frame_number();
 	float lightmap_probe_update_speed = RSG::light_storage->lightmap_get_probe_capture_update_speed() * RSG::rasterizer->get_frame_delta_time();
 
@@ -3295,6 +3309,9 @@ void RendererSceneCull::_scene_particles_set_view_axis(RID p_particles, const Ve
 }
 
 void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_camera_data, const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_force_camera_attributes, RID p_compositor, uint32_t p_visible_layers, RID p_scenario, RID p_viewport, RID p_shadow_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, float p_window_output_max_value, bool p_using_shadows, RenderingServerTypes::RenderInfo *r_render_info) {
+	GodotProfileZoneGroupedFirst(scene_profile, "Render/Scene");
+	GodotProfileZoneGroupedValue(scene_profile, p_viewport.get_id());
+	GodotProfileZoneGroupedFirst(scene_stage, "Render/Scene/setup");
 	Instance *render_reflection_probe = instance_owner.get_or_null(p_reflection_probe); //if null, not rendering to it
 
 	// Prepare the light - camera volume culling system.
@@ -3315,6 +3332,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	}
 
 	RENDER_TIMESTAMP("Update Visibility Dependencies");
+	GodotProfileZoneGrouped(scene_stage, "Render/Visibility/dependencies");
 
 	if (scenario->instance_visibility.get_bin_count() > 0) {
 		if (!scenario->viewport_visibility_masks.has(p_viewport)) {
@@ -3322,6 +3340,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		}
 
 		VisibilityCullData visibility_cull_data;
+		visibility_cull_data.viewport = p_viewport;
 		visibility_cull_data.scenario = scenario;
 		visibility_cull_data.viewport_mask = scenario->viewport_visibility_masks[p_viewport];
 		visibility_cull_data.camera_position = camera_position;
@@ -3335,7 +3354,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 
 			if (visibility_cull_data.cull_count > thread_cull_threshold) {
+				GodotProfileZoneGroupedFirst(task, "Render/Visibility/dispatch");
 				WorkerThreadPool::GroupID group_task = WorkerThreadPool::get_singleton()->add_template_group_task(this, &RendererSceneCull::_visibility_cull_threaded, &visibility_cull_data, WorkerThreadPool::get_singleton()->get_thread_count(), -1, true, SNAME("VisibilityCullInstances"));
+				GodotProfileZoneGrouped(task, "Render/Visibility/wait");
 				WorkerThreadPool::get_singleton()->wait_for_group_task_completion(group_task);
 			} else {
 				_visibility_cull(visibility_cull_data, visibility_cull_data.cull_offset, visibility_cull_data.cull_offset + visibility_cull_data.cull_count);
@@ -3344,6 +3365,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	}
 
 	RENDER_TIMESTAMP("Cull 3D Scene");
+	GodotProfileZoneGrouped(scene_stage, "Render/Cull/prepare");
 
 	//rasterizer->set_camera(p_camera_data->main_transform, p_camera_data.main_projection, p_camera_data.is_orthogonal);
 
@@ -3415,11 +3437,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	scene_cull_result.clear();
 
+	GodotProfileZoneGrouped(scene_stage, "Render/Cull");
 	{
+		GodotProfileZoneGroupedFirst(cull_stage, "Render/Cull/instances");
 		uint64_t cull_from = 0;
 		uint64_t cull_to = scenario->instance_data.size();
+		GodotProfileZoneGroupedValue(cull_stage, cull_to);
 
 		CullData cull_data;
+		cull_data.viewport = p_viewport;
 
 		//prepare for eventual thread usage
 		cull_data.cull = &cull;
@@ -3441,9 +3467,12 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				thread.clear();
 			}
 
+			GodotProfileZoneGroupedFirst(task, "Render/Cull/dispatch");
 			WorkerThreadPool::GroupID group_task = WorkerThreadPool::get_singleton()->add_template_group_task(this, &RendererSceneCull::_scene_cull_threaded, &cull_data, scene_cull_result_threads.size(), -1, true, SNAME("RenderCullInstances"));
+			GodotProfileZoneGrouped(task, "Render/Cull/wait");
 			WorkerThreadPool::get_singleton()->wait_for_group_task_completion(group_task);
 
+			GodotProfileZoneGrouped(task, "Render/Cull/merge");
 			for (InstanceCullResult &thread : scene_cull_result_threads) {
 				scene_cull_result.append_from(thread);
 			}
@@ -3461,6 +3490,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		print_line("time taken: " + rtos(time_avg / time_count));
 #endif
 
+		GodotProfileZoneGrouped(cull_stage, "Render/Cull/mesh_updates");
+		GodotProfileZoneGroupedValue(cull_stage, scene_cull_result.mesh_instances.size());
 		if (scene_cull_result.mesh_instances.size()) {
 			for (uint64_t i = 0; i < scene_cull_result.mesh_instances.size(); i++) {
 				RSG::mesh_storage->mesh_instance_check_for_update(scene_cull_result.mesh_instances[i]);
@@ -3470,6 +3501,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	}
 
 	//render shadows
+	GodotProfileZoneGrouped(scene_stage, "Render/Shadows/prepare");
 
 	max_shadows_used = 0;
 
@@ -3645,6 +3677,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	}
 
 	//render SDFGI
+	GodotProfileZoneGroupedValue(scene_stage, max_shadows_used);
+	GodotProfileZoneGrouped(scene_stage, "Render/SDFGI/prepare");
 
 	{
 		// Q: Should this whole block be skipped if we're rendering our reflection probe?
@@ -3703,8 +3737,11 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	}
 
 	RENDER_TIMESTAMP("Render 3D Scene");
+	GodotProfileZoneGrouped(scene_stage, "Render/Scene/submit");
+	GodotProfileZoneGroupedValue(scene_stage, scene_cull_result.geometry_instances.size());
 	scene_render->render_scene(p_render_buffers, p_camera_data, prev_camera_data, scene_cull_result.geometry_instances, scene_cull_result.light_instances, scene_cull_result.reflections, scene_cull_result.voxel_gi_instances, scene_cull_result.decals, scene_cull_result.lightmaps, scene_cull_result.fog_volumes, p_environment, camera_attributes, p_compositor, p_shadow_atlas, occluders_tex, p_reflection_probe.is_valid() ? RID() : scenario->reflection_atlas, p_reflection_probe, p_reflection_probe_pass, p_screen_mesh_lod_threshold, render_shadow_data, max_shadows_used, render_sdfgi_data, cull.sdfgi.region_count, p_window_output_max_value, &sdfgi_update_data, r_render_info);
 
+	GodotProfileZoneGrouped(scene_stage, "Render/Scene/cleanup");
 	if (p_viewport.is_valid()) {
 		RSG::viewport->viewport_set_prev_camera_data(p_viewport, p_camera_data);
 	}

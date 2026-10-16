@@ -7292,7 +7292,10 @@ void RenderingDevice::_submit_transfer_worker(TransferWorker *p_transfer_worker,
 }
 
 void RenderingDevice::_wait_for_transfer_worker(TransferWorker *p_transfer_worker) {
-	driver->fence_wait(p_transfer_worker->command_fence);
+	{
+		GodotProfileZone("Render/Transfer/fence_wait");
+		driver->fence_wait(p_transfer_worker->command_fence);
+	}
 	driver->command_pool_reset(p_transfer_worker->command_pool);
 	p_transfer_worker->staging_buffer_size_in_use = 0;
 	p_transfer_worker->submitted = false;

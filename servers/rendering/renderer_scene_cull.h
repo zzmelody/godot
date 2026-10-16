@@ -1126,6 +1126,7 @@ public:
 	} cull;
 
 	struct VisibilityCullData {
+		RID viewport;
 		uint64_t viewport_mask;
 		Scenario *scenario = nullptr;
 		Vector3 camera_position;
@@ -1139,6 +1140,7 @@ public:
 	_FORCE_INLINE_ int _visibility_range_check(InstanceVisibilityData &r_vis_data, const Vector3 &p_camera_pos, uint64_t p_viewport_mask);
 
 	struct CullData {
+		RID viewport;
 		Cull *cull = nullptr;
 		Scenario *scenario = nullptr;
 		RID shadow_atlas;

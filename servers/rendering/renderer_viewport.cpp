@@ -304,6 +304,9 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 
 void RendererViewport::_draw_3d(Viewport *p_viewport) {
 #ifndef _3D_DISABLED
+	GodotProfileZoneGroupedFirst(scene_profile, "Render/Viewport/3d");
+	GodotProfileZoneGroupedValue(scene_profile, p_viewport->self.get_id());
+	GodotProfileZoneGroupedFirst(scene_stage, "Render/Viewport/occlusion_prepare");
 	RENDER_TIMESTAMP("> Render 3D Scene");
 
 	Ref<XRInterface> xr_interface;
@@ -329,6 +332,7 @@ void RendererViewport::_draw_3d(Viewport *p_viewport) {
 	}
 
 	float screen_mesh_lod_threshold = p_viewport->mesh_lod_threshold / float(p_viewport->size.width);
+	GodotProfileZoneGrouped(scene_stage, "Render/Viewport/camera");
 	RSG::scene->render_camera(p_viewport->render_buffers, p_viewport->camera, p_viewport->scenario, p_viewport->self, p_viewport->internal_size, p_viewport->jitter_phase_count, screen_mesh_lod_threshold, p_viewport->shadow_atlas, xr_interface, p_viewport->window_output_max_value, &p_viewport->render_info);
 
 	RENDER_TIMESTAMP("< Render 3D Scene");
@@ -336,6 +340,9 @@ void RendererViewport::_draw_3d(Viewport *p_viewport) {
 }
 
 void RendererViewport::_draw_viewport(Viewport *p_viewport) {
+	GodotProfileZoneGroupedFirst(viewport_profile, "Render/Viewport/draw");
+	GodotProfileZoneGroupedValue(viewport_profile, p_viewport->self.get_id());
+	GodotProfileZoneGroupedFirst(viewport_stage, "Render/Viewport/setup");
 	if (p_viewport->measure_render_time) {
 		String rt_id = "vp_begin_" + itos(p_viewport->self.get_id());
 		RSG::utilities->capture_timestamp(rt_id);
@@ -404,6 +411,7 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 		}
 	}
 
+	GodotProfileZoneGrouped(viewport_stage, "Render/Viewport/scene");
 	if (!scenario_draw_canvas_bg && can_draw_3d) {
 		if (force_clear_render_target) {
 			RSG::texture_storage->render_target_do_clear_request(p_viewport->render_target);
@@ -411,7 +419,9 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 		_draw_3d(p_viewport);
 	}
 
+	GodotProfileZoneGrouped(viewport_stage, "Render/Viewport/canvas");
 	if (can_draw_2d) {
+		GodotProfileZoneGroupedFirst(canvas_stage, "Render/Canvas/sdf_prepare");
 		RBMap<Viewport::CanvasKey, Viewport::CanvasData *> canvas_map;
 
 		Rect2 clip_rect(0, 0, p_viewport->size.x, p_viewport->size.y);
@@ -467,6 +477,8 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 		int directional_light_count = 0;
 
 		RENDER_TIMESTAMP("Cull 2D Lights");
+		GodotProfileZoneGrouped(canvas_stage, "Render/Canvas/lights_cull");
+		GodotProfileZoneGroupedValue(canvas_stage, p_viewport->canvas_map.size());
 		for (KeyValue<RID, Viewport::CanvasData> &E : p_viewport->canvas_map) {
 			RendererCanvasCull::Canvas *canvas = static_cast<RendererCanvasCull::Canvas *>(E.value.canvas);
 
@@ -544,6 +556,7 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 			canvas_map[Viewport::CanvasKey(E.key, E.value.layer, E.value.sublayer)] = &E.value;
 		}
 
+		GodotProfileZoneGrouped(canvas_stage, "Render/Canvas/shadows");
 		if (lights_with_shadow) {
 			//update shadows if any
 
@@ -674,6 +687,7 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 			RENDER_TIMESTAMP("< Render DirectionalLight2D Shadows");
 		}
 
+		GodotProfileZoneGrouped(canvas_stage, "Render/Canvas/composite");
 		if (scenario_draw_canvas_bg && canvas_map.begin() && canvas_map.begin()->key.get_layer() > scenario_canvas_max_layer) {
 			// There may be an outstanding clear request if a clear was requested, but no 2D elements were drawn.
 			// Clear now otherwise we copy over garbage from the render target.
@@ -688,6 +702,7 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 
 		int canvas_idx = 0;
 		for (const KeyValue<Viewport::CanvasKey, Viewport::CanvasData *> &E : canvas_map) {
+			GodotProfileZoneGroupedFirst(canvas_item, "Render/Canvas/list_prepare");
 			RendererCanvasCull::Canvas *canvas = static_cast<RendererCanvasCull::Canvas *>(E.value->canvas);
 
 			Transform2D xform = _canvas_get_transform(p_viewport, canvas, E.value, clip_rect.size);
@@ -715,8 +730,10 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 
 			RENDER_TIMESTAMP("> Render Canvas " + itos(canvas_idx));
 
+			GodotProfileZoneGrouped(canvas_item, "Render/Canvas/submit");
 			RSG::canvas->render_canvas(p_viewport->render_target, canvas, xform, canvas_lights, canvas_directional_lights, clip_rect, p_viewport->texture_filter, p_viewport->texture_repeat, p_viewport->snap_2d_transforms_to_pixel, p_viewport->snap_2d_vertices_to_pixel, p_viewport->canvas_cull_mask, &p_viewport->render_info);
 
+			GodotProfileZoneGrouped(canvas_item, "Render/Canvas/after_submit");
 			RENDER_TIMESTAMP("< Render Canvas " + itos(canvas_idx));
 
 			if (RSG::canvas->was_sdf_used()) {
@@ -751,6 +768,7 @@ void RendererViewport::_draw_viewport(Viewport *p_viewport) {
 		}
 	}
 
+	GodotProfileZoneGrouped(viewport_stage, "Render/Viewport/finalize");
 	if (RSG::texture_storage->render_target_is_clear_requested(p_viewport->render_target)) {
 		//was never cleared in the end, force clear it
 		RSG::texture_storage->render_target_do_clear_request(p_viewport->render_target);
@@ -864,16 +882,16 @@ void RendererViewport::draw_viewports(bool p_swap_buffers) {
 	int draw_calls_used = 0;
 
 	for (int i = 0; i < sorted_active_viewports.size(); i++) {
-		// TODO Somehow print the index
-		GodotProfileZone("render viewport");
-
 		Viewport *vp = sorted_active_viewports[i];
 
 		if (vp->last_pass != draw_viewports_pass) {
 			continue; //should not draw
 		}
 
-		RENDER_TIMESTAMP("> Render Viewport " + itos(i));
+		// Skipped viewports must not look like rendered scene samples.
+		GodotProfileZoneGroupedFirst(viewport_profile, "render viewport");
+		GodotProfileZoneGroupedValue(viewport_profile, vp->self.get_id());
+		RENDER_TIMESTAMP("> Render Viewport RID " + itos(vp->self.get_id()));
 
 		RSG::texture_storage->render_target_set_as_unused(vp->render_target);
 #ifndef XR_DISABLED
@@ -960,7 +978,7 @@ void RendererViewport::draw_viewports(bool p_swap_buffers) {
 			vp->update_mode = RSE::VIEWPORT_UPDATE_DISABLED;
 		}
 
-		RENDER_TIMESTAMP("< Render Viewport " + itos(i));
+		RENDER_TIMESTAMP("< Render Viewport RID " + itos(vp->self.get_id()));
 
 		// 3D render info.
 		objects_drawn += vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME] + vp->render_info.info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME];

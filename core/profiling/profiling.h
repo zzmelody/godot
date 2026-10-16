@@ -63,6 +63,7 @@ const SourceLocationData *intern_source_location(const void *p_function_ptr, con
 #define GodotProfileFrameMark FrameMark
 #define GodotProfileZone(m_zone_name) ZoneNamedN(GD_UNIQUE_NAME(__godot_tracy_szone_), m_zone_name, true)
 #define GodotProfileZoneGroupedFirst(m_group_name, m_zone_name) ZoneNamedN(__godot_tracy_zone_##m_group_name, m_zone_name, true)
+#define GodotProfileZoneGroupedValue(m_group_name, m_value) __godot_tracy_zone_##m_group_name.Value(m_value)
 #define GodotProfileZoneGroupedEndEarly(m_group_name, m_zone_name) __godot_tracy_zone_##m_group_name.~ScopedZone();
 #ifndef TRACY_CALLSTACK
 #define GodotProfileZoneGrouped(m_group_name, m_zone_name) \
@@ -270,6 +271,11 @@ void godot_cleanup_profiler();
 // Define a zone for a system call from a script (dynamic source location).
 #define GodotProfileZoneScriptSystemCall(m_ptr, m_file, m_function, m_name, m_line)
 
+#endif
+
+// Numeric zone annotations are optional for the other profiling backends.
+#ifndef GodotProfileZoneGroupedValue
+#define GodotProfileZoneGroupedValue(m_group_name, m_value)
 #endif
 
 // Preserve the original allocator. Recording serializes successful realloc
