@@ -56,7 +56,10 @@ public:
 	}
 };
 
-TopologyError validate_input(const TriangleMeshInput &p_input) {
+TopologyError validate_input(const TriangleMeshInput &p_input, TriangleValidation p_validation) {
+	if (p_validation != TriangleValidation::SOURCE && p_validation != TriangleValidation::BUILD_INTERMEDIATE) {
+		return TopologyError::INVALID_INPUT;
+	}
 	if (p_input.indices.empty() || p_input.indices.size() % 3 != 0 || p_input.materials.size() != p_input.indices.size() / 3) {
 		return TopologyError::INVALID_INPUT;
 	}
@@ -75,6 +78,15 @@ TopologyError validate_input(const TriangleMeshInput &p_input) {
 			if (p_input.indices[corner + side] >= p_input.positions.size()) {
 				return TopologyError::INVALID_INPUT;
 			}
+		}
+		const auto &position0 = p_input.positions[p_input.indices[corner]];
+		const auto &position1 = p_input.positions[p_input.indices[corner + 1]];
+		const auto &position2 = p_input.positions[p_input.indices[corner + 2]];
+		if (position0 == position1 || position1 == position2 || position2 == position0) {
+			return TopologyError::INVALID_INPUT;
+		}
+		if (p_validation == TriangleValidation::BUILD_INTERMEDIATE) {
+			continue;
 		}
 		Center edges[2];
 		for (size_t axis = 0; axis < 3; ++axis) {
@@ -324,12 +336,12 @@ TopologyError build_graph(const TriangleMeshInput &p_input, TriangleTopology &r_
 
 } // namespace
 
-TopologyError validate_triangle_mesh(const TriangleMeshInput &p_input) {
-	return validate_input(p_input);
+TopologyError validate_triangle_mesh(const TriangleMeshInput &p_input, TriangleValidation p_validation) {
+	return validate_input(p_input, p_validation);
 }
 
-TopologyError build_triangle_topology(const TriangleMeshInput &p_input, TriangleTopology &r_topology) {
-	const TopologyError valid = validate_triangle_mesh(p_input);
+TopologyError build_triangle_topology(const TriangleMeshInput &p_input, TriangleTopology &r_topology, TriangleValidation p_validation) {
+	const TopologyError valid = validate_triangle_mesh(p_input, p_validation);
 	if (valid != TopologyError::OK) {
 		return valid;
 	}

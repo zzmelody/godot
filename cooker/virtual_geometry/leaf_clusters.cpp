@@ -64,10 +64,10 @@ void materialize_leaves(const TriangleMeshInput &p_input, const TriangleTopology
 
 } // namespace
 
-LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafClusters &r_leaves) {
+LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafClusters &r_leaves, TriangleValidation p_validation) {
 	try {
 		TriangleTopology topology;
-		const TopologyError topology_result = build_triangle_topology(p_input, topology);
+		const TopologyError topology_result = build_triangle_topology(p_input, topology, p_validation);
 		if (topology_result != TopologyError::OK) {
 			return { LeafError::TOPOLOGY, topology_result };
 		}

@@ -39,7 +39,7 @@ struct LeafResult {
 // No simplification, attribute modification or encoded 256-vertex/64-material
 // constraint occurs here. Input/old output survive refusal; no borrowed state
 // escapes. The output owns source identity maps, not references to source arrays.
-LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafClusters &r_leaves);
+LeafResult build_leaf_clusters(const TriangleMeshInput &p_input, MeshLeafClusters &r_leaves, TriangleValidation p_validation = TriangleValidation::SOURCE);
 
 } // namespace VirtualGeometry
 

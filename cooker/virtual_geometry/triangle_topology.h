@@ -33,14 +33,22 @@ enum class TopologyError {
 	MEMORY,
 };
 
-// Checks the shared mesh input contract without constructing adjacency or a graph.
-TopologyError validate_triangle_mesh(const TriangleMeshInput &p_input);
+enum class TriangleValidation {
+	SOURCE,
+	BUILD_INTERMEDIATE,
+	INVALID,
+};
 
-// Offline, value-only. Input must contain finite positions, valid nondegenerate
-// triangles and one material identity per triangle. Refusal preserves output.
+// Both modes require three distinct finite positions per triangle. Source input
+// also requires nonzero area. Build intermediates retain collinear triangles to
+// preserve boundary identities, as in the reference simplifier and encoder.
+TopologyError validate_triangle_mesh(const TriangleMeshInput &p_input, TriangleValidation p_validation = TriangleValidation::SOURCE);
+
+// Offline, value-only. Requires valid indices and one material per triangle.
+// Source/intermediate validation is explicit; refusal preserves output.
 // Geometry edges cost 260; weak spatial links cost 1 and cross only disconnected
 // islands with the same material. Geometry adjacency can cross material seams.
-TopologyError build_triangle_topology(const TriangleMeshInput &p_input, TriangleTopology &r_topology);
+TopologyError build_triangle_topology(const TriangleMeshInput &p_input, TriangleTopology &r_topology, TriangleValidation p_validation = TriangleValidation::SOURCE);
 
 } // namespace VirtualGeometry
 

@@ -40,7 +40,7 @@ enum class AttributePolicyError {
 // Does not scale or modify source data. Old output survives every refusal.
 AttributePolicyError prepare_attribute_policy(const TriangleMeshInput &p_mesh,
 		const AttributeLayout &p_layout, const std::vector<float> &p_values,
-		PreparedAttributePolicy &r_policy);
+		PreparedAttributePolicy &r_policy, TriangleValidation p_validation = TriangleValidation::SOURCE);
 
 // Corrects one fitted vertex after its error has been evaluated: normalize normal,
 // orthogonalize/normalize tangent, restore sign and clamp all RGBA channels.

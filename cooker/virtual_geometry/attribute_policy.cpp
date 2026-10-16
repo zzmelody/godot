@@ -84,11 +84,11 @@ bool normalize(std::array<double, 3> &r_vector) {
 
 } // namespace
 
-AttributePolicyError prepare_attribute_policy(const TriangleMeshInput &p_mesh, const AttributeLayout &p_layout, const std::vector<float> &p_values, PreparedAttributePolicy &r_policy) {
+AttributePolicyError prepare_attribute_policy(const TriangleMeshInput &p_mesh, const AttributeLayout &p_layout, const std::vector<float> &p_values, PreparedAttributePolicy &r_policy, TriangleValidation p_validation) {
 	if (p_layout.uv_sets > 4) {
 		return AttributePolicyError::INVALID_LAYOUT;
 	}
-	if (validate_triangle_mesh(p_mesh) != TopologyError::OK) {
+	if (validate_triangle_mesh(p_mesh, p_validation) != TopologyError::OK) {
 		return AttributePolicyError::INVALID_MESH;
 	}
 	const size_t stride = p_layout.scalar_count();
