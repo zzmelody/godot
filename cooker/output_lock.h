@@ -13,10 +13,20 @@ public:
 	~Guard();
 	Guard(const Guard &) = delete;
 	Guard &operator=(const Guard &) = delete;
-	bool acquired() const { return handle != nullptr; }
+	bool acquired() const {
+#ifdef WINDOWS_ENABLED
+		return handle != nullptr;
+#else
+		return descriptor >= 0;
+#endif
+	}
 
 private:
+#ifdef WINDOWS_ENABLED
 	void *handle = nullptr;
+#else
+	int descriptor = -1;
+#endif
 };
 
 } // namespace CookerOutputLock

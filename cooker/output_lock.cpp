@@ -1,9 +1,18 @@
 /*<<----- VEYA_COOKER: one writer per generated output across Cooker processes. */
 #include "output_lock.h"
+
 #include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
+#include "core/os/os.h"
 
 #ifdef WINDOWS_ENABLED
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
+#include <cerrno>
 #endif
 
 namespace CookerOutputLock {
@@ -29,7 +38,25 @@ Guard::Guard(const String &p_output) {
 	}
 	handle = mutex;
 #else
-	(void)p_output;
+	const String directory = OS::get_singleton()->get_cache_path().path_join("veya-cooker-output-locks");
+	if (DirAccess::make_dir_recursive_absolute(directory) != OK) {
+		return;
+	}
+	const String absolute = ProjectSettings::get_singleton()->globalize_path(p_output).simplify_path();
+	const CharString path = directory.path_join(absolute.sha256_text() + ".lock").utf8();
+	const int file = open(path.get_data(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+	if (file < 0) {
+		return;
+	}
+	int result = 0;
+	do {
+		result = flock(file, LOCK_EX);
+	} while (result != 0 && errno == EINTR);
+	if (result != 0) {
+		close(file);
+		return;
+	}
+	descriptor = file;
 #endif
 }
 
@@ -38,6 +65,11 @@ Guard::~Guard() {
 	if (handle) {
 		ReleaseMutex((HANDLE)handle);
 		CloseHandle((HANDLE)handle);
+	}
+#else
+	if (descriptor >= 0) {
+		flock(descriptor, LOCK_UN);
+		close(descriptor);
 	}
 #endif
 }
