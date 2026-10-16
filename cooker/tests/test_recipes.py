@@ -729,7 +729,7 @@ func _initialize():
 for y=0,24 do
     for side=0,7 do
         local angle=side*math.pi/4
-        table.insert(vertices,{math.cos(angle)*.35,y*20/24,math.sin(angle)*.35})
+        table.insert(vertices,{math.cos(angle)*.35,y*4/24,math.sin(angle)*.35})
     end
 end
 for y=0,23 do
@@ -751,7 +751,7 @@ return cooker.mesh({vertices=vertices,indices=indices})''',
                              output="res://assets/runtime/model/trunk/source.res")
         covered = self.recipe('''return cooker.minimum_visual("mesh",{
  triangle_ratio=1,lod_triangle_ratios={.5,.15,.05},
- lod_screen_errors={.5,1,2},lod_minimum_coverage=.5})''',
+ lod_screen_errors={.5,1,2},lod_minimum_coverage=.5,lod_root_surfaces={1}})''',
                               inputs={"mesh": source["output"]},
                               output="res://assets/runtime/model/trunk/covered.res")
         self.assertIsNotNone(REFERENCE)
@@ -785,7 +785,7 @@ func _initialize():
             visited[point]=true
             highest=max(highest,point.y)
             pending.append_array(edges[point])
-        assert(highest>19)
+        assert(highest>3.8)
     print("CONNECTED_TRUNK:true")
     quit()
 ''', encoding="utf-8")
@@ -836,6 +836,10 @@ func _initialize():
             "lod_triangle_ratios={.5},lod_screen_errors={.2}",
             "lod_triangle_ratios={.5},lod_minimum_coverage=.95",
             "lod_triangle_ratios={.5},lod_screen_errors={.2},lod_minimum_coverage=1.01",
+            "lod_root_surfaces={1}",
+            "lod_triangle_ratios={.5},lod_screen_errors={.2},lod_minimum_coverage=.9,lod_root_surfaces={0}",
+            "lod_triangle_ratios={.5},lod_screen_errors={.2},lod_minimum_coverage=.9,lod_root_surfaces={1,1}",
+            "lod_triangle_ratios={.5},lod_screen_errors={.2},lod_minimum_coverage=.9,lod_root_surfaces={2}",
         ):
             with self.subTest(policy=policy):
                 self.recipe('return cooker.minimum_visual("mesh",{'+policy+'})',

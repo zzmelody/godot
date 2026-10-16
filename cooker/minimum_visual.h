@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "core/io/image.h"
@@ -35,6 +37,7 @@ struct Options {
   // Explicit local-space screen errors, paired with ratios. Coverage mode uses
   // topology-aware simplification and rejects silhouette loss in sixteen views.
   std::vector<double> lod_screen_errors;
+  std::vector<int> lod_root_surfaces;
   double lod_minimum_coverage = 0;
   double lod_coverage_scale = 1;
   bool preserve_materials = false;
@@ -213,10 +216,16 @@ class Builder {
 
   Dictionary BuildCoveredLods(const PackedVector3Array& vertices,
                               const PackedInt32Array& indices,
-                              const std::vector<float>& positions) const {
+                              const std::vector<float>& positions,
+                              int surface) const {
     Dictionary result;
     int previous_count = indices.size();
-    const CookerLod::RootedSpan rooted_span(vertices, indices);
+    std::optional<CookerLod::RootedSpan> rooted_span;
+    if (std::find(options_.lod_root_surfaces.begin(),
+                  options_.lod_root_surfaces.end(),
+                  surface) != options_.lod_root_surfaces.end()) {
+      rooted_span.emplace(vertices, indices);
+    }
     const float extent = meshopt_simplifyScale(
         positions.data(), vertices.size(), sizeof(float) * 3);
     for (size_t level = 0; level < options_.lod_triangle_ratios.size();
@@ -240,7 +249,7 @@ class Builder {
           vertices, indices,
           2 * options_.lod_coverage_scale / options_.lod_screen_errors[level]);
       if (count < 3 || count >= size_t(previous_count) ||
-          !rooted_span.Accepts(selected) ||
+          (rooted_span && !rooted_span->Accepts(selected)) ||
           !silhouette.Accepts(selected, options_.lod_minimum_coverage)) {
         continue;
       }
@@ -414,6 +423,11 @@ class Builder {
     const bool covered_lods = options_.lod_minimum_coverage > 0;
     const bool preserve_lods =
         source->get_meta("veya_covered_lods", 0) == Variant(1);
+    for (const int surface : options_.lod_root_surfaces) {
+      if (surface >= source->get_surface_count()) {
+        return Ref<Mesh>();
+      }
+    }
     for (int surface = 0; surface < source->get_surface_count(); ++surface) {
       source_has_lods |= !source->surface_get_lods(surface).is_empty();
       if (source->surface_get_primitive_type(surface) !=
@@ -485,7 +499,7 @@ class Builder {
       }
       Dictionary lods;
       if (covered_lods) {
-        lods = BuildCoveredLods(vertices, indices, positions);
+        lods = BuildCoveredLods(vertices, indices, positions, surface);
       } else if (preserve_lods) {
         lods = source->surface_get_lods(surface);
       } else if (!options_.lod_triangle_ratios.empty() &&

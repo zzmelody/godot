@@ -59,10 +59,14 @@ orthographic views (eight azimuths, elevations zero and thirty degrees).
 Views sample twice the projected size at that level's screen error, capped at
 256 pixels. Interior holes are filled per scanline for the contour comparison;
 two raster samples of boundary movement are tolerated (one reference screen
-pixel before the raster-size cap). Tall position-welded components connected to
-the source's lowest Y must remain connected from the root through their height.
-Ground movement is limited to 1% of surface height and top loss to 3%.
-This protects thin trunks independently from the foliage contour.
+pixel before the raster-size cap).
+`lod_root_surfaces={1}` optionally selects surfaces whose position-welded basal
+component must remain connected from its root through its original height.
+Indices are increasing, one-based, within 1..64 and within each input mesh.
+The default empty selection adds no root-specific constraint.
+Ground movement is limited to 1% of surface height; top loss is limited to 3%
+of the protected component's own height. Short stems receive the same protection.
+The author selects bark surfaces independently from the foliage contour.
 `lod_coverage_scale` defaults to one and accounts for authored
 instance normalization when coverage is evaluated for a MultiMesh batch.
 Unsafe levels are omitted. The output mesh owns a `veya_covered_lods=1` marker;

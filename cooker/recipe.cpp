@@ -949,11 +949,12 @@ struct Recipe {
     } else {
       resource = s.handle(1);
     }
-    s.fields(2, {"triangle_ratio", "max_texture_size", "minimum_height",
-                 "lock_border", "max_error", "preserve_heightfields",
-                 "compress_color_textures", "lod_triangle_ratios",
-                 "lod_screen_errors", "lod_minimum_coverage",
-                 "lod_coverage_scale", "preserve_materials"});
+    s.fields(
+        2,
+        {"triangle_ratio", "max_texture_size", "minimum_height", "lock_border",
+         "max_error", "preserve_heightfields", "compress_color_textures",
+         "lod_triangle_ratios", "lod_screen_errors", "lod_minimum_coverage",
+         "lod_coverage_scale", "preserve_materials", "lod_root_surfaces"});
     CookerMinimum::Options options;
     s.field(2, "lod_triangle_ratios");
     if (!lua_isnil(p_state, -1)) {
@@ -1001,6 +1002,25 @@ struct Recipe {
         options.lod_screen_errors.empty() ==
             (options.lod_minimum_coverage == 0),
         "covered LODs require screen errors and minimum coverage together");
+    s.field(2, "lod_root_surfaces");
+    if (!lua_isnil(p_state, -1)) {
+      s.require(options.lod_minimum_coverage > 0,
+                "lod_root_surfaces requires covered LODs");
+      const int count = s.array(-1, 64);
+      s.require(count > 0, "lod_root_surfaces requires 1..64 surface indices");
+      int previous = 0;
+      for (int index = 0; index < count; ++index) {
+        lua_rawgeti(p_state, -1, index + 1);
+        const double surface = s.number(-1);
+        s.require(surface >= 1 && surface <= 64 && surface == int(surface) &&
+                      surface > previous,
+                  "lod_root_surfaces must contain increasing 1-based indices");
+        previous = int(surface);
+        options.lod_root_surfaces.push_back(previous - 1);
+        lua_pop(p_state, 1);
+      }
+    }
+    lua_pop(p_state, 1);
     options.lod_coverage_scale =
         s.number_field(2, "lod_coverage_scale", 1, 0.0001, 10000);
     options.preserve_materials =

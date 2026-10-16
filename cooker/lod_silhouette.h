@@ -10,7 +10,7 @@
 #include "core/variant/variant.h"
 
 namespace CookerLod {
-// Preserve a tall connected component that starts at the source's lowest Y.
+// Preserve the connected component that starts at the source's lowest Y.
 // Position welding includes UV/normal seams without joining nearby branches.
 class RootedSpan {
  public:
@@ -32,7 +32,6 @@ class RootedSpan {
     tolerance_ = (maximum - minimum) * 0.01;
     for (const auto& span : Spans(indices)) {
       if (span.first <= minimum + tolerance_ &&
-          span.second - span.first >= (maximum - minimum) * 0.5 &&
           span.second - span.first > required_.second - required_.first) {
         required_ = span;
       }
@@ -45,7 +44,8 @@ class RootedSpan {
     }
     for (const auto& span : Spans(indices)) {
       if (span.first <= required_.first + tolerance_ &&
-          span.second >= required_.second - tolerance_ * 3) {
+          span.second >=
+              required_.second - (required_.second - required_.first) * 0.03) {
         return true;
       }
     }
