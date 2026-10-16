@@ -324,8 +324,12 @@ TopologyError build_graph(const TriangleMeshInput &p_input, TriangleTopology &r_
 
 } // namespace
 
+TopologyError validate_triangle_mesh(const TriangleMeshInput &p_input) {
+	return validate_input(p_input);
+}
+
 TopologyError build_triangle_topology(const TriangleMeshInput &p_input, TriangleTopology &r_topology) {
-	const TopologyError valid = validate_input(p_input);
+	const TopologyError valid = validate_triangle_mesh(p_input);
 	if (valid != TopologyError::OK) {
 		return valid;
 	}

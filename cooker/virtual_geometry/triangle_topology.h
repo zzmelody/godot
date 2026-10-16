@@ -33,6 +33,9 @@ enum class TopologyError {
 	MEMORY,
 };
 
+// Checks the shared mesh input contract without constructing adjacency or a graph.
+TopologyError validate_triangle_mesh(const TriangleMeshInput &p_input);
+
 // Offline, value-only. Input must contain finite positions, valid nondegenerate
 // triangles and one material identity per triangle. Refusal preserves output.
 // Geometry edges cost 260; weak spatial links cost 1 and cross only disconnected
