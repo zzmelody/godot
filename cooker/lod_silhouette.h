@@ -1,13 +1,102 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <map>
 #include <utility>
 #include <vector>
 
 #include "core/variant/variant.h"
 
 namespace CookerLod {
+// Preserve a tall connected component that starts at the source's lowest Y.
+// Position welding includes UV/normal seams without joining nearby branches.
+class RootedSpan {
+ public:
+  RootedSpan(const PackedVector3Array& vertices,
+             const PackedInt32Array& indices) {
+    std::map<std::array<real_t, 3>, int> positions;
+    double minimum = INFINITY, maximum = -INFINITY;
+    for (const Vector3& vertex : vertices) {
+      const std::array<real_t, 3> key = {vertex.x, vertex.y, vertex.z};
+      auto found = positions.find(key);
+      if (found == positions.end()) {
+        found = positions.emplace(key, heights_.size()).first;
+        heights_.push_back(vertex.y);
+      }
+      welded_.push_back(found->second);
+      minimum = MIN(minimum, vertex.y);
+      maximum = MAX(maximum, vertex.y);
+    }
+    tolerance_ = (maximum - minimum) * 0.01;
+    for (const auto& span : Spans(indices)) {
+      if (span.first <= minimum + tolerance_ &&
+          span.second - span.first >= (maximum - minimum) * 0.5 &&
+          span.second - span.first > required_.second - required_.first) {
+        required_ = span;
+      }
+    }
+  }
+
+  bool Accepts(const PackedInt32Array& indices) const {
+    if (required_.second <= required_.first) {
+      return true;
+    }
+    for (const auto& span : Spans(indices)) {
+      if (span.first <= required_.first + tolerance_ &&
+          span.second >= required_.second - tolerance_ * 3) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+ private:
+  static int Find(std::vector<int>& parent, int index) {
+    while (parent[index] != index) {
+      parent[index] = parent[parent[index]];
+      index = parent[index];
+    }
+    return index;
+  }
+
+  std::vector<std::pair<double, double>> Spans(
+      const PackedInt32Array& indices) const {
+    std::vector<int> parent(heights_.size());
+    for (size_t i = 0; i < parent.size(); ++i) {
+      parent[i] = i;
+    }
+    for (int i = 0; i < indices.size(); i += 3) {
+      const int root = Find(parent, welded_[indices[i]]);
+      parent[Find(parent, welded_[indices[i + 1]])] = root;
+      parent[Find(parent, welded_[indices[i + 2]])] = root;
+    }
+    std::map<int, std::pair<double, double>> spans;
+    for (const int index : indices) {
+      const int vertex = welded_[index];
+      const int root = Find(parent, vertex);
+      auto found = spans.find(root);
+      if (found == spans.end()) {
+        spans.emplace(root, std::make_pair(heights_[vertex], heights_[vertex]));
+      } else {
+        found->second.first = MIN(found->second.first, heights_[vertex]);
+        found->second.second = MAX(found->second.second, heights_[vertex]);
+      }
+    }
+    std::vector<std::pair<double, double>> result;
+    for (const auto& span : spans) {
+      result.push_back(span.second);
+    }
+    return result;
+  }
+
+  std::vector<int> welded_;
+  std::vector<double> heights_;
+  std::pair<double, double> required_ = {0, 0};
+  double tolerance_ = 0;
+};
+
 // Offline, double-sided orthographic coverage. Each candidate uses exactly the
 // source projection, pixel centres and bounds, including views above the crown.
 class Silhouette {
@@ -38,7 +127,10 @@ class Silhouette {
         for (Vector2& point : view.points) {
           point = (point - minimum) * scale + Vector2(2, 2);
         }
-        view.source = Raster(view.points, indices, view.width, view.height);
+        view.source =
+            Outline(Raster(view.points, indices, view.width, view.height),
+                    view.width, view.height);
+        view.expanded = Expand(view.source, view.width, view.height);
         views_.push_back(std::move(view));
       }
     }
@@ -47,11 +139,14 @@ class Silhouette {
   bool Accepts(const PackedInt32Array& indices, double minimum_coverage) const {
     for (const View& view : views_) {
       const auto candidate =
-          Raster(view.points, indices, view.width, view.height);
+          Outline(Raster(view.points, indices, view.width, view.height),
+                  view.width, view.height);
+      const auto expanded = Expand(candidate, view.width, view.height);
       int source_pixels = 0, changed_pixels = 0;
       for (size_t pixel = 0; pixel < view.source.size(); ++pixel) {
         source_pixels += view.source[pixel];
-        changed_pixels += view.source[pixel] != candidate[pixel];
+        changed_pixels += (view.source[pixel] && !expanded[pixel]) ||
+                          (candidate[pixel] && !view.expanded[pixel]);
       }
       if (source_pixels &&
           changed_pixels > source_pixels * (1 - minimum_coverage)) {
@@ -67,7 +162,54 @@ class Silhouette {
     int width = 0, height = 0;
     std::vector<Vector2> points;
     std::vector<unsigned char> source;
+    std::vector<unsigned char> expanded;
   };
+
+  // Samples are twice the expected screen density. Two samples permit one
+  // screen pixel of contour movement when thinning individual leaves.
+  static std::vector<unsigned char> Expand(
+      const std::vector<unsigned char>& mask, int width, int height) {
+    std::vector<unsigned char> horizontal(mask.size(), 0),
+        result(mask.size(), 0);
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        for (int offset = -2; offset <= 2; ++offset) {
+          if (x + offset >= 0 && x + offset < width) {
+            horizontal[y * width + x] |= mask[y * width + x + offset];
+          }
+        }
+      }
+    }
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        for (int offset = -2; offset <= 2; ++offset) {
+          if (y + offset >= 0 && y + offset < height) {
+            result[y * width + x] |= horizontal[(y + offset) * width + x];
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  // Compare each scanline's outer envelope. Interior leaf holes may change
+  // when reducing disconnected leaves; their individual pixels are not shape.
+  static std::vector<unsigned char> Outline(std::vector<unsigned char> mask,
+                                            int width, int height) {
+    for (int y = 0; y < height; ++y) {
+      int left = width, right = -1;
+      for (int x = 0; x < width; ++x) {
+        if (mask[y * width + x]) {
+          left = MIN(left, x);
+          right = MAX(right, x);
+        }
+      }
+      for (int x = left; x <= right; ++x) {
+        mask[y * width + x] = 1;
+      }
+    }
+    return mask;
+  }
 
   static double Edge(const Vector2& first, const Vector2& second,
                      const Vector2& point) {

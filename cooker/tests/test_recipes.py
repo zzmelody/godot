@@ -709,7 +709,9 @@ func _initialize():
             assert(max(a.x,max(b.x,c.x))-min(a.x,min(b.x,c.x))<=1.001)
             assert(max(a.y,max(b.y,c.y))-min(a.y,min(b.y,c.y))<=1.001)
             represented[Vector2i(int(a.x/2),int(a.y/2))] = true
-        assert(represented.size()==16)
+        # Interior leaves may thin. The four outer corners must remain.
+        for corner in [Vector2i(0,0),Vector2i(3,0),Vector2i(0,3),Vector2i(3,3)]:
+            assert(represented.has(corner),str(represented.keys()))
         for i in indices.size():
             assert(points[indices[i]].is_equal_approx(final_points[final_indices[i]]))
     print("COVERED_LODS:true")
@@ -721,6 +723,78 @@ func _initialize():
             capture_output=True, text=True, timeout=30)
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
         self.assertIn("COVERED_LODS:true", checked.stdout, checked.stderr)
+
+    def test_covered_lods_keep_ground_connected_trunk(self):
+        source = self.recipe('''local vertices,indices={},{}
+for y=0,24 do
+    for side=0,7 do
+        local angle=side*math.pi/4
+        table.insert(vertices,{math.cos(angle)*.35,y*20/24,math.sin(angle)*.35})
+    end
+end
+for y=0,23 do
+    for side=0,7 do
+        local a=y*8+side+1
+        local b=y*8+(side+1)%8+1
+        for _,i in {a,b,b+8,a,b+8,a+8} do table.insert(indices,i) end
+    end
+end
+for branch=1,24 do
+    local first=#vertices
+    local y=branch*15/24+3
+    table.insert(vertices,{2,y,0})
+    table.insert(vertices,{2.2,y,0})
+    table.insert(vertices,{2,y+.2,0})
+    for _,i in {first+1,first+2,first+3} do table.insert(indices,i) end
+end
+return cooker.mesh({vertices=vertices,indices=indices})''',
+                             output="res://assets/runtime/model/trunk/source.res")
+        covered = self.recipe('''return cooker.minimum_visual("mesh",{
+ triangle_ratio=1,lod_triangle_ratios={.5,.15,.05},
+ lod_screen_errors={.5,1,2},lod_minimum_coverage=.5})''',
+                              inputs={"mesh": source["output"]},
+                              output="res://assets/runtime/model/trunk/covered.res")
+        self.assertIsNotNone(REFERENCE)
+        (self.project / "inspect_trunk.gd").write_text('''extends SceneTree
+func _initialize():
+    var mesh=load("'''+covered["output"]+'''")
+    var imported=ImporterMesh.from_mesh(mesh)
+    var points=mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+    assert(imported.get_surface_lod_count(0)>0)
+    for level in imported.get_surface_lod_count(0):
+        var indices=imported.get_surface_lod_indices(0,level)
+        assert(indices.size()<mesh.surface_get_array_index_len(0)*.7)
+        var edges={}
+        for i in range(0,indices.size(),3):
+            for j in 3:
+                var a=points[indices[i+j]]
+                var b=points[indices[i+(j+1)%3]]
+                if not edges.has(a):edges[a]=[]
+                if not edges.has(b):edges[b]=[]
+                edges[a].append(b)
+                edges[b].append(a)
+        var pending=[]
+        for point in edges:
+            if point.y<.2:pending.append(point)
+        assert(not pending.is_empty())
+        var visited={}
+        var highest=0.0
+        while not pending.is_empty():
+            var point=pending.pop_back()
+            if visited.has(point):continue
+            visited[point]=true
+            highest=max(highest,point.y)
+            pending.append_array(edges[point])
+        assert(highest>19)
+    print("CONNECTED_TRUNK:true")
+    quit()
+''', encoding="utf-8")
+        checked = subprocess.run(
+            [str(REFERENCE), "--headless", "--path", str(self.project),
+             "--script", "res://inspect_trunk.gd", "--quit-after", "20"],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("CONNECTED_TRUNK:true", checked.stdout, checked.stderr)
 
     def test_covered_lods_preserve_shared_material_dependencies(self):
         material = self.recipe('return cooker.material({color={.2,.4,.3}})',

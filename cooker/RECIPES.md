@@ -54,10 +54,16 @@ are targets; inspect published levels for achieved counts.
 Errors must be positive, strictly increasing and paired with the triangle ratios.
 Coverage must be within [0.5,1]. This mode retains the input base geometry and
 regenerates levels with topology-aware edge collapse, ignoring unsafe source LODs.
-Each level must satisfy the symmetric coverage-difference bound in sixteen
+Each level must satisfy the symmetric outer-envelope difference bound in sixteen
 orthographic views (eight azimuths, elevations zero and thirty degrees).
 Views sample twice the projected size at that level's screen error, capped at
-256 pixels. `lod_coverage_scale` defaults to one and accounts for authored
+256 pixels. Interior holes are filled per scanline for the contour comparison;
+two raster samples of boundary movement are tolerated (one reference screen
+pixel before the raster-size cap). Tall position-welded components connected to
+the source's lowest Y must remain connected from the root through their height.
+Ground movement is limited to 1% of surface height and top loss to 3%.
+This protects thin trunks independently from the foliage contour.
+`lod_coverage_scale` defaults to one and accounts for authored
 instance normalization when coverage is evaluated for a MultiMesh batch.
 Unsafe levels are omitted. The output mesh owns a `veya_covered_lods=1` marker;
 downstream minimum builders preserve its base geometry, levels and screen errors

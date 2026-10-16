@@ -216,6 +216,9 @@ class Builder {
                               const std::vector<float>& positions) const {
     Dictionary result;
     int previous_count = indices.size();
+    const CookerLod::RootedSpan rooted_span(vertices, indices);
+    const float extent = meshopt_simplifyScale(
+        positions.data(), vertices.size(), sizeof(float) * 3);
     for (size_t level = 0; level < options_.lod_triangle_ratios.size();
          ++level) {
       const size_t target = MAX(
@@ -224,15 +227,20 @@ class Builder {
       PackedInt32Array selected;
       selected.resize(indices.size());
       // Regular edge collapses never join disconnected leaf components.
+      const float error = MIN(
+          0.05,
+          MAX(0.01, options_.lod_screen_errors[level] /
+                        MAX(0.00001, extent * options_.lod_coverage_scale)));
       const size_t count = meshopt_simplify(
           reinterpret_cast<unsigned int*>(selected.ptrw()),
           reinterpret_cast<const unsigned int*>(indices.ptr()), indices.size(),
-          positions.data(), vertices.size(), sizeof(float) * 3, target, 0.01f);
+          positions.data(), vertices.size(), sizeof(float) * 3, target, error);
       selected.resize(count);
       const CookerLod::Silhouette silhouette(
           vertices, indices,
           2 * options_.lod_coverage_scale / options_.lod_screen_errors[level]);
       if (count < 3 || count >= size_t(previous_count) ||
+          !rooted_span.Accepts(selected) ||
           !silhouette.Accepts(selected, options_.lod_minimum_coverage)) {
         continue;
       }
