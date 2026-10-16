@@ -56,6 +56,15 @@ Implementation: `minimum_visual.h`, `Builder::MeshValue`. The regression case is
 test execution, asset production and performance measurement were deferred by
 the user on 2026-10-16. No measured saving is claimed.
 
+During 2026-10-16 production, an old fragment receipt referenced 47 absent
+render resources. Regeneration emitted a new valid render closure, but pipeline
+publication retained the old auxiliary paths and failed while hashing them.
+The pipeline entry now replaces only the prior `render-resources/` portion of
+the receipt with the current emitted list after a successful job. Other
+declared auxiliary outputs and the existing integrity checks are preserved.
+`test_shared_render_cache_checks_auxiliary_files` covers a changed source with
+a missing old render resource. Test execution remains deferred.
+
 ### Production example
 
 After building Cooker, the production example runs through its Luau pipeline

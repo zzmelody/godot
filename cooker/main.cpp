@@ -1103,6 +1103,19 @@ Error execute_pipeline(Dictionary &r_result) {
 		error = execute_job(job, job_result);
 		if (error == OK && bool(verification)) {
 			const Array render_outputs = job_result.get("render_outputs", Array());
+			if (bool(job.get("external_render_resources", false))) {
+				// A rebuilt fragment owns its newly emitted render closure. Old
+				// content-addressed paths can disappear or become unreferenced;
+				// retaining them makes receipt publication hash obsolete files.
+				const String prefix = receipt.output.get_base_dir().path_join("render-resources") + "/";
+				const Array previous_outputs = receipt.auxiliary_outputs.keys();
+				for (const Variant &path : previous_outputs) {
+					if (String(path).begins_with(prefix)) {
+						receipt.auxiliary_outputs.erase(path);
+						CookerAtomicSave::replaceable.erase(path);
+					}
+				}
+			}
 			for (const Variant &path : render_outputs) receipt.auxiliary_outputs[path] = "";
 			error = CookerCache::commit(receipt);
 		}

@@ -829,6 +829,18 @@ func _initialize():
         restored = self.pipeline(code)["steps"][0]
         self.assertFalse(restored.get("skipped", False))
         self.assertEqual(shared.read_bytes(), expected)
+        replacement = self.recipe(
+            'local mesh=cooker.primitive("sphere",{}); return cooker.scene({{asset=mesh}})',
+            output="res://content/worlds/fixture/generated/replacement.scn")
+        shared.unlink()
+        code = code.replace(original["output"], replacement["output"])
+        rebuilt = self.pipeline(code)["steps"][0]
+        self.assertFalse(rebuilt.get("skipped", False))
+        receipt = json.loads((self.project / (rebuilt["output"] + ".cook.json").removeprefix("res://")).read_text())
+        self.assertEqual(set(receipt["auxiliary_outputs"]), set(rebuilt["render_outputs"]))
+        self.assertNotIn("res://" + str(shared.relative_to(self.project)).replace("\\", "/"),
+                         receipt["auxiliary_outputs"])
+        shared = self.project / rebuilt["render_outputs"][0].removeprefix("res://")
         shared.write_bytes(b"changed dependency")
         self.pipeline(code, success=False)
 
