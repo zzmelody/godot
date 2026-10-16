@@ -951,8 +951,24 @@ struct Recipe {
     }
     s.fields(2, {"triangle_ratio", "max_texture_size", "minimum_height",
                  "lock_border", "max_error", "preserve_heightfields",
-                 "compress_color_textures"});
+                 "compress_color_textures", "lod_triangle_ratios"});
     CookerMinimum::Options options;
+    s.field(2, "lod_triangle_ratios");
+    if (!lua_isnil(p_state, -1)) {
+      const int count = s.array(-1, 8);
+      s.require(count > 0, "lod_triangle_ratios requires 1..8 levels");
+      double previous_ratio = 1;
+      for (int level = 0; level < count; ++level) {
+        lua_rawgeti(p_state, -1, level + 1);
+        const double ratio = s.number(-1);
+        s.require(ratio > 0 && ratio < previous_ratio,
+                  "lod_triangle_ratios must decrease strictly within (0,1)");
+        options.lod_triangle_ratios.push_back(ratio);
+        previous_ratio = ratio;
+        lua_pop(p_state, 1);
+      }
+    }
+    lua_pop(p_state, 1);
     options.compress_color_textures =
         s.boolean_field(2, "compress_color_textures", false);
     options.preserve_heightfields =

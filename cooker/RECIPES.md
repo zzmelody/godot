@@ -39,6 +39,20 @@ as a Godot ScriptLanguage. No Python/external Lua interpreter runs a recipe.
 
 ### Minimum mesh LODs
 
+`lod_triangle_ratios` explicitly enables distant-mesh LOD publication. It accepts
+1..8 strictly decreasing ratios within (0,1), relative to input triangle counts.
+The builder retains useful precomputed source levels, then uses the existing
+meshoptimizer sloppy simplifier to add lighter targets. All index sets share a
+compacted union of referenced source vertices; base triangles and vertex
+attributes retain their semantics. Distances include the base simplification
+error and grow monotonically. The new levels can remove disconnected geometry
+and do not lock borders, so callers must restrict them to standalone distant
+models. Protected upward height-field surfaces do not use this path. Ratios
+are targets; inspect published levels for achieved counts.
+
+This option is Cooker-only. Omission retains the previous path below. No game
+renderer, runtime LOD selection or resource format changes are required.
+
 `minimum_visual` preserves the ability to select native mesh LODs when its
 input mesh contains precomputed LODs. Minimum reduction compacts and reindexes
 the vertex arrays, so Cooker regenerates LOD index sets from the final minimum

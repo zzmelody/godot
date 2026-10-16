@@ -593,21 +593,21 @@ func inspect():
     def test_minimum_preserves_precomputed_lod_capability(self):
         source = self.recipe(
             'return cooker.primitive("sphere",{radius=2,segments=24,rings=12})',
-            output="res://content/worlds/fixture/generated/lod/source.res")
+            output="res://content/worlds/fixture/assets/runtime/model/lod/source.res")
         processed = self.job({
             "operation": "process-mesh", "source": source["output"],
-            "output": "res://content/worlds/fixture/generated/lod/processed.res"})
+            "output": "res://content/worlds/fixture/assets/runtime/model/lod/processed.res"})
         layout = self.recipe('''local mesh=cooker.input("mesh")
 return cooker.scene({
  {asset=mesh,position={0,2,0},scale={1,2,.5}},
  {asset=mesh,position={7,2,-4},scale={2,2,.5}},
  {asset=mesh,position={14,2,-4},scale={3,2,.5}},
 })''', inputs={"mesh": processed["output"]},
-                             output="res://content/worlds/fixture/generated/lod/layout.scn")
+                             output="res://content/worlds/fixture/assets/runtime/model/lod/layout.scn")
         minimum = self.recipe('''return cooker.minimum_visual("visual",{
  triangle_ratio=1,max_texture_size=32})''',
                               inputs={"visual": layout["output"]},
-                              output="res://content/worlds/fixture/generated/lod/minimum.scn")
+                              output="res://content/worlds/fixture/assets/runtime/model/lod/minimum.scn")
         self.assertIsNotNone(REFERENCE, "LOD resource round trip needs --reference-godot")
         script = self.project / "inspect_minimum_lods.gd"
         script.write_text('''extends SceneTree
@@ -643,6 +643,169 @@ func _initialize():
             capture_output=True, text=True, timeout=30)
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
         self.assertIn("MINIMUM_PRECOMPUTED_LODS:true", checked.stdout)
+
+    def test_minimum_builds_far_lods_for_disconnected_geometry(self):
+        source = self.recipe('''local vertices, indices = {}, {}
+for y = 0, 3 do
+    for z = 0, 7 do
+        for x = 0, 7 do
+            local first = #vertices
+            local px, py, pz = x * 0.3, y * 0.4, z * 0.3
+            for _, point in {
+                { px, py, pz },
+                { px + 0.12, py, pz },
+                { px + 0.12, py + 0.16, pz + 0.03 },
+                { px, py + 0.16, pz + 0.03 },
+            } do
+                table.insert(vertices, point)
+            end
+            for _, index in { 1, 2, 3, 1, 3, 4 } do
+                table.insert(indices, first + index)
+            end
+        end
+    end
+end
+return cooker.mesh({ vertices = vertices, indices = indices })''',
+                             output="res://content/worlds/fixture/assets/runtime/model/lod/source.res")
+        minimum = self.recipe('''return cooker.minimum_visual("mesh",{
+ triangle_ratio=1,max_texture_size=32,
+ lod_triangle_ratios={.5,.25,.125,.0625}})''',
+                              inputs={"mesh": source["output"]},
+                              output="res://content/worlds/fixture/assets/runtime/model/lod/minimum.res")
+        self.assertIsNotNone(REFERENCE, "LOD resource round trip needs --reference-godot")
+        script = self.project / "inspect_disconnected_lods.gd"
+        script.write_text('''extends SceneTree
+func _initialize():
+    var original = load("'''+source["output"]+'''")
+    var minimum = load("'''+minimum["output"]+'''")
+    var source_arrays = original.surface_get_arrays(0)
+    var arrays = minimum.surface_get_arrays(0)
+    var source_indices = source_arrays[Mesh.ARRAY_INDEX]
+    var indices = arrays[Mesh.ARRAY_INDEX]
+    assert(source_indices.size() == indices.size())
+    for i in indices.size():
+        assert(source_arrays[Mesh.ARRAY_VERTEX][source_indices[i]] == arrays[Mesh.ARRAY_VERTEX][indices[i]])
+    var lods = ImporterMesh.from_mesh(minimum)
+    var achieved = []
+    for level in lods.get_surface_lod_count(0):
+        achieved.append(lods.get_surface_lod_indices(0, level).size())
+    print("DISCONNECTED_LOD_INDICES:", achieved)
+    assert(ImporterMesh.from_mesh(original).get_surface_lod_count(0) == 0)
+    # Tiny disconnected leaves may disappear at coarser targets. The contract
+    # requires a useful valid level, not one level for every requested ratio.
+    assert(lods.get_surface_lod_count(0) >= 1)
+    var count = indices.size()
+    var distance = 0.0
+    for level in lods.get_surface_lod_count(0):
+        var next = lods.get_surface_lod_indices(0, level)
+        assert(next.size() >= 3 and next.size() < count and next.size() % 3 == 0)
+        assert(lods.get_surface_lod_size(0, level) > distance)
+        for index in next:
+            assert(index >= 0 and index < arrays[Mesh.ARRAY_VERTEX].size())
+        count = next.size()
+        distance = lods.get_surface_lod_size(0, level)
+    assert(count < indices.size() * 0.5)
+    print("MINIMUM_DISCONNECTED_LODS:true")
+    quit()
+''', encoding="utf-8")
+        checked = subprocess.run(
+            [str(REFERENCE), "--headless", "--path", str(self.project),
+             "--script", "res://inspect_disconnected_lods.gd", "--quit-after", "20"],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("MINIMUM_DISCONNECTED_LODS:true", checked.stdout, checked.stderr)
+
+    def test_minimum_retains_source_lods_after_union_compaction(self):
+        source = self.recipe('return cooker.primitive("sphere",{radius=2,segments=48,rings=24})',
+                             output="res://content/worlds/fixture/assets/runtime/model/lod/source.res")
+        processed = self.job({"operation": "process-mesh", "source": source["output"],
+                              "output": "res://content/worlds/fixture/assets/runtime/model/lod/source_lods.res"})
+        minimum = self.recipe('''return cooker.minimum_visual("mesh",{
+ triangle_ratio=.75,max_texture_size=32,lod_triangle_ratios={.03125,.015625}})''',
+                              inputs={"mesh": processed["output"]},
+                              output="res://content/worlds/fixture/assets/runtime/model/lod/minimum.res")
+        self.assertIsNotNone(REFERENCE, "LOD resource round trip needs --reference-godot")
+        script = self.project / "inspect_source_lods.gd"
+        script.write_text('''extends SceneTree
+func _initialize():
+    var source = load("'''+processed["output"]+'''")
+    var minimum = load("'''+minimum["output"]+'''")
+    var source_lods = ImporterMesh.from_mesh(source)
+    var result_lods = ImporterMesh.from_mesh(minimum)
+    var source_vertices = source.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+    var result_arrays = minimum.surface_get_arrays(0)
+    var result_vertices = result_arrays[Mesh.ARRAY_VERTEX]
+    var preserved = 0
+    for source_level in source_lods.get_surface_lod_count(0):
+        var expected = source_lods.get_surface_lod_indices(0, source_level)
+        if expected.size() >= result_arrays[Mesh.ARRAY_INDEX].size():
+            continue
+        var found = false
+        for result_level in result_lods.get_surface_lod_count(0):
+            var actual = result_lods.get_surface_lod_indices(0, result_level)
+            if expected.size() != actual.size():
+                continue
+            var matches = true
+            for index in expected.size():
+                matches = matches and source_vertices[expected[index]] == result_vertices[actual[index]]
+            found = found or matches
+        assert(found)
+        preserved += 1
+    assert(preserved > 0)
+    print("MINIMUM_SOURCE_LODS:true")
+    quit()
+''', encoding="utf-8")
+        checked = subprocess.run(
+            [str(REFERENCE), "--headless", "--path", str(self.project),
+             "--script", "res://inspect_source_lods.gd", "--quit-after", "20"],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("MINIMUM_SOURCE_LODS:true", checked.stdout, checked.stderr)
+
+    def test_minimum_far_lods_preserve_heightfield_protection(self):
+        minimum = self.recipe('''local vertices, indices = {}, {}
+for z = 0, 8 do
+    for x = 0, 8 do
+        table.insert(vertices, { x, 0, z })
+    end
+end
+for z = 0, 7 do
+    for x = 0, 7 do
+        local first = z * 9 + x + 1
+        for _, index in { first, first + 1, first + 9, first + 1, first + 10, first + 9 } do
+            table.insert(indices, index)
+        end
+    end
+end
+return cooker.minimum_visual(cooker.mesh({ vertices = vertices, indices = indices }), {
+    triangle_ratio = 1,
+    preserve_heightfields = true,
+    lod_triangle_ratios = { 0.5, 0.25, 0.125 },
+})''', output="res://content/worlds/fixture/assets/runtime/model/lod/heightfield.res")
+        self.assertIsNotNone(REFERENCE, "LOD resource round trip needs --reference-godot")
+        script = self.project / "inspect_protected_lods.gd"
+        script.write_text('''extends SceneTree
+func _initialize():
+    var mesh = load("'''+minimum["output"]+'''")
+    assert(ImporterMesh.from_mesh(mesh).get_surface_lod_count(0) == 0)
+    assert(mesh.surface_get_arrays(0)[Mesh.ARRAY_INDEX].size() == 384)
+    print("MINIMUM_PROTECTED_LODS:true")
+    quit()
+''', encoding="utf-8")
+        checked = subprocess.run(
+            [str(REFERENCE), "--headless", "--path", str(self.project),
+             "--script", "res://inspect_protected_lods.gd", "--quit-after", "20"],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("MINIMUM_PROTECTED_LODS:true", checked.stdout, checked.stderr)
+
+    def test_minimum_rejects_invalid_far_lod_ratios(self):
+        for value in ("{}", "{1}", "{0}", "{-.1}", "{.5,.5}", "{.25,.5}",
+                      "{.9,.8,.7,.6,.5,.4,.3,.2,.1}"):
+            with self.subTest(value=value):
+                self.recipe('''return cooker.minimum_visual(cooker.primitive("sphere",{}),{
+ lod_triangle_ratios='''+value+'''})''', success=False,
+                            output="res://content/worlds/fixture/assets/runtime/model/lod/refused.res")
 
     def test_minimum_color_texture_compression_survives_resource_save(self):
         source = self.recipe('''local texture=cooker.procedural_texture({kind="soft-noise",size=64,seed=17})

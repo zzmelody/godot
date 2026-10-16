@@ -17,6 +17,7 @@
 #include "scene/resources/portable_compressed_texture.h"
 #include "scene/resources/shader.h"
 #include "scene/resources/surface_tool.h"
+#include "thirdparty/meshoptimizer/meshoptimizer.h"
 
 namespace CookerMinimum {
 struct Options {
@@ -27,6 +28,9 @@ struct Options {
   double max_error = 0;
   bool preserve_heightfields = false;
   bool compress_color_textures = true;
+  // Explicit far-mesh targets relative to the input surface. Empty keeps the
+  // existing minimum path. These levels may remove disconnected components.
+  std::vector<double> lod_triangle_ratios;
 };
 
 class Builder {
@@ -147,6 +151,81 @@ class Builder {
     }
     return true;
   }
+  Dictionary BuildLods(const Ref<Mesh>& source, int surface,
+                       const PackedInt32Array& indices,
+                       const std::vector<float>& positions,
+                       int minimum_index_count, float minimum_error) const {
+    Dictionary result;
+    const float scale = meshopt_simplifyScale(
+        positions.data(), positions.size() / 3, sizeof(float) * 3);
+    const float base_error =
+        options_.max_error > 0 ? minimum_error : minimum_error * scale;
+    float previous_distance = 0;
+    int previous_count = minimum_index_count;
+    const auto add_level = [&result, &previous_count, &previous_distance,
+                            base_error](const PackedInt32Array& level,
+                                        float error) {
+      if (level.size() < 3 || level.size() >= previous_count) {
+        return;
+      }
+      const float distance =
+          MAX(MAX(base_error + error, previous_distance * 1.5f), CMP_EPSILON);
+      result[distance] = level;
+      previous_count = level.size();
+      previous_distance = distance;
+    };
+
+    // Source LOD indices use the same input vertex arrays. Compact their union
+    // with the minimum base instead of discarding levels that need other verts.
+    const Dictionary source_lods = source->surface_get_lods(surface);
+    Array distances = source_lods.keys();
+    distances.sort();
+    for (int level = 0; level < distances.size(); ++level) {
+      const PackedInt32Array selected = source_lods[distances[level]];
+      add_level(selected, static_cast<float>(distances[level]));
+    }
+    for (const double ratio : options_.lod_triangle_ratios) {
+      const size_t target =
+          MAX(size_t(3), static_cast<size_t>(indices.size() * ratio) / 3 * 3);
+      if (target >= static_cast<size_t>(previous_count)) {
+        continue;
+      }
+      PackedInt32Array selected;
+      selected.resize(indices.size());
+      float error = 0;
+      const size_t count = meshopt_simplifySloppy(
+          reinterpret_cast<unsigned int*>(selected.ptrw()),
+          reinterpret_cast<const unsigned int*>(indices.ptr()), indices.size(),
+          positions.data(), positions.size() / 3, sizeof(float) * 3, nullptr,
+          target, 1.0f, &error);
+      selected.resize(count);
+      add_level(selected, error * scale);
+    }
+    return result;
+  }
+
+  static bool CompactLods(Array& arrays, PackedInt32Array& indices,
+                          Dictionary& lods, int original_count) {
+    const int base_count = indices.size();
+    PackedInt32Array combined = indices;
+    Array distances = lods.keys();
+    distances.sort();
+    for (int level = 0; level < distances.size(); ++level) {
+      combined.append_array(lods[distances[level]]);
+    }
+    if (!CompactArrays(arrays, combined, original_count)) {
+      return false;
+    }
+    indices = combined.slice(0, base_count);
+    int offset = base_count;
+    for (int level = 0; level < distances.size(); ++level) {
+      const PackedInt32Array original = lods[distances[level]];
+      lods[distances[level]] = combined.slice(offset, offset + original.size());
+      offset += original.size();
+    }
+    return true;
+  }
+
   Ref<Texture2D> TextureValue(const Ref<Texture2D>& source, bool normal = false) {
     const auto id = source->get_instance_id();
     if (textures_.count(id)) {
@@ -324,11 +403,12 @@ class Builder {
       if (options_.max_error > 0) {
         flags |= SurfaceTool::SIMPLIFY_ERROR_ABSOLUTE;
       }
+      float reduction_error = 0;
       const size_t count = SurfaceTool::simplify_func(
           reinterpret_cast<unsigned int*>(reduced.ptrw()),
           reinterpret_cast<const unsigned int*>(indices.ptr()), indices.size(),
           positions.data(), vertices.size(), sizeof(float) * 3, target, error,
-          flags, nullptr);
+          flags, &reduction_error);
       if (count < 3 || count % 3) {
         return Ref<Mesh>();
       }
@@ -340,7 +420,17 @@ class Builder {
           !HasUpwardProjection(vertices, reduced)) {
         reduced = indices;
       }
-      if (!CompactArrays(arrays, reduced, vertices.size())) {
+      Dictionary lods;
+      if (!options_.lod_triangle_ratios.empty() &&
+          !(options_.preserve_heightfields &&
+            HasUpwardProjection(vertices, indices))) {
+        lods = BuildLods(source, surface, indices, positions, reduced.size(),
+                         reduction_error);
+      }
+      const bool compacted =
+          lods.is_empty() ? CompactArrays(arrays, reduced, vertices.size())
+                          : CompactLods(arrays, reduced, lods, vertices.size());
+      if (!compacted) {
         return Ref<Mesh>();
       }
       arrays[Mesh::ARRAY_INDEX] = reduced;
@@ -356,7 +446,7 @@ class Builder {
                   (uint64_t(Mesh::ARRAY_FORMAT_CUSTOM_MASK) << shift);
       }
       result->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays,
-                                     Array(), Dictionary(), format);
+                                      Array(), lods, format);
       const Ref<Material> material = source->surface_get_material(surface);
       const Ref<Material> minimum = MaterialValue(material);
       if (material.is_valid() && minimum.is_null()) {
@@ -367,7 +457,8 @@ class Builder {
     if (!result->get_surface_count()) {
       return Ref<Mesh>();
     }
-    if (source_has_lods && !protected_heightfield) {
+    if (options_.lod_triangle_ratios.empty() && source_has_lods &&
+        !protected_heightfield) {
       // Minimum compaction changes vertex indices, so the source LOD indices
       // cannot be copied. Generate new levels after the final arrays exist.
       // Keep this work in Cooker; runtime only selects the published levels.
