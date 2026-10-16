@@ -4,3 +4,4 @@ from misc.utility.scons_hints import *
 Import("env")
 
 env.add_source_files(env.core_sources, "*.cpp")
+SConscript("virtual_geometry/SCsub")
