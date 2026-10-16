@@ -37,6 +37,27 @@ as a Godot ScriptLanguage. No Python/external Lua interpreter runs a recipe.
 
 ## Example
 
+### Minimum mesh LODs
+
+`minimum_visual` preserves the ability to select native mesh LODs when its
+input mesh contains precomputed LODs. Minimum reduction compacts and reindexes
+the vertex arrays, so Cooker regenerates LOD index sets from the final minimum
+mesh instead of copying invalid source indices. This runs once per source mesh
+in a recipe's existing mesh cache. Meshes without source LODs retain the existing
+minimum generation path. Protected height-field meshes also retain that path;
+automatic LOD reduction must not bypass their projection constraints.
+Non-reducible surfaces may have no additional levels.
+MultiMesh instance counts and complete instance transforms are preserved.
+Published resources contain the generated levels; the game performs no mesh
+simplification or LOD baking at load time.
+
+Implementation: `minimum_visual.h`, `Builder::MeshValue`. The regression case is
+`RecipeTests.test_minimum_preserves_precomputed_lod_capability`. Compilation,
+test execution, asset production and performance measurement were deferred by
+the user on 2026-10-16. No measured saving is claimed.
+
+### Production example
+
 After building Cooker, the production example runs through its Luau pipeline
 from the **Veya repository root**:
 

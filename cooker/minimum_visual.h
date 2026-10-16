@@ -8,6 +8,9 @@
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/skeleton_3d.h"
+/*<<----- VEYA_COOKER: rebuild native LODs after minimum mesh compaction. */
+#include "scene/resources/3d/importer_mesh.h"
+/*>>----- VEYA_COOKER */
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/packed_scene.h"
@@ -268,6 +271,7 @@ class Builder {
     }
     return result;
   }
+  /*<<----- VEYA_COOKER: preserve LOD capability in published minimum meshes. */
   Ref<Mesh> MeshValue(const Ref<Mesh>& source) {
     const auto id = source->get_instance_id();
     if (meshes_.count(id)) {
@@ -275,7 +279,10 @@ class Builder {
     }
     Ref<ArrayMesh> result;
     result.instantiate();
+    bool source_has_lods = false;
+    bool protected_heightfield = false;
     for (int surface = 0; surface < source->get_surface_count(); ++surface) {
+      source_has_lods |= !source->surface_get_lods(surface).is_empty();
       if (source->surface_get_primitive_type(surface) != Mesh::PRIMITIVE_TRIANGLES) {
         return Ref<Mesh>();
       }
@@ -299,6 +306,8 @@ class Builder {
           return Ref<Mesh>();
         }
       }
+      protected_heightfield |= options_.preserve_heightfields &&
+                               HasUpwardProjection(vertices, indices);
       std::vector<float> positions(size_t(vertices.size()) * 3);
       for (int i = 0; i < vertices.size(); ++i) {
         for (int axis = 0; axis < 3; ++axis) {
@@ -358,9 +367,21 @@ class Builder {
     if (!result->get_surface_count()) {
       return Ref<Mesh>();
     }
+    if (source_has_lods && !protected_heightfield) {
+      // Minimum compaction changes vertex indices, so the source LOD indices
+      // cannot be copied. Generate new levels after the final arrays exist.
+      // Keep this work in Cooker; runtime only selects the published levels.
+      const Ref<ImporterMesh> minimum = ImporterMesh::from_mesh(result);
+      minimum->generate_lods(60.0, Array());
+      result = minimum->get_mesh();
+      if (result.is_null()) {
+        return Ref<Mesh>();
+      }
+    }
     meshes_.emplace(id, result);
     return result;
   }
+  /*>>----- VEYA_COOKER */
   bool CopyTree(Node* source, Node3D* destination, const Transform3D& parent,
                  int depth) {
     const Ref<Script> script = source->get_script();

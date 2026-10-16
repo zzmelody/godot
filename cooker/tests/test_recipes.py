@@ -590,6 +590,60 @@ func inspect():
                     inputs={"mesh": source["output"]},
                     output="res://content/worlds/fixture/assets/runtime/terrain/test/invalid.res")
 
+    def test_minimum_preserves_precomputed_lod_capability(self):
+        source = self.recipe(
+            'return cooker.primitive("sphere",{radius=2,segments=24,rings=12})',
+            output="res://content/worlds/fixture/generated/lod/source.res")
+        processed = self.job({
+            "operation": "process-mesh", "source": source["output"],
+            "output": "res://content/worlds/fixture/generated/lod/processed.res"})
+        layout = self.recipe('''local mesh=cooker.input("mesh")
+return cooker.scene({
+ {asset=mesh,position={0,2,0},scale={1,2,.5}},
+ {asset=mesh,position={7,2,-4},scale={2,2,.5}},
+ {asset=mesh,position={14,2,-4},scale={3,2,.5}},
+})''', inputs={"mesh": processed["output"]},
+                             output="res://content/worlds/fixture/generated/lod/layout.scn")
+        minimum = self.recipe('''return cooker.minimum_visual("visual",{
+ triangle_ratio=1,max_texture_size=32})''',
+                              inputs={"visual": layout["output"]},
+                              output="res://content/worlds/fixture/generated/lod/minimum.scn")
+        self.assertIsNotNone(REFERENCE, "LOD resource round trip needs --reference-godot")
+        script = self.project / "inspect_minimum_lods.gd"
+        script.write_text('''extends SceneTree
+func _initialize():
+    var original = load("'''+layout["output"]+'''").instantiate()
+    var minimum = load("'''+minimum["output"]+'''").instantiate()
+    var before = original.get_child(0).multimesh as MultiMesh
+    var after = minimum.get_child(0).multimesh as MultiMesh
+    assert(before.instance_count == 3 and after.instance_count == 3)
+    for index in 3:
+        assert(before.get_instance_transform(index) == after.get_instance_transform(index))
+    var source_lods = ImporterMesh.from_mesh(before.mesh)
+    var minimum_lods = ImporterMesh.from_mesh(after.mesh)
+    assert(source_lods.get_surface_lod_count(0) > 0)
+    assert(minimum_lods.get_surface_lod_count(0) > 0)
+    var arrays = after.mesh.surface_get_arrays(0)
+    var vertex_count = arrays[Mesh.ARRAY_VERTEX].size()
+    var base_count = arrays[Mesh.ARRAY_INDEX].size()
+    for lod in minimum_lods.get_surface_lod_count(0):
+        var indices = minimum_lods.get_surface_lod_indices(0, lod)
+        assert(indices.size() >= 3 and indices.size() < base_count)
+        assert(indices.size() % 3 == 0)
+        for index in indices:
+            assert(index >= 0 and index < vertex_count)
+    original.free()
+    minimum.free()
+    print("MINIMUM_PRECOMPUTED_LODS:true")
+    quit()
+''', encoding="utf-8")
+        checked = subprocess.run(
+            [str(REFERENCE), "--headless", "--path", str(self.project),
+             "--script", "res://inspect_minimum_lods.gd", "--quit-after", "20"],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("MINIMUM_PRECOMPUTED_LODS:true", checked.stdout)
+
     def test_minimum_color_texture_compression_survives_resource_save(self):
         source = self.recipe('''local texture=cooker.procedural_texture({kind="soft-noise",size=64,seed=17})
 local material=cooker.material({albedo_texture=texture})
