@@ -1575,6 +1575,7 @@ int32_t MaterialStorage::_global_shader_uniform_allocate(uint32_t p_elements) {
 				continue; //if not valid, idx is in new position
 			}
 
+			++global_shader_uniforms.layout_version;
 			return idx;
 		} else {
 			idx += global_shader_uniforms.buffer_usage[idx].elements;
@@ -1856,6 +1857,7 @@ void MaterialStorage::global_shader_parameter_remove(const StringName &p_name) {
 
 	if (gv.buffer_index >= 0) {
 		global_shader_uniforms.buffer_usage[gv.buffer_index].elements = 0;
+		++global_shader_uniforms.layout_version;
 		global_shader_uniforms.must_update_buffer_materials = true;
 	} else {
 		global_shader_uniforms.must_update_texture_materials = true;
@@ -2045,6 +2047,10 @@ RID MaterialStorage::global_shader_uniforms_get_storage_buffer() const {
 	return global_shader_uniforms.buffer;
 }
 
+uint32_t MaterialStorage::global_shader_uniforms_get_storage_buffer_bytes() const {
+	return global_shader_uniforms.buffer_size * sizeof(GlobalShaderUniforms::Value);
+}
+
 int32_t MaterialStorage::global_shader_parameters_instance_allocate(RID p_instance) {
 	ERR_FAIL_COND_V(global_shader_uniforms.instance_buffer_pos.has(p_instance), -1);
 	int32_t pos = _global_shader_uniform_allocate(ShaderLanguage::MAX_INSTANCE_UNIFORM_INDICES);
@@ -2059,6 +2065,7 @@ void MaterialStorage::global_shader_parameters_instance_free(RID p_instance) {
 	int32_t pos = global_shader_uniforms.instance_buffer_pos[p_instance];
 	if (pos >= 0) {
 		global_shader_uniforms.buffer_usage[pos].elements = 0;
+		++global_shader_uniforms.layout_version;
 	}
 	global_shader_uniforms.instance_buffer_pos.erase(p_instance);
 }

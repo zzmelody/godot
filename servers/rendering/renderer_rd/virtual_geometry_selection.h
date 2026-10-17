@@ -54,7 +54,9 @@ public:
 	};
 
 	void begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size, uint32_t p_shadow_flags = 0, float p_shadow_far = 0);
-	Error record(const Batch &p_batch);
+	// SDFGI captures the complete resident root proxy without requesting fine
+	// pages; its dirty regions do not track ordinary page-residency changes.
+	Error record(const Batch &p_batch, bool p_root_only = false);
 	void use_root_coverage();
 	Span<Result> get_results() const { return Span<Result>(results.ptr(), used); }
 	uint64_t get_buffer_bytes() const;

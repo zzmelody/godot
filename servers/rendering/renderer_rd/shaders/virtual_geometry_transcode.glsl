@@ -21,6 +21,7 @@ layout(push_constant, std430) uniform Parameters {
 	uint destination_word;
 	uint clusters;
 	uint gpu_bytes;
+	uint phase;
 } params;
 
 uint record_word;
@@ -28,6 +29,205 @@ uint reference_word;
 
 uint record(uint word) {
 	return disk_pages.words[record_word + word];
+}
+
+uint cluster_record(uint cluster, uint word) {
+	return disk_pages.words[params.source_word + 8u + cluster * 72u + word];
+}
+
+uint disk_byte(uint offset) {
+	return (disk_pages.words[params.source_word + (offset >> 2u)] >> ((offset & 3u) * 8u)) & 255u;
+}
+
+uint mask_bits(uint bits) {
+	return bits == 32u ? 0xffffffffu : (1u << bits) - 1u;
+}
+
+uint channels(uint cluster) {
+	uint flags = cluster_record(cluster, 35u);
+	return 5u + (flags & 1u) + ((flags & 2u) != 0u ? 4u : 0u) + cluster_record(cluster, 36u) * 2u;
+}
+
+// bits, integer origin, bit offset in a vertex, attribute-stream selector.
+uvec4 channel_at(uint cluster, uint index) {
+	if (index < 3u) {
+		uint offset = 0u;
+		for (uint axis = 0u; axis < index; ++axis) {
+			offset += cluster_record(cluster, 28u + axis);
+		}
+		return uvec4(cluster_record(cluster, 28u + index), cluster_record(cluster, 25u + index), offset, 0u);
+	}
+	index -= 3u;
+	uint normal_bits = cluster_record(cluster, 33u);
+	if (index < 2u) {
+		return uvec4(normal_bits, 0u, index * normal_bits, 1u);
+	}
+	index -= 2u;
+	uint offset = normal_bits * 2u;
+	uint flags = cluster_record(cluster, 35u);
+	if ((flags & 1u) != 0u) {
+		uint bits = cluster_record(cluster, 34u) + 1u;
+		if (index == 0u) {
+			return uvec4(bits, 0u, offset, 1u);
+		}
+		--index;
+		offset += bits;
+	}
+	if ((flags & 2u) != 0u) {
+		for (uint component = 0u; component < 4u; ++component) {
+			uint bits = (cluster_record(cluster, 40u) >> (component * 4u)) & 15u;
+			if (index == 0u) {
+				return uvec4(bits, (cluster_record(cluster, 39u) >> (component * 8u)) & 255u, offset, 1u);
+			}
+			--index;
+			offset += bits;
+		}
+	}
+	for (uint component = 0u; component < cluster_record(cluster, 36u) * 2u; ++component) {
+		uint code = cluster_record(cluster, 41u + component);
+		uint bits = code & 63u;
+		if (index == 0u) {
+			return uvec4(bits, code >> 6u, offset, 1u);
+		}
+		--index;
+		offset += bits;
+	}
+	return uvec4(0u);
+}
+
+uint vertex_stride(uint cluster, bool p_attribute) {
+	if (!p_attribute) {
+		return cluster_record(cluster, 28u) + cluster_record(cluster, 29u) + cluster_record(cluster, 30u);
+	}
+	uint flags = cluster_record(cluster, 35u);
+	uint result = cluster_record(cluster, 33u) * 2u;
+	if ((flags & 1u) != 0u) {
+		result += cluster_record(cluster, 34u) + 1u;
+	}
+	if ((flags & 2u) != 0u) {
+		for (uint component = 0u; component < 4u; ++component) {
+			result += (cluster_record(cluster, 40u) >> (component * 4u)) & 15u;
+		}
+	}
+	for (uint component = 0u; component < cluster_record(cluster, 36u) * 2u; ++component) {
+		result += cluster_record(cluster, 41u + component) & 63u;
+	}
+	return result;
+}
+
+bool vertex_reference(uint vertex) {
+	return (disk_byte(record(37u) + (vertex >> 3u)) & (1u << (vertex & 7u))) != 0u;
+}
+
+uint reference_count(uint before_vertex) {
+	uint result = 0u;
+	for (uint word = 0u; word < 8u; ++word) {
+		uint before = min(32u, before_vertex > word * 32u ? before_vertex - word * 32u : 0u);
+		result += uint(bitCount(disk_pages.words[params.source_word + (record(37u) >> 2u) + word] & mask_bits(before)));
+	}
+	return result;
+}
+
+void write_vertex_value(uint cluster, uint vertex, uvec4 description, uint value) {
+	if (description.x == 0u) {
+		return;
+	}
+	uint start = cluster_record(cluster, 71u);
+	if (description.w != 0u) {
+		start += (cluster_record(cluster, 32u) + 3u) & ~3u;
+	}
+	uint bit = vertex * vertex_stride(cluster, description.w != 0u) + description.z;
+	uint word = params.destination_word + (start >> 2u) + (bit >> 5u);
+	uint shift = bit & 31u;
+	atomicOr(gpu_pages.words[word], value << shift);
+	if (shift + description.x > 32u) {
+		atomicOr(gpu_pages.words[word + 1u], value >> (32u - shift));
+	}
+}
+
+uint read_vertex_value(uint cluster, uint vertex, uvec4 description) {
+	if (description.x == 0u) {
+		return 0u;
+	}
+	uint start = cluster_record(cluster, 71u);
+	if (description.w != 0u) {
+		start += (cluster_record(cluster, 32u) + 3u) & ~3u;
+	}
+	uint bit = vertex * vertex_stride(cluster, description.w != 0u) + description.z;
+	uint word = params.destination_word + (start >> 2u) + (bit >> 5u);
+	uint shift = bit & 31u;
+	// Reference fields can share a word with this immutable coded field.
+	// Atomic reads keep that word's concurrent atomic updates well-defined.
+	uint value = atomicOr(gpu_pages.words[word], 0u) >> shift;
+	if (shift + description.x > 32u) {
+		value |= atomicOr(gpu_pages.words[word + 1u], 0u) << (32u - shift);
+	}
+	return value & mask_bits(description.x);
+}
+
+void decode_coded_vertices(uint cluster) {
+	uint channel = gl_LocalInvocationIndex;
+	if (channel >= channels(cluster)) {
+		return;
+	}
+	uvec4 description = channel_at(cluster, channel);
+	if (description.x == 0u) {
+		return;
+	}
+	uvec4 plane_values = uvec4(0u);
+	uvec4 rank = uvec4(0u);
+	for (uint other = 0u; other < channels(cluster); ++other) {
+		uint bits = channel_at(cluster, other).x;
+		for (uint plane = 0u; plane < 4u; ++plane) {
+			if (bits > plane * 8u) {
+				++plane_values[plane];
+				if (other < channel) {
+					++rank[plane];
+				}
+			}
+		}
+	}
+	uint coded = record(4u) - reference_count(record(4u));
+	uvec4 starts = uvec4(record(31u));
+	for (uint plane = 1u; plane < 4u; ++plane) {
+		starts[plane] = starts[plane - 1u] + coded * plane_values[plane - 1u];
+	}
+	uint previous = channel < 3u ? (1u << description.x) >> 1u : 0u;
+	uint unique_vertex = 0u;
+	for (uint vertex = 0u; vertex < record(4u); ++vertex) {
+		if (vertex_reference(vertex)) {
+			continue;
+		}
+		uint zigzag = 0u;
+		for (uint plane = 0u; plane < (description.x + 7u) / 8u; ++plane) {
+			zigzag |= disk_byte(starts[plane] + unique_vertex * plane_values[plane] + rank[plane]) << (plane * 8u);
+		}
+		previous = (previous + ((zigzag >> 1u) ^ (0u - (zigzag & 1u)))) & mask_bits(description.x);
+		write_vertex_value(cluster, vertex, description, previous);
+		++unique_vertex;
+	}
+}
+
+void decode_referenced_vertices(uint cluster) {
+	uint count = reference_count(record(4u));
+	for (uint vertex = gl_LocalInvocationIndex; vertex < record(4u); vertex += 64u) {
+		if (!vertex_reference(vertex)) {
+			continue;
+		}
+		uint ordinal = reference_count(vertex);
+		uint source_cluster = disk_byte(record(37u) + 32u + ordinal);
+		uint source_vertex = 0u;
+		for (uint reference = 0u; reference <= ordinal; ++reference) {
+			uint zigzag = disk_byte(record(37u) + 32u + count + reference);
+			source_vertex = (source_vertex + ((zigzag >> 1u) ^ (0u - (zigzag & 1u)))) & 255u;
+		}
+		for (uint channel = 0u; channel < channels(cluster); ++channel) {
+			uvec4 destination = channel_at(cluster, channel);
+			uvec4 source = channel_at(source_cluster, channel);
+			uint value = source.y + read_vertex_value(source_cluster, source_vertex, source) - destination.y;
+			write_vertex_value(cluster, vertex, destination, value);
+		}
+	}
 }
 
 uint flag(uint triangle, uint mask_index) {
@@ -115,6 +315,10 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	record_word = params.source_word + 8u + cluster * 72u;
 	reference_word = params.source_word + (record(63u) >> 2u);
+	if (params.phase != 0u) {
+		decode_referenced_vertices(cluster);
+		return;
+	}
 	uint position = record(71u);
 	uint attribute_byte = position + ((record(32u) + 3u) & ~3u);
 	uint indices = attribute_byte + ((record(38u) + 3u) & ~3u);
@@ -154,8 +358,9 @@ void main() {
 		}
 		gpu_pages.words[params.destination_word + 8u + cluster * 72u + word] = value;
 	}
-	copy_words(record(31u), position, (record(32u) + 3u) >> 2u);
-	copy_words(record(37u), attribute_byte, (record(38u) + 3u) >> 2u);
+	for (uint word = lane; word < (indices - position) / 4u; word += 64u) {
+		gpu_pages.words[params.destination_word + (position >> 2u) + word] = 0u;
+	}
 	copy_words(record(66u), materials, record(67u) + record(6u) + record(70u));
 	for (uint word = lane; word < index_words; word += 64u) {
 		gpu_pages.words[params.destination_word + (indices >> 2u) + word] = 0u;
@@ -163,6 +368,7 @@ void main() {
 	// All triangle writers in this cluster must observe the cleared words.
 	memoryBarrierBuffer();
 	barrier();
+	decode_coded_vertices(cluster);
 	for (uint triangle = lane; triangle < record(5u); triangle += 64u) {
 		uvec3 vertices = triangle_at(triangle);
 		if (vertices.y < min(vertices.x, vertices.z)) {

@@ -30,6 +30,8 @@ public:
 	};
 	Error record(const Ref<RenderSceneBuffersRD> &p_buffers, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material);
 	Error record_shadow(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material);
+	Error record_sdfgi(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material,
+			const AABB &p_bounds, const Vector3i &p_from, const Vector3i &p_grid_size, RID p_albedo, RID p_emission, RID p_emission_aniso, RID p_facing);
 	Error recover(const VirtualGeometryShading::ViewParameters &p_view);
 	Error record_reactivity(RID p_depth, RID p_scene_reactivity, bool p_combine_scene);
 	Error record_depth(RID p_framebuffer, DepthMode p_mode, RID p_fitting_table, const Rect2i &p_region);
@@ -72,6 +74,7 @@ private:
 	LocalVector<ScanLevel> scan_levels;
 	RID candidates, classified, arguments;
 	RID pending, occlusion_parameters;
+	RID voxel_parameters;
 	RID geometry_buffer; // Borrowed for the current prepared view only.
 	uint32_t pending_words = 0;
 	RID candidate_uniforms, scan_uniforms, dispatch_uniforms;
@@ -82,7 +85,8 @@ private:
 	VirtualGeometryShading shading;
 
 	Error _prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow);
-	Error _prepare_bins(Span<VirtualGeometrySelection::Result> p_sources);
+	Error _prepare_bins(Span<VirtualGeometrySelection::Result> p_sources, bool p_voxel = false);
+	Error _prepare_candidates(const VirtualGeometryShading::ViewParameters &p_view);
 	void _record_material_bins(uint32_t p_phase);
 	Error _record_geometry(const VirtualGeometryShading::ViewParameters &p_view, uint32_t p_phase);
 	Error _record(const Ref<RenderSceneBuffersRD> &p_buffers, const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow);

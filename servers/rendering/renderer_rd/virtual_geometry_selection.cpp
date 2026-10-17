@@ -53,7 +53,7 @@ void VirtualGeometrySelection::begin(const Transform3D &p_camera, const Projecti
 	}
 }
 
-Error VirtualGeometrySelection::record(const Batch &p_batch) {
+Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
 	if (p_batch.count == 0) {
 		return OK;
 	}
@@ -66,9 +66,9 @@ Error VirtualGeometrySelection::record(const Batch &p_batch) {
 	// when even that complete cut cannot fit; never emit a truncated list.
 	const uint64_t roots = uint64_t(p_batch.count) * p_batch.geometry.root_clusters;
 	ERR_FAIL_COND_V(roots == 0 || roots > MAX_WORK_ITEMS || p_batch.count > MAX_WORK_ITEMS, ERR_OUT_OF_MEMORY);
-	const uint32_t nodes = MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.nodes);
-	const uint32_t clusters = MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.clusters);
-	const uint32_t requests = MIN(uint64_t(65536), uint64_t(p_batch.count) * p_batch.geometry.pages);
+	const uint32_t nodes = p_root_only ? 0 : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.nodes);
+	const uint32_t clusters = p_root_only ? uint32_t(roots) : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.clusters);
+	const uint32_t requests = p_root_only ? 0 : MIN(uint64_t(65536), uint64_t(p_batch.count) * p_batch.geometry.pages);
 	const uint32_t words = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2 + requests * 2 + 128 * 2;
 	RD *rd = RD::get_singleton();
 	if (version.is_null()) {
@@ -167,17 +167,19 @@ Error VirtualGeometrySelection::record(const Batch &p_batch) {
 		rd->compute_list_add_barrier(list);
 	};
 	dispatch(0, 0, p_batch.count);
-	for (uint32_t depth = 0; depth <= VirtualGeometry::MAX_HIERARCHY_DEPTH; ++depth) {
-		dispatch(1, depth, 1);
-		dispatch(2, depth, 0, true);
+	if (!p_root_only) {
+		for (uint32_t depth = 0; depth <= VirtualGeometry::MAX_HIERARCHY_DEPTH; ++depth) {
+			dispatch(1, depth, 1);
+			dispatch(2, depth, 0, true);
+		}
+		dispatch(3, 0, 1);
+		dispatch(4, 0, 0, true);
 	}
-	dispatch(3, 0, 1);
-	dispatch(4, 0, 0, true);
 	dispatch(5, 0, p_batch.count * p_batch.geometry.root_pages);
-	dispatch(6, VirtualGeometry::MAX_HIERARCHY_DEPTH, 1);
+	dispatch(p_root_only ? 7 : 6, VirtualGeometry::MAX_HIERARCHY_DEPTH, 1);
 	rd->compute_list_end();
 	const uint32_t request_word = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2;
-	const Error feedback_error = MeshStorage::get_singleton()->record_virtual_geometry_requests(p_batch.mesh, p_batch.geometry.generation, result.work, request_word, requests);
+	const Error feedback_error = p_root_only ? OK : MeshStorage::get_singleton()->record_virtual_geometry_requests(p_batch.mesh, p_batch.geometry.generation, result.work, request_word, requests);
 	if (feedback_error != OK && feedback_error != ERR_BUSY) {
 		WARN_PRINT_ONCE("Virtual geometry page feedback is unavailable; retaining current resident coverage.");
 	}

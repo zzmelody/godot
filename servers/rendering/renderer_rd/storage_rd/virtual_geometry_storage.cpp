@@ -24,6 +24,13 @@ uint64_t root_memory(const VirtualGeometry::GeometryModelRoot &p_root) {
 } // namespace
 
 VirtualGeometryStorage::~VirtualGeometryStorage() {
+	diagnostics_pipeline.free();
+	if (diagnostics_version.is_valid()) {
+		diagnostics_shader.version_free(diagnostics_version);
+	}
+	if (diagnostics_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(diagnostics_buffer);
+	}
 	for (RequestSlot &slot : request_slots) {
 		if (slot.buffer.is_valid()) {
 			RD::get_singleton()->free_rid(slot.buffer);
@@ -121,6 +128,21 @@ void VirtualGeometryStorage::_publish_feedback() {
 }
 
 void VirtualGeometryStorage::_consume_requests() {
+	if (diagnostics_readback.is_valid() && diagnostics_readback->ready) {
+		const Vector<uint8_t> bytes = diagnostics_readback->bytes;
+		diagnostics_readback.unref();
+		if (bytes.size() != 8) {
+			ERR_PRINT("Virtual geometry GPU diagnostic readback has invalid length.");
+		} else {
+			const uint32_t view_flags = decode_uint32(bytes.ptr());
+			const uint32_t material_flags = decode_uint32(bytes.ptr() + 4);
+			if ((view_flags & ~reported_diagnostics[0]) != 0 || (material_flags & ~reported_diagnostics[1]) != 0) {
+				ERR_PRINT(vformat("Virtual geometry GPU view refusal through submission %d: raster/deformation=%d material=%d", diagnostics_serial, view_flags, material_flags));
+				reported_diagnostics[0] |= view_flags;
+				reported_diagnostics[1] |= material_flags;
+			}
+		}
+	}
 	for (RequestSlot &slot : request_slots) {
 		if (slot.readback.is_null() || !slot.readback->ready) {
 			continue;
@@ -309,6 +331,57 @@ Error VirtualGeometryStorage::record_requests(RID p_mesh, uint64_t p_generation,
 		++request_invalid;
 	}
 	return error;
+}
+
+Error VirtualGeometryStorage::record_diagnostics(RID p_view_status, RID p_material_status) {
+	ERR_FAIL_COND_V(p_view_status.is_null() || p_material_status.is_null(), ERR_INVALID_PARAMETER);
+	RD *rd = RD::get_singleton();
+	if (diagnostics_buffer.is_null()) {
+		const uint64_t charge = 32u * 3u + sizeof(RequestReadback);
+		if (charge > work_budget - work_reserved) {
+			return ERR_BUSY;
+		}
+		diagnostics_buffer = rd->storage_buffer_create(8);
+		ERR_FAIL_COND_V(diagnostics_buffer.is_null(), ERR_CANT_CREATE);
+		work_reserved += charge;
+		rd->buffer_clear(diagnostics_buffer, 0, 8);
+	}
+	if (diagnostics_version.is_null()) {
+		Vector<String> modes = { "" };
+		diagnostics_shader.initialize(modes);
+		diagnostics_version = diagnostics_shader.version_create();
+		const RID program = diagnostics_shader.version_get_shader(diagnostics_version, 0);
+		ERR_FAIL_COND_V(program.is_null(), ERR_CANT_CREATE);
+		diagnostics_pipeline.create_compute_pipeline(program);
+	}
+	const RID program = diagnostics_shader.version_get_shader(diagnostics_version, 0);
+	ERR_FAIL_COND_V(diagnostics_pipeline.get_rid().is_null(), ERR_CANT_CREATE);
+	const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { p_view_status }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_material_status }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { diagnostics_buffer }));
+	ERR_FAIL_COND_V(uniforms.is_null(), ERR_CANT_CREATE);
+	const RD::ComputeListID list = rd->compute_list_begin();
+	rd->compute_list_bind_compute_pipeline(list, diagnostics_pipeline.get_rid());
+	rd->compute_list_bind_uniform_set(list, uniforms, 0);
+	rd->compute_list_dispatch(list, 1, 1, 1);
+	rd->compute_list_end();
+	if (diagnostics_readback.is_valid()) {
+		return OK; // Later views keep accumulating while the prior copy is pending.
+	}
+	diagnostics_readback.instantiate();
+	const Ref<RefCounted> keep_alive = diagnostics_readback;
+	const Error error = rd->buffer_get_data_async(diagnostics_buffer,
+			callable_mp(diagnostics_readback.ptr(), &RequestReadback::complete).bind(keep_alive), 0, 8);
+	if (error != OK) {
+		diagnostics_readback.unref();
+		return error;
+	}
+	diagnostics_serial = rd->get_recording_submission_serial();
+	// The copy precedes this clear in the device command graph. Error bits from
+	// subsequent views remain accumulated until the next successful snapshot.
+	rd->buffer_clear(diagnostics_buffer, 0, 8);
+	return OK;
 }
 
 Vector<uint8_t> VirtualGeometryStorage::get_feedback(uint64_t p_after_sequence) const {

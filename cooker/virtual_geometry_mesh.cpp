@@ -10,6 +10,7 @@
 #include "virtual_geometry/model_builder.h"
 
 #include "core/crypto/crypto_core.h"
+#include "core/object/worker_thread_pool.h"
 #include "core/os/os.h"
 #include "core/version.h"
 #include "scene/resources/surface_tool.h"
@@ -24,6 +25,18 @@
 namespace CookerVirtualGeometry {
 namespace {
 namespace vg = VirtualGeometry;
+
+void run_dag_groups(void *p_context, uint32_t p_count, void (*p_work)(void *, uint32_t)) {
+	WorkerThreadPool *pool = WorkerThreadPool::get_singleton();
+	if (pool == nullptr || pool->get_thread_count() <= 1 || p_count > INT32_MAX) {
+		for (uint32_t index = 0; index < p_count; ++index) {
+			p_work(p_context, index);
+		}
+		return;
+	}
+	const auto task = pool->add_native_group_task(p_work, p_context, int(p_count), MIN(8, pool->get_thread_count()), false, "Build virtual geometry groups");
+	pool->wait_for_group_task_completion(task);
+}
 
 Error refuse(String &r_message, const String &p_message, Error p_error = ERR_INVALID_DATA) {
 	r_message = p_message;
@@ -110,7 +123,7 @@ Error extract(const Ref<Mesh> &p_source, const Settings &p_settings, vg::Geometr
 		const PackedVector3Array positions = arrays[Mesh::ARRAY_VERTEX];
 		vertices += positions.size();
 		if (positions.size() < 3 || vertices > p_settings.max_source_vertices) {
-			return refuse(r_message, "virtual_geometry source vertex budget exceeded", ERR_OUT_OF_MEMORY);
+			return refuse(r_message, vformat("virtual_geometry source vertex budget exceeded: %d > %d", vertices, p_settings.max_source_vertices), ERR_OUT_OF_MEMORY);
 		}
 		for (int slot : { Mesh::ARRAY_BONES, Mesh::ARRAY_WEIGHTS, Mesh::ARRAY_CUSTOM0, Mesh::ARRAY_CUSTOM1, Mesh::ARRAY_CUSTOM2, Mesh::ARRAY_CUSTOM3 }) {
 			if (arrays[slot].get_type() != Variant::NIL && !arrays[slot].is_zero()) {
@@ -273,6 +286,7 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 		hash.text("Veya virtual geometry mesh builder 1");
 		hash.text(GODOT_VERSION_HASH);
 		hash.word(vg::MODEL_FORMAT_VERSION);
+		hash.word(vg::GEOMETRY_PAGE_VERSION);
 		hash.word(uint32_t(input.mesh.positions.size()));
 		hash.word(uint32_t(input.mesh.indices.size()));
 		hash.word(input.layout.has_tangents);
@@ -303,7 +317,9 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 			return refuse(r_message, "virtual_geometry could not hash canonical build inputs", FAILED);
 		}
 		vg::GeometryDag dag;
-		const auto dag_result = vg::build_cluster_dag(input, p_settings.dag, dag);
+		const uint64_t dag_started = OS::get_singleton()->get_ticks_usec();
+		const auto dag_result = vg::build_cluster_dag(input, p_settings.dag, dag, &run_dag_groups);
+		const uint64_t dag_build_usec = OS::get_singleton()->get_ticks_usec() - dag_started;
 		if (dag_result.error != vg::DagBuildError::OK) {
 			return refuse(r_message, vformat("virtual_geometry DAG refused: error=%d group=%d simplification=%d", int(dag_result.error), dag_result.group, int(dag_result.simplification_result.error)));
 		}
@@ -315,7 +331,7 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 		vg::GeometryPageSet pages;
 		const auto paged = vg::build_geometry_pages(geometry, p_settings.max_output_bytes, pages);
 		if (paged.error != vg::PageBuildError::OK) {
-			return refuse(r_message, vformat("virtual_geometry pages refused: error=%d cluster=%d", int(paged.error), paged.cluster));
+			return refuse(r_message, vformat("virtual_geometry pages refused: error=%d cluster=%d output_limit=%d source_triangles=%d leaf_clusters=%d encoded_clusters=%d root_clusters=%d", int(paged.error), paged.cluster, p_settings.max_output_bytes, input.mesh.indices.size() / 3, dag.leaf_count, geometry.clusters.size(), geometry.root_clusters.size()));
 		}
 		vg::GeometryHierarchy hierarchy;
 		const auto hierarchical = vg::build_geometry_hierarchy(geometry, pages, hierarchy);
@@ -382,6 +398,9 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 			return refuse(r_message, "virtual_geometry generated invalid native resource metadata");
 		}
 		candidate.source_vertices = source_vertices;
+		candidate.report["dag_build_usec"] = int64_t(dag_build_usec);
+		const WorkerThreadPool *pool = WorkerThreadPool::get_singleton();
+		candidate.report["dag_group_worker_limit"] = pool != nullptr ? MAX(1, MIN(8, pool->get_thread_count())) : 1;
 		candidate.report["source_vertices"] = candidate.source_vertices;
 		candidate.report["prepared_vertices"] = int64_t(input.mesh.positions.size());
 		candidate.report["source_triangles"] = int64_t(input.mesh.indices.size() / 3);
@@ -506,6 +525,12 @@ Error publish_resource_containers(const Ref<Resource> &p_resource, const std::ma
 	HashSet<String> published;
 	uint64_t total = 0;
 	for (const Ref<VirtualGeometryMesh> &mesh : meshes) {
+		if (p_resource.ptr() != mesh.ptr() && !mesh->is_built_in() && !mesh->get_path().is_empty() &&
+				CookerFiles::is_generated(mesh->get_path()) && FileAccess::exists(mesh->get_path())) {
+			// ResourceSaver keeps this standalone root as an external dependency.
+			// Its relative page file belongs to that root, not to this scene.
+			continue;
+		}
 		const String destination = p_resource_path.get_base_dir().path_join(mesh->get_container_file());
 		if (published.has(destination)) {
 			continue;
@@ -669,8 +694,10 @@ Error convert_imported_scene(const Ref<Resource> &p_source, Ref<Resource> &r_res
 				BuildOutput built;
 				error = build(source, settings, built, r_message);
 				if (error != OK) {
+					r_message = "scene node " + String(root->get_path_to(node)) + " mesh " + source->get_name() + vformat(" (completed_meshes=%d completed_bytes=%d scene_limit=%d): ", converted.size(), output_bytes, output_limit) + r_message;
 					break;
 				}
+				record["build"] = built.report;
 				output_bytes += built.container.size() + uint64_t(int64_t(built.report["root_bytes"]));
 				if (output_bytes > output_limit) {
 					error = refuse(r_message, "scene virtual geometry exceeds its complete output budget", ERR_OUT_OF_MEMORY);

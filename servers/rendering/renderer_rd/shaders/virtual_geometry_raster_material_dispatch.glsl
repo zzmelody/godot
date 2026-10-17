@@ -47,9 +47,9 @@ void main() {
 		arguments.data[output_word + 2u] = 1u;
 		arguments.data[output_word + 3u] = 0u;
 	} else {
-		uint hardware = bins.data[bucket * 4u];
-		uint software = bins.data[bucket * 4u + 1u];
-		valid = valid && bins.data[bucket * 4u + 2u] == 0u && hardware <= count && software <= count - hardware;
+		uint hardware = params.mode == 2u ? count : bins.data[bucket * 4u];
+		uint software = params.mode == 2u ? 0u : bins.data[bucket * 4u + 1u];
+		valid = valid && (params.mode == 2u || bins.data[bucket * 4u + 2u] == 0u) && hardware <= count && software <= count - hardware;
 		arguments.data[output_word + 4u] = valid ? min(65535u, software) : 0u;
 		arguments.data[output_word + 5u] = max(1u, (software + 65534u) / 65535u);
 		arguments.data[output_word + 6u] = 1u;

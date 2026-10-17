@@ -3,6 +3,10 @@ layout(set = 0, binding = VG_GLOBALS_BINDING, std430) readonly buffer GlobalShad
 	vec4 data[];
 }
 global_shader_uniforms;
+layout(set = 0, binding = 7, std430) readonly buffer PreviousGlobalShaderUniformData {
+	vec4 data[];
+}
+vg_previous_global_uniforms;
 layout(set = 0, binding = 12, std140) uniform View {
 	mat4 projection;
 	mat4 inverse_projection;
@@ -53,6 +57,10 @@ vec4 vg_instance_color;
 float vg_time;
 bool vg_previous_evaluation = false;
 bool vg_previous_invalid = false;
+
+vec4 vg_global_uniform(uint index) {
+	return vg_previous_evaluation ? vg_previous_global_uniforms.data[index] : global_shader_uniforms.data[index];
+}
 vec3 albedo_highp, emission, backlight, normal_map;
 float alpha_highp, metallic_highp, roughness_highp, specular, normal_map_depth;
 float ao, ao_light_affect, rim, rim_tint, clearcoat, clearcoat_roughness, anisotropy;

@@ -41,6 +41,14 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 			}
 		}
 		if (mesh.is_valid()) {
+			const Ref<VirtualGeometryMesh> geometry = mesh;
+			// Published standalone roots retain their material/container ownership.
+			// Dependent fragments borrow them instead of republishing their pages.
+			if (geometry.is_valid() && !geometry->is_built_in() && !geometry->get_path().is_empty() &&
+					CookerFiles::is_generated(geometry->get_path()) && FileAccess::exists(geometry->get_path()) &&
+					(p_geometry_builds == nullptr || p_geometry_builds->count(geometry->get_instance_id()) == 0)) {
+				continue;
+			}
 			resources[mesh->get_instance_id()] = mesh;
 			for (int i = 0; i < mesh->get_surface_count(); ++i) {
 				const Ref<Material> material = mesh->surface_get_material(i);

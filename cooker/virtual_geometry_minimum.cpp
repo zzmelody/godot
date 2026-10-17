@@ -144,4 +144,30 @@ Error minimum_root_mesh(const Ref<VirtualGeometryMesh> &p_source, Ref<ArrayMesh>
 	}
 }
 
+Error BakeMeshCache::get(const Ref<VirtualGeometryMesh> &p_source, BakeMesh &r_mesh) {
+	try {
+		ERR_FAIL_COND_V(p_source.is_null(), ERR_INVALID_PARAMETER);
+		const auto found = meshes.find(p_source->get_instance_id());
+		if (found != meshes.end()) {
+			r_mesh = found->second;
+			return OK;
+		}
+		ERR_FAIL_COND_V(meshes.size() >= 4096, ERR_OUT_OF_MEMORY);
+		BakeMesh candidate;
+		const Error error = minimum_root_mesh(p_source, candidate.mesh, candidate.source_slots);
+		ERR_FAIL_COND_V(error != OK, error);
+		uint64_t added = 0;
+		for (int surface = 0; surface < candidate.mesh->get_surface_count(); ++surface) {
+			added += candidate.mesh->surface_get_array_len(surface);
+		}
+		ERR_FAIL_COND_V(added > 16000000 - vertices, ERR_OUT_OF_MEMORY);
+		meshes.emplace(p_source->get_instance_id(), candidate);
+		vertices += added;
+		r_mesh = std::move(candidate);
+		return OK;
+	} catch (const std::bad_alloc &) {
+		return ERR_OUT_OF_MEMORY;
+	}
+}
+
 } // namespace CookerVirtualGeometry

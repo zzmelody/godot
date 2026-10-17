@@ -382,64 +382,68 @@ void ShaderCompiler::_dump_function_deps(const SL::ShaderNode *p_node, const Str
 	}
 }
 
-static String _get_global_shader_uniform_from_type_and_index(const String &p_buffer, const String &p_index, ShaderLanguage::DataType p_type) {
+static String _get_global_shader_uniform_from_type_and_index(const String &p_buffer, const String &p_index, ShaderLanguage::DataType p_type, bool p_function) {
+	const auto load = [&](const String &p_offset) {
+		return p_buffer + (p_function ? "(" : "[") + p_offset + (p_function ? ")" : "]");
+	};
+	const String value = load(p_index);
 	switch (p_type) {
 		case ShaderLanguage::TYPE_BOOL: {
-			return "bool(floatBitsToUint(" + p_buffer + "[" + p_index + "].x))";
+			return "bool(floatBitsToUint(" + value + ".x))";
 		}
 		case ShaderLanguage::TYPE_BVEC2: {
-			return "bvec2(floatBitsToUint(" + p_buffer + "[" + p_index + "].xy))";
+			return "bvec2(floatBitsToUint(" + value + ".xy))";
 		}
 		case ShaderLanguage::TYPE_BVEC3: {
-			return "bvec3(floatBitsToUint(" + p_buffer + "[" + p_index + "].xyz))";
+			return "bvec3(floatBitsToUint(" + value + ".xyz))";
 		}
 		case ShaderLanguage::TYPE_BVEC4: {
-			return "bvec4(floatBitsToUint(" + p_buffer + "[" + p_index + "].xyzw))";
+			return "bvec4(floatBitsToUint(" + value + ".xyzw))";
 		}
 		case ShaderLanguage::TYPE_INT: {
-			return "floatBitsToInt(" + p_buffer + "[" + p_index + "].x)";
+			return "floatBitsToInt(" + value + ".x)";
 		}
 		case ShaderLanguage::TYPE_IVEC2: {
-			return "floatBitsToInt(" + p_buffer + "[" + p_index + "].xy)";
+			return "floatBitsToInt(" + value + ".xy)";
 		}
 		case ShaderLanguage::TYPE_IVEC3: {
-			return "floatBitsToInt(" + p_buffer + "[" + p_index + "].xyz)";
+			return "floatBitsToInt(" + value + ".xyz)";
 		}
 		case ShaderLanguage::TYPE_IVEC4: {
-			return "floatBitsToInt(" + p_buffer + "[" + p_index + "].xyzw)";
+			return "floatBitsToInt(" + value + ".xyzw)";
 		}
 		case ShaderLanguage::TYPE_UINT: {
-			return "floatBitsToUint(" + p_buffer + "[" + p_index + "].x)";
+			return "floatBitsToUint(" + value + ".x)";
 		}
 		case ShaderLanguage::TYPE_UVEC2: {
-			return "floatBitsToUint(" + p_buffer + "[" + p_index + "].xy)";
+			return "floatBitsToUint(" + value + ".xy)";
 		}
 		case ShaderLanguage::TYPE_UVEC3: {
-			return "floatBitsToUint(" + p_buffer + "[" + p_index + "].xyz)";
+			return "floatBitsToUint(" + value + ".xyz)";
 		}
 		case ShaderLanguage::TYPE_UVEC4: {
-			return "floatBitsToUint(" + p_buffer + "[" + p_index + "].xyzw)";
+			return "floatBitsToUint(" + value + ".xyzw)";
 		}
 		case ShaderLanguage::TYPE_FLOAT: {
-			return "(" + p_buffer + "[" + p_index + "].x)";
+			return "(" + value + ".x)";
 		}
 		case ShaderLanguage::TYPE_VEC2: {
-			return "(" + p_buffer + "[" + p_index + "].xy)";
+			return "(" + value + ".xy)";
 		}
 		case ShaderLanguage::TYPE_VEC3: {
-			return "(" + p_buffer + "[" + p_index + "].xyz)";
+			return "(" + value + ".xyz)";
 		}
 		case ShaderLanguage::TYPE_VEC4: {
-			return "(" + p_buffer + "[" + p_index + "].xyzw)";
+			return "(" + value + ".xyzw)";
 		}
 		case ShaderLanguage::TYPE_MAT2: {
-			return "mat2(" + p_buffer + "[" + p_index + "].xy," + p_buffer + "[" + p_index + "+1u].xy)";
+			return "mat2(" + value + ".xy," + load(p_index + "+1u") + ".xy)";
 		}
 		case ShaderLanguage::TYPE_MAT3: {
-			return "mat3(" + p_buffer + "[" + p_index + "].xyz," + p_buffer + "[" + p_index + "+1u].xyz," + p_buffer + "[" + p_index + "+2u].xyz)";
+			return "mat3(" + value + ".xyz," + load(p_index + "+1u") + ".xyz," + load(p_index + "+2u") + ".xyz)";
 		}
 		case ShaderLanguage::TYPE_MAT4: {
-			return "mat4(" + p_buffer + "[" + p_index + "].xyzw," + p_buffer + "[" + p_index + "+1u].xyzw," + p_buffer + "[" + p_index + "+2u].xyzw," + p_buffer + "[" + p_index + "+3u].xyzw)";
+			return "mat4(" + value + ".xyzw," + load(p_index + "+1u") + ".xyzw," + load(p_index + "+2u") + ".xyzw," + load(p_index + "+3u") + ".xyzw)";
 		}
 		default: {
 			ERR_FAIL_V("void");
@@ -1006,11 +1010,11 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
 							code = actions.base_uniform_string + _mkid(vnode->name); //texture, use as is
 							//global variable, this means the code points to an index to the global table
-							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type);
+							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
 							//instance variable, index it as such
 							code = "(" + p_default_actions.instance_uniform_index_variable + "+" + itos(u.instance_index) + "u)";
-							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type);
+							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else {
 							//regular uniform, index from UBO
 							code = actions.base_uniform_string + _mkid(vnode->name);
@@ -1117,11 +1121,11 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
 							code = actions.base_uniform_string + _mkid(anode->name); //texture, use as is
 							//global variable, this means the code points to an index to the global table
-							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type);
+							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
 							//instance variable, index it as such
 							code = "(" + p_default_actions.instance_uniform_index_variable + "+" + itos(u.instance_index) + "u)";
-							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type);
+							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else {
 							//regular uniform, index from UBO
 							code = actions.base_uniform_string + _mkid(anode->name);

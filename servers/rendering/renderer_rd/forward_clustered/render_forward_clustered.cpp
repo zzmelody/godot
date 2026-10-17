@@ -3460,19 +3460,19 @@ void RenderForwardClustered::_render_shadow_end() {
 		RenderListParameters render_list_parameters(render_list[RENDER_LIST_SECONDARY].elements.ptr() + shadow_pass.element_from, render_list[RENDER_LIST_SECONDARY].element_info.ptr() + shadow_pass.element_from, shadow_pass.element_count, shadow_pass.flip_cull, shadow_pass.pass_mode, 0, true, false, shadow_pass.rp_uniform_set, false, Vector2(), shadow_pass.lod_distance_multiplier, shadow_pass.screen_mesh_lod_threshold, 1, shadow_pass.element_from);
 		_render_list_with_draw_list(&render_list_parameters, shadow_pass.framebuffer, shadow_pass.clear_depth ? RD::DRAW_CLEAR_DEPTH : RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0, shadow_pass.rect);
 		if (!shadow_pass.virtual_geometry_batches.is_empty()) {
-			if (virtual_geometry_shadow_selection == nullptr) {
-				virtual_geometry_shadow_selection = memnew(RendererRD::VirtualGeometrySelection);
-				virtual_geometry_shadow_raster = memnew(RendererRD::VirtualGeometryRasterizer);
+			if (virtual_geometry_aux_selection == nullptr) {
+				virtual_geometry_aux_selection = memnew(RendererRD::VirtualGeometrySelection);
+				virtual_geometry_aux_raster = memnew(RendererRD::VirtualGeometryRasterizer);
 			}
 			const auto &view = shadow_pass.virtual_geometry_view;
 			Projection correction;
 			correction.set_depth_correction(shadow_pass.virtual_geometry_flip_y);
 			const Projection projection = correction.inverse() * view.projection;
-			virtual_geometry_shadow_selection->begin(view.camera, projection, shadow_pass.virtual_geometry_flip_y,
+			virtual_geometry_aux_selection->begin(view.camera, projection, shadow_pass.virtual_geometry_flip_y,
 					shadow_pass.virtual_geometry_size, view.shadow_flags & ~1u, view.shadow_far);
 			bool valid = true;
 			for (const auto &batch : shadow_pass.virtual_geometry_batches) {
-				const Error error = virtual_geometry_shadow_selection->record(batch);
+				const Error error = virtual_geometry_aux_selection->record(batch);
 				if (error != OK) {
 					ERR_PRINT("Virtual geometry shadow selection refused: " + itos(error));
 					valid = false;
@@ -3480,10 +3480,10 @@ void RenderForwardClustered::_render_shadow_end() {
 				}
 			}
 			if (valid) {
-				Error error = virtual_geometry_shadow_raster->record_shadow(shadow_pass.virtual_geometry_size, view,
-						virtual_geometry_shadow_selection->get_results(), scene_shader.default_material);
+				Error error = virtual_geometry_aux_raster->record_shadow(shadow_pass.virtual_geometry_size, view,
+						virtual_geometry_aux_selection->get_results(), scene_shader.default_material);
 				if (error == OK) {
-					error = virtual_geometry_shadow_raster->record_depth(shadow_pass.framebuffer, RendererRD::VirtualGeometryRasterizer::DEPTH_SHADOW, RID(), shadow_pass.rect);
+					error = virtual_geometry_aux_raster->record_depth(shadow_pass.framebuffer, RendererRD::VirtualGeometryRasterizer::DEPTH_SHADOW, RID(), shadow_pass.rect);
 				}
 				ERR_CONTINUE_MSG(error != OK, "Virtual geometry shadow view refused: " + itos(error));
 			}
@@ -3706,6 +3706,18 @@ void RenderForwardClustered::_render_sdfgi(Ref<RenderSceneBuffersRD> p_render_bu
 	render_list[RENDER_LIST_SECONDARY].sort_by_key();
 	_fill_instance_data(RENDER_LIST_SECONDARY);
 
+	LocalVector<RendererRD::VirtualGeometrySelection::Batch> virtual_batches;
+	for (uint32_t index = 0; index < p_instances.size(); ++index) {
+		RendererRD::VirtualGeometrySelection::Batch batch;
+		if (_virtual_geometry_batch(p_instances[index], batch)) {
+			virtual_batches.push_back(batch);
+		}
+	}
+	if (!virtual_batches.is_empty() && virtual_geometry_aux_selection == nullptr) {
+		virtual_geometry_aux_selection = memnew(RendererRD::VirtualGeometrySelection);
+		virtual_geometry_aux_raster = memnew(RendererRD::VirtualGeometryRasterizer);
+	}
+
 	Vector3 half_size = p_bounds.size * 0.5;
 	Vector3 center = p_bounds.position + half_size;
 
@@ -3760,6 +3772,34 @@ void RenderForwardClustered::_render_sdfgi(Ref<RenderSceneBuffersRD> p_render_bu
 
 		RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), true, pass_mode, 0, true, false, rp_uniform_set, false);
 		_render_list_with_draw_list(&render_list_params, E->value);
+		if (!virtual_batches.is_empty()) {
+			virtual_geometry_aux_selection->begin(scene_data.cam_transform, scene_data.cam_projection, scene_data.flip_y, fb_size);
+			Error error = OK;
+			for (const auto &batch : virtual_batches) {
+				// SDFGI uses the stable complete root proxy. Page residency changes
+				// cannot leave a dirty region waiting for a later camera recapture.
+				error = virtual_geometry_aux_selection->record(batch, true);
+				if (error != OK) {
+					break;
+				}
+			}
+			if (error == OK) {
+				RendererRD::VirtualGeometryShading::ViewParameters view;
+				Projection correction;
+				correction.set_depth_correction(scene_data.flip_y);
+				view.projection = correction * scene_data.cam_projection;
+				view.camera = scene_data.cam_transform;
+				view.main_camera = scene_data.cam_transform;
+				view.time = time;
+				view.exposure = p_exposure_normalization;
+				view.layers = UINT32_MAX;
+				error = virtual_geometry_aux_raster->record_sdfgi(fb_size, view, virtual_geometry_aux_selection->get_results(), scene_shader.default_material,
+						p_bounds, p_from, p_size, p_albedo_texture, p_emission_texture, p_emission_aniso_texture, p_geom_facing_texture);
+			}
+			if (error != OK) {
+				ERR_PRINT("Virtual geometry SDFGI capture refused: " + itos(error));
+			}
+		}
 	}
 
 	RD::get_singleton()->draw_command_end_label();
@@ -5851,11 +5891,11 @@ RenderForwardClustered::RenderForwardClustered() {
 }
 
 RenderForwardClustered::~RenderForwardClustered() {
-	if (virtual_geometry_shadow_raster != nullptr) {
-		memdelete(virtual_geometry_shadow_raster);
+	if (virtual_geometry_aux_raster != nullptr) {
+		memdelete(virtual_geometry_aux_raster);
 	}
-	if (virtual_geometry_shadow_selection != nullptr) {
-		memdelete(virtual_geometry_shadow_selection);
+	if (virtual_geometry_aux_selection != nullptr) {
+		memdelete(virtual_geometry_aux_selection);
 	}
 	if (ss_effects != nullptr) {
 		memdelete(ss_effects);

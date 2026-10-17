@@ -292,11 +292,17 @@ void include_bounds(const GeometryCluster &p_cluster, GeometryDag &r_dag) {
 	}
 }
 
-DagBuildResult reduce_group(const DagBuildSettings &p_settings, const std::vector<uint32_t> &p_children, GeometryDag &r_dag, std::vector<uint32_t> &r_next) {
-	const uint32_t group_id = static_cast<uint32_t>(r_dag.groups.size());
+struct GroupReduction {
+	GeometryGroup group;
+	std::vector<GeometryCluster> parents;
+	DagBuildResult result;
+};
+
+DagBuildResult reduce_group(const DagBuildSettings &p_settings, const std::vector<uint32_t> &p_children, const GeometryDag &p_dag, GroupReduction &r_output) {
+	const uint32_t group_id = static_cast<uint32_t>(p_dag.groups.size());
 	GeometryGroup group;
 	group.children = p_children;
-	const SimplificationInput merged = merge_children(r_dag, p_children, group.clamped_external_edges);
+	const SimplificationInput merged = merge_children(p_dag, p_children, group.clamped_external_edges);
 	const uint32_t initial_parents = static_cast<uint32_t>((merged.mesh.materials.size() + 255) / 256);
 	const uint32_t max_parents = std::max(initial_parents, static_cast<uint32_t>(p_children.size() - 1));
 	std::vector<GeometryCluster> parents;
@@ -355,7 +361,7 @@ DagBuildResult reduce_group(const DagBuildSettings &p_settings, const std::vecto
 					continue;
 				}
 				for (const auto &leaf : split.clusters) {
-					parents.push_back(materialize_cluster(simplified.mesh, simplified.attributes, r_dag.layout.scalar_count(), leaf));
+					parents.push_back(materialize_cluster(simplified.mesh, simplified.attributes, p_dag.layout.scalar_count(), leaf));
 				}
 			}
 			group.simplification = simplified.report;
@@ -373,16 +379,27 @@ DagBuildResult reduce_group(const DagBuildSettings &p_settings, const std::vecto
 	group.min_child_error = std::numeric_limits<double>::infinity();
 	group.max_parent_error = group.simplification.lod_error;
 	for (uint32_t child : p_children) {
-		auto &cluster = r_dag.clusters[child];
+		const auto &cluster = p_dag.clusters[child];
 		draw_spheres.push_back(cluster.bounds);
 		lod_spheres.push_back(cluster.lod_bounds);
 		group.min_child_error = std::min(group.min_child_error, cluster.generating_group == UINT32_MAX ? -1.0 : cluster.lod_error);
 		group.max_parent_error = std::max(group.max_parent_error, cluster.lod_error);
 		group.level = std::max(group.level, cluster.level);
-		cluster.group = group_id;
 	}
 	group.bounds = sphere_union(draw_spheres);
 	group.lod_bounds = sphere_union(lod_spheres);
+	r_output.group = std::move(group);
+	r_output.parents = std::move(parents);
+	return {};
+}
+
+DagBuildResult append_group(GroupReduction &r_reduction, GeometryDag &r_dag, std::vector<uint32_t> &r_next) {
+	const uint32_t group_id = static_cast<uint32_t>(r_dag.groups.size());
+	GeometryGroup &group = r_reduction.group;
+	for (uint32_t child : group.children) {
+		r_dag.clusters[child].group = group_id;
+	}
+	auto &parents = r_reduction.parents;
 	for (auto &parent : parents) {
 		if (r_dag.clusters.size() >= UINT32_MAX) {
 			return { DagBuildError::LIMIT };
@@ -401,7 +418,23 @@ DagBuildResult reduce_group(const DagBuildSettings &p_settings, const std::vecto
 	return {};
 }
 
-DagBuildResult build(const GeometryBuildInput &p_input, const DagBuildSettings &p_settings, GeometryDag &r_dag) {
+struct ReductionWork {
+	const DagBuildSettings &settings;
+	const GeometryDag &dag;
+	const std::vector<std::vector<uint32_t>> &groups;
+	std::vector<GroupReduction> &outputs;
+
+	static void run(void *p_context, uint32_t p_index) {
+		auto &work = *static_cast<ReductionWork *>(p_context);
+		try {
+			work.outputs[p_index].result = reduce_group(work.settings, work.groups[p_index], work.dag, work.outputs[p_index]);
+		} catch (const std::bad_alloc &) {
+			work.outputs[p_index].result = { DagBuildError::MEMORY };
+		}
+	}
+};
+
+DagBuildResult build(const GeometryBuildInput &p_input, const DagBuildSettings &p_settings, GeometryDag &r_dag, DagGroupExecutor p_executor) {
 	PreparedAttributePolicy policy;
 	if (prepare_attribute_policy(p_input.mesh, p_input.layout, p_input.attributes, policy) != AttributePolicyError::OK) {
 		return { DagBuildError::INVALID_INPUT };
@@ -446,8 +479,20 @@ DagBuildResult build(const GeometryBuildInput &p_input, const DagBuildSettings &
 			return grouped;
 		}
 		std::vector<uint32_t> next;
-		for (const auto &children : groups) {
-			const DagBuildResult reduced = reduce_group(p_settings, children, candidate, next);
+		std::vector<GroupReduction> reductions(groups.size());
+		ReductionWork work{ p_settings, candidate, groups, reductions };
+		if (p_executor != nullptr && groups.size() > 1) {
+			p_executor(&work, static_cast<uint32_t>(groups.size()), &ReductionWork::run);
+		} else {
+			for (uint32_t index = 0; index < groups.size(); ++index) {
+				ReductionWork::run(&work, index);
+			}
+		}
+		// Commit in the original group order. Scheduling cannot change cluster
+		// identities, floating-point work within a group or published bytes.
+		for (uint32_t index = 0; index < groups.size(); ++index) {
+			const auto &children = groups[index];
+			DagBuildResult reduced = reductions[index].result;
 			if (reduced.error != DagBuildError::OK) {
 				if (reduced.error == DagBuildError::BOUNDARY_CHANGE || reduced.error == DagBuildError::FALLBACK_REMOVAL || reduced.error == DagBuildError::RETRY_EXHAUSTED) {
 					// Keep this complete cut while other groups continue reducing.
@@ -456,7 +501,12 @@ DagBuildResult build(const GeometryBuildInput &p_input, const DagBuildSettings &
 					++candidate.retained_boundary_groups;
 					continue;
 				}
+				reduced.group = static_cast<uint32_t>(candidate.groups.size());
 				return reduced;
+			}
+			const auto appended = append_group(reductions[index], candidate, next);
+			if (appended.error != DagBuildError::OK) {
+				return appended;
 			}
 		}
 		if (next.empty()) {
@@ -495,13 +545,13 @@ DagBuildResult build(const GeometryBuildInput &p_input, const DagBuildSettings &
 
 } // namespace
 
-DagBuildResult build_cluster_dag(const GeometryBuildInput &p_input, const DagBuildSettings &p_settings, GeometryDag &r_dag) {
+DagBuildResult build_cluster_dag(const GeometryBuildInput &p_input, const DagBuildSettings &p_settings, GeometryDag &r_dag, DagGroupExecutor p_executor) {
 	const double factor_squared = p_settings.max_edge_length_factor * p_settings.max_edge_length_factor;
 	if (!std::isfinite(p_settings.max_edge_length_factor) || p_settings.max_edge_length_factor < 0 || (p_settings.max_edge_length_factor > 0 && (!std::isfinite(factor_squared) || factor_squared == 0))) {
 		return { DagBuildError::INVALID_INPUT };
 	}
 	try {
-		return build(p_input, p_settings, r_dag);
+		return build(p_input, p_settings, r_dag, p_executor);
 	} catch (const std::bad_alloc &) {
 		return { DagBuildError::MEMORY };
 	}

@@ -12,6 +12,11 @@ vec2 vg_motion(uint payload, VGSurface surface) {
 	if (vg_history_view.state.y == 0.0) {
 		return vec2(0.0);
 	}
+	if ((vg_view.flags.w & 1u) != 0u) {
+		// No compatible numeric-parameter snapshot exists. The caller also marks
+		// this view reactive; geometry topology changes still evaluate real motion.
+		return vec2(0.0);
+	}
 	uvec2 visible = vg_visible_reference((payload >> 7u) - 1u);
 	uvec3 vertices = vg_triangle(visible.y, payload & 127u);
 	mat4 previous_world = transpose(mat4(vg_previous_vector(visible.x, 0u), vg_previous_vector(visible.x, 4u), vg_previous_vector(visible.x, 8u), vec4(0.0, 0.0, 0.0, 1.0)));

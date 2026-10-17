@@ -252,6 +252,7 @@ private:
 		uint32_t buffer_dirty_region_count = 0;
 
 		uint32_t buffer_size;
+		uint64_t layout_version = 1;
 
 		bool must_update_texture_materials = false;
 		bool must_update_buffer_materials = false;
@@ -459,6 +460,8 @@ public:
 	virtual void global_shader_parameters_instance_update(RID p_instance, int p_index, const Variant &p_value, int p_flags_count = 0) override;
 
 	RID global_shader_uniforms_get_storage_buffer() const;
+	uint32_t global_shader_uniforms_get_storage_buffer_bytes() const;
+	uint64_t global_shader_uniforms_get_storage_layout_version() const { return global_shader_uniforms.layout_version; }
 
 	/* SHADER API */
 

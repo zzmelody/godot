@@ -12,6 +12,7 @@
 #include "core/variant/typed_array.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_fixup.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_requests.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_diagnostics.glsl.gen.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_transcoder.h"
 #include "servers/rendering/storage/mesh_storage.h"
 
@@ -175,6 +176,13 @@ private:
 	RID request_version;
 	PipelineDeferredRD request_pipeline;
 	RequestSlot request_slots[REQUEST_SLOTS];
+	VirtualGeometryDiagnosticsShaderRD diagnostics_shader;
+	RID diagnostics_version;
+	PipelineDeferredRD diagnostics_pipeline;
+	RID diagnostics_buffer;
+	Ref<RequestReadback> diagnostics_readback;
+	uint32_t reported_diagnostics[2] = {};
+	uint64_t diagnostics_serial = 0;
 	SelfList<Asset>::List request_waiters;
 	uint64_t request_epoch = 0;
 	LocalVector<RequestRecord> requests;
@@ -241,6 +249,9 @@ public:
 	// Bounded asynchronous feedback, separate from install/retirement outcomes.
 	// A saturated feedback queue delays detail; it never removes root coverage.
 	Error record_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity);
+	// Aggregate every view before asynchronous readback. No view owner or scene
+	// object is retained, and saturation cannot erase another view's error bits.
+	Error record_diagnostics(RID p_view_status, RID p_material_status);
 	Vector<uint8_t> get_requests(uint64_t p_after_sequence) const;
 	void update();
 };

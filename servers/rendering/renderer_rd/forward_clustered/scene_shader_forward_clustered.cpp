@@ -705,6 +705,11 @@ void SceneShaderForwardClustered::ShaderData::_clear_virtual_geometry_raster() {
 		pipeline.free();
 	}
 	virtual_geometry_raster_hardware.clear();
+	virtual_geometry_voxel_pipeline.clear();
+	if (virtual_geometry_voxel_version.is_valid()) {
+		owner->virtual_geometry_raster_hw.version_free(virtual_geometry_voxel_version);
+		virtual_geometry_voxel_version = RID();
+	}
 	for (uint32_t mode = 0; mode < 3; ++mode) {
 		if (virtual_geometry_raster_versions[mode].is_valid()) {
 			templates[mode]->version_free(virtual_geometry_raster_versions[mode]);
@@ -721,6 +726,40 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_raster_shader(
 RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_raster_pipeline(uint32_t p_mode, RD::FramebufferFormatID p_format) {
 	ERR_FAIL_COND_V(p_mode >= 3, RID());
 	return p_mode < 2 ? virtual_geometry_raster_compute[p_mode].get_rid() : virtual_geometry_raster_hardware.get_render_pipeline(RD::INVALID_ID, p_format);
+}
+
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_voxel_shader() {
+	MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+	auto *owner = SceneShaderForwardClustered::singleton;
+	if (virtual_geometry_voxel_version.is_null()) {
+		ShaderCompiler::IdentifierActions actions;
+		actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
+		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
+		HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> voxel_uniforms;
+		actions.uniforms = &voxel_uniforms;
+		ShaderCompiler::GeneratedCode vertex_code;
+		actions.entry_point_stages.erase("fragment");
+		Error error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, vertex_code);
+		ERR_FAIL_COND_V_MSG(error != OK || vertex_code.uniform_total_size != ubo_size || vertex_code.uniform_offsets != ubo_offsets || vertex_code.texture_uniforms.size() != texture_uniforms.size(), RID(), "Virtual geometry SDFGI vertex layout refused: " + path);
+		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
+		ShaderCompiler::GeneratedCode generated;
+		error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, generated);
+		ERR_FAIL_COND_V_MSG(error != OK || generated.uniform_total_size != ubo_size || generated.uniform_offsets != ubo_offsets || generated.texture_uniforms.size() != texture_uniforms.size(), RID(), "Virtual geometry SDFGI material layout refused: " + path);
+		generated.defines.push_back("#define VG_VOXEL_CAPTURE\n");
+		virtual_geometry_voxel_version = owner->virtual_geometry_raster_hw.version_create(false);
+		owner->virtual_geometry_raster_hw.version_set_code(virtual_geometry_voxel_version, generated.code, generated.uniforms,
+				vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
+		const RID program = owner->virtual_geometry_raster_hw.version_get_shader(virtual_geometry_voxel_version, 0);
+		ERR_FAIL_COND_V(program.is_null(), RID());
+		RD::PipelineRasterizationState raster;
+		raster.cull_mode = RD::POLYGON_CULL_DISABLED;
+		virtual_geometry_voxel_pipeline.setup(program, RD::RENDER_PRIMITIVE_TRIANGLES, raster, RD::PipelineMultisampleState(), RD::PipelineDepthStencilState(), RD::PipelineColorBlendState());
+	}
+	return owner->virtual_geometry_raster_hw.version_get_shader(virtual_geometry_voxel_version, 0);
+}
+
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_voxel_pipeline(RD::FramebufferFormatID p_format) {
+	return virtual_geometry_voxel_pipeline.get_render_pipeline(RD::INVALID_ID, p_format);
 }
 
 RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_shader(bool p_separate_specular, bool p_multiview) const {
@@ -1128,6 +1167,8 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.check_multiview_samplers = true;
 
 		compiler.initialize(actions);
+		actions.global_buffer_array_variable = "vg_global_uniform";
+		actions.global_buffer_array_function = true;
 		actions.compute_material_varyings = true;
 		actions.separate_texture_function_samplers = true;
 		actions.discard_function = "vg_discard";

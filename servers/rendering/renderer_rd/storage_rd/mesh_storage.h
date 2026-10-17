@@ -390,6 +390,7 @@ public:
 	}
 	void update_virtual_geometry();
 	bool reserve_virtual_geometry_work(uint64_t p_bytes) { return virtual_geometry.reserve_view_work(p_bytes); }
+	Error record_virtual_geometry_diagnostics(RID p_view_status, RID p_material_status) { return virtual_geometry.record_diagnostics(p_view_status, p_material_status); }
 	void retire_virtual_geometry_work(uint64_t p_bytes) { virtual_geometry.retire_view_work(p_bytes); }
 	const VirtualGeometryStorage::Bindings *mesh_get_virtual_geometry(RID p_mesh) const { return virtual_geometry.get_bindings(p_mesh); }
 	VirtualGeometryMaterials mesh_get_virtual_geometry_materials(RID p_mesh) const override { return virtual_geometry.get_materials(p_mesh); }

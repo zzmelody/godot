@@ -40,7 +40,7 @@ public:
 		Projection occlusion_projection;
 	};
 	Error prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only = false);
-	Error prepare_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const ViewParameters &p_view, RD::FramebufferFormatID p_raster_format);
+	Error prepare_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const ViewParameters &p_view, RD::FramebufferFormatID p_raster_format, bool p_voxel = false);
 	void record_sources(Span<VirtualGeometrySelection::Result> p_sources);
 	void record_bins();
 	void record_materials();
@@ -61,6 +61,7 @@ public:
 	Span<RasterMaterialWork> get_raster_work() const { return Span<RasterMaterialWork>(raster_work.ptr(), raster_work.size()); }
 	RID get_material_view() const { return material_view; }
 	RID get_frame_history() const { return frame_history; }
+	RID get_previous_globals() const { return previous_global_binding; }
 	RID get_status() const { return view_status; }
 	RID get_raster_materials() const { return raster_material_buffer; }
 	uint32_t get_entries_word() const { return entries_word; }
@@ -96,6 +97,13 @@ private:
 	uint32_t draw_argument_words = 0;
 	RID material_view;
 	RID frame_history;
+	RID global_history[2];
+	uint32_t global_history_words[2] = {};
+	RID previous_global_binding;
+	uint64_t global_history_frame = UINT64_MAX;
+	uint64_t global_history_layout = 0;
+	uint64_t temporal_frame = UINT64_MAX;
+	bool global_history_valid = false;
 	RID previous_sources;
 	uint32_t previous_source_words = 0;
 	LocalVector<RID> previous_parameters;

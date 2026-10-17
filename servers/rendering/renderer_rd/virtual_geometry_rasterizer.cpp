@@ -3,6 +3,7 @@
 
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/utilities.h"
 
@@ -22,7 +23,7 @@ VirtualGeometryRasterizer::~VirtualGeometryRasterizer() {
 	if (depth_version.is_valid()) {
 		depth_shader.version_free(depth_version);
 	}
-	for (RID buffer : { candidates, classified, arguments, pending, occlusion_parameters }) {
+	for (RID buffer : { candidates, classified, arguments, pending, occlusion_parameters, voxel_parameters }) {
 		memory.free(buffer);
 	}
 	memory.free(visibility);
@@ -123,7 +124,7 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 	return OK;
 }
 
-Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Result> p_sources) {
+Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Result> p_sources, bool p_voxel) {
 	ERR_FAIL_COND_V(p_sources.is_empty(), ERR_INVALID_PARAMETER);
 	bucket_count = shading.get_materials().size() + 1;
 	const uint64_t capacity = shading.get_raster_candidate_capacity(p_sources);
@@ -189,7 +190,9 @@ Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Re
 	fixed.work.pipelines[0] = bin_pipeline.get_rid();
 	fixed.work.pipelines[1] = software_pipeline.get_rid();
 	fixed.work.pipelines[2] = hardware_pipeline;
-	passes.push_back(fixed);
+	if (!p_voxel) {
+		passes.push_back(fixed);
+	}
 	for (const auto &work : shading.get_raster_work()) {
 		Pass pass;
 		pass.work = work;
@@ -197,19 +200,20 @@ Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Re
 	}
 	for (Pass &pass : passes) {
 		const bool programmable = pass.work.material != UINT32_MAX;
-		for (uint32_t mode = 0; mode < 3; ++mode) {
+		for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {
 			LocalVector<RD::Uniform> uniforms;
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { geometry }));
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { p_sources[0].parameters }));
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { candidates }));
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { classified }));
-			if (mode != 0) {
+			if (mode != 0 && !p_voxel) {
 				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { visibility }));
 			}
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() }));
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { shading.get_raster_materials() }));
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 15, { shading.get_status() }));
 			if (programmable) {
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { shading.get_previous_globals() }));
 				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 12, { shading.get_material_view() }));
 				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 14, { MaterialStorage::get_singleton()->global_shader_uniforms_get_storage_buffer() }));
 				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 28, { shading.get_frame_history() }));
@@ -268,6 +272,88 @@ Error VirtualGeometryRasterizer::record_shadow(const Size2i &p_size, const Virtu
 	return _record(Ref<RenderSceneBuffersRD>(), p_size, p_view, p_sources, p_default_material, true);
 }
 
+Error VirtualGeometryRasterizer::record_sdfgi(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material,
+		const AABB &p_bounds, const Vector3i &p_from, const Vector3i &p_grid_size, RID p_albedo, RID p_emission, RID p_emission_aniso, RID p_facing) {
+	ready = false;
+	if (p_sources.is_empty()) {
+		return OK;
+	}
+	Error error = _prepare(p_size, p_sources, p_default_material, true);
+	if (error != OK) {
+		return error;
+	}
+	RD *rd = RD::get_singleton();
+	error = shading.prepare_materials(Ref<RenderSceneBuffersRD>(), p_sources[0].batch.geometry.geometry, p_view, rd->framebuffer_get_format(framebuffer), true);
+	if (error != OK) {
+		return error;
+	}
+	error = _prepare_bins(p_sources, true);
+	if (error != OK) {
+		return error;
+	}
+	error = _prepare_candidates(p_view);
+	if (error != OK) {
+		return error;
+	}
+	if (voxel_parameters.is_null()) {
+		voxel_parameters = memory.uniform(96);
+	}
+	ERR_FAIL_COND_V(voxel_parameters.is_null(), ERR_OUT_OF_MEMORY);
+	struct VoxelParameters {
+		float world_to_bounds[16];
+		int32_t offset[4];
+		int32_t size[4];
+	} voxel = {};
+	static_assert(sizeof(VoxelParameters) == 96);
+	Transform3D bounds_transform;
+	bounds_transform.origin = p_bounds.position;
+	bounds_transform.basis.scale(p_bounds.size);
+	MaterialStorage::store_transform(bounds_transform.affine_inverse(), voxel.world_to_bounds);
+	for (uint32_t axis = 0; axis < 3; ++axis) {
+		voxel.offset[axis] = p_from[axis];
+		voxel.size[axis] = p_grid_size[axis];
+	}
+	rd->buffer_update(voxel_parameters, 0, sizeof(voxel), &voxel);
+	rd->buffer_clear(shading.get_bins(), 0, 8);
+	shading.record_sources(p_sources);
+	_record_material_bins(0);
+	for (const Pass &pass : passes) {
+		const RID voxel_set = UniformSetCacheRD::get_singleton()->get_cache(pass.work.programs[2], 1,
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 0, { p_albedo }),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 1, { p_emission }),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 2, { p_emission_aniso }),
+				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, { p_facing }),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 4, { voxel_parameters }));
+		ERR_FAIL_COND_V(voxel_set.is_null(), ERR_CANT_CREATE);
+		const uint32_t bucket = pass.work.material + 1;
+		const uint32_t dispatch[4] = { 2, bucket_count, bucket, candidate_capacity };
+		const RD::ComputeListID list = rd->compute_list_begin();
+		rd->compute_list_bind_compute_pipeline(list, dispatch_pipeline.get_rid());
+		rd->compute_list_bind_uniform_set(list, dispatch_uniforms, 0);
+		rd->compute_list_set_push_constant(list, dispatch, sizeof(dispatch));
+		rd->compute_list_dispatch(list, 1, 1, 1);
+		rd->compute_list_end();
+		struct RasterParameters {
+			uint32_t raster[4];
+			float jitter[2];
+			uint32_t header_words;
+			uint32_t material;
+		} raster = { { uint32_t(size.x), uint32_t(size.y), entries_word, candidate_capacity }, { 0, 0 }, bucket_count * 4, pass.work.material };
+		static_assert(sizeof(RasterParameters) == 32);
+		const RD::DrawListID draw = rd->draw_list_begin(framebuffer);
+		rd->draw_list_bind_render_pipeline(draw, pass.work.pipelines[2]);
+		rd->draw_list_bind_uniform_set(draw, pass.uniforms[2], 0);
+		rd->draw_list_bind_uniform_set(draw, voxel_set, 1);
+		if (pass.work.parameters[2].is_valid()) {
+			rd->draw_list_bind_uniform_set(draw, pass.work.parameters[2], 3);
+		}
+		rd->draw_list_set_push_constant(draw, &raster, sizeof(raster));
+		rd->draw_list_draw_indirect(draw, false, arguments, bucket * 48 + 32);
+		rd->draw_list_end();
+	}
+	return MeshStorage::get_singleton()->record_virtual_geometry_diagnostics(shading.get_status(), shading.get_bins());
+}
+
 Error VirtualGeometryRasterizer::_record(const Ref<RenderSceneBuffersRD> &p_buffers, const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow) {
 	ready = false;
 	if (p_sources.is_empty()) {
@@ -296,6 +382,10 @@ Error VirtualGeometryRasterizer::_record(const Ref<RenderSceneBuffersRD> &p_buff
 	if (!p_view.prediction) {
 		shading.record_bins();
 		shading.record_materials();
+		const Error feedback = MeshStorage::get_singleton()->record_virtual_geometry_diagnostics(shading.get_status(), shading.get_bins());
+		if (feedback != OK) {
+			WARN_PRINT_ONCE("Virtual geometry GPU diagnostics are unavailable.");
+		}
 	}
 	ready = true;
 	return OK;
@@ -312,10 +402,14 @@ Error VirtualGeometryRasterizer::recover(const VirtualGeometryShading::ViewParam
 	}
 	shading.record_bins();
 	shading.record_materials();
+	const Error feedback = MeshStorage::get_singleton()->record_virtual_geometry_diagnostics(shading.get_status(), shading.get_bins());
+	if (feedback != OK) {
+		WARN_PRINT_ONCE("Virtual geometry GPU diagnostics are unavailable.");
+	}
 	return OK;
 }
 
-Error VirtualGeometryRasterizer::_record_geometry(const VirtualGeometryShading::ViewParameters &p_view, uint32_t p_phase) {
+Error VirtualGeometryRasterizer::_prepare_candidates(const VirtualGeometryShading::ViewParameters &p_view) {
 	RD *rd = RD::get_singleton();
 	struct Occlusion {
 		float projection[16];
@@ -337,6 +431,15 @@ Error VirtualGeometryRasterizer::_record_geometry(const VirtualGeometryShading::
 			RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 30, { sampler, hierarchy }),
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 31, { occlusion_parameters }));
 	ERR_FAIL_COND_V(candidate_uniforms.is_null(), ERR_CANT_CREATE);
+	return OK;
+}
+
+Error VirtualGeometryRasterizer::_record_geometry(const VirtualGeometryShading::ViewParameters &p_view, uint32_t p_phase) {
+	const Error error = _prepare_candidates(p_view);
+	if (error != OK) {
+		return error;
+	}
+	RD *rd = RD::get_singleton();
 	_record_material_bins(p_phase);
 	for (const Pass &pass : passes) {
 		const uint32_t bucket = pass.work.material == UINT32_MAX ? 0 : pass.work.material + 1;
@@ -427,7 +530,7 @@ Error VirtualGeometryRasterizer::record_reactivity(RID p_depth, RID p_scene_reac
 uint64_t VirtualGeometryRasterizer::get_buffer_bytes() const {
 	uint64_t bytes = visibility.is_valid() ? uint64_t(size.x) * size.y * 8 : 0;
 	bytes += uint64_t(candidate_words + classified_words + argument_words + pending_words) * 4;
-	return bytes + shading.get_buffer_bytes() + (occlusion_parameters.is_valid() ? 80 : 0);
+	return bytes + shading.get_buffer_bytes() + (occlusion_parameters.is_valid() ? 80 : 0) + (voxel_parameters.is_valid() ? 96 : 0);
 }
 
 Error VirtualGeometryRasterizer::record_depth(RID p_framebuffer, DepthMode p_mode, RID p_fitting_table, const Rect2i &p_region) {

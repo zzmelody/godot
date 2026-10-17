@@ -20,7 +20,12 @@ void main() {
 		shadow_clip = -1.0;
 		return;
 	}
-	uint index = vg_raster_hardware(uint(gl_InstanceIndex));
+	uint index =
+#ifdef VG_VOXEL_CAPTURE
+			vg_raster_input(uint(gl_InstanceIndex));
+#else
+			vg_raster_hardware(uint(gl_InstanceIndex));
+#endif
 #else
 	uint index = bins.data[4u + uint(gl_InstanceIndex)];
 #endif
@@ -63,27 +68,38 @@ layout(set = 0, binding = 1, std430) readonly buffer Geometry {
 geometry;
 #endif
 #include "virtual_geometry_raster_cull_inc.glsl"
+#ifndef VG_VOXEL_CAPTURE
 #include "virtual_geometry_write_inc.glsl"
+#endif
 
-#ifdef VG_MASKED
+#if defined(VG_MASKED) || defined(VG_VOXEL_CAPTURE)
 #include "virtual_geometry_attributes_inc.glsl"
 #define VG_GLOBALS_BINDING 14
 #define VG_MATERIAL_INDEX raster_info.material
 #include "virtual_geometry_material_vertex_inc.glsl"
 #include "virtual_geometry_raster_coverage_inc.glsl"
 #endif
+#ifdef VG_VOXEL_CAPTURE
+#include "virtual_geometry_sdfgi_inc.glsl"
+#endif
 
 void main() {
 	if (shadow_clip > 0.0) {
 		discard;
 	}
+#ifndef VG_VOXEL_CAPTURE
 	if (vg_cull_material(pixel_value, gl_FrontFacing)) {
 		discard;
 	}
+#endif
+#ifdef VG_VOXEL_CAPTURE
+	vg_capture_sdfgi(pixel_value, gl_FragCoord.xy);
+#else
 #ifdef VG_MASKED
 	if (!vg_raster_coverage(pixel_value, gl_FragCoord.xy)) {
 		discard;
 	}
 #endif
 	vg_write_pixel(ivec2(gl_FragCoord.xy), gl_FragCoord.z, pixel_value);
+#endif
 }

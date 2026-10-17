@@ -5,6 +5,7 @@
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
+#include "servers/rendering/renderer_compositor.h"
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/utilities.h"
 
@@ -25,6 +26,11 @@ void dispatch_items(RD::ComputeListID p_list, uint32_t p_items, uint32_t p_threa
 } // namespace
 
 VirtualGeometryShading::~VirtualGeometryShading() {
+	for (RID snapshot : global_history) {
+		if (snapshot.is_valid()) {
+			memory.free(snapshot);
+		}
+	}
 	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, dummy_transforms, material_view, frame_history, previous_sources, view_status, raster_material_buffer }) {
 		if (rid.is_valid()) {
 			memory.free(rid);
@@ -296,10 +302,37 @@ void VirtualGeometryShading::record_bins() {
 	RENDER_TIMESTAMP("Virtual Geometry Shading Bins End");
 }
 
-Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const ViewParameters &p_view, RD::FramebufferFormatID p_raster_format) {
+Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const ViewParameters &p_view, RD::FramebufferFormatID p_raster_format, bool p_voxel) {
 	materials_ready = false;
 	RD *rd = RD::get_singleton();
 	MaterialStorage *storage = MaterialStorage::get_singleton();
+	const uint64_t current_frame = RSG::rasterizer != nullptr ? RSG::rasterizer->get_frame_number() : global_history_frame + 1;
+	previous_global_binding = storage->global_shader_uniforms_get_storage_buffer();
+	if (p_view.motion && !depth_only) {
+		const uint32_t bytes = storage->global_shader_uniforms_get_storage_buffer_bytes();
+		const uint64_t layout = storage->global_shader_uniforms_get_storage_layout_version();
+		ERR_FAIL_COND_V(bytes == 0 || bytes % 4 != 0, ERR_INVALID_DATA);
+		bool replaced = false;
+		for (uint32_t index = 0; index < 2; ++index) {
+			replaced |= global_history[index].is_null() || global_history_words[index] < bytes / 4;
+			const Error error = memory.ensure(global_history[index], global_history_words[index], bytes / 4);
+			if (error != OK) {
+				return error;
+			}
+		}
+		if (current_frame != global_history_frame || replaced || layout != global_history_layout) {
+			global_history_valid = !replaced && layout == global_history_layout && global_history_frame != UINT64_MAX && current_frame == global_history_frame + 1;
+			std::swap(global_history[0], global_history[1]);
+			std::swap(global_history_words[0], global_history_words[1]);
+			rd->buffer_copy(previous_global_binding, global_history[0], 0, 0, bytes);
+			if (!global_history_valid) {
+				rd->buffer_copy(previous_global_binding, global_history[1], 0, 0, bytes);
+			}
+			global_history_frame = current_frame;
+			global_history_layout = layout;
+		}
+		previous_global_binding = global_history[1];
+	}
 	using SceneShader = RendererSceneRenderImplementation::SceneShaderForwardClustered;
 	material_work.clear();
 	raster_work.clear();
@@ -337,8 +370,11 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 		}
 	}
 	if (!depth_only) {
-		std::swap(temporal_keys[0], temporal_keys[1]);
-		std::swap(temporal_key_words[0], temporal_key_words[1]);
+		if (current_frame != temporal_frame) {
+			std::swap(temporal_keys[0], temporal_keys[1]);
+			std::swap(temporal_key_words[0], temporal_key_words[1]);
+			temporal_frame = current_frame;
+		}
 		const uint64_t words = p_view.motion ? uint64_t(size.x) * size.y * 4 : 4;
 		for (uint32_t index = 0; index < 2; ++index) {
 			const bool replaced = temporal_key_words[index] < words || temporal_keys[index].is_null();
@@ -409,7 +445,8 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 	view.state[2] = p_view.shadow_far;
 	view.flags[0] = p_view.layers;
 	view.flags[1] = p_view.shadow_flags;
-	view.flags[2] = p_view.history_valid;
+	view.flags[2] = p_view.history_valid && (!p_view.motion || global_history_valid);
+	view.flags[3] = p_view.motion && !global_history_valid ? 1u : 0u;
 	view.eye_offset[0] = p_view.eye_offset.x;
 	view.eye_offset[1] = p_view.eye_offset.y;
 	view.eye_offset[2] = p_view.eye_offset.z;
@@ -429,15 +466,15 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 						data->shader_data->get_virtual_geometry_composite_shader(true).is_null(),
 				ERR_UNAVAILABLE,
 				"Virtual geometry scene lighting shader compilation failed.");
-		if (data->shader_data->uses_vertex || data->shader_data->uses_alpha_clip || data->shader_data->uses_discard) {
+		if (p_voxel || data->shader_data->uses_vertex || data->shader_data->uses_alpha_clip || data->shader_data->uses_discard) {
 			ERR_FAIL_COND_V_MSG(data->shader_data->uses_vertex && storage->material_get_max_vertex_displacement(material) <= 0.0f, ERR_UNAVAILABLE, "Virtual geometry vertex deformation requires a positive max_vertex_displacement.");
 			raster_material_data[material_index * 4 + 2] = 1;
 			RasterMaterialWork raster;
 			raster.material = material_index;
-			for (uint32_t mode = 0; mode < 3; ++mode) {
-				raster.programs[mode] = data->shader_data->get_virtual_geometry_raster_shader(mode);
+			for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {
+				raster.programs[mode] = p_voxel ? data->shader_data->get_virtual_geometry_voxel_shader() : data->shader_data->get_virtual_geometry_raster_shader(mode);
 				ERR_FAIL_COND_V(raster.programs[mode].is_null(), ERR_CANT_CREATE);
-				raster.pipelines[mode] = data->shader_data->get_virtual_geometry_raster_pipeline(mode, p_raster_format);
+				raster.pipelines[mode] = p_voxel ? data->shader_data->get_virtual_geometry_voxel_pipeline(p_raster_format) : data->shader_data->get_virtual_geometry_raster_pipeline(mode, p_raster_format);
 				ERR_FAIL_COND_V(raster.pipelines[mode].is_null(), ERR_CANT_CREATE);
 				raster.parameters[mode] = data->get_parameters_uniform_set(raster.programs[mode], 3, true, data->shader_data->texture_uniforms);
 				ERR_FAIL_COND_V(raster.parameters[mode].is_null() && (data->shader_data->ubo_size != 0 || !data->shader_data->texture_uniforms.is_empty()), ERR_CANT_CREATE);
@@ -445,10 +482,12 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 			raster_work.push_back(raster);
 		}
 		if (depth_only) {
+			data->set_as_used();
 			continue;
 		}
 		LocalVector<RD::Uniform> uniforms;
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_geometry }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { previous_global_binding }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, { bins_buffer }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { storage->global_shader_uniforms_get_storage_buffer() }));
@@ -505,6 +544,7 @@ void VirtualGeometryShading::record_materials() {
 
 uint64_t VirtualGeometryShading::get_buffer_bytes() const {
 	return uint64_t(scene_words + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words) * 4 +
+			uint64_t(global_history_words[0] + global_history_words[1]) * 4 +
 			uint64_t(previous_parameters.size()) * 80 + (dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 320 : 0) +
 			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;
 }

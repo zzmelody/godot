@@ -16,7 +16,16 @@ if env["veya_cooker"]:
 else:
     env_main.add_source_files(env.main_sources, "*.cpp")
     if env_main.editor_build and not env_main["disable_3d"]:
-        env_main.add_source_files(env.main_sources, "#cooker/virtual_geometry_validation.cpp")
+        # These offline helpers catch allocation failures before returning to
+        # Godot. Keep exception unwinding local to their translation units.
+        geometry_tools = env_main.Clone()
+        geometry_tools["CXXFLAGS"] = [flag for flag in geometry_tools["CXXFLAGS"] if flag not in ("-fno-exceptions", "/EHs-c-")]
+        if env.msvc:
+            geometry_tools["CPPDEFINES"] = [item for item in geometry_tools["CPPDEFINES"] if not (isinstance(item, tuple) and item[0] == "_HAS_EXCEPTIONS")]
+            geometry_tools.Append(CPPDEFINES=[("_HAS_EXCEPTIONS", 1)], CXXFLAGS=["/EHsc"])
+        else:
+            geometry_tools.Append(CXXFLAGS=["-fexceptions"])
+        geometry_tools.add_source_files(env.main_sources, ["#cooker/virtual_geometry_validation.cpp", "#cooker/virtual_geometry_minimum.cpp"])
 # /*>>----- VEYA_COOKER */
 
 if env["steamapi"] and env.editor_build:

@@ -30,6 +30,8 @@
 
 #include "voxel_gi.h"
 
+#include "cooker/virtual_geometry_minimum.h"
+
 #include "core/config/project_settings.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
@@ -330,7 +332,7 @@ static bool is_node_voxel_bakeable(Node3D *p_node) {
 	return true;
 }
 
-void VoxelGI::_find_meshes(Node *p_at_node, List<PlotMesh> &plot_meshes) {
+bool VoxelGI::_find_meshes(Node *p_at_node, List<PlotMesh> &plot_meshes, CookerVirtualGeometry::BakeMeshCache &p_geometry) {
 	MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_at_node);
 	if (mi && is_node_voxel_bakeable(mi)) {
 		Ref<Mesh> mesh = mi->get_mesh();
@@ -340,11 +342,23 @@ void VoxelGI::_find_meshes(Node *p_at_node, List<PlotMesh> &plot_meshes) {
 			Transform3D xf = get_global_transform().affine_inverse() * mi->get_global_transform();
 
 			if (AABB(-size / 2, size).intersects(xf.xform(aabb))) {
+				std::vector<uint32_t> source_slots;
+				const Ref<VirtualGeometryMesh> virtual_mesh = mesh;
+				if (virtual_mesh.is_valid()) {
+#ifdef TOOLS_ENABLED
+					CookerVirtualGeometry::BakeMesh geometry;
+					ERR_FAIL_COND_V_MSG(p_geometry.get(virtual_mesh, geometry) != OK, false, vformat("Cannot reconstruct virtual geometry for voxel baking: %s", mi->get_path()));
+					mesh = geometry.mesh;
+					source_slots = std::move(geometry.source_slots);
+#else
+					ERR_FAIL_V_MSG(false, "Virtual geometry voxel baking requires an editor build.");
+#endif
+				}
 				PlotMesh pm;
 				pm.local_xform = xf;
 				pm.mesh = mesh;
 				for (int i = 0; i < mesh->get_surface_count(); i++) {
-					pm.instance_materials.push_back(mi->get_surface_override_material(i));
+					pm.instance_materials.push_back(mi->get_surface_override_material(source_slots.empty() ? i : source_slots[i]));
 				}
 				pm.override_material = mi->get_material_override();
 				plot_meshes.push_back(pm);
@@ -369,15 +383,29 @@ void VoxelGI::_find_meshes(Node *p_at_node, List<PlotMesh> &plot_meshes) {
 				if (mesh.is_null()) {
 					continue;
 				}
-
 				AABB aabb = mesh->get_aabb();
 
 				Transform3D xf = get_global_transform().affine_inverse() * (s->get_global_transform() * mxf);
 
 				if (AABB(-size / 2, size).intersects(xf.xform(aabb))) {
+					const Ref<VirtualGeometryMesh> virtual_mesh = mesh;
+					if (virtual_mesh.is_valid()) {
+#ifdef TOOLS_ENABLED
+						CookerVirtualGeometry::BakeMesh geometry;
+						ERR_FAIL_COND_V_MSG(p_geometry.get(virtual_mesh, geometry) != OK, false, vformat("Cannot reconstruct virtual geometry for voxel baking: %s", s->get_path()));
+						mesh = geometry.mesh;
+#else
+						ERR_FAIL_V_MSG(false, "Virtual geometry voxel baking requires an editor build.");
+#endif
+					}
 					PlotMesh pm;
 					pm.local_xform = xf;
 					pm.mesh = mesh;
+					if (virtual_mesh.is_valid()) {
+						if (const auto *geometry_instance = Object::cast_to<GeometryInstance3D>(s)) {
+							pm.override_material = geometry_instance->get_material_override();
+						}
+					}
 					plot_meshes.push_back(pm);
 				}
 			}
@@ -386,8 +414,11 @@ void VoxelGI::_find_meshes(Node *p_at_node, List<PlotMesh> &plot_meshes) {
 
 	for (int i = 0; i < p_at_node->get_child_count(); i++) {
 		Node *child = p_at_node->get_child(i);
-		_find_meshes(child, plot_meshes);
+		if (!_find_meshes(child, plot_meshes, p_geometry)) {
+			return false;
+		}
 	}
+	return true;
 }
 
 VoxelGI::BakeBeginFunc VoxelGI::bake_begin_function = nullptr;
@@ -444,8 +475,8 @@ void VoxelGI::bake(Node *p_from_node, bool p_create_visual_debug) {
 	baker.begin_bake(subdiv_value[subdiv], AABB(-size / 2, size), exposure_normalization);
 
 	List<PlotMesh> mesh_list;
-
-	_find_meshes(p_from_node, mesh_list);
+	CookerVirtualGeometry::BakeMeshCache geometry;
+	ERR_FAIL_COND_MSG(!_find_meshes(p_from_node, mesh_list, geometry), "Virtual geometry voxel bake input is invalid.");
 
 	if (bake_begin_function) {
 		bake_begin_function();

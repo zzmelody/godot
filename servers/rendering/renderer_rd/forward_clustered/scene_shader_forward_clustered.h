@@ -228,6 +228,10 @@ public:
 		RID virtual_geometry_raster_versions[3];
 		PipelineDeferredRD virtual_geometry_raster_compute[2];
 		PipelineCacheRD virtual_geometry_raster_hardware;
+		RID virtual_geometry_voxel_version;
+		PipelineCacheRD virtual_geometry_voxel_pipeline;
+		RID get_virtual_geometry_voxel_shader();
+		RID get_virtual_geometry_voxel_pipeline(RD::FramebufferFormatID p_format);
 		void _clear_virtual_geometry_raster();
 		RID get_virtual_geometry_raster_shader(uint32_t p_mode) const;
 		RID get_virtual_geometry_raster_pipeline(uint32_t p_mode, RD::FramebufferFormatID p_format);

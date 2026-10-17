@@ -4,6 +4,7 @@
 #include "scene/resources/3d/virtual_geometry_mesh.h"
 
 #include <cstdint>
+#include <map>
 #include <vector>
 
 namespace CookerVirtualGeometry {
@@ -13,6 +14,21 @@ namespace CookerVirtualGeometry {
 // or runtime renderer are used. Slots map output surfaces to source overrides.
 // Refusal leaves both prior outputs unchanged.
 Error minimum_root_mesh(const Ref<VirtualGeometryMesh> &p_source, Ref<ArrayMesh> &r_mesh, std::vector<uint32_t> &r_slots);
+
+struct BakeMesh {
+	Ref<ArrayMesh> mesh;
+	std::vector<uint32_t> source_slots;
+};
+
+// One explicit offline bake owns this cache. Repeated source instances reuse
+// one decoded root. It is never installed as a live rendering fallback.
+class BakeMeshCache {
+	std::map<ObjectID, BakeMesh> meshes;
+	uint64_t vertices = 0;
+
+public:
+	Error get(const Ref<VirtualGeometryMesh> &p_source, BakeMesh &r_mesh);
+};
 
 } // namespace CookerVirtualGeometry
 

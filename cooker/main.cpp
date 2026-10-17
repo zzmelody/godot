@@ -11,6 +11,7 @@
 #include "core/io/json.h"
 #include "pipeline_cache.h"
 #include "atomic_save.h"
+#include "render_dependencies.h"
 #include "output_lock.h"
 #include <cfloat>
 #include <memory>
@@ -867,16 +868,34 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		error = CookerVirtualGeometry::convert_imported_scene(imported, prepared, geometry_builds, geometry_report, geometry_message);
 		ERR_FAIL_COND_V_MSG(error != OK, error, geometry_message);
 		imported = prepared;
-		Array geometry_outputs;
-		error = CookerVirtualGeometry::publish_resource_containers(imported, geometry_builds, published_path, 256ull * 1024 * 1024, geometry_outputs);
-		ERR_FAIL_COND_V(error != OK, error);
 		r_result["virtual_geometry"] = geometry_report;
-		r_result["geometry_outputs"] = geometry_outputs;
-		error = CookerAtomicSave::save_resource(imported, imported_path,
-				ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
-		ERR_FAIL_COND_V(error != OK, error);
+		if (!geometry_builds.empty()) {
+			CookerTextures::Builder textures;
+			Variant normalized = imported;
+			error = textures.Normalize(normalized);
+			ERR_FAIL_COND_V(error != OK, error);
+			Array render_outputs;
+			const Ref<PackedScene> scene = imported;
+			error = CookerRender::save(scene, published_path.get_base_dir(), render_outputs, 256ull * 1024 * 1024, &geometry_builds);
+			ERR_FAIL_COND_V(error != OK, error);
+			r_result["render_outputs"] = render_outputs;
+			// Save beside the final path so external relative references survive
+			// publication out of the importer's private staging directory.
+			error = CookerAtomicSave::save_resource(imported, published_path, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+			ERR_FAIL_COND_V(error != OK, error);
+			CookerAtomicSave::discard_stale(imported_path);
+		} else {
+			Array geometry_outputs;
+			error = CookerVirtualGeometry::publish_resource_containers(imported, geometry_builds, published_path, 256ull * 1024 * 1024, geometry_outputs);
+			ERR_FAIL_COND_V(error != OK, error);
+			r_result["geometry_outputs"] = geometry_outputs;
+			error = CookerAtomicSave::save_resource(imported, imported_path,
+					ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
+			ERR_FAIL_COND_V(error != OK, error);
+			error = CookerAtomicSave::publish(imported_path, published_path);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
 		r_result["max_texture_dimension"] = maximum_texture_dimension;
-		error = CookerAtomicSave::publish(imported_path, published_path);
 		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(staging_dir));
 		ERR_FAIL_COND_V(error != OK, error);
 		r_result["output"] = published_path;
@@ -1154,7 +1173,7 @@ Error execute_pipeline(Dictionary &r_result) {
 		error = execute_job(job, job_result);
 		if (error == OK && bool(verification)) {
 			const Array render_outputs = job_result.get("render_outputs", Array());
-			if (bool(job.get("external_render_resources", false))) {
+			if (bool(job.get("external_render_resources", false)) || job_result.has("render_outputs")) {
 				// A rebuilt fragment owns its newly emitted render closure. Old
 				// content-addressed paths can disappear or become unreferenced;
 				// retaining them makes receipt publication hash obsolete files.

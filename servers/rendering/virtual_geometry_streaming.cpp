@@ -81,7 +81,7 @@ Error VirtualGeometryStreaming::_configure() {
 	if (rd == nullptr || RS::get_singleton()->get_current_rendering_method() != "forward_plus" ||
 			!rd->has_feature(RD::SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX) ||
 			rd->limit_get(RD::LIMIT_MAX_STORAGE_IMAGES_PER_SHADER_STAGE) < 12 ||
-			rd->limit_get(RD::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) < 9 ||
+			rd->limit_get(RD::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) < 10 ||
 			(rd->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & required) != required ||
 			(rd->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) == 0) {
 		return ERR_UNAVAILABLE;

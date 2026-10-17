@@ -2,6 +2,8 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "virtual_geometry_mesh.h"
+#include "render_dependencies.h"
+#include "core/crypto/crypto_core.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/3d/importer_mesh.h"
 #include "scene/resources/material.h"
@@ -18,11 +20,13 @@
 #include "tydra/scene-access.hh"
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <new>
 #include <set>
 #include <tuple>
+#include <unordered_map>
 
 namespace CookerUsd {
 namespace {
@@ -118,6 +122,40 @@ struct Surface {
 			compacted.indices.push_back(remap[index]);
 		}
 		*this=std::move(compacted);
+	}
+	Error weld_values() {
+		struct VertexHash {
+			size_t operator()(const std::array<uint32_t, 8> &p_key) const {
+				uint64_t hash = 14695981039346656037ull;
+				for (uint32_t word : p_key) {
+					hash = (hash ^ word) * 1099511628211ull;
+				}
+				return static_cast<size_t>(hash);
+			}
+		};
+		std::unordered_map<std::array<uint32_t, 8>, unsigned int, VertexHash> values;
+		std::vector<unsigned int> remap(points.size(), ~0u);
+		Surface compacted;
+		compacted.indices.reserve(indices.size());
+		for (unsigned int index : indices) {
+			if (remap[index] == ~0u) {
+				ERR_FAIL_COND_V(!points[index].is_finite() || !normals[index].is_finite() || !uv[index].is_finite(), ERR_INVALID_DATA);
+				const std::array<float, 8> vertex = { points[index].x, points[index].y, points[index].z,
+					normals[index].x, normals[index].y, normals[index].z, uv[index].x, uv[index].y };
+				std::array<uint32_t, 8> key;
+				std::memcpy(key.data(), vertex.data(), sizeof(key));
+				const auto [found, added] = values.emplace(key, compacted.points.size());
+				if (added) {
+					compacted.points.push_back(points[index]);
+					compacted.normals.push_back(normals[index]);
+					compacted.uv.push_back(uv[index]);
+				}
+				remap[index] = found->second;
+			}
+			compacted.indices.push_back(remap[index]);
+		}
+		*this = std::move(compacted);
+		return OK;
 	}
 	void reduce(size_t triangles) {
 		if (triangles == 0) {
@@ -384,10 +422,13 @@ struct SceneImport {
 	Import &source;
 	std::array<Ref<Material>, 2> materials;
 	std::map<std::string, Ref<ArrayMesh>> meshes;
+	std::map<std::array<uint8_t, 32>, Ref<ArrayMesh>> geometry_values;
 	std::map<std::string, std::vector<ScenePart>> prototypes;
 	std::set<std::string> active;
 	uint64_t unique_triangles[2] = {};
 	uint64_t instanced_triangles[2] = {};
+	uint64_t zero_area_triangles = 0;
+	uint64_t reused_mesh_values = 0;
 	int authored_instances = 0;
 	uint64_t visible_point_instances = 0;
 	bool asset_coordinates = false;
@@ -432,11 +473,46 @@ struct SceneImport {
 		ERR_FAIL_COND_V(error != OK, error);
 		Ref<ArrayMesh> mesh;
 		mesh.instantiate();
+		mesh->set_name(String::utf8(key.c_str()));
+		CryptoCore::SHA256Context content;
+		ERR_FAIL_COND_V(content.start() != OK, FAILED);
 		for (int role = 0; role < 2; ++role) {
-			const auto &surface = surfaces[role];
+			auto &surface = surfaces[role];
+			size_t kept = 0;
+			for (size_t triangle = 0; triangle < surface.indices.size(); triangle += 3) {
+				const Vector3 &a = surface.points[surface.indices[triangle]];
+				const Vector3 &b = surface.points[surface.indices[triangle + 1]];
+				const Vector3 &c = surface.points[surface.indices[triangle + 2]];
+				ERR_FAIL_COND_V(!a.is_finite() || !b.is_finite() || !c.is_finite(), ERR_INVALID_DATA);
+				std::array<double, 3> ab, ac;
+				for (int axis = 0; axis < 3; ++axis) {
+					ab[axis] = double(b[axis]) - a[axis];
+					ac[axis] = double(c[axis]) - a[axis];
+				}
+				if (ab[1] * ac[2] == ab[2] * ac[1] && ab[2] * ac[0] == ab[0] * ac[2] && ab[0] * ac[1] == ab[1] * ac[0]) {
+					++zero_area_triangles;
+					continue;
+				}
+				for (int corner = 0; corner < 3; ++corner) {
+					surface.indices[kept++] = surface.indices[triangle + corner];
+				}
+			}
+			surface.indices.resize(kept);
 			if (surface.indices.empty()) {
 				continue;
 			}
+			const Error welded = surface.weld_values();
+			ERR_FAIL_COND_V(welded != OK, welded);
+			// This key is local to one import, never a file/protocol identity.
+			// The role keeps equal bark/leaf values with different bindings apart.
+			static_assert(sizeof(Vector3) == sizeof(float) * 3 && sizeof(Vector2) == sizeof(float) * 2);
+			const std::array<uint64_t, 5> header = { uint64_t(role), surface.points.size(), surface.normals.size(), surface.uv.size(), surface.indices.size() };
+			ERR_FAIL_COND_V(content.update(reinterpret_cast<const uint8_t *>(header.data()), sizeof(header)) != OK ||
+						content.update(reinterpret_cast<const uint8_t *>(surface.points.data()), surface.points.size() * sizeof(Vector3)) != OK ||
+						content.update(reinterpret_cast<const uint8_t *>(surface.normals.data()), surface.normals.size() * sizeof(Vector3)) != OK ||
+						content.update(reinterpret_cast<const uint8_t *>(surface.uv.data()), surface.uv.size() * sizeof(Vector2)) != OK ||
+						content.update(reinterpret_cast<const uint8_t *>(surface.indices.data()), surface.indices.size() * sizeof(unsigned int)) != OK,
+					FAILED);
 			const Array arrays = surface.arrays();
 			ERR_FAIL_COND_V(arrays.size() != Mesh::ARRAY_MAX, ERR_OUT_OF_MEMORY);
 			const int slot = mesh->get_surface_count();
@@ -444,9 +520,23 @@ struct SceneImport {
 			ERR_FAIL_COND_V(mesh->get_surface_count() != slot + 1, ERR_INVALID_DATA);
 			mesh->surface_set_material(slot, materials[role]);
 			mesh->surface_set_name(slot, role == 0 ? "bark" : "leaves");
-			unique_triangles[role] += surface.indices.size() / 3;
 		}
-		ERR_FAIL_COND_V(mesh->get_surface_count() == 0, ERR_INVALID_DATA);
+		if (mesh->get_surface_count() == 0) {
+			mesh.unref(); // A zero-area prototype contributes no visible coverage.
+		}
+		std::array<uint8_t, 32> digest;
+		ERR_FAIL_COND_V(content.finish(digest.data()) != OK, FAILED);
+		const auto same_value = geometry_values.find(digest);
+		if (same_value != geometry_values.end()) {
+			mesh = same_value->second;
+			++reused_mesh_values;
+		} else {
+			ERR_FAIL_COND_V(geometry_values.size() >= 65536, ERR_OUT_OF_MEMORY);
+			geometry_values.emplace(digest, mesh);
+			for (int role = 0; role < 2; ++role) {
+				unique_triangles[role] += surfaces[role].indices.size() / 3;
+			}
+		}
 		meshes.emplace(key, mesh);
 		r_mesh = mesh;
 		return OK;
@@ -545,8 +635,10 @@ struct SceneImport {
 				Ref<ArrayMesh> mesh;
 				Error error = geometry(p_node, mesh);
 				ERR_FAIL_COND_V(error != OK, error);
-				error = append(r_parts, { mesh, Transform3D() }, p_relative * transform(p_node.get_world_matrix()));
-				ERR_FAIL_COND_V(error != OK, error);
+				if (mesh.is_valid()) {
+					error = append(r_parts, { mesh, Transform3D() }, p_relative * transform(p_node.get_world_matrix()));
+					ERR_FAIL_COND_V(error != OK, error);
+				}
 			}
 		}
 		for (const auto &child : p_node.children) {
@@ -557,7 +649,7 @@ struct SceneImport {
 	}
 
 	Error pack(const std::vector<ScenePart> &p_parts, Ref<PackedScene> &r_scene) {
-		ERR_FAIL_COND_V(p_parts.empty() || unique_triangles[1] == 0, ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(p_parts.empty(), ERR_INVALID_DATA);
 		struct Batch {
 			Ref<ArrayMesh> mesh;
 			std::vector<Transform3D> placements;
@@ -591,6 +683,11 @@ struct SceneImport {
 			normalization.origin = Vector3(rooted ? 0 : -bounds.get_center().x * scale, -bounds.position.y * scale, rooted ? 0 : -bounds.get_center().z * scale);
 			ERR_FAIL_COND_V(!normalization.is_finite() || !Math::is_finite(normalization.basis.determinant()) || normalization.basis.determinant() == 0, ERR_INVALID_DATA);
 		}
+		if (asset_coordinates) {
+			for (const auto &part : p_parts) {
+				ERR_FAIL_COND_V(!(normalization * part.transform).affine_inverse().is_finite(), ERR_INVALID_DATA);
+			}
+		}
 		Node3D *root = memnew(Node3D);
 		root->set_name("SourceTree");
 		root->set_unique_scene_id(1);
@@ -616,9 +713,10 @@ struct SceneImport {
 					// An opted-in shader receives asset-space height coefficients
 					// and the asset origin in prototype coordinates. Both remain
 					// valid when a later scene composes the full instance basis.
-					const Vector3 height(placement.basis.get_column(0).y, placement.basis.get_column(1).y, placement.basis.get_column(2).y);
-					const Vector3 origin = placement.affine_inverse().origin;
-					multimesh->set_instance_color(index, Color(height.x, height.y, height.z, placement.origin.y));
+					const Transform3D asset_placement = normalization * placement;
+					const Vector3 height(asset_placement.basis.get_column(0).y, asset_placement.basis.get_column(1).y, asset_placement.basis.get_column(2).y);
+					const Vector3 origin = asset_placement.affine_inverse().origin;
+					multimesh->set_instance_color(index, Color(height.x, height.y, height.z, asset_placement.origin.y));
 					multimesh->set_instance_custom_data(index, Color(origin.x, origin.y, origin.z, 1));
 				}
 			}
@@ -742,23 +840,34 @@ Error import_scene(const Dictionary &job, Dictionary &result) {
 			Dictionary report;
 			String message;
 			CookerVirtualGeometry::Settings settings;
-			settings.max_source_vertices = 2000000;
-			settings.max_output_bytes = 256ull * 1024 * 1024;
+			// Composed USD models retain every unique prototype. Their aggregate
+			// page output is separate from the ordinary recipe/fragment allowance.
+			settings.max_source_vertices = 4000000;
+			settings.max_output_bytes = 1024ull * 1024 * 1024;
 			settings.dag.preserve_area = options.get("preserve_area", false);
 			e = CookerVirtualGeometry::convert_imported_scene(scene, prepared, builds, report, message, explicit_geometry ? &settings : nullptr);
 			ERR_FAIL_COND_V_MSG(e != OK, e, message);
 			e = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 			ERR_FAIL_COND_V(e != OK, e);
-			Array containers;
-			e = CookerVirtualGeometry::publish_resource_containers(prepared, builds, output, 256ull * 1024 * 1024, containers);
+			CookerTextures::Builder textures;
+			Variant normalized = prepared;
+			e = textures.Normalize(normalized);
+			ERR_FAIL_COND_V(e != OK, e);
+			Array render_outputs;
+			const Ref<PackedScene> published_scene = prepared;
+			e = CookerRender::save(published_scene, output.get_base_dir(), render_outputs, settings.max_output_bytes, &builds);
 			ERR_FAIL_COND_V(e != OK, e);
 			e = CookerAtomicSave::save_resource(prepared, output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 			result["virtual_geometry"] = report;
-			result["geometry_outputs"] = containers;
+			result["render_outputs"] = render_outputs;
 			result["source_prototypes"] = int64_t(shared.prototypes.size());
 			result["source_instances"] = shared.authored_instances;
 			result["visible_point_instances"] = int64_t(shared.visible_point_instances);
 			result["source_unique_triangles"] = importer.source_triangles;
+			result["source_zero_area_triangles"] = int64_t(shared.zero_area_triangles);
+			result["source_mesh_values"] = int64_t(shared.geometry_values.size());
+			result["reused_source_mesh_values"] = int64_t(shared.reused_mesh_values);
+			result["unique_geometry_triangles"] = int64_t(shared.unique_triangles[0] + shared.unique_triangles[1]);
 			result["bark_triangles"] = int64_t(shared.instanced_triangles[0]);
 			result["leaf_triangles"] = int64_t(shared.instanced_triangles[1]);
 			result["source_representation"] = "shared_complete_prototypes";

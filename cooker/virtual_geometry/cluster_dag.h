@@ -92,6 +92,10 @@ struct DagBuildResult {
 	SimplificationReport simplification_report;
 };
 
+// Borrowed for one build. The executor must run every index once and join all
+// work before returning. Workers only read the current level and own outputs.
+using DagGroupExecutor = void (*)(void *p_context, uint32_t p_count, void (*p_work)(void *, uint32_t));
+
 // Builds the complete raw cluster replacement DAG from one high-detail mesh.
 // Groups use 8/32 strict graph targets. Reduction retries start from the same
 // merged input, with target cluster sizes 126,124,...,66. Every parent of one
@@ -102,7 +106,7 @@ struct DagBuildResult {
 // set. Published groups never contain boundary movement or fallback removal.
 // Input and old output survive refusal. This owns CPU build geometry only;
 // encoded vertex/material limits, pages and GPU traversal are separate stages.
-DagBuildResult build_cluster_dag(const GeometryBuildInput &p_input, const DagBuildSettings &p_settings, GeometryDag &r_dag);
+DagBuildResult build_cluster_dag(const GeometryBuildInput &p_input, const DagBuildSettings &p_settings, GeometryDag &r_dag, DagGroupExecutor p_executor = nullptr);
 
 } // namespace VirtualGeometry
 

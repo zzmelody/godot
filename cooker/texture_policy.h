@@ -13,7 +13,9 @@ class JobScope {
   explicit JobScope(const Dictionary& job) : previous_(maximum_dimension) {
     maximum_dimension = job.get("max_texture_dimension", 1024);
   }
-  ~JobScope() { maximum_dimension = previous_; }
+  ~JobScope() {
+    maximum_dimension = previous_;
+  }
 
  private:
   int previous_;
@@ -42,6 +44,13 @@ inline Error PrepareImage(const Ref<Image>& image, int maximum, bool normal) {
 class Builder {
  public:
   Error Normalize(Variant& value, bool normal = false, int depth = 0) {
+    bool replaced = false;
+    return NormalizeValue(value, normal, depth, replaced);
+  }
+
+ private:
+  Error NormalizeValue(Variant& value, bool normal, int depth, bool& replaced) {
+    replaced = false;
     if (depth > 128) {
       return ERR_PARAMETER_RANGE_ERROR;
     }
@@ -49,11 +58,16 @@ class Builder {
       Array array = value;
       for (int index = 0; index < array.size(); ++index) {
         Variant child = array[index];
-        const Error error = Normalize(child, normal, depth + 1);
+        bool child_replaced = false;
+        const Error error =
+            NormalizeValue(child, normal, depth + 1, child_replaced);
         if (error != OK) {
           return error;
         }
-        array[index] = child;
+        if (child_replaced) {
+          array[index] = child;
+          replaced = true;
+        }
       }
       return OK;
     }
@@ -62,11 +76,16 @@ class Builder {
       for (const Variant* key = dictionary.next(); key;
            key = dictionary.next(key)) {
         Variant child = dictionary[*key];
-        const Error error = Normalize(child, normal, depth + 1);
+        bool child_replaced = false;
+        const Error error =
+            NormalizeValue(child, normal, depth + 1, child_replaced);
         if (error != OK) {
           return error;
         }
-        dictionary[*key] = child;
+        if (child_replaced) {
+          dictionary[*key] = child;
+          replaced = true;
+        }
       }
       return OK;
     }
@@ -82,6 +101,7 @@ class Builder {
       const auto id = texture->get_instance_id();
       if (const auto* prior = textures_.getptr(id)) {
         value = *prior;
+        replaced = true;
         return OK;
       }
       Ref<Image> image = texture->get_image();
@@ -116,8 +136,9 @@ class Builder {
       const bool hdr = image->get_format() == Image::FORMAT_RGBF ||
                        image->get_format() == Image::FORMAT_RGBH;
       compressed->create_from_image(
-          image, hdr ? PortableCompressedTexture2D::COMPRESSION_MODE_BPTC
-                     : PortableCompressedTexture2D::COMPRESSION_MODE_BASIS_UNIVERSAL,
+          image,
+          hdr ? PortableCompressedTexture2D::COMPRESSION_MODE_BPTC
+              : PortableCompressedTexture2D::COMPRESSION_MODE_BASIS_UNIVERSAL,
           normal);
       if (compressed->get_width() != image->get_width() ||
           compressed->get_height() != image->get_height()) {
@@ -125,6 +146,7 @@ class Builder {
       }
       textures_.insert(id, compressed);
       value = compressed;
+      replaced = true;
       return OK;
     }
     if (visited_.has(resource->get_instance_id())) {
@@ -135,17 +157,24 @@ class Builder {
     resource->get_property_list(&properties);
     for (const auto& property : properties) {
       if (!(property.usage & PROPERTY_USAGE_STORAGE) ||
-          (property.type != Variant::OBJECT && property.type != Variant::ARRAY &&
+          (property.type != Variant::OBJECT &&
+           property.type != Variant::ARRAY &&
            property.type != Variant::DICTIONARY)) {
         continue;
       }
       Variant child = resource->get(property.name);
       const bool is_normal = String(property.name).contains("normal");
-      const Error error = Normalize(child, is_normal, depth + 1);
+      bool child_replaced = false;
+      const Error error =
+          NormalizeValue(child, is_normal, depth + 1, child_replaced);
       if (error != OK) {
         return error;
       }
-      resource->set(property.name, child);
+      // Material/Shader objects can change internally without changing their
+      // binding. Do not rewrite immutable geometry dictionaries in that case.
+      if (child_replaced) {
+        resource->set(property.name, child);
+      }
     }
     return OK;
   }

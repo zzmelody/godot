@@ -8,7 +8,7 @@ namespace VirtualGeometry {
 
 constexpr uint32_t GEOMETRY_DISK_PAGE_MAGIC = 0x47504756; // VGPG
 constexpr uint32_t GEOMETRY_GPU_PAGE_MAGIC = 0x50474756; // VGGP
-constexpr uint32_t GEOMETRY_PAGE_VERSION = 2;
+constexpr uint32_t GEOMETRY_PAGE_VERSION = 3;
 constexpr uint32_t GEOMETRY_PAGE_HEADER_BYTES = 32;
 constexpr uint32_t GEOMETRY_PAGE_CLUSTER_BYTES = 288;
 
@@ -41,7 +41,7 @@ struct GeometryPage {
 };
 
 struct GeometryPageSizes {
-	uint32_t disk_bytes = 0;
+	uint32_t disk_bytes = 0; // Upper bound before page-local vertex sharing.
 	uint32_t gpu_bytes = 0;
 };
 
@@ -69,15 +69,17 @@ struct PageCodecResult {
 };
 
 // Structural sizing for offline page packing, without decoding the payloads.
+// disk_bytes is a bound; encode may emit fewer bytes through vertex sharing.
 // Counts and byte lengths are bounded; encode/decode additionally check values.
 // Root pages fit 32 KiB/64 clusters, detail pages 128 KiB/256 clusters after
 // transcode. Disk bytes and GPU bytes are deliberately separate quantities.
 PageCodecResult measure_geometry_page(const GeometryPage &p_page, GeometryPageSizes &r_sizes);
 
 // Explicit little-endian records, canonical four-byte-aligned payload ranges,
-// zero padding, no serialized native structs. All clusters are self-contained
-// in this initial disk representation; cross-cluster vertex references and
-// byte-plane deltas are not implemented yet. Input is borrowed for the call.
+// zero padding, no serialized native structs. Unique vertices use wrapped
+// ZigZag deltas in four byte planes. References name a directly coded vertex
+// in this page, including earlier clusters; there are no reference chains.
+// Input is borrowed for the call. GPU payloads retain their packed bit layout.
 // Disk record word 71 is the canonical GPU payload byte offset. The GPU record
 // keeps word 71 zero; no physical page/pool address is stored in an asset.
 // Old output survives every refusal. No file, engine object or GPU operations.
@@ -89,8 +91,8 @@ PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, Geom
 // or triangle arrays. This is not content admission or a CPU transcode path.
 PageCodecResult validate_geometry_page_layout(const uint8_t *p_bytes, size_t p_size);
 
-// Bounded CPU oracle for the future GPU installer. Converts disk strips into
-// minimum-base/delta triangles and copies compressed positions/attributes.
+// Bounded CPU oracle for the GPU installer. Converts disk strips into
+// minimum-base/delta triangles and restores packed positions/attributes.
 // Material table offsets are relocated to the GPU page's word addresses.
 // This does not install a page or provide a CPU runtime rendering path.
 PageCodecResult transcode_geometry_page_cpu(const uint8_t *p_bytes, size_t p_size, std::vector<uint8_t> &r_gpu_bytes);

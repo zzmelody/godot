@@ -505,8 +505,8 @@ private:
 	Error virtual_geometry_prepare_materials(const TypedArray<RID> &p_materials) override;
 	Ref<RenderBufferDataForwardClustered> _virtual_geometry_data(const Ref<RenderSceneBuffersRD> &p_buffers);
 	bool _virtual_geometry_batch(RenderGeometryInstance *p_instance, RendererRD::VirtualGeometrySelection::Batch &r_batch) const;
-	RendererRD::VirtualGeometrySelection *virtual_geometry_shadow_selection = nullptr;
-	RendererRD::VirtualGeometryRasterizer *virtual_geometry_shadow_raster = nullptr;
+	RendererRD::VirtualGeometrySelection *virtual_geometry_aux_selection = nullptr;
+	RendererRD::VirtualGeometryRasterizer *virtual_geometry_aux_raster = nullptr;
 	struct VirtualGeometryColorWork {
 		RID program;
 		RID pipeline;
