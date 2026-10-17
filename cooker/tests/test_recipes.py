@@ -83,16 +83,17 @@ class RecipeTests(unittest.TestCase):
         report = json.loads(next(line for line in run.stdout.splitlines() if line.startswith('{')))
         self.assertEqual(report["script_languages"], 0)
         self.assertEqual(report["recipe_runtime"]["version"], "0.738")
-        self.assertEqual(report["recipe_runtime"]["api_version"], 8)
+        self.assertEqual(report["recipe_runtime"]["api_version"], 10)
         for name in ("field", "sample", "field_info", "points", "child_names", "children", "parts"):
             self.assertIn(name, report["recipe_runtime"]["apis"])
         self.assertIn("scene", report["recipe_runtime"]["apis"])
+        self.assertIn("virtual_geometry", report["recipe_runtime"]["apis"])
         self.assertIn("procedural_texture", report["recipe_runtime"]["apis"])
         self.assertIn("effect", report["recipe_runtime"]["apis"])
         self.assertEqual(report["pipeline_runtime"]["language"], "Luau")
         self.assertEqual(report["pipeline_runtime"]["api_version"], 1)
         # All recipe jobs below run with PATH pointing at an empty/nonexistent directory.
-        report = self.recipe()
+        report = self.recipe(output="res://assets/runtime/model/basic/box.res")
         self.assertEqual(report["type"], "BoxMesh")
         self.assertGreater(report["vertices"], 0)
 
@@ -197,6 +198,142 @@ return {
             with self.subTest(code=code[:40]):
                 self.pipeline(code, success=False)
 
+    def test_virtual_geometry_builds_root_and_content_addressed_container(self):
+        result = self.recipe('''
+local source = cooker.primitive("box", {size={2,3,4}})
+local first = cooker.virtual_geometry(source, {})
+local second = cooker.virtual_geometry(source, {})
+local bounds = cooker.bounds(second)
+assert(bounds.max[1] >= 1 and bounds.min[1] <= -1)
+return second
+''', output="res://assets/runtime/model/vg/model.res", limits={"max_vertices": 24})
+        self.assertEqual(result["type"], "VirtualGeometryMesh")
+        self.assertEqual(result["virtual_geometry_builds"], 1)
+        report = result["virtual_geometry"]
+        self.assertEqual(report["source_triangles"], 12)
+        self.assertEqual(report["source_surfaces"], 1)
+        self.assertEqual(result["vertices"], 24)
+        self.assertEqual(report["verified_pages"], report["pages"])
+        self.assertLessEqual(report["gpu_payload_bytes"], report["gpu_page_capacity_bytes"])
+        self.assertFalse(report["render_ready"])
+        self.assertEqual(len(report["build_key"]), 64)
+        files = result["geometry_outputs"]
+        self.assertEqual(len(files), 1)
+        container = self.project / files[0]["path"].removeprefix("res://")
+        data = container.read_bytes()
+        self.assertEqual(data[:4], b"VGPG")
+        self.assertEqual(len(data), report["container_bytes"])
+        self.assertEqual(files[0]["sha256"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(container.name, "geometry--" + files[0]["sha256"] + ".vgp")
+        os.utime(container, (1234567890, 1234567890))
+        timestamp = container.stat().st_mtime_ns
+        repeated = self.recipe('return cooker.virtual_geometry(cooker.primitive("box", {size={2,3,4}}), {})',
+                               output="res://assets/runtime/model/vg/repeated.res")
+        self.assertEqual(repeated["geometry_outputs"], files)
+        self.assertEqual(repeated["virtual_geometry"]["build_key"], report["build_key"])
+        self.assertEqual(container.stat().st_mtime_ns, timestamp)
+        self.assertEqual(len(list(container.parent.glob("*.vgp"))), 1)
+        self.assertEqual(result["vertices"], repeated["vertices"])
+
+    def test_virtual_geometry_preserves_mixed_surface_materials_without_source_mesh_dependency(self):
+        if REFERENCE is None:
+            self.skipTest("resource round trip needs the matching private editor")
+        directory = self.project / "assets/runtime/model/vg"
+        directory.mkdir(parents=True)
+        source = self.project / "make_source.gd"
+        source.write_text('''extends SceneTree
+func _initialize():
+    var mesh = ArrayMesh.new()
+    var red = StandardMaterial3D.new()
+    red.albedo_color = Color(0.8,0.1,0.2)
+    var green = StandardMaterial3D.new()
+    green.albedo_color = Color(0.1,0.7,0.3)
+    for surface in 3:
+        var arrays = []
+        arrays.resize(Mesh.ARRAY_MAX)
+        var offset = Vector3(surface,0,0)
+        arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([offset,offset+Vector3(0,1,0),offset+Vector3(1,0,0)])
+        if surface != 1:
+            arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([Vector3(0,0,1),Vector3(0,0,1),Vector3(0,0,1)])
+        if surface == 0:
+            arrays[Mesh.ARRAY_TANGENT] = PackedFloat32Array([1,0,0,1,1,0,0,1,1,0,0,1])
+            arrays[Mesh.ARRAY_COLOR] = PackedColorArray([Color.RED,Color.GREEN,Color.BLUE])
+            arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array([Vector2.ZERO,Vector2(0,1),Vector2(1,0)])
+        if surface == 1:
+            arrays[Mesh.ARRAY_TEX_UV2] = PackedVector2Array([Vector2(2,3),Vector2(4,5),Vector2(6,7)])
+        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+        mesh.surface_set_material(surface, green if surface == 1 else red)
+    assert(ResourceSaver.save(mesh,"res://assets/runtime/model/vg/source.res") == OK)
+    quit()
+''')
+        made = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project), "--script", "res://make_source.gd"],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        self.assertEqual(made.returncode, 0, made.stdout + made.stderr)
+        self.assertNotIn("ERROR:", made.stdout + made.stderr)
+        result = self.recipe('return cooker.virtual_geometry("source", {})',
+                             inputs={"source": "res://assets/runtime/model/vg/source.res"},
+                             output="res://assets/runtime/model/vg/model.res")
+        report = result["virtual_geometry"]
+        self.assertEqual(report["source_triangles"], 3)
+        self.assertEqual(report["source_surfaces"], 3)
+        self.assertEqual(report["uv_sets"], 2)
+        self.assertTrue(report["has_tangents"])
+        self.assertTrue(report["has_colors"])
+        (directory / "source.res").unlink()
+        inspect = self.project / "inspect.gd"
+        inspect.write_text('''extends SceneTree
+func _initialize():
+    var path = "res://assets/runtime/model/vg/model.res"
+    var mesh = load(path) as VirtualGeometryMesh
+    assert(mesh != null and mesh.has_geometry())
+    assert(mesh.get_surface_count() == 3)
+    var red = mesh.surface_get_material(0) as StandardMaterial3D
+    var green = mesh.surface_get_material(1) as StandardMaterial3D
+    assert(is_equal_approx(red.albedo_color.r,0.8))
+    assert(is_equal_approx(green.albedo_color.g,0.7))
+    assert(mesh.surface_get_material(2) == red)
+    assert(ResourceLoader.get_dependencies(path).is_empty())
+    var data = mesh.get_geometry_data()
+    var root_bytes: PackedByteArray = data.root
+    assert(root_bytes.slice(0,4).get_string_from_ascii() == "VGMR")
+    assert(root_bytes.decode_u32(44) == 3)
+    assert(FileAccess.file_exists(path.get_base_dir().path_join(data.container)))
+    print("VG_COOKER_MATERIALS: passed")
+    quit()
+''')
+        checked = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project), "--script", "res://inspect.gd"],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("VG_COOKER_MATERIALS: passed", checked.stdout)
+        self.assertNotIn("ERROR:", checked.stdout + checked.stderr)
+
+    def test_virtual_geometry_refusals_do_not_publish_or_overwrite(self):
+        for options in ("{unknown=true}", "{normal_bits=2.5}", "{position_precision=44}", "{preserve_area=1}"):
+            output = f"res://assets/runtime/model/vg/rejected-{self.index}.res"
+            self.recipe('return cooker.virtual_geometry(cooker.primitive("box", {}),' + options + ')', False,
+                        output=output)
+            self.assertFalse((self.project / output.removeprefix("res://")).exists())
+        for expression in ('cooker.virtual_geometry(mesh,{})', 'cooker.scene({{asset=mesh}})',
+                           'cooker.collision(mesh,"trimesh")', 'cooker.minimum_visual(mesh,{})',
+                           '(function() error("after build") end)()',
+                           '(function() pcall(function() cooker.virtual_geometry(mesh,{}) end); return cooker.primitive("box",{}) end)()'):
+            output = f"res://assets/runtime/model/vg/rejected-{self.index}.res"
+            self.recipe('local mesh=cooker.virtual_geometry(cooker.primitive("box",{}),{})\nreturn ' + expression,
+                        False, output=output)
+            self.assertFalse((self.project / output.removeprefix("res://")).exists())
+        self.assertFalse(list(self.project.rglob("*.vgp")))
+        result = self.recipe('return cooker.virtual_geometry(cooker.primitive("box",{}),{})',
+                             output="res://assets/runtime/model/vg/first.res")
+        record = result["geometry_outputs"][0]
+        container = self.project / record["path"].removeprefix("res://")
+        container.write_bytes(b"existing data must survive")
+        failed = self.recipe('return cooker.virtual_geometry(cooker.primitive("box",{}),{})', False,
+                             output="res://assets/runtime/model/vg/conflict.res")
+        self.assertEqual(failed["error"], 32)  # ERR_ALREADY_EXISTS.
+        self.assertEqual(container.read_bytes(), b"existing data must survive")
+        self.assertFalse((container.parent / "conflict.res").exists())
+        self.assertFalse(list(self.project.rglob("*.partial*")))
+
     def test_primitives_material_and_mesh(self):
         for code, kind in [
             ('return cooker.primitive("sphere", {radius=2,segments=12,rings=6})', "SphereMesh"),
@@ -205,7 +342,8 @@ return {
             ('return cooker.mesh({vertices={{0,0,0},{1,0,0},{0,0,1}},indices={1,2,3},uvs={{0,0},{1,0},{0,1}}})', "ArrayMesh"),
         ]:
             with self.subTest(kind=kind):
-                result = self.recipe(code)
+                asset_kind = "material" if kind == "StandardMaterial3D" else "model"
+                result = self.recipe(code, output=f"res://assets/runtime/{asset_kind}/basic/result-{self.index}.res")
                 self.assertEqual(result["type"], kind)
                 self.job({"operation": "validate-resource", "source": result["output"], "type": kind})
 

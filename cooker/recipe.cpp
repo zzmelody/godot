@@ -6,6 +6,7 @@
 #include "heightfield_support.h"
 #include "minimum_visual.h"
 #include "render_dependencies.h"
+#include "virtual_geometry_mesh.h"
 
 #include "core/io/json.h"
 #include "core/io/image.h"
@@ -53,6 +54,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace CookerRecipe {
@@ -85,6 +87,7 @@ struct Recipe {
 	Limits limits;
 	lua_State *L = nullptr;
 	const char *fault = nullptr;
+	std::string host_message;
 	bool memory_failed = false;
 	size_t allocated = 0, peak_memory = 0;
 	int vertices = 0, instances = 0;
@@ -106,6 +109,10 @@ struct Recipe {
 	std::map<size_t, FieldView> field_views;
 	std::map<ObjectID, OwnedNode> part_roots;
 	std::map<ObjectID, size_t> part_handles;
+	using GeometryCacheKey = std::tuple<uint64_t, bool, double, int32_t, uint32_t, uint32_t, bool>;
+	std::map<GeometryCacheKey, ObjectID> geometry_cache;
+	std::map<ObjectID, CookerVirtualGeometry::BuildOutput> geometry_builds;
+	uint64_t geometry_pending_bytes = 0;
 
 	~Recipe() { if (L) lua_close(L); }
 	static Recipe &self(lua_State *p_state) { return *static_cast<Recipe *>(lua_callbacks(p_state)->userdata); }
@@ -297,9 +304,14 @@ struct Recipe {
 		Ref<Mesh> mesh = p_resource;
 		if (mesh.is_valid() && !accounted_meshes.has(mesh->get_instance_id())) {
 			accounted_meshes.insert(mesh->get_instance_id());
-			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
-				vertices += mesh->surface_get_array_len(surface);
-				require(vertices <= limits.max_vertices, "mesh vertex budget exceeded");
+			if (Ref<VirtualGeometryMesh>(mesh).is_valid()) {
+				const auto built = geometry_builds.find(mesh->get_instance_id());
+				require(built != geometry_builds.end(), "virtual geometry source accounting is missing");
+			} else {
+				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
+					vertices += mesh->surface_get_array_len(surface);
+					require(vertices <= limits.max_vertices, "mesh vertex budget exceeded");
+				}
 			}
 		}
 		Ref<PackedScene> packed = p_resource;
@@ -877,6 +889,7 @@ struct Recipe {
                   "collision expects mesh, kind and optional simplification");
 		Ref<Mesh> mesh = s.handle(1);
 		s.require(mesh.is_valid(), "collision requires a Mesh handle");
+		s.require(Ref<VirtualGeometryMesh>(mesh).is_null(), "collision requires the original ordinary Mesh, not encoded virtual geometry");
 		const String kind = s.string(2);
 		if (kind == "heightmap") {
 			s.require(lua_gettop(p_state) == 3, "heightmap requires grid options");
@@ -1062,12 +1075,74 @@ struct Recipe {
                   options.texture_size >= 16 && options.texture_size <= 1024 &&
                   options.minimum_height >= 0 && options.minimum_height <= 100,
               "minimum_visual options are outside the supported range");
-    CookerMinimum::Builder builder(options);
+	s.require(Ref<VirtualGeometryMesh>(resource).is_null(), "minimum_visual requires the original ordinary resource");
+	CookerMinimum::Builder builder(options);
     Ref<Resource> output = builder.Build(resource);
     s.require(output.is_valid(),
               "minimum_visual requires valid static geometry or material");
     return s.push_resource(output);
   }
+  static int virtual_geometry(lua_State *p_state) {
+	  auto &s = self(p_state);
+	  s.arity(2);
+	  Ref<Resource> resource;
+	  if (lua_type(p_state, 1) == LUA_TSTRING) {
+		  const String name = s.string(1);
+		  s.require(s.inputs.has(name), "virtual_geometry input is not declared");
+		  resource = s.inputs[name];
+	  } else {
+		  resource = s.handle(1);
+	  }
+	  const Ref<Mesh> source = resource;
+	  s.require(source.is_valid() && Ref<VirtualGeometryMesh>(source).is_null(), "virtual_geometry requires an ordinary source Mesh");
+	  s.fields(2, { "preserve_area", "max_edge_length_factor", "position_precision", "normal_bits", "tangent_bits", "interpolate_uvs" });
+	  CookerVirtualGeometry::Settings settings;
+	  settings.dag.preserve_area = s.boolean_field(2, "preserve_area", false);
+	  settings.dag.max_edge_length_factor = s.number_field(2, "max_edge_length_factor", 0, 0, 100000);
+	  settings.interpolate_uvs = s.boolean_field(2, "interpolate_uvs", true);
+	  s.field(2, "position_precision");
+	  if (!lua_isnil(p_state, -1)) {
+		  const double value = s.number(-1, -20, 43);
+		  s.require(value == std::floor(value), "position_precision must be an integer");
+		  settings.encoding.position_precision = int32_t(value);
+	  }
+	  lua_pop(p_state, 1);
+	  const double normal_bits = s.number_field(2, "normal_bits", 8, 1, 15);
+	  const double tangent_bits = s.number_field(2, "tangent_bits", 7, 1, 12);
+	  s.require(normal_bits == std::floor(normal_bits) && tangent_bits == std::floor(tangent_bits), "virtual geometry attribute precision must be integral");
+	  settings.encoding.normal_bits = uint32_t(normal_bits);
+	  settings.encoding.tangent_bits = uint32_t(tangent_bits);
+	  const GeometryCacheKey key = std::make_tuple(uint64_t(source->get_instance_id()), settings.dag.preserve_area,
+			  settings.dag.max_edge_length_factor, settings.encoding.position_precision, settings.encoding.normal_bits,
+			  settings.encoding.tangent_bits, settings.interpolate_uvs);
+	  const auto cached = s.geometry_cache.find(key);
+	  if (cached != s.geometry_cache.end()) {
+		  return s.push_resource(s.geometry_builds.at(cached->second).mesh);
+	  }
+	  s.require(s.resources.size() < size_t(s.limits.max_resources), "asset resource limit exceeded");
+	  const bool source_accounted = s.accounted_meshes.has(source->get_instance_id());
+	  settings.max_source_vertices = uint32_t(source_accounted ? s.limits.max_vertices : s.limits.max_vertices - s.vertices);
+	  settings.max_output_bytes = uint64_t(s.limits.output_mb) * 1024 * 1024 - s.geometry_pending_bytes;
+	  s.require(settings.max_output_bytes > 0, "virtual geometry output budget exceeded");
+	  CookerVirtualGeometry::BuildOutput built;
+	  String message;
+	  const Error error = CookerVirtualGeometry::build(source, settings, built, message);
+	  if (error != OK) {
+		  s.host_message = message.utf8().get_data();
+		  s.require(false, s.host_message.c_str());
+	  }
+	  const Ref<VirtualGeometryMesh> mesh = built.mesh;
+	  const ObjectID id = mesh->get_instance_id();
+	  if (!source_accounted) {
+		  s.accounted_meshes.insert(source->get_instance_id());
+		  s.vertices += built.source_vertices;
+	  }
+	  s.geometry_pending_bytes += built.container.size() + uint64_t(int64_t(built.report["root_bytes"]));
+	  s.geometry_builds.emplace(id, std::move(built));
+	  s.geometry_cache.emplace(key, id);
+	  return s.push_resource(mesh);
+  }
+
   static int primitive(lua_State* p_state) {
     auto& s = self(p_state);
     s.arity(2);
@@ -1193,6 +1268,7 @@ struct Recipe {
 			s.require(cull_margin >= 0 && cull_margin <= 32, "cull_margin must be in [0,32]");
 			Ref<Mesh> mesh = asset;
 			if (mesh.is_valid()) {
+				s.require(Ref<VirtualGeometryMesh>(mesh).is_null(), "virtual geometry scene installation requires GPU storage, which is not connected yet");
 				if (s.boolean_field(item, "lightmap", false)) {
 					auto *node = memnew(MeshInstance3D);
 					node->set_name(s.string_field(item, "name", "Mesh" + itos(i)));
@@ -1720,7 +1796,7 @@ struct Recipe {
 		for (const char *name : {"random", "randomseed", "noise"}) { lua_pushnil(p_state); lua_setfield(p_state, -2, name); }
 		lua_pop(p_state, 1);
 		lua_newtable(p_state);
-		const luaL_Reg methods[] = {{"resource_index", resource_index}, {"primitive", primitive}, {"material", material}, {"procedural_texture", procedural_texture}, {"effect", effect}, {"atmosphere", atmosphere}, {"camera_attributes", camera_attributes}, {"cloud_mask", cloud_mask}, {"mesh", mesh}, {"collision", collision}, {"minimum_visual", minimum_visual}, {"scene", scene}, {"lightmap_scene", lightmap_scene}, {"field", field_raster}, {"sample", sample}, {"field_info", field_info}, {"points", points}, {"child_names", child_names}, {"children", children}, {"parts", parts}, {"input", input}, {"bounds", bounds}, {"random", random}, {nullptr, nullptr}};
+		const luaL_Reg methods[] = { { "resource_index", resource_index }, { "primitive", primitive }, { "material", material }, { "procedural_texture", procedural_texture }, { "effect", effect }, { "atmosphere", atmosphere }, { "camera_attributes", camera_attributes }, { "cloud_mask", cloud_mask }, { "mesh", mesh }, { "collision", collision }, { "minimum_visual", minimum_visual }, { "virtual_geometry", virtual_geometry }, { "scene", scene }, { "lightmap_scene", lightmap_scene }, { "field", field_raster }, { "sample", sample }, { "field_info", field_info }, { "points", points }, { "child_names", child_names }, { "children", children }, { "parts", parts }, { "input", input }, { "bounds", bounds }, { "random", random }, { nullptr, nullptr } };
 		for (const auto *method = methods; method->name; ++method) { lua_pushcfunction(p_state, method->func, method->name); lua_setfield(p_state, -2, method->name); }
 		s.push_json(s.parameters); lua_setfield(p_state, -2, "parameters");
 		lua_setreadonly(p_state, -1, true); lua_setglobal(p_state, "cooker");
@@ -1768,9 +1844,12 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 9; result["operation"] = "run-recipe";
+	result["api_version"] = 10;
+	result["operation"] = "run-recipe";
 	Array apis;
-	for (const char *name : {"resource_index", "primitive", "mesh", "collision", "minimum_visual", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "child_names", "children", "parts", "input", "bounds", "random", "parameters"}) apis.push_back(name);
+	for (const char *name : { "resource_index", "primitive", "mesh", "collision", "minimum_visual", "virtual_geometry", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "child_names", "children", "parts", "input", "bounds", "random", "parameters" }) {
+		apis.push_back(name);
+	}
 	result["apis"] = apis;
 	return result;
 }
@@ -1890,6 +1969,20 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	if (error == OK) {
 		Ref<FileAccess> saved = FileAccess::open(temporary, FileAccess::READ);
 		if (saved.is_null() || saved->get_length() > uint64_t(recipe.limits.output_mb) * 1024 * 1024) error = ERR_OUT_OF_MEMORY;
+		if (error == OK && Ref<VirtualGeometryMesh>(recipe.result).is_valid()) {
+			const auto built = recipe.geometry_builds.find(recipe.result->get_instance_id());
+			if (built == recipe.geometry_builds.end()) {
+				error = ERR_INVALID_DATA;
+			} else {
+				Array files;
+				error = CookerVirtualGeometry::publish_container(built->second, output, saved->get_length(),
+						uint64_t(recipe.limits.output_mb) * 1024 * 1024, files);
+				if (error == OK) {
+					r_result["geometry_outputs"] = files;
+					r_result["virtual_geometry"] = built->second.report;
+				}
+			}
+		}
 	}
 	if (error == OK && CookerAtomicSave::occupied(output)) error = ERR_ALREADY_EXISTS;
 	// Replace a stale output in one step; readers keep the old bytes until then.
@@ -1914,6 +2007,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	effect_stats["declared_particles"] = recipe.effect_particles; effect_stats["textures"] = recipe.effect_textures;
 	r_result["effect"] = effect_stats;
 	r_result["field_cells"] = recipe.field_cells; r_result["points"] = recipe.point_count;
+	r_result["virtual_geometry_builds"] = int64_t(recipe.geometry_builds.size());
 	return OK;
 }
 }
