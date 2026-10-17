@@ -26,6 +26,13 @@ enum class GpuFixupError { OK,
 	INVALID_REFERENCE,
 	MEMORY };
 
+// One-time GPU metadata initialization, borrowing a validated model root.
+// Branch word 15 marks paths containing the logical root group. Such paths
+// have no parent LOD cutoff (UE encodes its root sentinel as half-float Inf).
+// Disk metadata stays finite and unchanged. Old output survives refusal.
+GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, uint32_t p_metadata_words,
+		std::vector<GeometryGpuFixup> &r_commands);
+
 // Resolve admitted logical fixups through the installer's slot snapshot.
 // Slots use 32 KiB units; UINT32_MAX means no physical allocation. A runtime
 // branch reference packs slot<<8 | first_cluster, matching UE's page/cluster

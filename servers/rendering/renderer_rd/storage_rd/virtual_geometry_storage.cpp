@@ -199,6 +199,14 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	uint8_t *gpu_data = gpu.ptrw();
 	memset(gpu_data + p_root.size(), 0, table_byte - p_root.size());
 	memset(gpu_data + table_byte, 0xff, gpu_bytes - table_byte);
+	std::vector<VirtualGeometry::GeometryGpuFixup> root_paths;
+	const auto paths = VirtualGeometry::resolve_geometry_gpu_root_paths(root, gpu_bytes / 4, root_paths);
+	if (paths != VirtualGeometry::GpuFixupError::OK) {
+		return paths == VirtualGeometry::GpuFixupError::MEMORY ? ERR_OUT_OF_MEMORY : ERR_INVALID_DATA;
+	}
+	for (const auto &command : root_paths) {
+		encode_uint32(command.value, gpu_data + command.word * 4);
+	}
 	const RID metadata = RD::get_singleton()->storage_buffer_create(gpu_bytes, gpu);
 	if (metadata.is_null()) {
 		return ERR_CANT_CREATE;

@@ -154,7 +154,8 @@ void visit_node(uint id) {
 		if (child_node == INVALID && part == INVALID) { continue; }
 		float edge = projected_edge(instance, meta4(branch + 6u), transform);
 		float threshold = error_scale * uintBitsToFloat(metadata.data[branch + 11u]);
-		if (edge > threshold || !in_frustum(meta3(branch), meta3(branch + 3u), transform)) { continue; }
+		bool root_path = metadata.data[branch + 15u] != 0u;
+		if ((!root_path && edge > threshold) || !in_frustum(meta3(branch), meta3(branch + 3u), transform)) { continue; }
 		if (child_node != INVALID) {
 			uint index = atomicAdd(work.data[1u - parity], 1u);
 			if (index < params.limits.x) {

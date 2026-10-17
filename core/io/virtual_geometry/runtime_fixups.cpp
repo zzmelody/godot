@@ -5,6 +5,36 @@
 
 namespace VirtualGeometry {
 
+GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, uint32_t p_metadata_words,
+		std::vector<GeometryGpuFixup> &r_commands) {
+	const auto &hierarchy = p_root.hierarchy;
+	const uint64_t nodes_end = MODEL_ROOT_HEADER_BYTES / 4 + uint64_t(hierarchy.nodes.size()) * (MODEL_NODE_BYTES / 4);
+	if (hierarchy.nodes.empty() || nodes_end > p_metadata_words) {
+		return GpuFixupError::INVALID_LAYOUT;
+	}
+	try {
+		std::vector<uint8_t> contains_root(hierarchy.nodes.size(), 0);
+		std::vector<GeometryGpuFixup> commands;
+		// The admitted spatial tree has forward child indices, one incoming
+		// edge per node and one visit per part. DAG links are not tree edges.
+		for (size_t end = hierarchy.nodes.size(); end > 0; --end) {
+			const uint32_t node = uint32_t(end - 1);
+			for (uint32_t child = 0; child < HIERARCHY_FANOUT; ++child) {
+				const auto &branch = hierarchy.nodes[node].children[child];
+				const bool root = branch.node != UINT32_MAX ? contains_root[branch.node] != 0 : branch.part != UINT32_MAX && hierarchy.parts[branch.part].group == p_root.root_group;
+				if (root) {
+					contains_root[node] = 1;
+					commands.push_back({ 0, MODEL_ROOT_HEADER_BYTES / 4 + node * (MODEL_NODE_BYTES / 4) + child * 16 + 15, 1, 0 });
+				}
+			}
+		}
+		r_commands = std::move(commands);
+		return GpuFixupError::OK;
+	} catch (const std::bad_alloc &) {
+		return GpuFixupError::MEMORY;
+	}
+}
+
 GpuFixupError resolve_geometry_gpu_fixups(const GeometryModelRoot &p_root, uint32_t p_page, bool p_uninstall,
 		const GeometryFixupUpdates &p_updates, const std::vector<uint32_t> &p_slots,
 		const GeometryGpuLayout &p_layout, std::vector<GeometryGpuFixup> &r_commands) {
