@@ -1930,7 +1930,9 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		// Resolve them through the same bounded collector used by pack jobs.
 		HashSet<ObjectID> visited;
 		error = CookerFiles::collect_render_payloads(resource, visited, files, true);
-		if (error != OK) return reject(r_result, "input render dependency validation failed", error);
+		if (error != OK) {
+			return reject(r_result, "input render dependency validation failed", error);
+		}
 		for (const String &dependency : files) {
 			if (inspected_inputs.has(dependency)) continue;
 			inspected_inputs.insert(dependency);

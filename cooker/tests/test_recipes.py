@@ -250,10 +250,10 @@ return second
         self.assertFalse(checked["render_ready"])
         self.assertNotIn("vertex_count", checked)
         manifest_path = "res://assets/runtime/model/vg/asset.manifest.json"
-        manifest_job = {"operation": "asset-manifest", "output": manifest_path,
-                        "asset_id": "vg", "revision": 1, "kind": "model",
-                        "entry": "model.res", "files": ["model.res"]}
-        self.job(manifest_job)
+        def publish_manifest(output=manifest_path, success=True):
+            return self.pipeline('return {{operation="asset-manifest",output=' + json.dumps(output) +
+                                 ',asset_id="vg",revision=1,kind="model",entry="model.res",files={"model.res"}}}', success)
+        publish_manifest()
         manifest = json.loads((container.parent / "asset.manifest.json").read_text())
         self.assertEqual({row["path"] for row in manifest["files"]}, {"model.res", container.name})
         record = next(row["streaming"] for row in manifest["files"] if row["path"] == "model.res")
@@ -276,7 +276,7 @@ return second
         for payload in (original[:-1], bytes([original[0] ^ 1]) + original[1:]):
             container.write_bytes(payload)
             self.job({"operation": "validate-resource", "source": root_path}, success=False)
-            self.job({**manifest_job, "output": "res://assets/runtime/model/vg/bad.json"}, success=False)
+            publish_manifest("res://assets/runtime/model/vg/bad.json", success=False)
             self.assertFalse((container.parent / "bad.json").exists())
             self.job({"operation": "pack", "output": "res://content/releases/bad.pck", "roots": [root_path]}, success=False)
             self.assertFalse((self.project / "content/releases/bad.pck").exists())
