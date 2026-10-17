@@ -77,9 +77,10 @@ ModelBuildResult pack_geometry_model(const EncodableGeometry &p_geometry, const 
 				return { ModelBuildError::INVALID_INPUT, page };
 			}
 			GeometryPage decoded;
-			if (decode_geometry_page(p_pages.container.data() + source.container_offset, source.disk_bytes, decoded).error != PageCodecError::OK ||
+			const auto decoded_result = decode_geometry_page(p_pages.container.data() + source.container_offset, source.disk_bytes, decoded);
+			if (decoded_result.error != PageCodecError::OK ||
 					decoded.root != (page < p_hierarchy.root_pages) || decoded.clusters.size() != p_hierarchy.pages[page].clusters) {
-				return { ModelBuildError::PAGE_CODEC, page };
+				return { ModelBuildError::PAGE_CODEC, page, {}, decoded_result };
 			}
 			for (uint32_t local = 0; local < decoded.clusters.size(); ++local) {
 				auto &cluster = decoded.clusters[local];
@@ -97,8 +98,9 @@ ModelBuildResult pack_geometry_model(const EncodableGeometry &p_geometry, const 
 				}
 			}
 			std::vector<uint8_t> geometry_bytes;
-			if (encode_geometry_page(decoded, geometry_bytes).error != PageCodecError::OK) {
-				return { ModelBuildError::PAGE_CODEC, page };
+			const auto encoded_result = encode_geometry_page(decoded, geometry_bytes);
+			if (encoded_result.error != PageCodecError::OK) {
+				return { ModelBuildError::PAGE_CODEC, page, {}, encoded_result };
 			}
 			std::vector<uint8_t> fixup_bytes;
 			const auto fixups = encode_geometry_model_fixups(root, page, p_hierarchy.pages[page], fixup_bytes);

@@ -485,7 +485,7 @@ bool disk_vertex_layout(const Record &p_record, const uint8_t *p_bytes, size_t p
 		VertexLayout &r_layout, uint32_t &r_references, uint32_t &r_coded) {
 	if (!vertex_layout(p_record, r_layout) || p_record[4] < 3 || p_record[4] > 256 ||
 			p_record[32] != (p_record[4] * r_layout.position_bits + 7) / 8 ||
-			p_record[38] != (p_record[4] * r_layout.attribute_bits + 7) / 8 ||
+			p_record[38] != ((p_record[4] * r_layout.attribute_bits + 31) / 32) * 4 ||
 			p_record[37] > p_size || 32 > p_size - p_record[37]) {
 		return false;
 	}

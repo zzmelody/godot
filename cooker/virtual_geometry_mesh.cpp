@@ -341,7 +341,7 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 		vg::GeometryModelBundle bundle;
 		const auto packed = vg::pack_geometry_model(geometry, pages, hierarchy, build_key, p_settings.max_output_bytes, bundle);
 		if (packed.error != vg::ModelBuildError::OK) {
-			return refuse(r_message, vformat("virtual_geometry model refused: error=%d page=%d codec=%d", int(packed.error), packed.page, int(packed.codec_result.error)));
+			return refuse(r_message, vformat("virtual_geometry model refused: error=%d page=%d codec=%d page_codec=%d cluster=%d", int(packed.error), packed.page, int(packed.codec_result.error), int(packed.page_result.error), packed.page_result.cluster));
 		}
 		CryptoCore::SHA256Context container_hash;
 		std::array<uint8_t, 32> digest;
