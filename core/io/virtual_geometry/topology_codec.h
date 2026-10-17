@@ -47,6 +47,15 @@ TopologyCodecError unpack_cluster_topology(const ClusterStripLayout &p_layout, c
 TopologyCodecError unpack_cluster_triangle(const ClusterStripLayout &p_layout, const uint8_t *p_bytes,
 		size_t p_size, uint32_t p_triangle, std::array<uint32_t, 3> &r_indices);
 
+// GPU triangle stream: minimum vertex first, preserving cyclic winding; then
+// two positive five-bit deltas. Base width is ceil(log2(vertex count)). Unlike
+// the disk strip this permits independent triangle reads without strip masks.
+// Vertex count is 3..256; triangle count is 1..128. Four-byte padding is zero.
+TopologyCodecError pack_cluster_gpu_indices(const std::vector<uint32_t> &p_indices, uint32_t p_vertices,
+		std::vector<uint8_t> &r_bytes);
+TopologyCodecError unpack_cluster_gpu_triangle(uint32_t p_vertices, uint32_t p_triangles,
+		const uint8_t *p_bytes, size_t p_size, uint32_t p_triangle, std::array<uint32_t, 3> &r_indices);
+
 // Per-material batches contain <=32 triangles. Cooker also checks <=32 unique
 // constrained vertex IDs. Counts use four bits, lengths-minus-one use five;
 // at least three count nibbles are reserved, matching the material fast path.

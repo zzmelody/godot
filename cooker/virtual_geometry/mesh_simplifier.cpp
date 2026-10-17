@@ -144,6 +144,7 @@ struct MergeCandidate {
 	std::vector<uint32_t> triangles;
 	std::vector<uint32_t> triangle_wedges;
 	std::vector<std::vector<double>> attributes;
+	std::vector<uint8_t> attribute_updates;
 	double error = 0;
 	double penalty = 0;
 	bool disjoint = false;
@@ -453,6 +454,7 @@ class Simplifier {
 			}
 		}
 		r_candidate.attributes.resize(quadrics.size(), std::vector<double>(policy.weights.size(), 0));
+		r_candidate.attribute_updates.assign(quadrics.size(), 0);
 		const Point delta0 = subtract(r_candidate.position, first);
 		const Point delta1 = subtract(r_candidate.position, second);
 		const uint32_t farthest = dot(delta0, delta0) > dot(delta1, delta1) ? 0 : 1;
@@ -466,6 +468,7 @@ class Simplifier {
 			const auto &quadric = quadrics[wedge];
 			auto &attributes = r_candidate.attributes[wedge];
 			if (quadric.area > 1e-8) {
+				r_candidate.attribute_updates[wedge] = 1;
 				double error;
 				if (locked0 != locked1) {
 					if (!checked(evaluate_attribute_quadric(quadric, r_candidate.position, attributes, error))) {
@@ -489,8 +492,6 @@ class Simplifier {
 					value = rounded;
 				}
 				r_candidate.error += std::min(error, quadric.area);
-			} else {
-				std::fill(attributes.begin(), attributes.end(), 0.0);
 			}
 			surface_area += quadric.area;
 		}
@@ -575,10 +576,16 @@ class Simplifier {
 			remove_pair(pair);
 		}
 		for (size_t local = 0; local < p_candidate.triangles.size(); ++local) {
+			const uint32_t wedge = p_candidate.triangle_wedges[local];
+			// As in MeshSimplify, an area-degenerate wedge has no fitted values.
+			// Keep each surviving vertex's own attributes instead of writing zeros.
+			if (p_candidate.attribute_updates[wedge] == 0) {
+				continue;
+			}
 			for (uint32_t vertex : triangles[p_candidate.triangles[local]].vertices) {
 				const uint32_t group = vertices[vertex].group;
 				if (group == key.first || group == key.second) {
-					vertices[vertex].attributes = p_candidate.attributes[p_candidate.triangle_wedges[local]];
+					vertices[vertex].attributes = p_candidate.attributes[wedge];
 				}
 			}
 		}

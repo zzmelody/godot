@@ -276,6 +276,81 @@ TopologyCodecError unpack_cluster_triangle(const ClusterStripLayout &p_layout, c
 	return TopologyCodecError::OK;
 }
 
+TopologyCodecError pack_cluster_gpu_indices(const std::vector<uint32_t> &p_indices, uint32_t p_vertices,
+		std::vector<uint8_t> &r_bytes) {
+	if (p_vertices < 3 || p_vertices > MAX_CLUSTER_VERTICES || p_indices.empty() ||
+			p_indices.size() % 3 != 0 || p_indices.size() / 3 > MAX_CLUSTER_TRIANGLES) {
+		return TopologyCodecError::INVALID_LAYOUT;
+	}
+	uint32_t base_bits = 0;
+	for (uint32_t remaining = p_vertices - 1; remaining != 0; remaining >>= 1) {
+		++base_bits;
+	}
+	try {
+		const size_t bits = p_indices.size() / 3 * (base_bits + 10);
+		std::vector<uint8_t> candidate(((bits + 31) / 32) * 4, 0);
+		size_t cursor = 0;
+		for (size_t triangle = 0; triangle < p_indices.size(); triangle += 3) {
+			std::array<uint32_t, 3> vertices = { p_indices[triangle], p_indices[triangle + 1], p_indices[triangle + 2] };
+			if (*std::max_element(vertices.begin(), vertices.end()) >= p_vertices) {
+				return TopologyCodecError::INVALID_REFERENCE;
+			}
+			if (vertices[0] == vertices[1] || vertices[1] == vertices[2] || vertices[2] == vertices[0]) {
+				return TopologyCodecError::INVALID_TRIANGLE;
+			}
+			std::rotate(vertices.begin(), std::min_element(vertices.begin(), vertices.end()), vertices.end());
+			if (vertices[1] - vertices[0] >= 32 || vertices[2] - vertices[0] >= 32) {
+				return TopologyCodecError::TAIL_WINDOW;
+			}
+			const uint32_t packed = vertices[0] | ((vertices[1] - vertices[0]) << base_bits) | ((vertices[2] - vertices[0]) << (base_bits + 5));
+			for (uint32_t bit = 0; bit < base_bits + 10; ++bit, ++cursor) {
+				candidate[cursor / 8] |= static_cast<uint8_t>(((packed >> bit) & 1u) << (cursor % 8));
+			}
+		}
+		r_bytes = std::move(candidate);
+		return TopologyCodecError::OK;
+	} catch (const std::bad_alloc &) {
+		return TopologyCodecError::MEMORY;
+	}
+}
+
+TopologyCodecError unpack_cluster_gpu_triangle(uint32_t p_vertices, uint32_t p_triangles,
+		const uint8_t *p_bytes, size_t p_size, uint32_t p_triangle, std::array<uint32_t, 3> &r_indices) {
+	if (p_vertices < 3 || p_vertices > MAX_CLUSTER_VERTICES || p_triangles == 0 ||
+			p_triangles > MAX_CLUSTER_TRIANGLES || p_triangle >= p_triangles) {
+		return TopologyCodecError::INVALID_LAYOUT;
+	}
+	uint32_t base_bits = 0;
+	for (uint32_t remaining = p_vertices - 1; remaining != 0; remaining >>= 1) {
+		++base_bits;
+	}
+	const size_t bits = static_cast<size_t>(p_triangles) * (base_bits + 10);
+	const size_t bytes = ((bits + 31) / 32) * 4;
+	if (p_size != bytes || p_bytes == nullptr) {
+		return TopologyCodecError::INVALID_LENGTH;
+	}
+	for (size_t bit = bits; bit < bytes * 8; ++bit) {
+		if (((p_bytes[bit / 8] >> (bit % 8)) & 1u) != 0) {
+			return TopologyCodecError::INVALID_PADDING;
+		}
+	}
+	uint32_t packed = 0;
+	size_t cursor = static_cast<size_t>(p_triangle) * (base_bits + 10);
+	for (uint32_t bit = 0; bit < base_bits + 10; ++bit, ++cursor) {
+		packed |= static_cast<uint32_t>((p_bytes[cursor / 8] >> (cursor % 8)) & 1u) << bit;
+	}
+	const uint32_t base = packed & ((1u << base_bits) - 1);
+	const std::array<uint32_t, 3> candidate = { base, base + ((packed >> base_bits) & 31), base + ((packed >> (base_bits + 5)) & 31) };
+	if (candidate[0] == candidate[1] || candidate[1] == candidate[2] || candidate[2] == candidate[0]) {
+		return TopologyCodecError::INVALID_TRIANGLE;
+	}
+	if (candidate[1] >= p_vertices || candidate[2] >= p_vertices) {
+		return TopologyCodecError::INVALID_REFERENCE;
+	}
+	r_indices = candidate;
+	return TopologyCodecError::OK;
+}
+
 TopologyCodecError pack_vertex_reuse_batches(const std::vector<ClusterMaterialRange> &p_ranges,
 		const std::vector<std::vector<uint8_t>> &p_batches, std::vector<uint32_t> &r_words) {
 	if (!valid_batch_ranges(p_ranges) || p_batches.size() != p_ranges.size()) {
