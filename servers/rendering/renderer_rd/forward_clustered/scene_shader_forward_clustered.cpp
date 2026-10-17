@@ -40,6 +40,14 @@ using namespace RendererSceneRenderImplementation;
 
 void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	//compile
+	for (uint32_t color_variant = 0; color_variant < 2; ++color_variant) {
+		virtual_geometry_composite_pipelines[color_variant].clear();
+		virtual_geometry_composite_initialized[color_variant] = false;
+	}
+	if (virtual_geometry_composite_version.is_valid()) {
+		SceneShaderForwardClustered::singleton->shader.version_free(virtual_geometry_composite_version);
+		virtual_geometry_composite_version = RID();
+	}
 	virtual_geometry_pipeline.free();
 	if (virtual_geometry_version.is_valid()) {
 		SceneShaderForwardClustered::singleton->virtual_geometry_shader.version_free(virtual_geometry_version);
@@ -594,7 +602,25 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 				virtual_geometry_error = "Virtual geometry material compilation or shared parameter layout failed: " + path;
 			} else if (generated.code.has("light")) {
 				virtual_geometry_error = "Virtual geometry custom light functions are not connected yet: " + path;
+			} else if (generated.defines.has("#define SKIP_TRANSFORM_USED\n") || generated.defines.has("#define USE_VERTEX_LIGHTING\n") ||
+					generated.defines.has("#define USE_SHADOW_TO_OPACITY\n") || generated.defines.has("#define LIGHT_VERTEX_USED\n") ||
+					generated.defines.has("#define CUSTOM_FOG_USED\n") || generated.defines.has("#define CUSTOM_RADIANCE_USED\n") ||
+					generated.defines.has("#define CUSTOM_IRRADIANCE_USED\n")) {
+				virtual_geometry_error = "Virtual geometry static material mode is not connected: " + path;
 			} else {
+				Vector<String> composite_defines;
+				composite_defines.push_back("#define VG_COMPOSITE\n");
+				for (const String &define : generated.defines) {
+					// Attribute/varying, material UBO and texture declarations belong
+					// to compute evaluation. Keep only the scene's lighting choices.
+					if (define.begins_with("#define LIGHT_") || define.begins_with("#define DIFFUSE_") || define.begins_with("#define SPECULAR_") ||
+							define == "#define MODE_UNSHADED\n" || define == "#define FOG_DISABLED\n" ||
+							define == "#define SHADOWS_DISABLED\n" || define == "#define AMBIENT_LIGHT_DISABLED\n") {
+						composite_defines.push_back(define);
+					}
+				}
+				virtual_geometry_composite_version = owner->shader.version_create(false);
+				owner->shader.version_set_code(virtual_geometry_composite_version, {}, "", "", "", composite_defines);
 				virtual_geometry_version = owner->virtual_geometry_shader.version_create(false);
 				owner->virtual_geometry_shader.version_set_compute_code(virtual_geometry_version, generated.code, generated.uniforms, generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
 				RID program = owner->virtual_geometry_shader.version_get_shader(virtual_geometry_version, 0);
@@ -611,6 +637,49 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 	return r_error.is_empty() && virtual_geometry_version.is_valid() ? owner->virtual_geometry_shader.version_get_shader(virtual_geometry_version, 0) : RID();
 }
 
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_shader(bool p_separate_specular) const {
+	if (virtual_geometry_composite_version.is_null()) {
+		return RID();
+	}
+	const uint16_t variant = ShaderVersion::SHADER_VERSION_COLOR_PASS * 2 + (p_separate_specular ? SHADER_COLOR_PASS_FLAG_SEPARATE_SPECULAR : 0);
+	return SceneShaderForwardClustered::singleton->shader.version_get_shader(virtual_geometry_composite_version, variant);
+}
+
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_pipeline(RD::FramebufferFormatID p_format, bool p_separate_specular, const ShaderSpecialization &p_specialization) {
+	const uint32_t color_variant = p_separate_specular ? 1 : 0;
+	auto &pipeline = virtual_geometry_composite_pipelines[color_variant];
+	const auto &old = virtual_geometry_composite_specialization[color_variant];
+	if (!virtual_geometry_composite_initialized[color_variant] || old.packed_0 != p_specialization.packed_0 || old.packed_1 != p_specialization.packed_1) {
+		RID program = get_virtual_geometry_composite_shader(p_separate_specular);
+		ERR_FAIL_COND_V(program.is_null(), RID());
+		Vector<RD::PipelineSpecializationConstant> constants;
+		RD::PipelineSpecializationConstant value;
+		value.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT;
+		value.constant_id = 0;
+		value.int_value = p_specialization.packed_0;
+		constants.push_back(value);
+		value.constant_id = 1;
+		value.int_value = p_specialization.packed_1;
+		constants.push_back(value);
+		RD::PipelineRasterizationState raster;
+		raster.cull_mode = RD::POLYGON_CULL_DISABLED;
+		RD::PipelineDepthStencilState depth;
+		depth.enable_depth_test = true;
+		depth.depth_compare_operator = RD::COMPARE_OP_GREATER_OR_EQUAL;
+		RD::PipelineColorBlendState blend = RD::PipelineColorBlendState::create_disabled(3);
+		// The scene framebuffer keeps three attachment slots. Temporal output
+		// has its own pending implementation and must preserve the motion pass.
+		blend.attachments.write[2].write_r = false;
+		blend.attachments.write[2].write_g = false;
+		blend.attachments.write[2].write_b = false;
+		blend.attachments.write[2].write_a = false;
+		pipeline.setup(program, RD::RENDER_PRIMITIVE_TRIANGLES, raster, RD::PipelineMultisampleState(), depth, blend, 0, constants);
+		virtual_geometry_composite_specialization[color_variant] = p_specialization;
+		virtual_geometry_composite_initialized[color_variant] = true;
+	}
+	return pipeline.get_render_pipeline(RD::INVALID_ID, p_format);
+}
+
 SceneShaderForwardClustered::ShaderData::ShaderData() :
 		shader_list_element(this) {
 	pipeline_hash_map.set_creation_object_and_function(this, &ShaderData::_create_pipeline);
@@ -619,6 +688,12 @@ SceneShaderForwardClustered::ShaderData::ShaderData() :
 
 SceneShaderForwardClustered::ShaderData::~ShaderData() {
 	pipeline_hash_map.clear_pipelines();
+	for (auto &pipeline : virtual_geometry_composite_pipelines) {
+		pipeline.clear();
+	}
+	if (virtual_geometry_composite_version.is_valid()) {
+		SceneShaderForwardClustered::singleton->shader.version_free(virtual_geometry_composite_version);
+	}
 	virtual_geometry_pipeline.free();
 	if (virtual_geometry_version.is_valid()) {
 		SceneShaderForwardClustered::singleton->virtual_geometry_shader.version_free(virtual_geometry_version);

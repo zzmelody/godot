@@ -40,6 +40,8 @@ layout(set = 0, binding = 19, rgba16f) uniform writeonly image2D vg_specular;
 layout(set = 0, binding = 20, rgba16f) uniform writeonly image2D vg_backlight;
 layout(set = 0, binding = 21, rgba16f) uniform writeonly image2D vg_anisotropy;
 layout(set = 0, binding = 22, r32ui) uniform writeonly uimage2D vg_flags;
+layout(set = 0, binding = 23, rgba16f) uniform writeonly image2D vg_tangent;
+layout(set = 0, binding = 24, rgba16f) uniform writeonly image2D vg_geo_normal;
 layout(push_constant, std430) uniform Parameters {
 	uint material;
 	uint materials;
@@ -183,6 +185,10 @@ void main() {
 	imageStore(vg_specular, pixel, vec4(specular, rim, rim_tint, clearcoat));
 	imageStore(vg_backlight, pixel, vec4(backlight, ao_light_affect));
 	imageStore(vg_anisotropy, pixel, vec4(clearcoat_roughness, anisotropy, anisotropy_flow));
+	vec3 geometric_normal = normalize(normal_highp);
+	float frame_sign = dot(cross(geometric_normal, tangent), binormal) < 0.0 ? -1.0 : 1.0;
+	imageStore(vg_tangent, pixel, vec4(normalize(tangent), frame_sign));
+	imageStore(vg_geo_normal, pixel, vec4(geometric_normal, 0.0));
 	uint flags = vg_source + 1u;
 #ifdef MODE_UNSHADED
 	flags |= 1u << 24u;

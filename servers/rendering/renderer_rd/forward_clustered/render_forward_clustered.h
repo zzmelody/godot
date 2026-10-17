@@ -179,12 +179,13 @@ private:
 	virtual void setup_render_buffer_data(Ref<RenderSceneBuffersRD> p_render_buffers) override;
 
 	RID render_base_uniform_set;
+	LocalVector<RD::Uniform> render_base_uniforms;
 
 	uint64_t lightmap_texture_array_version = 0xFFFFFFFF;
 
 	void _update_render_base_uniform_set();
 	RID _setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index);
-	RID _setup_render_pass_uniform_set(RenderListType p_render_list, const RenderDataRD *p_render_data, RID p_radiance_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index, bool p_use_directional_shadow_atlas = false);
+	RID _setup_render_pass_uniform_set(RenderListType p_render_list, const RenderDataRD *p_render_data, RID p_radiance_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index, bool p_use_directional_shadow_atlas = false, RID p_shader = RID());
 
 	struct BestFitNormal {
 		BestFitNormalShaderRD shader;
@@ -492,6 +493,15 @@ private:
 	RendererRD::GpuOcclusion *active_gpu_occlusion = nullptr;
 	void _prepare_gpu_occlusion(RenderDataRD *p_render_data, PassMode p_depth_mode);
 	void _prepare_virtual_geometry(RenderDataRD *p_render_data);
+	struct VirtualGeometryColorWork {
+		RID program;
+		RID pipeline;
+		RID base;
+		RID pass;
+		RID surfaces;
+	};
+	LocalVector<VirtualGeometryColorWork> virtual_geometry_color_work;
+	Error _render_virtual_geometry_color(RenderDataRD *p_render_data, RID p_framebuffer, bool p_separate_specular, RID p_radiance, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer, const SceneShaderForwardClustered::ShaderSpecialization &p_specialization);
 
 	HashMap<Size2i, RID> sdfgi_framebuffer_size_cache;
 

@@ -9,6 +9,12 @@ namespace RendererRD {
 
 VirtualGeometryRasterizer::~VirtualGeometryRasterizer() {
 	RD *rd = RD::get_singleton();
+	for (auto &pipeline : depth_pipelines) {
+		pipeline.clear();
+	}
+	if (depth_version.is_valid()) {
+		depth_shader.version_free(depth_version);
+	}
 	for (const Slot &slot : slots) {
 		if (slot.bins.is_valid()) {
 			rd->free_rid(slot.bins);
@@ -192,6 +198,51 @@ uint64_t VirtualGeometryRasterizer::get_buffer_bytes() const {
 		bytes += uint64_t(4 + slot.capacity * 2) * 4 + 48;
 	}
 	return bytes + shading.get_buffer_bytes();
+}
+
+Error VirtualGeometryRasterizer::record_depth(RID p_framebuffer, DepthMode p_mode, RID p_fitting_table, const Rect2i &p_region) {
+	ERR_FAIL_COND_V(p_mode >= DEPTH_MODE_MAX || p_framebuffer.is_null(), ERR_INVALID_PARAMETER);
+	if (!ready || shading.get_materials().is_empty() || shading.get_surface(6).is_null()) {
+		return OK;
+	}
+	RD *rd = RD::get_singleton();
+	if (depth_version.is_null()) {
+		Vector<String> modes = { "", "#define VG_NORMAL_ROUGHNESS\n", "#define VG_NORMAL_ROUGHNESS\n#define VG_VOXEL_GI\n" };
+		depth_shader.initialize(modes);
+		depth_version = depth_shader.version_create();
+		RD::PipelineRasterizationState raster;
+		raster.cull_mode = RD::POLYGON_CULL_DISABLED;
+		RD::PipelineDepthStencilState depth;
+		depth.enable_depth_test = true;
+		depth.enable_depth_write = true;
+		depth.depth_compare_operator = RD::COMPARE_OP_GREATER_OR_EQUAL;
+		for (uint32_t mode = 0; mode < DEPTH_MODE_MAX; ++mode) {
+			depth_pipelines[mode].setup(depth_shader.version_get_shader(depth_version, mode), RD::RENDER_PRIMITIVE_TRIANGLES,
+					raster, RD::PipelineMultisampleState(), depth, RD::PipelineColorBlendState::create_disabled(mode));
+		}
+	}
+	RID program = depth_shader.version_get_shader(depth_version, p_mode);
+	RID pipeline = depth_pipelines[p_mode].get_render_pipeline(RD::INVALID_ID, rd->framebuffer_get_format(p_framebuffer));
+	ERR_FAIL_COND_V(pipeline.is_null(), ERR_CANT_CREATE);
+	LocalVector<RD::Uniform> uniforms;
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { visibility }));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { shading.get_bins() }));
+	RID sampler = MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, { sampler, shading.get_surface(6) }));
+	if (p_mode != DEPTH_ONLY) {
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 3, { sampler, shading.get_surface(1) }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 4, { p_fitting_table }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 5, { sampler }));
+	}
+	RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(program, 0, uniforms);
+	ERR_FAIL_COND_V(set.is_null(), ERR_CANT_CREATE);
+	RENDER_TIMESTAMP("Virtual Geometry Depth Resolve");
+	const RD::DrawListID list = rd->draw_list_begin(p_framebuffer, RD::DRAW_DEFAULT_ALL, {}, 0.0f, 0, p_region);
+	rd->draw_list_bind_render_pipeline(list, pipeline);
+	rd->draw_list_bind_uniform_set(list, set, 0);
+	rd->draw_list_draw(list, false, 1, 3);
+	rd->draw_list_end();
+	return OK;
 }
 
 } // namespace RendererRD

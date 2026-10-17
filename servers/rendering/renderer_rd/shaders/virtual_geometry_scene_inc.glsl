@@ -1,9 +1,12 @@
 // Frame-local source records, visible-cluster references and material map.
 // Header words point to 48-word sources, two-word references and material IDs.
+#ifndef VG_SCENE_SET
+#define VG_SCENE_SET 0
+#endif
 #ifdef VG_SCENE_WRITE
-layout(set = 0, binding = 8, std430) buffer Scene { uint data[]; } scene;
+layout(set = VG_SCENE_SET, binding = 8, std430) buffer Scene { uint data[]; } scene;
 #else
-layout(set = 0, binding = 8, std430) readonly buffer Scene { uint data[]; } scene;
+layout(set = VG_SCENE_SET, binding = 8, std430) readonly buffer Scene { uint data[]; } scene;
 #endif
 
 uint vg_source_word(uint index) { return scene.data[0] + index * 48u; }

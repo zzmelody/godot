@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "servers/rendering/renderer_rd/pipeline_cache_rd.h"
 #include "servers/rendering/renderer_rd/pipeline_deferred_rd.h"
 #include "servers/rendering/renderer_rd/pipeline_hash_map_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl.gen.h"
@@ -222,6 +223,10 @@ public:
 
 		RID version;
 		RID virtual_geometry_version;
+		RID virtual_geometry_composite_version;
+		PipelineCacheRD virtual_geometry_composite_pipelines[2];
+		bool virtual_geometry_composite_initialized[2] = {};
+		ShaderSpecialization virtual_geometry_composite_specialization[2] = {};
 		PipelineDeferredRD virtual_geometry_pipeline;
 		bool virtual_geometry_attempted = false;
 		String virtual_geometry_error;
@@ -321,6 +326,8 @@ public:
 		bool is_valid() const;
 		RID get_virtual_geometry_shader(String &r_error);
 		RID get_virtual_geometry_pipeline() { return virtual_geometry_pipeline.get_rid(); }
+		RID get_virtual_geometry_composite_shader(bool p_separate_specular) const;
+		RID get_virtual_geometry_composite_pipeline(RD::FramebufferFormatID p_format, bool p_separate_specular, const ShaderSpecialization &p_specialization);
 
 		SelfList<ShaderData> shader_list_element;
 		ShaderData();

@@ -1807,6 +1807,56 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 	}
 }
 
+Error RenderForwardClustered::_render_virtual_geometry_color(RenderDataRD *p_render_data, RID p_framebuffer, bool p_separate_specular, RID p_radiance, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer, const SceneShaderForwardClustered::ShaderSpecialization &p_specialization) {
+	Ref<RenderBufferDataForwardClustered> data = p_render_data->render_buffers->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
+	auto *raster = data->virtual_geometry_raster;
+	const auto results = data->virtual_geometry->get_results();
+	if (results.is_empty()) {
+		return OK;
+	}
+	const auto &shading = raster->get_shading();
+	const auto materials = shading.get_materials();
+	RD *rd = RD::get_singleton();
+	UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
+	virtual_geometry_color_work.resize(materials.size());
+	thread_local LocalVector<RD::Uniform> uniforms;
+	for (uint32_t index = 0; index < materials.size(); ++index) {
+		auto *material = static_cast<SceneShaderForwardClustered::MaterialData *>(RendererRD::MaterialStorage::get_singleton()->material_get_data(materials[index], RendererRD::MaterialStorage::SHADER_TYPE_3D));
+		ERR_FAIL_COND_V(material == nullptr || material->shader_data == nullptr, ERR_INVALID_DATA);
+		auto &work = virtual_geometry_color_work[index];
+		work.program = material->shader_data->get_virtual_geometry_composite_shader(p_separate_specular);
+		work.pipeline = material->shader_data->get_virtual_geometry_composite_pipeline(rd->framebuffer_get_format(p_framebuffer), p_separate_specular, p_specialization);
+		ERR_FAIL_COND_V(work.program.is_null() || work.pipeline.is_null(), ERR_CANT_CREATE);
+		work.base = cache->get_cache_vec(work.program, SCENE_UNIFORM_SET, render_base_uniforms);
+		work.pass = _setup_render_pass_uniform_set(RENDER_LIST_OPAQUE, p_render_data, p_radiance, p_samplers, p_uniform_buffer, true, work.program);
+		uniforms.clear();
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { scene_shader.default_vec4_xform_buffer }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { results[0].batch.geometry.geometry }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { raster->get_visibility() }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 3, { shading.get_bins() }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() }));
+		for (uint32_t surface = 0; surface < 9; ++surface) {
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 16 + surface, { shading.get_surface(surface) }));
+		}
+		work.surfaces = cache->get_cache_vec(work.program, TRANSFORMS_UNIFORM_SET, uniforms);
+		ERR_FAIL_COND_V(work.base.is_null() || work.pass.is_null() || work.surfaces.is_null(), ERR_CANT_CREATE);
+	}
+	RENDER_TIMESTAMP("Virtual Geometry Scene Lighting");
+	const RD::DrawListID list = rd->draw_list_begin(p_framebuffer, RD::DRAW_DEFAULT_ALL, {}, 0.0f, 0, p_render_data->render_region);
+	for (uint32_t index = 0; index < virtual_geometry_color_work.size(); ++index) {
+		const auto &work = virtual_geometry_color_work[index];
+		rd->draw_list_bind_render_pipeline(list, work.pipeline);
+		rd->draw_list_bind_uniform_set(list, work.base, SCENE_UNIFORM_SET);
+		rd->draw_list_bind_uniform_set(list, work.pass, RENDER_PASS_UNIFORM_SET);
+		rd->draw_list_bind_uniform_set(list, work.surfaces, TRANSFORMS_UNIFORM_SET);
+		const uint32_t push[8] = { index, uint32_t(materials.size()), shading.get_entries_word(), 0, 0, 0, 0, 0 };
+		rd->draw_list_set_push_constant(list, push, sizeof(push));
+		rd->draw_list_draw_indirect(list, false, shading.get_draw_arguments(), index * 16);
+	}
+	rd->draw_list_end();
+	return OK;
+}
+
 void RenderForwardClustered::_prepare_gpu_occlusion(RenderDataRD *p_render_data, PassMode p_depth_mode) {
 	Ref<RenderSceneBuffersRD> buffers = p_render_data->render_buffers;
 	if (!buffers->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED)) {
@@ -2166,7 +2216,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 					scene_state.used_normal_texture) {
 				depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS;
 			}
-		} else if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_NORMAL_BUFFER || scene_state.used_normal_texture) {
+		} else if (ce_needs_normal_roughness || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_NORMAL_BUFFER || scene_state.used_normal_texture) {
 			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS;
 		}
 
@@ -2340,7 +2390,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	bool debug_voxelgis = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_ALBEDO || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_LIGHTING || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_EMISSION;
 	bool debug_sdfgi_probes = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SDFGI_PROBES;
-	bool force_depth_pre_pass = scene_state.used_opaque_stencil;
+	const bool has_virtual_geometry = rb_data.is_valid() && rb_data->virtual_geometry_raster &&
+			rb_data->virtual_geometry_raster->get_visibility().is_valid() && rb_data->virtual_geometry_raster->get_shading().are_materials_ready();
+	bool force_depth_pre_pass = scene_state.used_opaque_stencil || has_virtual_geometry;
 	bool depth_pre_pass = (force_depth_pre_pass || bool(GLOBAL_GET_CACHED(bool, "rendering/driver/depth_prepass/enable"))) && depth_framebuffer.is_valid();
 
 	SceneShaderForwardClustered::ShaderSpecialization base_specialization = scene_shader.default_specialization;
@@ -2380,6 +2432,19 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			render_list_params.gpu_occlusion = apply_gpu_occlusion ? active_gpu_occlusion : nullptr;
 			render_list_params.gpu_occlusion_phase = 0;
 			_render_list_with_draw_list(&render_list_params, depth_framebuffer, RD::DrawFlags(needs_pre_resolve ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_ALL), depth_pass_clear, 0.0f, 0u, p_render_data->render_region);
+		}
+		if (has_virtual_geometry) {
+			using Rasterizer = RendererRD::VirtualGeometryRasterizer;
+			Rasterizer::DepthMode mode = Rasterizer::DEPTH_ONLY;
+			if (depth_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI) {
+				mode = Rasterizer::DEPTH_NORMAL_ROUGHNESS_VOXEL_GI;
+			} else if (depth_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS) {
+				mode = Rasterizer::DEPTH_NORMAL_ROUGHNESS;
+			}
+			const Error error = rb_data->virtual_geometry_raster->record_depth(depth_framebuffer, mode, best_fit_normal.texture, p_render_data->render_region);
+			if (error != OK) {
+				ERR_PRINT_ONCE("Virtual geometry depth resolve failed: " + itos(error));
+			}
 		}
 		if (active_gpu_occlusion) {
 			RID depth_source = use_msaa ? rb->get_depth_msaa(0) : rb->get_depth_texture(0);
@@ -2491,6 +2556,12 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			render_list_params.gpu_occlusion = rb->get_gpu_occlusion_mode() == 2 ? active_gpu_occlusion : nullptr;
 			GodotProfileZone("Render/Submit/opaque");
 			_render_list_with_draw_list(&render_list_params, opaque_framebuffer, RD::DrawFlags(load_color ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_COLOR_ALL) | (depth_pre_pass ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_DEPTH), c, 0.0f, 0u, p_render_data->render_region);
+			if (has_virtual_geometry) {
+				const Error error = _render_virtual_geometry_color(p_render_data, opaque_framebuffer, using_separate_specular, radiance_texture, samplers, opaque_pass_uniform_buffer_index, base_specialization);
+				if (error != OK) {
+					ERR_PRINT_ONCE("Virtual geometry scene lighting failed: " + itos(error));
+				}
+			}
 		}
 
 		RD::get_singleton()->draw_command_end_label();
@@ -3657,10 +3728,14 @@ void RenderForwardClustered::_update_render_base_uniform_set() {
 		}
 
 		render_base_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, scene_shader.default_shader_rd, SCENE_UNIFORM_SET);
+		render_base_uniforms.clear();
+		for (const auto &uniform : uniforms) {
+			render_base_uniforms.push_back(uniform);
+		}
 	}
 }
 
-RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_render_list, const RenderDataRD *p_render_data, RID p_radiance_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index, bool p_use_directional_shadow_atlas) {
+RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_render_list, const RenderDataRD *p_render_data, RID p_radiance_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index, bool p_use_directional_shadow_atlas, RID p_shader) {
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 
@@ -4054,7 +4129,7 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 	}
 
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 40, { active_gpu_occlusion ? active_gpu_occlusion->get_indices() : scene_shader.default_vec4_xform_buffer }));
-	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.default_shader_rd, RENDER_PASS_UNIFORM_SET, uniforms);
+	return UniformSetCacheRD::get_singleton()->get_cache_vec(p_shader.is_valid() ? p_shader : scene_shader.default_shader_rd, RENDER_PASS_UNIFORM_SET, uniforms);
 }
 
 RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index) {
