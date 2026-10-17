@@ -1077,7 +1077,7 @@ struct Recipe {
               "minimum_visual options are outside the supported range");
 	s.require(Ref<VirtualGeometryMesh>(resource).is_null(), "minimum_visual requires the original ordinary resource");
 	CookerMinimum::Builder builder(options);
-    Ref<Resource> output = builder.Build(resource);
+	Ref<Resource> output = builder.Build(resource);
     s.require(output.is_valid(),
               "minimum_visual requires valid static geometry or material");
     return s.push_resource(output);
