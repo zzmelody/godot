@@ -390,6 +390,9 @@ struct SceneImport {
 	uint64_t instanced_triangles[2] = {};
 	int authored_instances = 0;
 	uint64_t visible_point_instances = 0;
+	bool asset_coordinates = false;
+	double target_height = 0;
+	bool rooted = false;
 
 	explicit SceneImport(Import &p_source) :
 			source(p_source) {}
@@ -452,7 +455,8 @@ struct SceneImport {
 	Error append(std::vector<ScenePart> &r_parts, const ScenePart &p_part, const Transform3D &p_transform) {
 		ERR_FAIL_COND_V(r_parts.size() >= MAX_PARTS, ERR_OUT_OF_MEMORY);
 		const Transform3D transform = p_transform * p_part.transform;
-		ERR_FAIL_COND_V(!transform.is_finite() || Math::abs(transform.basis.determinant()) < 1e-12, ERR_INVALID_DATA);
+		const real_t determinant = transform.basis.determinant();
+		ERR_FAIL_COND_V(!transform.is_finite() || !Math::is_finite(determinant) || Math::abs(determinant) < 1e-12, ERR_INVALID_DATA);
 		r_parts.push_back({ p_part.mesh, transform });
 		return OK;
 	}
@@ -498,7 +502,7 @@ struct SceneImport {
 					active.insert(key);
 					const XformNode &root = *source.nodes.at(key);
 					const Transform3D world = transform(root.get_world_matrix());
-					ERR_FAIL_COND_V(!world.is_finite() || Math::abs(world.basis.determinant()) < 1e-12, ERR_INVALID_DATA);
+					ERR_FAIL_COND_V(!world.is_finite() || !Math::is_finite(world.basis.determinant()) || Math::abs(world.basis.determinant()) < 1e-12, ERR_INVALID_DATA);
 					std::vector<ScenePart> parts;
 					// USD applies the prototype root's local transform before its
 					// instance SRT; ancestors of the prototype library do not apply.
@@ -560,7 +564,14 @@ struct SceneImport {
 		};
 		std::vector<Batch> batches;
 		std::map<ObjectID, size_t> slots;
+		AABB bounds;
+		bool has_bounds = false;
 		for (const auto &part : p_parts) {
+			ERR_FAIL_COND_V(asset_coordinates && !part.transform.affine_inverse().is_finite(), ERR_INVALID_DATA);
+			const AABB part_bounds = part.transform.xform(part.mesh->get_aabb());
+			ERR_FAIL_COND_V(!part_bounds.position.is_finite() || !part_bounds.size.is_finite(), ERR_INVALID_DATA);
+			bounds = has_bounds ? bounds.merge(part_bounds) : part_bounds;
+			has_bounds = true;
 			const auto [slot, added] = slots.emplace(part.mesh->get_instance_id(), batches.size());
 			if (added) {
 				batches.push_back({ part.mesh, {} });
@@ -571,25 +582,52 @@ struct SceneImport {
 				instanced_triangles[role] += part.mesh->surface_get_array_index_len(surface) / 3;
 			}
 		}
+		ERR_FAIL_COND_V(!bounds.position.is_finite() || !bounds.size.is_finite() || !bounds.get_end().is_finite(), ERR_INVALID_DATA);
+		Transform3D normalization;
+		if (target_height > 0) {
+			ERR_FAIL_COND_V(bounds.size.y <= 1e-6 || !Math::is_finite(bounds.size.y), ERR_INVALID_DATA);
+			const real_t scale = target_height / bounds.size.y;
+			normalization.basis.scale(Vector3(scale, scale, scale));
+			normalization.origin = Vector3(rooted ? 0 : -bounds.get_center().x * scale, -bounds.position.y * scale, rooted ? 0 : -bounds.get_center().z * scale);
+			ERR_FAIL_COND_V(!normalization.is_finite() || !Math::is_finite(normalization.basis.determinant()) || normalization.basis.determinant() == 0, ERR_INVALID_DATA);
+		}
 		Node3D *root = memnew(Node3D);
 		root->set_name("SourceTree");
 		root->set_unique_scene_id(1);
+		auto *geometry = memnew(Node3D);
+		geometry->set_name("Geometry");
+		geometry->set_transform(normalization);
+		root->add_child(geometry);
+		geometry->set_owner(root);
+		geometry->set_unique_scene_id(2);
 		for (size_t slot = 0; slot < batches.size(); ++slot) {
 			const auto &batch = batches[slot];
 			Ref<MultiMesh> multimesh;
 			multimesh.instantiate();
 			multimesh->set_transform_format(MultiMesh::TRANSFORM_3D);
+			multimesh->set_use_colors(asset_coordinates);
+			multimesh->set_use_custom_data(asset_coordinates);
 			multimesh->set_mesh(batch.mesh);
 			multimesh->set_instance_count(batch.placements.size());
 			for (size_t index = 0; index < batch.placements.size(); ++index) {
-				multimesh->set_instance_transform(index, batch.placements[index]);
+				const Transform3D &placement = batch.placements[index];
+				multimesh->set_instance_transform(index, placement);
+				if (asset_coordinates) {
+					// An opted-in shader receives asset-space height coefficients
+					// and the asset origin in prototype coordinates. Both remain
+					// valid when a later scene composes the full instance basis.
+					const Vector3 height(placement.basis.get_column(0).y, placement.basis.get_column(1).y, placement.basis.get_column(2).y);
+					const Vector3 origin = placement.affine_inverse().origin;
+					multimesh->set_instance_color(index, Color(height.x, height.y, height.z, placement.origin.y));
+					multimesh->set_instance_custom_data(index, Color(origin.x, origin.y, origin.z, 1));
+				}
 			}
 			auto *instance = memnew(MultiMeshInstance3D);
 			instance->set_name("Prototype" + itos(slot));
 			instance->set_multimesh(multimesh);
-			root->add_child(instance);
+			geometry->add_child(instance);
 			instance->set_owner(root);
-			instance->set_unique_scene_id(slot + 2);
+			instance->set_unique_scene_id(slot + 3);
 		}
 		Ref<PackedScene> scene;
 		scene.instantiate();
@@ -625,38 +663,71 @@ Error import_scene(const Dictionary &job, Dictionary &result) {
 	ERR_FAIL_COND_V(e != OK, e);
 	int authored_instances = 0;
 	std::set<std::string> library_roots;
-	std::function<void(const u::Prim &,const std::string &)> count_instances=[&](const u::Prim &prim,const std::string &parent) {
+	std::function<void(const u::Prim &, const std::string &)> count_instances = [&](const u::Prim &prim, const std::string &parent) {
 		const std::string path=parent+"/"+prim.element_name();
-		if(const auto *inst=prim.as<u::PointInstancer>()) {std::vector<int> ids;if(sample(inst->protoIndices,ids))authored_instances+=ids.size();}
+		if(const auto *inst=prim.as<u::PointInstancer>()) {
+			std::vector<int> ids;
+			if (sample(inst->protoIndices, ids))
+				authored_instances += ids.size();
+		}
 		// Some source packages author their reference libraries as `over`, not
 		// `class`. They still only supply instancer prototypes, not scenery.
 		if(path.find("/Prototypes/")!=std::string::npos && prim.metas().references) {
-			for(const auto &reference:prim.metas().references->second)if(reference.asset_path.GetAssetPath().empty()) {
-				const auto target=reference.prim_path.full_path_name();const auto slash=target.rfind('/');
-				if(slash!=std::string::npos && slash>0)library_roots.insert(target.substr(0,slash));
-			}
+			for(const auto &reference:prim.metas().references->second)
+				if (reference.asset_path.GetAssetPath().empty()) {
+					const auto target = reference.prim_path.full_path_name();
+					const auto slash = target.rfind('/');
+					if (slash != std::string::npos && slash > 0)
+						library_roots.insert(target.substr(0, slash));
+				}
 		}
-		for(const auto &child:prim.children())count_instances(child,path);
+		for(const auto &child:prim.children())
+			count_instances(child, path);
 	};
-	for(const auto &prim:authored.root_prims())count_instances(prim,"");
-	Import importer;importer.library_roots=std::move(library_roots);e=load(source,importer.stage,true);ERR_FAIL_COND_V(e!=OK,e);
-	ERR_FAIL_COND_V(importer.stage.metas().upAxis.get_value()!=u::Axis::Y || importer.stage.metas().metersPerUnit.get_value()!=1.0,ERR_UNAVAILABLE);
-	const Dictionary options=job.get("options",Dictionary());
-	for(const Variant &key:options.keys())ERR_FAIL_COND_V(key!="prototype_triangles" && key!="bark_triangles" && key!="leaf_triangles",ERR_INVALID_PARAMETER);
+	for (const auto &prim : authored.root_prims()) {
+		count_instances(prim, "");
+	}
+	Import importer;
+	importer.library_roots = std::move(library_roots);
+	e = load(source, importer.stage, true);
+	ERR_FAIL_COND_V(e != OK, e);
+	ERR_FAIL_COND_V(importer.stage.metas().upAxis.get_value() != u::Axis::Y || importer.stage.metas().metersPerUnit.get_value() != 1.0, ERR_UNAVAILABLE);
+	const Dictionary options = job.get("options", Dictionary());
+	for (const Variant &key : options.keys()) {
+		ERR_FAIL_COND_V(key != "prototype_triangles" && key != "bark_triangles" && key != "leaf_triangles" && key != "virtual_geometry" && key != "preserve_area" && key != "asset_coordinates" && key != "height" && key != "rooted", ERR_INVALID_PARAMETER);
+	}
 	const bool runtime_scene = type == "PackedScene";
+	for (const String &key : { String("virtual_geometry"), String("preserve_area"), String("asset_coordinates"), String("rooted") }) {
+		ERR_FAIL_COND_V(options.has(key) && (!runtime_scene || options[key].get_type() != Variant::BOOL), ERR_INVALID_PARAMETER);
+	}
+	const bool explicit_geometry = options.get("virtual_geometry", false);
+	ERR_FAIL_COND_V(options.has("preserve_area") && !explicit_geometry, ERR_INVALID_PARAMETER);
+	const Variant height = options.get("height", 0.0);
+	ERR_FAIL_COND_V(options.has("height") && (!runtime_scene || (height.get_type() != Variant::INT && height.get_type() != Variant::FLOAT) || !Math::is_finite(double(height)) || double(height) <= 0 || double(height) > 100000), ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(options.has("rooted") && !options.has("height"), ERR_INVALID_PARAMETER);
 	importer.prototype_budget = budget(options, "prototype_triangles", runtime_scene ? 0 : 1200);
 	importer.trunk_budget = budget(options, "bark_triangles", runtime_scene ? 0 : 6000);
 	importer.leaf_budget = budget(options, "leaf_triangles", runtime_scene ? 0 : 40000);
-	ERR_FAIL_COND_V(importer.prototype_budget<0 || importer.trunk_budget<0 || importer.leaf_budget<0,ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V_MSG(!u::tydra::BuildXformNodeFromStage(importer.stage,&importer.hierarchy,u::value::TimeCode::Default(),u::value::TimeSampleInterpolationType::Linear),ERR_INVALID_DATA,"USD transform hierarchy could not be evaluated.");
+	ERR_FAIL_COND_V(importer.prototype_budget < 0 || importer.trunk_budget < 0 || importer.leaf_budget < 0, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V_MSG(!u::tydra::BuildXformNodeFromStage(importer.stage, &importer.hierarchy, u::value::TimeCode::Default(), u::value::TimeSampleInterpolationType::Linear), ERR_INVALID_DATA, "USD transform hierarchy could not be evaluated.");
 	// Tydra copies its temporary hierarchy; repair ancestor pointers only after
 	// the final vector storage is stable. Never retain pointers into temporaries.
-	std::function<void(XformNode &,XformNode *)> index=[&](XformNode &n,XformNode *parent){n.parent=parent;importer.nodes[n.absolute_path.full_path_name()]=&n;for(auto &c:n.children)index(c,&n);};index(importer.hierarchy,nullptr);
+	std::function<void(XformNode &, XformNode *)> index = [&](XformNode &n, XformNode *parent) {
+		n.parent = parent;
+		importer.nodes[n.absolute_path.full_path_name()] = &n;
+		for (auto &child : n.children) {
+			index(child, &n);
+		}
+	};
+	index(importer.hierarchy, nullptr);
 	if (runtime_scene) {
 		try {
 			ERR_FAIL_COND_V_MSG(importer.prototype_budget != 0 || importer.trunk_budget != 0 || importer.leaf_budget != 0, ERR_INVALID_PARAMETER,
 					"USD PackedScene import preserves complete prototypes. Explicit triangle budgets belong to ArrayMesh source transport.");
 			SceneImport shared(importer);
+			shared.asset_coordinates = options.get("asset_coordinates", false);
+			shared.target_height = height;
+			shared.rooted = options.get("rooted", false);
 			e = shared.load_materials(job.get("material_overrides", Dictionary()));
 			ERR_FAIL_COND_V(e != OK, e);
 			std::vector<ScenePart> parts;
@@ -670,7 +741,11 @@ Error import_scene(const Dictionary &job, Dictionary &result) {
 			std::map<ObjectID, CookerVirtualGeometry::BuildOutput> builds;
 			Dictionary report;
 			String message;
-			e = CookerVirtualGeometry::convert_imported_scene(scene, prepared, builds, report, message);
+			CookerVirtualGeometry::Settings settings;
+			settings.max_source_vertices = 2000000;
+			settings.max_output_bytes = 256ull * 1024 * 1024;
+			settings.dag.preserve_area = options.get("preserve_area", false);
+			e = CookerVirtualGeometry::convert_imported_scene(scene, prepared, builds, report, message, explicit_geometry ? &settings : nullptr);
 			ERR_FAIL_COND_V_MSG(e != OK, e, message);
 			e = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
 			ERR_FAIL_COND_V(e != OK, e);
@@ -687,6 +762,7 @@ Error import_scene(const Dictionary &job, Dictionary &result) {
 			result["bark_triangles"] = int64_t(shared.instanced_triangles[0]);
 			result["leaf_triangles"] = int64_t(shared.instanced_triangles[1]);
 			result["source_representation"] = "shared_complete_prototypes";
+			result["instance_asset_coordinates"] = shared.asset_coordinates;
 			result["output"] = output;
 			return e;
 		} catch (const std::bad_alloc &) {

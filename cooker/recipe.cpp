@@ -233,6 +233,21 @@ struct Recipe {
 		}
 		lua_pop(L, 1); return value;
 	}
+	Color instance_data_field(int p_index, const char *p_name, Color p_default, bool &r_present) {
+		field(p_index, p_name);
+		r_present = !lua_isnil(L, -1);
+		Color value = p_default;
+		if (r_present) {
+			require(array(-1, 4) == 4, "instance data requires four finite components");
+			for (int component = 0; component < 4; ++component) {
+				lua_rawgeti(L, -1, component + 1);
+				value[component] = number(-1, -1e30, 1e30);
+				lua_pop(L, 1);
+			}
+		}
+		lua_pop(L, 1);
+		return value;
+	}
 	Color color(int p_index) {
 		int count = array(p_index, 4); require(count == 3 || count == 4, "color needs three or four components");
 		p_index = lua_absindex(L, p_index); Color value(1, 1, 1, 1);
@@ -1273,41 +1288,77 @@ struct Recipe {
 		return Transform3D(basis, position);
 	}
 	static int scene(lua_State *p_state) {
-		auto &s = self(p_state); s.arity(1);
+		auto &s = self(p_state);
+		s.arity(1);
 		int count = s.array(1, s.limits.max_instances - s.instances);
 		s.require(count > 0, "scene must contain at least one instance");
 		s.instances += count;
-		struct Batch { Ref<Mesh> mesh; Ref<Material> material; real_t cull_margin; Vector<Transform3D> transforms; Array resources; };
+		struct Batch {
+			Ref<Mesh> mesh;
+			Ref<Material> material;
+			real_t cull_margin;
+			Vector<Transform3D> transforms;
+			Array resources;
+			Vector<Color> colors, custom_data;
+			bool has_colors = false, has_custom_data = false;
+		};
 		std::vector<Batch> batches;
-		OwnedNode root(memnew(Node3D)); root->set_name("RecipeAsset");
+		OwnedNode root(memnew(Node3D));
+		root->set_name("RecipeAsset");
 		for (int i = 0; i < count; ++i) {
-			lua_rawgeti(p_state, 1, i + 1); int item = lua_absindex(p_state, -1);
-			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "keep", "lightmap", "cull_margin", "resource_id", "resource_kind", "resource_pose", "resource_collider", "resource_stage"});
-			s.field(item, "asset"); Ref<Resource> asset = s.handle(-1); lua_pop(p_state, 1);
-			s.field(item, "material"); Ref<Material> material;
-			if (!lua_isnil(p_state, -1)) { material = s.handle(-1); s.require(material.is_valid(), "material requires a Material handle"); }
+			lua_rawgeti(p_state, 1, i + 1);
+			int item = lua_absindex(p_state, -1);
+			s.fields(item, { "asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "keep", "lightmap", "cull_margin", "color", "custom_data", "resource_id", "resource_kind", "resource_pose", "resource_collider", "resource_stage" });
+			s.field(item, "asset");
+			Ref<Resource> asset = s.handle(-1);
+			lua_pop(p_state, 1);
+			s.field(item, "material");
+			Ref<Material> material;
+			if (!lua_isnil(p_state, -1)) {
+				material = s.handle(-1);
+				s.require(material.is_valid(), "material requires a Material handle");
+			}
 			lua_pop(p_state, 1);
 			Transform3D transform = s.transform(item);
 			const real_t cull_margin = s.number_field(item, "cull_margin", 0, 0, 32);
+			bool has_color = false, has_custom_data = false;
+			const Color color = s.instance_data_field(item, "color", Color(1, 1, 1, 1), has_color);
+			const Color custom_data = s.instance_data_field(item, "custom_data", Color(0, 0, 0, 0), has_custom_data);
 			s.require(cull_margin >= 0 && cull_margin <= 32, "cull_margin must be in [0,32]");
 			Ref<Mesh> mesh = asset;
 			if (mesh.is_valid()) {
 				if (s.boolean_field(item, "lightmap", false)) {
+					s.require(!has_color && !has_custom_data, "lightmap MeshInstance entries cannot carry MultiMesh instance data");
 					s.require(Ref<VirtualGeometryMesh>(mesh).is_null(), "virtual geometry requires separately prepared lightmap geometry");
 					auto *node = memnew(MeshInstance3D);
 					node->set_name(s.string_field(item, "name", "Mesh" + itos(i)));
 					s.require(!node->get_name().is_empty(), "lightmap mesh requires a name");
-					node->set_mesh(mesh); node->set_material_override(material); node->set_transform(transform); node->set_extra_cull_margin(cull_margin);
+					node->set_mesh(mesh);
+					node->set_material_override(material);
+					node->set_transform(transform);
+					node->set_extra_cull_margin(cull_margin);
 					node->set_gi_mode(GeometryInstance3D::GI_MODE_STATIC);
-					root->add_child(node); node->set_owner(root.get());
-					lua_pop(p_state, 1); continue;
+					root->add_child(node);
+					node->set_owner(root.get());
+					lua_pop(p_state, 1);
+					continue;
 				}
-				s.field(item, "name"); s.require(lua_isnil(p_state, -1), "name is only valid for PackedScene instances"); lua_pop(p_state, 1);
-				s.field(item, "remove"); s.require(lua_isnil(p_state, -1), "remove is only valid for PackedScene instances"); lua_pop(p_state, 1);
-				s.field(item, "keep"); s.require(lua_isnil(p_state, -1), "keep is only valid for PackedScene instances"); lua_pop(p_state, 1);
+				s.field(item, "name");
+				s.require(lua_isnil(p_state, -1), "name is only valid for PackedScene instances");
+				lua_pop(p_state, 1);
+				s.field(item, "remove");
+				s.require(lua_isnil(p_state, -1), "remove is only valid for PackedScene instances");
+				lua_pop(p_state, 1);
+				s.field(item, "keep");
+				s.require(lua_isnil(p_state, -1), "keep is only valid for PackedScene instances");
+				lua_pop(p_state, 1);
 				size_t batch = 0;
-				while (batch < batches.size() && (batches[batch].mesh != mesh || batches[batch].material != material || batches[batch].cull_margin != cull_margin)) ++batch;
-				if (batch == batches.size()) batches.push_back({mesh, material, cull_margin, {}, {}});
+				while (batch < batches.size() && (batches[batch].mesh != mesh || batches[batch].material != material || batches[batch].cull_margin != cull_margin)) {
+					++batch;
+				}
+				if (batch == batches.size()) {
+					batches.push_back({ mesh, material, cull_margin, {}, {} });
+				}
 				const String identity = s.string_field(item, "resource_id", "");
 				if (!identity.is_empty()) {
 					s.require(identity.length() <= 96 && identity.is_valid_identifier(), "invalid resource_id");
@@ -1334,10 +1385,28 @@ struct Recipe {
 						transform.basis = Basis(Vector3(), Vector3(), Vector3());
 					}
 				}
-				batches[batch].transforms.push_back(transform);
+				auto &output = batches[batch];
+				if (has_color && !output.has_colors) {
+					s.require(output.colors.resize(output.transforms.size()) == OK, "instance color allocation failed");
+					output.colors.fill(Color(1, 1, 1, 1));
+					output.has_colors = true;
+				}
+				if (has_custom_data && !output.has_custom_data) {
+					s.require(output.custom_data.resize(output.transforms.size()) == OK, "instance custom data allocation failed");
+					output.custom_data.fill(Color(0, 0, 0, 0));
+					output.has_custom_data = true;
+				}
+				if (output.has_colors) {
+					output.colors.push_back(color);
+				}
+				if (output.has_custom_data) {
+					output.custom_data.push_back(custom_data);
+				}
+				output.transforms.push_back(transform);
 			} else {
 				Ref<PackedScene> packed = asset;
 				s.require(packed.is_valid(), "scene instances require Mesh or PackedScene handles");
+				s.require(!has_color && !has_custom_data, "PackedScene entries retain their own instance data");
 				s.require(material.is_null(), "PackedScene instances cannot use a material override");
 				s.require(cull_margin == 0, "PackedScene margins belong to their geometry nodes");
 				OwnedNode instance(packed->instantiate());
@@ -1349,7 +1418,9 @@ struct Recipe {
 					String name = s.string(-1);
 					s.require(!name.is_empty() && name.validate_node_name() == name, "invalid PackedScene instance name");
 					instance->set_name(name);
-				} else instance->set_name("Scene" + itos(i));
+				} else {
+					instance->set_name("Scene" + itos(i));
+				}
 				lua_pop(p_state, 1);
 				// Recipe-created PackedScenes have no external scene to instance.
 				// Own their descendants in the enclosing scene so nested spatial
@@ -1361,7 +1432,8 @@ struct Recipe {
 					localize = localize || remove_count > 0;
 					for (int remove_index = 0; remove_index < remove_count; ++remove_index) {
 						lua_rawgeti(p_state, -1, remove_index + 1);
-						String path = s.string(-1); lua_pop(p_state, 1);
+						String path = s.string(-1);
+						lua_pop(p_state, 1);
 						s.require(!path.is_empty() && !path.begins_with("/") && path.find("..") == -1, "invalid removal path");
 						Node *removed = instance->get_node_or_null(NodePath(path));
 						s.require(removed && removed != instance.get() && removed->get_parent(), "PackedScene removal path was not found");
@@ -1407,18 +1479,37 @@ struct Recipe {
 		}
 		for (size_t i = 0; i < batches.size(); ++i) {
 			auto &batch = batches[i];
-			Ref<MultiMesh> multi; multi.instantiate();
-			multi->set_transform_format(MultiMesh::TRANSFORM_3D); multi->set_mesh(batch.mesh);
+			Ref<MultiMesh> multi;
+			multi.instantiate();
+			multi->set_transform_format(MultiMesh::TRANSFORM_3D);
+			multi->set_use_colors(batch.has_colors);
+			multi->set_use_custom_data(batch.has_custom_data);
+			multi->set_mesh(batch.mesh);
 			multi->set_instance_count(batch.transforms.size());
-			for (int j = 0; j < batch.transforms.size(); ++j) multi->set_instance_transform(j, batch.transforms[j]);
+			for (int j = 0; j < batch.transforms.size(); ++j) {
+				multi->set_instance_transform(j, batch.transforms[j]);
+				if (batch.has_colors) {
+					multi->set_instance_color(j, batch.colors[j]);
+				}
+				if (batch.has_custom_data) {
+					multi->set_instance_custom_data(j, batch.custom_data[j]);
+				}
+			}
 			auto *node = memnew(MultiMeshInstance3D);
-			node->set_name("Batch" + itos(i)); node->set_multimesh(multi); node->set_material_override(batch.material); node->set_extra_cull_margin(batch.cull_margin);
-			if (!batch.resources.is_empty()) node->set_meta("veya_resources", batch.resources);
-			root->add_child(node); node->set_owner(root.get());
+			node->set_name("Batch" + itos(i));
+			node->set_multimesh(multi);
+			node->set_material_override(batch.material);
+			node->set_extra_cull_margin(batch.cull_margin);
+			if (!batch.resources.is_empty()) {
+				node->set_meta("veya_resources", batch.resources);
+			}
+			root->add_child(node);
+			node->set_owner(root.get());
 		}
 		int32_t next_scene_id = 1;
 		assign_scene_ids(root.get(), root.get(), next_scene_id);
-		Ref<PackedScene> scene; scene.instantiate();
+		Ref<PackedScene> scene;
+		scene.instantiate();
 		s.require(scene->pack(root.get()) == OK, "could not pack recipe scene");
 		return s.push_resource(scene);
 	}
@@ -1706,29 +1797,68 @@ struct Recipe {
 		}
 		return 1;
 	}
-	struct Part { Ref<Mesh> mesh; Ref<Material> material; Transform3D transform; };
-	static void collect_parts(Node *p_node, const Transform3D &p_parent, std::vector<Part> &r_parts, int p_depth) {
+	static constexpr size_t MAX_PARTS = 65536;
+	struct Part {
+		Ref<Mesh> mesh;
+		Ref<Material> material;
+		Transform3D transform;
+		Color color = Color(1, 1, 1, 1), custom_data = Color(0, 0, 0, 0);
+		bool has_color = false, has_custom_data = false;
+	};
+	static bool collect_parts(Node *p_node, const Transform3D &p_parent, std::vector<Part> &r_parts, int p_depth) {
+		if (p_depth > 32) {
+			return false;
+		}
 		Transform3D transform = p_parent;
-		if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) transform = p_parent * node_3d->get_transform();
+		if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
+			transform = p_parent * node_3d->get_transform();
+		}
 		if (MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(p_node); mesh && mesh->get_mesh().is_valid()) {
+			if (r_parts.size() == MAX_PARTS) {
+				return false;
+			}
 			Ref<Material> material = mesh->get_material_override();
-			if (material.is_null() && mesh->get_mesh()->get_surface_count() == 1) material = mesh->get_surface_override_material(0);
-			r_parts.push_back({mesh->get_mesh(), material, transform});
+			if (material.is_null() && mesh->get_mesh()->get_surface_count() == 1) {
+				material = mesh->get_surface_override_material(0);
+			}
+			r_parts.push_back({ mesh->get_mesh(), material, transform });
 		}
 		// Recipe-batched models expand to one part per MultiMesh instance.
 		if (MultiMeshInstance3D *multi = Object::cast_to<MultiMeshInstance3D>(p_node); multi && multi->get_multimesh().is_valid() && multi->get_multimesh()->get_mesh().is_valid()) {
 			const Ref<MultiMesh> batch = multi->get_multimesh();
-			for (int i = 0; i < batch->get_instance_count() && r_parts.size() <= 64; ++i)
-				r_parts.push_back({batch->get_mesh(), multi->get_material_override(), transform * batch->get_instance_transform(i)});
+			for (int i = 0; i < batch->get_instance_count(); ++i) {
+				if (r_parts.size() == MAX_PARTS) {
+					return false;
+				}
+				Part part;
+				part.mesh = batch->get_mesh();
+				part.material = multi->get_material_override();
+				part.transform = transform * batch->get_instance_transform(i);
+				part.has_color = batch->is_using_colors();
+				part.has_custom_data = batch->is_using_custom_data();
+				if (part.has_color) {
+					part.color = batch->get_instance_color(i);
+				}
+				if (part.has_custom_data) {
+					part.custom_data = batch->get_instance_custom_data(i);
+				}
+				r_parts.push_back(part);
+			}
 		}
-		if (p_depth < 32 && r_parts.size() <= 64) for (int i = 0; i < p_node->get_child_count(); ++i) collect_parts(p_node->get_child(i), transform, r_parts, p_depth + 1);
+		for (int child = 0; child < p_node->get_child_count(); ++child) {
+			if (!collect_parts(p_node->get_child(child), transform, r_parts, p_depth + 1)) {
+				return false;
+			}
+		}
+		return true;
 	}
 	// MeshInstance3D descendants and MultiMesh instances of a PackedScene as
 	// {mesh,material,basis,position} in root space, so dense scatter can batch
 	// cooked models into MultiMesh. material is the node or single-surface
 	// override, else absent (the mesh's own surface materials apply).
 	static int parts(lua_State *p_state) {
-		auto &s = self(p_state); s.check_budget();
+		auto &s = self(p_state);
+		s.check_budget();
 		s.require(lua_gettop(p_state) == 1 || lua_gettop(p_state) == 2, "parts accepts a scene and optional direct child name");
 		Ref<PackedScene> packed = s.handle(1);
 		s.require(packed.is_valid(), "parts requires a PackedScene handle");
@@ -1744,10 +1874,14 @@ struct Recipe {
 				found = s.part_roots.emplace(packed->get_instance_id(), OwnedNode(packed->instantiate())).first;
 			}
 			s.require(found->second != nullptr, "could not instantiate PackedScene for parts");
-			if (Node3D *node = Object::cast_to<Node3D>(found->second.get())) parent = node->get_transform();
+			if (Node3D *node = Object::cast_to<Node3D>(found->second.get())) {
+				parent = node->get_transform();
+			}
 			for (int child = 0; child < found->second->get_child_count(); ++child) {
 				Node *candidate = found->second->get_child(child);
-				if (String(candidate->get_name()) == child_name) root = candidate;
+				if (String(candidate->get_name()) == child_name) {
+					root = candidate;
+				}
 			}
 			s.require(root != nullptr, "parts direct child does not exist");
 		} else {
@@ -1756,14 +1890,14 @@ struct Recipe {
 			s.require(root != nullptr, "could not instantiate PackedScene for parts");
 		}
 		std::vector<Part> found;
-		collect_parts(root, parent, found, 0);
-		s.require(!found.empty() && found.size() <= 64, "parts requires 1..64 mesh instances");
+		s.require(collect_parts(root, parent, found, 0), "parts hierarchy or instance limit exceeded");
+		s.require(!found.empty() && found.size() <= MAX_PARTS, "parts requires 1..65536 mesh instances");
 		lua_createtable(p_state, found.size(), 0);
 		for (size_t i = 0; i < found.size(); ++i) {
 			const Transform3D &transform = found[i].transform;
 			s.require(transform.basis.is_finite() && std::abs(transform.basis.determinant()) > 1e-12, "part transform must be invertible");
 			const Ref<Material> &material = found[i].material;
-			lua_createtable(p_state, 0, 4);
+			lua_createtable(p_state, 0, 6);
 			const auto push = [&s](const Ref<Resource> &resource) {
 				const auto cached = s.part_handles.find(resource->get_instance_id());
 				if (cached == s.part_handles.end()) {
@@ -1773,12 +1907,32 @@ struct Recipe {
 					*static_cast<size_t *>(lua_newuserdatatagged(s.L, sizeof(size_t), HANDLE_TAG)) = cached->second;
 				}
 			};
-			push(found[i].mesh); lua_setfield(p_state, -2, "mesh");
-			if (material.is_valid()) { push(material); lua_setfield(p_state, -2, "material"); }
-			s.push_vector(transform.origin); lua_setfield(p_state, -2, "position");
+			push(found[i].mesh);
+			lua_setfield(p_state, -2, "mesh");
+			if (material.is_valid()) {
+				push(material);
+				lua_setfield(p_state, -2, "material");
+			}
+			s.push_vector(transform.origin);
+			lua_setfield(p_state, -2, "position");
 			lua_createtable(p_state, 3, 0);
-			for (int c = 0; c < 3; ++c) { s.push_vector(transform.basis.get_column(c)); lua_rawseti(p_state, -2, c + 1); }
+			for (int c = 0; c < 3; ++c) {
+				s.push_vector(transform.basis.get_column(c));
+				lua_rawseti(p_state, -2, c + 1);
+			}
 			lua_setfield(p_state, -2, "basis");
+			for (int data = 0; data < 2; ++data) {
+				if (!(data == 0 ? found[i].has_color : found[i].has_custom_data)) {
+					continue;
+				}
+				const Color &value = data == 0 ? found[i].color : found[i].custom_data;
+				lua_createtable(p_state, 4, 0);
+				for (int component = 0; component < 4; ++component) {
+					lua_pushnumber(p_state, value[component]);
+					lua_rawseti(p_state, -2, component + 1);
+				}
+				lua_setfield(p_state, -2, data == 0 ? "color" : "custom_data");
+			}
 			lua_rawseti(p_state, -2, i + 1);
 		}
 		return 1;

@@ -13,6 +13,13 @@ its output byte limit. The cache belongs to one recipe and keys source identity
 and settings. Publication writes content-addressed `.vgp` containers alongside
 the `.res` mesh or `.scn` scene. Collision uses an independent ordinary source.
 
+Mesh entries in `scene` may provide four finite `color` and `custom_data`
+components, exposed as MultiMesh COLOR and INSTANCE_CUSTOM. Missing values are
+white and zero respectively. Channels allocate only when used. `parts` preserves
+these authored values along with all transform columns; it accepts up to 65,536
+parts and rejects a hierarchy deeper than 32 rather than returning a partial
+subtree. The recipe VM, resource and output budgets still apply.
+
 `run-recipe` accepts `external_render_resources=true` for static fragments.
 The host saves Shader, Material and Mesh resources under the output's
 `render-resources/` directory. Scene and render output sizes remain bounded by

@@ -112,6 +112,16 @@ Luau `options` declares `prototype_triangles`, `bark_triangles`, `leaf_triangles
   screen-space index LODs. All local USD
 layer bytes participate in verified cache fingerprints. USD support is linked
 only into Cooker, on Windows and macOS, without external PXR/Python executables.
+  PackedScene options may explicitly set `virtual_geometry=true` and
+  `preserve_area=true` to build every static prototype. Each unique source Mesh
+  remains bounded to two million vertices; combined encoded output is at most
+  256 MiB. `asset_coordinates=true` stores the asset-space height row and the
+  prototype-local asset origin in MultiMesh COLOR and INSTANCE_CUSTOM. An opted-in
+  shader must consume these values. Optional positive `height` normalizes the
+  complete asset height; `rooted=true` keeps its XZ origin, otherwise it centers
+  XZ. Normalization belongs to a child Node3D, so the scene root keeps its identity
+  transform when a caller places the asset. No ordinary source Mesh or hand LOD
+  is required for this path.
 `import-texture` optionally accepts `max_texture_dimension`, a power of two from
 256 through 8192. Larger immutable source images are resized proportionally
 before mip generation and compression. With `normal_map=true`, resized normals
