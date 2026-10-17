@@ -479,6 +479,76 @@ PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, Geom
 	}
 }
 
+PageCodecResult validate_geometry_page_layout(const uint8_t *p_bytes, size_t p_size) {
+	if (p_bytes == nullptr || p_size < GEOMETRY_PAGE_HEADER_BYTES || p_size > MAX_DISK_BYTES ||
+			read_word(p_bytes, 0) != GEOMETRY_DISK_PAGE_MAGIC || read_word(p_bytes, 4) != GEOMETRY_PAGE_VERSION ||
+			read_word(p_bytes, 8) > PAGE_FLAG_ROOT || read_word(p_bytes, 24) != GEOMETRY_PAGE_HEADER_BYTES || read_word(p_bytes, 28) != 0) {
+		return { PageCodecError::INVALID_HEADER };
+	}
+	const bool root = read_word(p_bytes, 8) != 0;
+	const uint32_t count = read_word(p_bytes, 12);
+	const uint32_t gpu_bytes = read_word(p_bytes, 20);
+	if (count == 0 || count > (root ? 64u : 256u) || gpu_bytes > (root ? ROOT_PAGE_GPU_CAPACITY : STREAMING_PAGE_GPU_CAPACITY)) {
+		return { PageCodecError::CAPACITY };
+	}
+	size_t cursor = GEOMETRY_PAGE_HEADER_BYTES + size_t(count) * GEOMETRY_PAGE_CLUSTER_BYTES;
+	size_t gpu_cursor = cursor;
+	if (cursor > p_size || read_word(p_bytes, 16) != p_size) {
+		return { PageCodecError::INVALID_LENGTH };
+	}
+	const auto range = [&](uint32_t p_offset, size_t p_bytes_count) {
+		if (p_offset != cursor || cursor > p_size || aligned(p_bytes_count) > p_size - cursor) {
+			return false;
+		}
+		for (size_t byte = p_bytes_count; byte < aligned(p_bytes_count); ++byte) {
+			if (p_bytes[cursor + byte] != 0) {
+				return false;
+			}
+		}
+		cursor += aligned(p_bytes_count);
+		return true;
+	};
+	for (uint32_t cluster = 0; cluster < count; ++cluster) {
+		Record record;
+		for (size_t word = 0; word < record.size(); ++word) {
+			record[word] = read_word(p_bytes, GEOMETRY_PAGE_HEADER_BYTES + size_t(cluster) * GEOMETRY_PAGE_CLUSTER_BYTES + word * 4);
+		}
+		if ((record[7] & ~15u) != 0 || (record[35] & ~7u) != 0 || (record[40] >> 16) != 0 ||
+				record[33] == 0 || record[33] > 15 || record[34] > 12 || record[36] > 4 ||
+				record[28] > 21 || record[29] > 21 || record[30] > 21 ||
+				record[4] < 3 || record[4] > MAX_CLUSTER_VERTICES || record[5] == 0 || record[5] > MAX_CLUSTER_TRIANGLES ||
+				record[6] == 0 || record[6] > MAX_CLUSTER_MATERIALS || record[32] > 2016 || record[38] > 10592 ||
+				record[64] > 240 || record[67] > MAX_CLUSTER_MATERIALS || record[70] > 28) {
+			return { PageCodecError::INVALID_LAYOUT, cluster };
+		}
+		if (record[71] != gpu_cursor || !range(record[31], record[32]) || !range(record[37], record[38]) || !range(record[63], record[64])) {
+			return { PageCodecError::INVALID_OFFSET, cluster };
+		}
+		ClusterStripLayout strip;
+		strip.vertices = record[4];
+		strip.triangles = record[5];
+		strip.new_vertices_before = record[61];
+		strip.references_before = record[62];
+		for (uint32_t block = 0; block < 4; ++block) {
+			for (uint32_t mask = 0; mask < 3; ++mask) {
+				strip.masks[block][mask] = record[49 + block * 3 + mask];
+			}
+		}
+		if (validate_cluster_strip_layout(strip, p_bytes + record[63], record[64]) != TopologyCodecError::OK) {
+			return { PageCodecError::TOPOLOGY, cluster };
+		}
+		if ((slow_material(record[65]) && (record[65] & SLOW_MATERIAL_MASK) != record[66] / 4) ||
+				!range(record[66], size_t(record[67]) * 4) || !range(record[68], size_t(record[6]) * 4) || !range(record[69], size_t(record[70]) * 4)) {
+			return { PageCodecError::INVALID_OFFSET, cluster };
+		}
+		gpu_cursor += aligned(record[32]) + aligned(record[38]) + gpu_index_bytes(record[4], record[5]) + size_t(record[67] + record[6] + record[70]) * 4;
+	}
+	if (cursor != p_size || gpu_cursor != gpu_bytes) {
+		return { PageCodecError::INVALID_LENGTH };
+	}
+	return {};
+}
+
 PageCodecResult transcode_geometry_page_cpu(const uint8_t *p_bytes, size_t p_size, std::vector<uint8_t> &r_gpu_bytes) {
 	GeometryPage page;
 	const auto decoded = decode_geometry_page(p_bytes, p_size, page);

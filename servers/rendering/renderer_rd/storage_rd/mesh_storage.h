@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "virtual_geometry_storage.h"
+
 #include "core/templates/local_vector.h"
 #include "core/templates/rid_owner.h"
 #include "core/templates/self_list.h"
@@ -65,6 +67,7 @@ public:
 
 private:
 	static MeshStorage *singleton;
+	VirtualGeometryStorage virtual_geometry;
 
 	RID default_rd_storage_buffer;
 
@@ -376,6 +379,12 @@ public:
 
 	/// Return stride
 	virtual void mesh_add_surface(RID p_mesh, const RenderingServerTypes::SurfaceData &p_surface) override;
+
+	Error virtual_geometry_set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes) override;
+	Error mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials) override;
+	Error virtual_geometry_submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads) override;
+	Vector<uint8_t> virtual_geometry_get_feedback(uint64_t p_after_sequence) const override;
+	void update_virtual_geometry();
 
 	virtual int mesh_get_blend_shape_count(RID p_mesh) const override;
 

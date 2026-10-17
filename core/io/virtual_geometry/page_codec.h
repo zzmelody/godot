@@ -84,6 +84,11 @@ PageCodecResult measure_geometry_page(const GeometryPage &p_page, GeometryPageSi
 PageCodecResult encode_geometry_page(const GeometryPage &p_page, std::vector<uint8_t> &r_bytes);
 PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, GeometryPage &r_page);
 
+// Bounded upload-layout check for publication-admitted bytes. Checks canonical
+// input/output ranges and strip headers without unpacking positions, attributes
+// or triangle arrays. This is not content admission or a CPU transcode path.
+PageCodecResult validate_geometry_page_layout(const uint8_t *p_bytes, size_t p_size);
+
 // Bounded CPU oracle for the future GPU installer. Converts disk strips into
 // minimum-base/delta triangles and copies compressed positions/attributes.
 // Material table offsets are relocated to the GPU page's word addresses.

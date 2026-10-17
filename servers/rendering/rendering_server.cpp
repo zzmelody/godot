@@ -2358,6 +2358,10 @@ void RenderingServer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("mesh_create_from_surfaces", "surfaces", "blend_shape_count"), &RenderingServer::_mesh_create_from_surfaces, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("mesh_create"), &RenderingServer::mesh_create);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_set_budget", "pool_bytes", "metadata_bytes", "work_bytes"), &RenderingServer::virtual_geometry_set_budget);
+	ClassDB::bind_method(D_METHOD("mesh_set_virtual_geometry", "mesh", "generation", "root", "materials"), &RenderingServer::mesh_set_virtual_geometry);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_submit_pages", "records", "payloads"), &RenderingServer::virtual_geometry_submit_pages);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_get_feedback", "after_sequence"), &RenderingServer::virtual_geometry_get_feedback);
 	ClassDB::bind_method(D_METHOD("mesh_surface_get_format_offset", "format", "vertex_count", "array_index"), &RenderingServer::mesh_surface_get_format_offset);
 	ClassDB::bind_method(D_METHOD("mesh_surface_get_format_vertex_stride", "format", "vertex_count"), &RenderingServer::mesh_surface_get_format_vertex_stride);
 	ClassDB::bind_method(D_METHOD("mesh_surface_get_format_normal_tangent_stride", "format", "vertex_count"), &RenderingServer::mesh_surface_get_format_normal_tangent_stride);

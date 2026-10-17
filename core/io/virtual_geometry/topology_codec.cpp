@@ -207,6 +207,10 @@ TopologyCodecError unpack_cluster_topology(const ClusterStripLayout &p_layout, c
 	}
 }
 
+TopologyCodecError validate_cluster_strip_layout(const ClusterStripLayout &p_layout, const uint8_t *p_bytes, size_t p_size) {
+	return validate(p_layout, p_bytes, p_size);
+}
+
 TopologyCodecError unpack_cluster_triangle(const ClusterStripLayout &p_layout, const uint8_t *p_bytes,
 		size_t p_size, uint32_t p_triangle, std::array<uint32_t, 3> &r_indices) {
 	const auto valid = validate(p_layout, p_bytes, p_size);

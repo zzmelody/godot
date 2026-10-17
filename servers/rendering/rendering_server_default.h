@@ -362,6 +362,13 @@ public:
 #define ServerName RendererMeshStorage
 #define server_name RSG::mesh_storage
 
+	FUNC3R(Error, virtual_geometry_set_budget, uint64_t, uint64_t, uint64_t)
+	FUNC4R(Error, mesh_set_virtual_geometry, RID, uint64_t, const PackedByteArray &, const TypedArray<RID> &)
+	FUNC2R(Error, virtual_geometry_submit_pages, const PackedByteArray &, const TypedArray<PackedByteArray> &)
+	PackedByteArray virtual_geometry_get_feedback(uint64_t p_after_sequence) const override {
+		return RSG::mesh_storage->virtual_geometry_get_feedback(p_after_sequence);
+	}
+
 	virtual RID mesh_create_from_surfaces(const Vector<RenderingServerTypes::SurfaceData> &p_surfaces, int p_blend_shape_count = 0) override {
 		RID mesh = RSG::mesh_storage->mesh_allocate();
 

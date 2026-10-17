@@ -47,6 +47,10 @@ TopologyCodecError unpack_cluster_topology(const ClusterStripLayout &p_layout, c
 TopologyCodecError unpack_cluster_triangle(const ClusterStripLayout &p_layout, const uint8_t *p_bytes,
 		size_t p_size, uint32_t p_triangle, std::array<uint32_t, 3> &r_indices);
 
+// Metadata/padding validation for an admitted GPU upload. Does not expand
+// triangle indices or validate geometric content; publication owns that check.
+TopologyCodecError validate_cluster_strip_layout(const ClusterStripLayout &p_layout, const uint8_t *p_bytes, size_t p_size);
+
 // GPU triangle stream: minimum vertex first, preserving cyclic winding; then
 // two positive five-bit deltas. Base width is ceil(log2(vertex count)). Unlike
 // the disk strip this permits independent triangle reads without strip masks.

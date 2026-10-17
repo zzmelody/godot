@@ -76,6 +76,12 @@ ModelCodecResult decode_geometry_model_fixups(const GeometryModelRoot &p_root, u
 		const uint8_t *p_bytes, size_t p_size, HierarchyPage &r_chunk);
 
 // One demanded container block = disk geometry followed by its fixup chunk.
+// Runtime installation check: canonical byte ranges, strip metadata, model
+// identity and fixups, without expanding positions, attributes or triangles.
+// Borrows immutable publication-admitted content; this is not asset admission.
+ModelCodecResult validate_geometry_model_page_layout(const GeometryModelRoot &p_root, uint32_t p_page,
+		const uint8_t *p_bytes, size_t p_size, HierarchyPage &r_chunk);
+
 // Checks metadata identity, material slots, attributes, static flags and part
 // membership. No I/O, hashing, runtime admission or GPU installation occurs.
 ModelCodecResult decode_geometry_model_page(const GeometryModelRoot &p_root, uint32_t p_page,

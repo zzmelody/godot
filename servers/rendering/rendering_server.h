@@ -193,6 +193,12 @@ public:
 	virtual RID mesh_create_from_surfaces(const Vector<RenderingServerTypes::SurfaceData> &p_surfaces, int p_blend_shape_count = 0) = 0;
 	virtual RID mesh_create() = 0;
 
+	virtual Error virtual_geometry_set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes) = 0;
+	virtual Error mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, const PackedByteArray &p_root, const TypedArray<RID> &p_materials) = 0;
+	virtual Error virtual_geometry_submit_pages(const PackedByteArray &p_records, const TypedArray<PackedByteArray> &p_payloads) = 0;
+	// Value snapshot only: no rendering-thread synchronization or GPU wait.
+	virtual PackedByteArray virtual_geometry_get_feedback(uint64_t p_after_sequence) const = 0;
+
 	virtual void mesh_set_blend_shape_count(RID p_mesh, int p_blend_shape_count) = 0;
 
 	virtual uint32_t mesh_surface_get_format_offset(BitField<RSE::ArrayFormat> p_format, int p_vertex_len, int p_array_index) const;
@@ -632,7 +638,6 @@ public:
 	virtual Dictionary sky_get_physical_source_status(RID p_sky) const = 0;
 	virtual Dictionary get_physical_sky_capabilities() const = 0;
 	virtual String get_sky_view_shader_source() const = 0;
-
 
 	virtual Ref<Image> sky_bake_panorama(RID p_sky, float p_energy, bool p_bake_irradiance, const Size2i &p_size) = 0;
 
