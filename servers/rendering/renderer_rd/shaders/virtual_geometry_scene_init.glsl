@@ -50,6 +50,8 @@ void main() {
 			scene.data[output_word + 24u + row * 4u + column] = column < 3u ? floatBitsToUint(normal_rows[row][column]) : 0u;
 		}
 	}
+	// Reuse selection's determinant sign; normal-matrix XYZ ignores padding.
+	scene.data[output_word + 35u] = work.data[16u + instance * 16u + 14u];
 	for (uint channel = 0u; channel < 4u; ++channel) {
 		scene.data[output_word + 36u + channel] = floatBitsToUint(color[channel]);
 		scene.data[output_word + 40u + channel] = floatBitsToUint(custom[channel]);

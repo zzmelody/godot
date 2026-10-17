@@ -19,10 +19,7 @@ void main() {
 	}
 	uvec3 vertices = vg_triangle(selected.y, triangle);
 	vec4 clip = vg_clip(selected.x, selected.y, vertices[uint(gl_VertexIndex) % 3u]);
-	if (clip.w > 0.0) {
-		clip.xy = (vg_snap(vg_screen(clip)) / vec2(raster_info.raster.xy) * 2.0 - 1.0) * clip.w;
-	}
-	gl_Position = clip;
+	gl_Position = vg_snap_clip(clip, vec2(raster_info.raster.xy));
 }
 
 #[fragment]

@@ -7,16 +7,24 @@ layout(set = 0, binding = 8, std430) readonly buffer Scene { uint data[]; } scen
 #endif
 
 uint vg_source_word(uint index) { return scene.data[0] + index * 48u; }
+vec4 vg_source_vector(uint source, uint offset) {
+	uint word = vg_source_word(source) + offset;
+	return uintBitsToFloat(uvec4(scene.data[word], scene.data[word + 1u], scene.data[word + 2u], scene.data[word + 3u]));
+}
+mat4 vg_source_matrix(uint source, uint offset) {
+	return transpose(mat4(vg_source_vector(source, offset), vg_source_vector(source, offset + 4u), vg_source_vector(source, offset + 8u), vec4(0.0, 0.0, 0.0, 1.0)));
+}
 uvec2 vg_visible_reference(uint index) {
 	uint word = scene.data[1] + index * 2u;
 	return uvec2(scene.data[word], scene.data[word + 1u]);
 }
 
 #ifdef VG_MATERIAL_LOOKUP
+#include "virtual_geometry_page_inc.glsl"
 uint vg_material(uint payload) {
 	uvec2 visible = vg_visible_reference((payload >> 7u) - 1u);
 	uint base = (visible.y >> 8u) * 8192u;
-	uint record = base + 8u + (visible.y & 255u) * 72u;
+	uint record = vg_record(visible.y);
 	uint triangle = payload & 127u;
 	uint info = geometry.data[record + 65u];
 	uint palette_index = 0xffffffffu;
