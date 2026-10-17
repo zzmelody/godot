@@ -69,6 +69,7 @@ geometry_library = geometry_env.add_library("#cooker/virtual_geometry", [
     "#cooker/virtual_geometry/attribute_policy.cpp",
     "#cooker/virtual_geometry/mesh_simplifier.cpp",
     "#cooker/virtual_geometry/cluster_dag.cpp",
+    "#cooker/virtual_geometry/cluster_stripifier.cpp",
     "#cooker/virtual_geometry/cluster_encoding.cpp",
 ])
 recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp", "#cooker/usd_import.cpp"])

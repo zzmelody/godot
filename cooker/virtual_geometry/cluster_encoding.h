@@ -2,6 +2,7 @@
 #define VIRTUAL_GEOMETRY_CLUSTER_ENCODING_H
 
 #include "cluster_dag.h"
+#include "cluster_stripifier.h"
 
 #include "core/io/virtual_geometry/cluster_codec.h"
 
@@ -22,12 +23,16 @@ struct EncodableCluster {
 	uint32_t source_cluster = UINT32_MAX;
 	// Offline maps into the raw source cluster, before material sorting/splits.
 	std::vector<uint32_t> source_triangles;
+	std::vector<uint8_t> source_corner_rotations;
 	std::vector<uint32_t> source_vertices;
 	std::vector<uint32_t> material_palette;
 	std::vector<ClusterMaterialRange> material_ranges;
 	PackedClusterMaterials materials;
 	QuantizedClusterPositions positions;
 	std::vector<uint8_t> position_bytes;
+	PackedClusterTopology topology;
+	std::vector<std::vector<uint8_t>> reuse_batches;
+	std::vector<uint32_t> reuse_batch_words;
 };
 
 struct EncodableGeometry {
@@ -54,6 +59,7 @@ enum class ClusterEncodingError {
 	POSITIONS,
 	QUANTIZATION_COLLAPSE,
 	MEMORY,
+	TOPOLOGY,
 };
 
 struct ClusterEncodingResult {
@@ -61,6 +67,7 @@ struct ClusterEncodingResult {
 	uint32_t cluster = UINT32_MAX;
 	MaterialCodecError material_error = MaterialCodecError::OK;
 	PositionCodecError position_error = PositionCodecError::OK;
+	TopologyCodecError topology_error = TopologyCodecError::OK;
 };
 
 // Material sorting/splits preserve every source triangle, attribute and boundary.
@@ -69,7 +76,7 @@ struct ClusterEncodingResult {
 // Quantization uses a common origin-centered power-of-two grid across all parts.
 // A separate measured encoding-error bound inflates spheres; simplifier error
 // stays unchanged. Input and complete old output survive refusal. This is CPU
-// encoding preparation, not a page/resource format or the final strip codec.
+// encoding preparation with constrained strip topology, not a page/resource.
 ClusterEncodingResult prepare_cluster_encoding(const GeometryDag &p_dag, const ClusterEncodingSettings &p_settings,
 		EncodableGeometry &r_geometry);
 

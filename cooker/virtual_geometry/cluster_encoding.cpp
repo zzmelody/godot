@@ -141,6 +141,70 @@ EncodableCluster materialize(const GeometryCluster &p_source, const AttributeLay
 	return result;
 }
 
+void apply_strip(StripifiedCluster p_strip, size_t p_stride, EncodableCluster &r_cluster) {
+	const auto positions = std::move(r_cluster.geometry.mesh.positions);
+	const auto attributes = std::move(r_cluster.geometry.attributes);
+	const auto materials = std::move(r_cluster.geometry.mesh.materials);
+	const auto external = std::move(r_cluster.geometry.external_edges);
+	const auto vertices = std::move(r_cluster.source_vertices);
+	const auto triangles = std::move(r_cluster.source_triangles);
+	r_cluster.geometry.mesh.positions.clear();
+	r_cluster.geometry.attributes.clear();
+	r_cluster.geometry.mesh.materials.clear();
+	r_cluster.geometry.external_edges.clear();
+	r_cluster.source_vertices.clear();
+	r_cluster.source_triangles.clear();
+	for (uint32_t vertex : p_strip.source_vertices) {
+		r_cluster.geometry.mesh.positions.push_back(positions[vertex]);
+		r_cluster.geometry.attributes.insert(r_cluster.geometry.attributes.end(), attributes.begin() + vertex * p_stride,
+				attributes.begin() + (vertex + 1) * p_stride);
+		r_cluster.source_vertices.push_back(vertices[vertex]);
+	}
+	for (uint32_t local = 0; local < p_strip.source_triangles.size(); ++local) {
+		const uint32_t triangle = p_strip.source_triangles[local];
+		const uint8_t rotation = p_strip.corner_rotations[local];
+		r_cluster.source_triangles.push_back(triangles[triangle]);
+		r_cluster.source_corner_rotations.push_back(rotation);
+		r_cluster.geometry.mesh.materials.push_back(materials[triangle]);
+		for (uint32_t side = 0; side < 3; ++side) {
+			r_cluster.geometry.external_edges.push_back(external[triangle * 3 + (rotation + side) % 3]);
+		}
+	}
+	r_cluster.geometry.mesh.indices = std::move(p_strip.indices);
+	r_cluster.topology = std::move(p_strip.topology);
+}
+
+void build_reuse_batches(EncodableCluster &r_cluster) {
+	for (const auto &range : r_cluster.material_ranges) {
+		std::array<bool, MAX_CLUSTER_VERTICES> used = {};
+		uint32_t unique = 0;
+		uint32_t count = 0;
+		std::vector<uint8_t> batches;
+		for (uint32_t triangle = range.start; triangle < range.start + range.count; ++triangle) {
+			uint32_t additional = 0;
+			for (uint32_t side = 0; side < 3; ++side) {
+				additional += !used[r_cluster.geometry.mesh.indices[triangle * 3 + side]] ? 1u : 0u;
+			}
+			if (count == 32 || unique + additional > 32) {
+				batches.push_back(static_cast<uint8_t>(count));
+				used.fill(false);
+				unique = 0;
+				count = 0;
+			}
+			for (uint32_t side = 0; side < 3; ++side) {
+				const uint32_t vertex = r_cluster.geometry.mesh.indices[triangle * 3 + side];
+				unique += !used[vertex] ? 1u : 0u;
+				used[vertex] = true;
+			}
+			++count;
+		}
+		if (count != 0) {
+			batches.push_back(static_cast<uint8_t>(count));
+		}
+		r_cluster.reuse_batches.push_back(std::move(batches));
+	}
+}
+
 ClusterEncodingResult split_cluster(const GeometryDag &p_dag, uint32_t p_id, EncodableGeometry &r_output) {
 	const auto &source = p_dag.clusters[p_id];
 	std::vector<uint32_t> all(source.mesh.materials.size());
@@ -151,6 +215,16 @@ ClusterEncodingResult split_cluster(const GeometryDag &p_dag, uint32_t p_id, Enc
 	while (!pending.empty()) {
 		auto part = materialize(source, p_dag.layout, p_id, std::move(pending.back()));
 		pending.pop_back();
+		StripifiedCluster strip;
+		const auto stripped = stripify_cluster(part.geometry.mesh, strip);
+		if (stripped.error != StripBuildError::OK) {
+			ClusterEncodingResult error;
+			error.error = stripped.error == StripBuildError::MEMORY ? ClusterEncodingError::MEMORY : ClusterEncodingError::TOPOLOGY;
+			error.cluster = p_id;
+			error.topology_error = stripped.codec_error;
+			return error;
+		}
+		apply_strip(std::move(strip), p_dag.layout.scalar_count(), part);
 		if (part.geometry.mesh.positions.size() > MAX_CLUSTER_VERTICES || part.material_palette.size() > MAX_CLUSTER_MATERIALS) {
 			const auto middle = part.source_triangles.begin() + part.source_triangles.size() / 2;
 			pending.emplace_back(middle, part.source_triangles.end());
@@ -160,6 +234,15 @@ ClusterEncodingResult split_cluster(const GeometryDag &p_dag, uint32_t p_id, Enc
 		const auto packed = pack_cluster_materials(part.material_ranges, static_cast<uint32_t>(part.geometry.mesh.materials.size()), 0, part.materials);
 		if (packed != MaterialCodecError::OK) {
 			return { ClusterEncodingError::MATERIALS, p_id, packed };
+		}
+		build_reuse_batches(part);
+		const auto batches = pack_vertex_reuse_batches(part.material_ranges, part.reuse_batches, part.reuse_batch_words);
+		if (batches != TopologyCodecError::OK) {
+			ClusterEncodingResult error;
+			error.error = ClusterEncodingError::TOPOLOGY;
+			error.cluster = p_id;
+			error.topology_error = batches;
+			return error;
 		}
 		r_output.clusters.push_back(std::move(part));
 	}
@@ -180,7 +263,7 @@ ClusterEncodingResult split_cluster(const GeometryDag &p_dag, uint32_t p_id, Enc
 			auto &part = r_output.clusters[id];
 			for (uint32_t local = 0; local < part.source_triangles.size(); ++local) {
 				for (uint32_t side = 0; side < 3; ++side) {
-					const uint32_t corner = part.source_triangles[local] * 3 + side;
+					const uint32_t corner = part.source_triangles[local] * 3 + (part.source_corner_rotations[local] + side) % 3;
 					uint64_t external = part.geometry.external_edges[local * 3 + side];
 					for (uint32_t edge = topology.edge_offsets[corner]; edge < topology.edge_offsets[corner + 1]; ++edge) {
 						external += owner[topology.adjacent_edges[edge] / 3] != id ? 1u : 0u;

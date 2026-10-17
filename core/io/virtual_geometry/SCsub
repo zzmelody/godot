@@ -4,7 +4,7 @@ from misc.utility.scons_hints import *
 Import("env")
 
 # These bounded, value-only codecs convert allocation failure to typed refusal.
-# Keep unwinding local to this file; no exception crosses an engine boundary.
+# Keep unwinding local to these codecs; no exception crosses an engine boundary.
 codec_env = env.Clone()
 codec_env["CXXFLAGS"] = [flag for flag in codec_env["CXXFLAGS"] if flag not in ("-fno-exceptions", "/EHs-c-")]
 if env.msvc:
@@ -13,4 +13,4 @@ if env.msvc:
     codec_env.Append(CXXFLAGS=["/EHsc"])
 else:
     codec_env.Append(CXXFLAGS=["-fexceptions"])
-codec_env.add_source_files(env.core_sources, ["cluster_codec.cpp"])
+codec_env.add_source_files(env.core_sources, ["cluster_codec.cpp", "topology_codec.cpp"])
