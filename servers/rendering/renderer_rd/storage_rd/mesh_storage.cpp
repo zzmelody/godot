@@ -229,7 +229,13 @@ Error MeshStorage::mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, 
 	if (mesh == nullptr || mesh->surface_count != 0 || mesh->blend_shape_count != 0) {
 		return ERR_INVALID_PARAMETER;
 	}
-	return virtual_geometry.register_mesh(p_mesh, p_generation, p_root, p_materials);
+	AABB bounds;
+	const Error error = virtual_geometry.register_mesh(p_mesh, p_generation, p_root, p_materials, bounds);
+	if (error == OK) {
+		mesh->aabb = bounds;
+		mesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MESH);
+	}
+	return error;
 }
 
 Error MeshStorage::virtual_geometry_submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads) {

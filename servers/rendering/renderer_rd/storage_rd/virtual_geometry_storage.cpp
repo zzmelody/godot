@@ -3,6 +3,9 @@
 #include "core/io/marshalls.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 
+#include <cmath>
+#include <limits>
+
 namespace RendererRD {
 namespace {
 
@@ -156,7 +159,7 @@ Error VirtualGeometryStorage::set_budget(uint64_t p_pool_bytes, uint64_t p_metad
 	return OK;
 }
 
-Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials) {
+Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials, AABB &r_bounds) {
 	if (has(p_mesh)) {
 		return ERR_ALREADY_IN_USE;
 	}
@@ -170,6 +173,18 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	}
 	if (p_materials.size() != int64_t(root.materials.size())) {
 		return ERR_INVALID_PARAMETER;
+	}
+	AABB bounds;
+	for (uint32_t axis = 0; axis < 3; ++axis) {
+		bounds.position[axis] = root.lower[axis];
+		const double extent = double(root.upper[axis]) - double(root.lower[axis]);
+		bounds.size[axis] = extent;
+		if (double(bounds.size[axis]) < extent) {
+			bounds.size[axis] = std::nextafter(bounds.size[axis], std::numeric_limits<real_t>::infinity());
+		}
+		if (!Math::is_finite(bounds.size[axis])) {
+			return ERR_INVALID_DATA;
+		}
 	}
 	const uint32_t table_byte = (uint32_t(p_root.size()) + 15) & ~15u;
 	const uint64_t gpu_bytes = table_byte + uint64_t(root.hierarchy.pages.size()) * 4;
@@ -196,12 +211,22 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	asset->metadata = charge;
 	asset->gpu_bytes = gpu_bytes;
 	asset->bindings = { metadata, pool, table_byte / 4, p_generation };
+	asset->bindings.parts_word = decode_uint64(p_root.ptr() + 144) / 4;
+	asset->bindings.groups_word = decode_uint64(p_root.ptr() + 192) / 4;
+	asset->bindings.nodes = asset->root.hierarchy.nodes.size();
+	asset->bindings.clusters = asset->root.cluster_count;
+	asset->bindings.root_pages = asset->root.hierarchy.root_pages;
+	asset->bindings.pages = asset->root.hierarchy.pages.size();
+	for (uint32_t page = 0; page < asset->bindings.root_pages; ++page) {
+		asset->bindings.root_clusters += asset->root.hierarchy.pages[page].clusters;
+	}
 	asset->committed.resize(asset->root.hierarchy.pages.size(), 0);
 	asset->physical_slots.resize(asset->root.hierarchy.pages.size(), UINT32_MAX);
 	asset->dependency_users.resize(asset->root.hierarchy.pages.size(), 0);
 	metadata_reserved += charge + gpu_bytes;
 	gpu_metadata_bytes += gpu_bytes;
 	assets.insert(p_mesh, asset);
+	r_bounds = bounds;
 	_publish_feedback();
 	return OK;
 }

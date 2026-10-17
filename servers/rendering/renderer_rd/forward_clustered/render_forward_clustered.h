@@ -43,6 +43,7 @@
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/best_fit_normal.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/integrate_dfg.glsl.gen.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_selection.h"
 
 #ifdef METAL_ENABLED
 #include "servers/rendering/renderer_rd/effects/metal_fx.h"
@@ -105,6 +106,7 @@ public:
 	public:
 		ClusterBuilderRD *cluster_builder = nullptr;
 		RendererRD::GpuOcclusion *gpu_occlusion = nullptr;
+		RendererRD::VirtualGeometrySelection *virtual_geometry = nullptr;
 		uint64_t gpu_occlusion_frames = 0;
 
 		struct SSEffectsData {
@@ -487,6 +489,7 @@ private:
 	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false);
 	RendererRD::GpuOcclusion *active_gpu_occlusion = nullptr;
 	void _prepare_gpu_occlusion(RenderDataRD *p_render_data, PassMode p_depth_mode);
+	void _prepare_virtual_geometry(RenderDataRD *p_render_data);
 
 	HashMap<Size2i, RID> sdfgi_framebuffer_size_cache;
 

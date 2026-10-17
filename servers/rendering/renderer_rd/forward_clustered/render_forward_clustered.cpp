@@ -112,6 +112,10 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_tempor
 #endif
 
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
+	if (virtual_geometry) {
+		memdelete(virtual_geometry);
+		virtual_geometry = nullptr;
+	}
 	if (gpu_occlusion) {
 		memdelete(gpu_occlusion);
 		gpu_occlusion = nullptr;
@@ -1728,6 +1732,56 @@ void RenderForwardClustered::_process_sss(Ref<RenderSceneBuffersRD> p_render_buf
 	}
 }
 
+void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_data) {
+	Ref<RenderSceneBuffersRD> buffers = p_render_data->render_buffers;
+	if (buffers.is_null() || !buffers->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED)) {
+		return;
+	}
+	Ref<RenderBufferDataForwardClustered> data = buffers->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
+	if (data->virtual_geometry) {
+		data->virtual_geometry->begin(p_render_data->scene_data->cam_transform, p_render_data->scene_data->cam_projection,
+				p_render_data->scene_data->flip_y, buffers->get_internal_size());
+	}
+	RendererRD::MeshStorage *storage = RendererRD::MeshStorage::get_singleton();
+	// Reuse the renderer's culled source instances. An asset's spatial tree has
+	// one path per part; DAG links affect error/leaf tests, not duplicate tasks.
+	for (uint32_t index = 0; index < p_render_data->instances->size(); ++index) {
+		GeometryInstanceForwardClustered *owner = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[index]);
+		const bool multimesh = owner->data->base_type == RSE::INSTANCE_MULTIMESH;
+		if (owner->data->base_type != RSE::INSTANCE_MESH && !multimesh) {
+			continue;
+		}
+		const RID mesh = multimesh ? storage->multimesh_get_mesh(owner->data->base) : owner->data->base;
+		const auto *bindings = storage->mesh_get_virtual_geometry(mesh);
+		if (bindings == nullptr) {
+			continue;
+		}
+		ERR_CONTINUE_MSG(buffers->get_view_count() != 1, "Virtual geometry multiview selection is not connected yet.");
+		ERR_CONTINUE_MSG(multimesh && (owner->base_flags & (INSTANCE_DATA_FLAG_MULTIMESH_FORMAT_2D | INSTANCE_DATA_FLAG_MULTIMESH_INDIRECT)),
+				"Virtual geometry requires a 3D MultiMesh with an explicit instance count.");
+		if (!data->virtual_geometry) {
+			data->virtual_geometry = memnew(RendererRD::VirtualGeometrySelection);
+			data->virtual_geometry->begin(p_render_data->scene_data->cam_transform, p_render_data->scene_data->cam_projection,
+					p_render_data->scene_data->flip_y, buffers->get_internal_size());
+		}
+		RendererRD::VirtualGeometrySelection::Batch batch;
+		batch.geometry = *bindings;
+		batch.mesh = mesh;
+		batch.source = owner->data->base;
+		batch.source_instance = owner;
+		batch.model = owner->transform;
+		if (multimesh) {
+			batch.count = storage->multimesh_get_instances_to_draw(owner->data->base);
+			batch.transforms = storage->_multimesh_get_buffer_rd_rid(owner->data->base);
+			batch.stride = 3 + bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR) + bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA);
+			uint32_t previous_offset;
+			storage->_multimesh_get_motion_vectors_offsets(owner->data->base, batch.transform_offset, previous_offset);
+		}
+		const Error error = data->virtual_geometry->record(batch);
+		ERR_CONTINUE_MSG(error != OK, "Virtual geometry selection refused a complete source batch: " + itos(error));
+	}
+}
+
 void RenderForwardClustered::_prepare_gpu_occlusion(RenderDataRD *p_render_data, PassMode p_depth_mode) {
 	Ref<RenderSceneBuffersRD> buffers = p_render_data->render_buffers;
 	if (!buffers->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED)) {
@@ -2050,6 +2104,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	_update_render_base_uniform_set();
 
 	_fill_render_list(RENDER_LIST_OPAQUE, p_render_data, PASS_MODE_COLOR, using_sdfgi, using_sdfgi || using_voxelgi, using_motion_pass);
+	_prepare_virtual_geometry(p_render_data);
 	{
 		GodotProfileZoneGroupedFirst(sort, "Render/List/sort_opaque");
 		GodotProfileZoneGroupedValue(sort, render_list[RENDER_LIST_OPAQUE].elements.size());

@@ -2,6 +2,7 @@
 #define VIRTUAL_GEOMETRY_STORAGE_RD_H
 
 #include "core/io/virtual_geometry/runtime_fixups.h"
+#include "core/math/aabb.h"
 #include "core/os/mutex.h"
 #include "core/templates/hash_set.h"
 #include "core/templates/local_vector.h"
@@ -23,6 +24,13 @@ public:
 		RID geometry;
 		uint32_t page_table_word = 0;
 		uint64_t generation = 0;
+		uint32_t parts_word = 0;
+		uint32_t groups_word = 0;
+		uint32_t nodes = 0;
+		uint32_t clusters = 0;
+		uint32_t root_pages = 0;
+		uint32_t root_clusters = 0;
+		uint32_t pages = 0;
 	};
 
 private:
@@ -167,7 +175,7 @@ public:
 	// result means the complete root set has not finished GPU publication.
 	const Bindings *get_bindings(RID p_mesh) const;
 	Error set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes);
-	Error register_mesh(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials);
+	Error register_mesh(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials, AABB &r_bounds);
 	void release_mesh(RID p_mesh);
 	// Whole-batch refusal retains caller ownership. Accepted input uses COW owned
 	// bytes. Resident outcomes follow GPU fixup publication; slots cannot retire
