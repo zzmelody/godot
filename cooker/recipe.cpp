@@ -350,8 +350,9 @@ struct Recipe {
 		if (geometry.is_valid()) {
 			require(geometry->has_geometry(), "virtual geometry input has no valid root");
 			// A published root has no CPU vertex arrays. Fresh builds already
-			// charged their ordinary source. Root/resource bytes and container
-			// dependencies are accounted by the existing input/output byte limits.
+			// charged their ordinary source. Root/resource files use the input
+			// byte limit; borrowed page containers stay deferred. Operations that
+			// decode roots retain their separate vertex and temporary bounds.
 		} else {
 			for (int surface = 0; surface < p_mesh->get_surface_count(); ++surface) { count += p_mesh->surface_get_array_len(surface); }
 		}
@@ -2088,8 +2089,15 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			inspected_inputs.insert(file);
 			Ref<FileAccess> input = FileAccess::open(file, FileAccess::READ);
 			if (input.is_null()) return reject(r_result, "cannot read input", ERR_FILE_CANT_READ);
-			input_bytes += input->get_length();
-			if (input_bytes > uint64_t(recipe.limits.input_mb) * 1024 * 1024) return reject(r_result, "input dependency bytes exceed recipe limit");
+			// The collector only adds .vgp through a validated geometry root.
+			// Keep its digest in the receipt, but do not charge the complete
+			// deferred container as a resource loaded by this recipe.
+			if (!file.ends_with(".vgp")) {
+				input_bytes += input->get_length();
+			}
+			if (input_bytes > uint64_t(recipe.limits.input_mb) * 1024 * 1024) {
+				return reject(r_result, "input dependency bytes exceed recipe limit");
+			}
 			recipe.input_hashes[file] = FileAccess::get_sha256(file);
 		}
 		Ref<Resource> resource = ResourceLoader::load(path);
@@ -2114,8 +2122,12 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			inspected_inputs.insert(dependency);
 			Ref<FileAccess> input = FileAccess::open(dependency, FileAccess::READ);
 			if (input.is_null()) return reject(r_result, "cannot read input dependency", ERR_FILE_CANT_READ);
-			input_bytes += input->get_length();
-			if (input_bytes > uint64_t(recipe.limits.input_mb) * 1024 * 1024) return reject(r_result, "input dependency bytes exceed recipe limit");
+			if (!dependency.ends_with(".vgp")) {
+				input_bytes += input->get_length();
+			}
+			if (input_bytes > uint64_t(recipe.limits.input_mb) * 1024 * 1024) {
+				return reject(r_result, "input dependency bytes exceed recipe limit");
+			}
 			recipe.input_hashes[dependency] = FileAccess::get_sha256(dependency);
 		}
 		recipe.inputs[*key] = resource;
