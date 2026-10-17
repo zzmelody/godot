@@ -108,6 +108,10 @@ inline Error collect(const String &p_path, HashSet<String> &r_files, bool p_pack
 		if (name.is_empty()) {
 			continue;
 		}
+		// Metadata serialization is available before the producer/page records.
+		// Do not publish an incomplete dependency closure or measure mesh arrays.
+		ERR_FAIL_COND_V_MSG(name == StringName("VirtualGeometryMesh"), ERR_UNAVAILABLE,
+				"Virtual geometry page dependencies and resource costs are not connected to Cooker yet.");
 		ERR_FAIL_COND_V_MSG(!ClassDB::class_exists(name) || name == StringName("GDExtension") || ClassDB::is_parent_class(name, "Script"), ERR_UNAVAILABLE, "Unsupported asset class: " + String(name));
 	}
 	List<String> dependencies;
