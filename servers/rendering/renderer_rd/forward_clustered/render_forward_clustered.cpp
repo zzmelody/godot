@@ -112,6 +112,10 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_tempor
 #endif
 
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
+	if (virtual_geometry_raster) {
+		memdelete(virtual_geometry_raster);
+		virtual_geometry_raster = nullptr;
+	}
 	if (virtual_geometry) {
 		memdelete(virtual_geometry);
 		virtual_geometry = nullptr;
@@ -1779,6 +1783,13 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		}
 		const Error error = data->virtual_geometry->record(batch);
 		ERR_CONTINUE_MSG(error != OK, "Virtual geometry selection refused a complete source batch: " + itos(error));
+	}
+	if (data->virtual_geometry && (!data->virtual_geometry->get_results().is_empty() || data->virtual_geometry_raster)) {
+		if (!data->virtual_geometry_raster) {
+			data->virtual_geometry_raster = memnew(RendererRD::VirtualGeometryRasterizer);
+		}
+		const Error error = data->virtual_geometry_raster->record(buffers->get_internal_size(), p_render_data->scene_data->taa_jitter, data->virtual_geometry->get_results());
+		ERR_FAIL_COND_MSG(error != OK, "Virtual geometry mixed raster refused this view: " + itos(error));
 	}
 }
 

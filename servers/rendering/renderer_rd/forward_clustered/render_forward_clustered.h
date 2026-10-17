@@ -43,6 +43,7 @@
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/best_fit_normal.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/integrate_dfg.glsl.gen.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_rasterizer.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_selection.h"
 
 #ifdef METAL_ENABLED
@@ -107,6 +108,7 @@ public:
 		ClusterBuilderRD *cluster_builder = nullptr;
 		RendererRD::GpuOcclusion *gpu_occlusion = nullptr;
 		RendererRD::VirtualGeometrySelection *virtual_geometry = nullptr;
+		RendererRD::VirtualGeometryRasterizer *virtual_geometry_raster = nullptr;
 		uint64_t gpu_occlusion_frames = 0;
 
 		struct SSEffectsData {

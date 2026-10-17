@@ -43,6 +43,7 @@ void VirtualGeometrySelection::begin(const Transform3D &p_camera, const Projecti
 	// UE FPackedView::UpdateLODScales, with a one-pixel error target. The
 	// unjittered projection and actual internal render height define this view.
 	lod_scale = 0.5f * Math::abs(p_projection.columns[1][1]) * p_size.y;
+	frustum_margin = 2.0f / MAX(1, MIN(p_size.x, p_size.y));
 	orthographic = p_projection.is_orthogonal();
 }
 
@@ -113,6 +114,7 @@ Error VirtualGeometrySelection::record(const Batch &p_batch) {
 	parameters.lod[0] = near_plane;
 	parameters.lod[1] = lod_scale;
 	parameters.lod[2] = orthographic;
+	parameters.lod[3] = frustum_margin;
 	parameters.source[0] = p_batch.count;
 	parameters.source[1] = p_batch.stride;
 	parameters.source[2] = p_batch.transform_offset;
@@ -167,6 +169,7 @@ Error VirtualGeometrySelection::record(const Batch &p_batch) {
 	rd->draw_command_end_label();
 	RENDER_TIMESTAMP(p_batch.stride == 0 ? "Virtual Geometry Mesh End" : "Virtual Geometry MultiMesh End");
 	result.batch = p_batch;
+	result.selected_capacity = clusters;
 	++used;
 	return OK;
 }

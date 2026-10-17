@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_bin.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_dispatch.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_sw.glsl.gen.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_selection.h"
+
+namespace RendererRD {
+
+// View-owned mixed raster work and one atomic visibility surface. Selection,
+// source transforms and MeshStorage buffers are borrowed for this frame only.
+// This stage does not evaluate materials or merge ordinary scene depth yet.
+class VirtualGeometryRasterizer {
+public:
+	Error record(const Size2i &p_size, const Vector2 &p_jitter, Span<VirtualGeometrySelection::Result> p_sources);
+	RID get_visibility() const { return ready ? visibility : RID(); }
+	uint64_t get_buffer_bytes() const;
+	~VirtualGeometryRasterizer();
+
+private:
+	struct Slot {
+		RID bins;
+		RID arguments;
+		RID build_uniforms;
+		RID dispatch_uniforms;
+		RID software_uniforms;
+		RID hardware_uniforms;
+		uint32_t capacity = 0;
+	};
+	VirtualGeometryRasterBinShaderRD bin_shader;
+	VirtualGeometryRasterDispatchShaderRD dispatch_shader;
+	VirtualGeometryRasterSwShaderRD software_shader;
+	VirtualGeometryRasterShaderRD hardware_shader;
+	RID bin_version, dispatch_version, software_version, hardware_version;
+	PipelineDeferredRD bin_pipeline, dispatch_pipeline, software_pipeline;
+	RID hardware_pipeline;
+	RID framebuffer;
+	RID visibility;
+	LocalVector<Slot> slots;
+	Size2i size;
+	bool ready = false;
+
+	Error _prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources);
+};
+
+} // namespace RendererRD

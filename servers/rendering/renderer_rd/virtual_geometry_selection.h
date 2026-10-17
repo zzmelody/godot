@@ -35,6 +35,7 @@ public:
 		RID parameters;
 		RID dispatch;
 		uint32_t words = 0;
+		uint32_t selected_capacity = 0;
 	};
 
 	void begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size);
@@ -58,6 +59,7 @@ private:
 	Projection projection;
 	float near_plane = 0;
 	float lod_scale = 0;
+	float frustum_margin = 0;
 	bool orthographic = false;
 };
 
