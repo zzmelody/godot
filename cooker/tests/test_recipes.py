@@ -235,6 +235,84 @@ return second
         self.assertEqual(len(list(container.parent.glob("*.vgp"))), 1)
         self.assertEqual(result["vertices"], repeated["vertices"])
 
+    def test_virtual_geometry_publication_and_packed_range_reads(self):
+        if REFERENCE is None:
+            self.skipTest("packed range reads need the matching private editor")
+        root_path = "res://assets/runtime/model/vg/model.res"
+        built = self.recipe('return cooker.virtual_geometry(cooker.primitive("box", {size={2,3,4}}), {})',
+                            output=root_path)
+        container_path = built["geometry_outputs"][0]["path"]
+        container = self.project / container_path.removeprefix("res://")
+        original = container.read_bytes()
+        checked = self.job({"operation": "validate-resource", "source": root_path,
+                            "type": "VirtualGeometryMesh"})
+        self.assertEqual(checked["page_count"], built["virtual_geometry"]["pages"])
+        self.assertFalse(checked["render_ready"])
+        self.assertNotIn("vertex_count", checked)
+        manifest_path = "res://assets/runtime/model/vg/asset.manifest.json"
+        manifest_job = {"operation": "asset-manifest", "output": manifest_path,
+                        "asset_id": "vg", "revision": 1, "kind": "model",
+                        "entry": "model.res", "files": ["model.res"]}
+        self.job(manifest_job)
+        manifest = json.loads((container.parent / "asset.manifest.json").read_text())
+        self.assertEqual({row["path"] for row in manifest["files"]}, {"model.res", container.name})
+        record = next(row["streaming"] for row in manifest["files"] if row["path"] == "model.res")
+        self.assertEqual(record["resource_type"], "VirtualGeometryMesh")
+        deferred = [row for row in record["dependencies"] if row.get("deferred")]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0]["path"], container.name)
+        self.assertEqual(deferred[0]["md5"], hashlib.md5(original).hexdigest())
+        self.assertEqual(deferred[0]["bytes"], len(original))
+        graph = {row["path"]: row["dependencies"] for row in record["dependency_graph"]}
+        self.assertIn(container.name, graph["model.res"])
+        self.assertEqual(graph[container.name], [])
+        self.assertGreater(record["geometry_bytes"], 32768 * built["virtual_geometry"]["root_pages"])
+        self.assertLess(record["geometry_bytes"], 100000)
+        self.assertEqual(sum(row["geometry_bytes"] for row in record["costs"]), record["geometry_bytes"])
+        pack_path = "res://content/releases/vg.pck"
+        packed = self.job({"operation": "pack", "output": pack_path, "roots": [root_path]})
+        self.assertEqual(set(packed["files"]), {root_path, container_path})
+        # Each refusal precedes publication; no broken manifest/pack is left.
+        for payload in (original[:-1], bytes([original[0] ^ 1]) + original[1:]):
+            container.write_bytes(payload)
+            self.job({"operation": "validate-resource", "source": root_path}, success=False)
+            self.job({**manifest_job, "output": "res://assets/runtime/model/vg/bad.json"}, success=False)
+            self.assertFalse((container.parent / "bad.json").exists())
+            self.job({"operation": "pack", "output": "res://content/releases/bad.pck", "roots": [root_path]}, success=False)
+            self.assertFalse((self.project / "content/releases/bad.pck").exists())
+        container.unlink()
+        missing = self.job({"operation": "validate-resource", "source": root_path}, success=False)
+        self.assertEqual(missing["error"], 7)
+        # Remove loose geometry. A fresh editor must obtain both files from PCK.
+        (self.project / root_path.removeprefix("res://")).unlink()
+        probe = self.project / "packed_pages.gd"
+        probe.write_text('''extends SceneTree
+func _initialize():
+    assert(ProjectSettings.load_resource_pack("res://content/releases/vg.pck"))
+    var mesh = load("res://assets/runtime/model/vg/model.res")
+    assert(mesh is VirtualGeometryMesh)
+    var data = mesh.get_geometry_data()
+    var root: PackedByteArray = data.root
+    var directory = root.decode_u64(168)
+    var file = FileAccess.open("res://assets/runtime/model/vg/" + data.container, FileAccess.READ)
+    assert(file != null and file.get_length() == data.container_bytes)
+    var verified = 0
+    for page in root.decode_u32(40):
+        var location = directory + 32 + page * 40
+        file.seek(root.decode_u64(location))
+        var bytes = file.get_buffer(root.decode_u32(location + 8))
+        assert(bytes.size() == root.decode_u32(location + 8))
+        assert(bytes.decode_u32(0) == 0x47504756)
+        verified += 1
+    print("VG_PACKED_PAGES:", verified)
+    quit()
+''')
+        loaded = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project), "--script", "res://packed_pages.gd"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        self.assertEqual(loaded.returncode, 0, loaded.stdout + loaded.stderr)
+        self.assertNotIn("ERROR:", loaded.stdout + loaded.stderr)
+        self.assertIn("VG_PACKED_PAGES:" + str(built["virtual_geometry"]["pages"]), loaded.stdout)
+
     def test_virtual_geometry_preserves_mixed_surface_materials_without_source_mesh_dependency(self):
         if REFERENCE is None:
             self.skipTest("resource round trip needs the matching private editor")

@@ -371,7 +371,8 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	HashMap<String, String> resource_digests;
 	HashSet<String> seen;
 	bool found_entry = false;
-	for (const Variant &item : declared) {
+	for (int declared_index = 0; declared_index < declared.size(); ++declared_index) {
+		const Variant item = declared[declared_index];
 		ERR_FAIL_COND_V(item.get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
 		String relative = item;
 		ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.begins_with("res://") || relative.contains("\\") || relative.contains(":"), ERR_INVALID_PARAMETER);
@@ -379,7 +380,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 		error = CookerFiles::check_path(path);
 		ERR_FAIL_COND_V(error != OK || !path.begins_with(base + "/") || seen.has(relative), ERR_INVALID_PARAMETER);
 		String extension = relative.get_extension().to_lower();
-		ERR_FAIL_COND_V_MSG(extension != "scn" && extension != "res" && !CookerSource::is_payload(path), ERR_UNAVAILABLE, "Asset manifests require cooked resources or immutable runtime payloads.");
+		ERR_FAIL_COND_V_MSG(extension != "scn" && extension != "res" && extension != "vgp" && !CookerSource::is_payload(path), ERR_UNAVAILABLE, "Asset manifests require cooked resources or immutable runtime payloads.");
 		Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ, &error);
 		ERR_FAIL_COND_V(file.is_null() || error != OK, error == OK ? ERR_FILE_CANT_READ : error);
 		Dictionary record;
@@ -390,12 +391,30 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 			Dictionary streaming;
 			error = CookerStreaming::Record(path, streaming, resource_digests);
 			ERR_FAIL_COND_V(error != OK, error);
-      if ((kind == "effect" || kind == "vfx") &&
-          String(streaming.get("resource_type", "")) == "PackedScene") {
-        ERR_FAIL_COND_V(!bool(streaming.get("effect_valid", false)),
-                        ERR_INVALID_DATA);
-      }
-      record["streaming"] = streaming;
+			// Container names are content-addressed. Authors declare the root;
+			// publication transports its verified local containers automatically.
+			for (const Dictionary &dependency : Array(streaming["dependencies"])) {
+				if (!bool(dependency.get("deferred", false))) {
+					continue;
+				}
+				String container = dependency["path"];
+				if (container.is_relative_path()) {
+					container = path.get_base_dir().path_join(container).simplify_path();
+				}
+				if (container.begins_with(base + "/")) {
+					const String relative_container = container.substr(base.length() + 1);
+					if (!declared.has(relative_container)) {
+						ERR_FAIL_COND_V(declared.size() >= CookerCache::MAX_MANIFEST_FILES, ERR_PARAMETER_RANGE_ERROR);
+						declared.push_back(relative_container);
+					}
+				}
+			}
+			if ((kind == "effect" || kind == "vfx") &&
+					String(streaming.get("resource_type", "")) == "PackedScene") {
+				ERR_FAIL_COND_V(!bool(streaming.get("effect_valid", false)),
+						ERR_INVALID_DATA);
+			}
+			record["streaming"] = streaming;
 		}
 		records.push_back(record);
 		seen.insert(relative);
@@ -860,7 +879,13 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		ERR_FAIL_COND_V(!expected.is_empty() && !resource->is_class(expected), ERR_INVALID_DATA);
 		r_result["type"] = resource->get_class();
 		Ref<Mesh> mesh_resource = resource;
-		if (mesh_resource.is_valid()) {
+		const Ref<VirtualGeometryMesh> virtual_mesh = resource;
+		if (virtual_mesh.is_valid()) {
+			r_result["cluster_count"] = virtual_mesh->get_model().cluster_count;
+			r_result["page_count"] = int64_t(virtual_mesh->get_model().directory.pages.size());
+			r_result["root_page_count"] = virtual_mesh->get_model().hierarchy.root_pages;
+			r_result["render_ready"] = false;
+		} else if (mesh_resource.is_valid()) {
 			int vertices = 0;
 			int uv2_vertices = 0;
 			int lods = 0;

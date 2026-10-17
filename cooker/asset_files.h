@@ -2,6 +2,7 @@
 #pragma once
 
 #include "atomic_save.h"
+#include "virtual_geometry_mesh.h"
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
@@ -87,6 +88,8 @@ inline bool is_resource(const String &p_path) {
 	return extension == "tres" || extension == "tscn" || extension == "res" || extension == "scn" || extension == "mesh" || extension == "material" || extension == "anim" || extension == "gdshader" || extension == "gdshaderinc";
 }
 
+inline Error collect_render_payloads(const Variant &p_value, HashSet<ObjectID> &r_visited, HashSet<String> &r_files, bool p_pack, int p_depth = 0);
+
 inline Error collect(const String &p_path, HashSet<String> &r_files, bool p_pack = false, int p_depth = 0) {
 	ERR_FAIL_COND_V(p_depth > 64 || r_files.size() > 4096, ERR_PARAMETER_RANGE_ERROR);
 	Error error = check_path(p_path);
@@ -108,10 +111,6 @@ inline Error collect(const String &p_path, HashSet<String> &r_files, bool p_pack
 		if (name.is_empty()) {
 			continue;
 		}
-		// Metadata serialization is available before the producer/page records.
-		// Do not publish an incomplete dependency closure or measure mesh arrays.
-		ERR_FAIL_COND_V_MSG(name == StringName("VirtualGeometryMesh"), ERR_UNAVAILABLE,
-				"Virtual geometry page dependencies and resource costs are not connected to Cooker yet.");
 		ERR_FAIL_COND_V_MSG(!ClassDB::class_exists(name) || name == StringName("GDExtension") || ClassDB::is_parent_class(name, "Script"), ERR_UNAVAILABLE, "Unsupported asset class: " + String(name));
 	}
 	List<String> dependencies;
@@ -129,25 +128,44 @@ inline Error collect(const String &p_path, HashSet<String> &r_files, bool p_pack
 		error = collect(path, r_files, p_pack, p_depth + 1);
 		ERR_FAIL_COND_V(error != OK, error);
 	}
+	if (classes.has(StringName("VirtualGeometryMesh"))) {
+		const Ref<Resource> resource = ResourceLoader::load(p_path, "", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
+		ERR_FAIL_COND_V(resource.is_null() || error != OK, ERR_INVALID_DATA);
+		HashSet<ObjectID> visited;
+		error = collect_render_payloads(resource, visited, r_files, p_pack);
+		ERR_FAIL_COND_V(error != OK, error);
+	}
 	return OK;
 }
 
-inline Error collect_shader_includes(const Variant &p_value, HashSet<ObjectID> &r_visited, HashSet<String> &r_files, int p_depth = 0) {
+inline Error collect_render_payloads(const Variant &p_value, HashSet<ObjectID> &r_visited, HashSet<String> &r_files, bool p_pack, int p_depth) {
 	ERR_FAIL_COND_V(p_depth > 128 || r_visited.size() > 16384, ERR_PARAMETER_RANGE_ERROR);
 	if (p_value.get_type() == Variant::ARRAY) {
 		for (const Variant &value : Array(p_value)) {
-			Error error = collect_shader_includes(value, r_visited, r_files, p_depth + 1);
+			Error error = collect_render_payloads(value, r_visited, r_files, p_pack, p_depth + 1);
 			ERR_FAIL_COND_V(error != OK, error);
 		}
 	} else if (p_value.get_type() == Variant::DICTIONARY) {
 		Array values = Dictionary(p_value).values();
-		return collect_shader_includes(values, r_visited, r_files, p_depth + 1);
+		return collect_render_payloads(values, r_visited, r_files, p_pack, p_depth + 1);
 	} else if (p_value.get_type() == Variant::OBJECT) {
 		Ref<Resource> resource = p_value;
 		if (resource.is_null() || r_visited.has(resource->get_instance_id())) {
 			return OK;
 		}
 		r_visited.insert(resource->get_instance_id());
+		const Ref<VirtualGeometryMesh> geometry = resource;
+		if (geometry.is_valid()) {
+			const String owner = resource->get_path().get_slice("::", 0);
+			ERR_FAIL_COND_V(owner.is_empty(), ERR_INVALID_DATA);
+			const String container = owner.get_base_dir().path_join(geometry->get_container_file());
+			ERR_FAIL_COND_V(p_pack && !is_generated(container), ERR_UNAUTHORIZED);
+			if (!r_files.has(container)) {
+				const Error error = CookerVirtualGeometry::validate_container(geometry, owner);
+				ERR_FAIL_COND_V(error != OK, error);
+				r_files.insert(container);
+			}
+		}
 		Ref<Shader> shader = resource;
 		if (shader.is_valid()) {
 			ShaderPreprocessor preprocessor;
@@ -156,7 +174,7 @@ inline Error collect_shader_includes(const Variant &p_value, HashSet<ObjectID> &
 			Error error = preprocessor.preprocess(shader->get_code(), shader->get_path(), expanded, nullptr, nullptr, nullptr, &includes);
 			ERR_FAIL_COND_V(error != OK, error);
 			for (const Ref<ShaderInclude> &include : includes) {
-				error = collect(include->get_path(), r_files, true);
+				error = collect(include->get_path(), r_files, p_pack);
 				ERR_FAIL_COND_V(error != OK, error);
 			}
 		}
@@ -164,7 +182,7 @@ inline Error collect_shader_includes(const Variant &p_value, HashSet<ObjectID> &
 		resource->get_property_list(&properties);
 		for (const PropertyInfo &property : properties) {
 			if (property.usage & PROPERTY_USAGE_STORAGE) {
-				Error error = collect_shader_includes(resource->get(property.name), r_visited, r_files, p_depth + 1);
+				Error error = collect_render_payloads(resource->get(property.name), r_visited, r_files, p_pack, p_depth + 1);
 				ERR_FAIL_COND_V(error != OK, error);
 			}
 		}
@@ -245,7 +263,7 @@ inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
 		Ref<Resource> resource = ResourceLoader::load(root, "", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
 		ERR_FAIL_COND_V(resource.is_null(), error == OK ? ERR_INVALID_DATA : error);
 		loaded_roots.push_back(resource);
-		error = collect_shader_includes(resource, visited_resources, closure);
+		error = collect_render_payloads(resource, visited_resources, closure, true);
 		ERR_FAIL_COND_V(error != OK, error);
 	}
 	for (const String &path : metadata) closure.insert(path);

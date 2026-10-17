@@ -2,6 +2,7 @@
 /*<<----- VEYA_COOKER: Value-only admission profile with conservative runtime accounting. */
 
 #include "character_actions.h"
+#include "virtual_geometry_mesh.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
@@ -68,6 +69,7 @@ struct Measure {
 	HashSet<ObjectID> resources;
 	String path;
 	Array costs;
+	HashMap<String, HashSet<String>> page_containers;
 };
 
 inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
@@ -81,14 +83,23 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 		result.resources.insert(resource->get_instance_id());
 		uint64_t geometry_bytes = 0, texture_bytes = 0;
 		Ref<Mesh> mesh = resource;
-		if (mesh.is_valid()) {
+		const Ref<VirtualGeometryMesh> virtual_mesh = resource;
+		if (virtual_mesh.is_valid()) {
+			const String owner = resource->get_path().get_slice("::", 0);
+			ERR_FAIL_COND_V(owner.is_empty(), ERR_INVALID_DATA);
+			const Error error = CookerVirtualGeometry::validate_container(virtual_mesh, owner);
+			ERR_FAIL_COND_V(error != OK, error);
+			result.page_containers[owner].insert(owner.get_base_dir().path_join(virtual_mesh->get_container_file()));
+			geometry_bytes = CookerVirtualGeometry::metadata_bytes(virtual_mesh) +
+					uint64_t(virtual_mesh->get_model().hierarchy.root_pages) * VirtualGeometry::ROOT_PAGE_GPU_CAPACITY;
+		} else if (mesh.is_valid()) {
 			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
 				geometry_bytes +=
 						uint64_t(mesh->surface_get_array_len(surface)) * 128 +
 						uint64_t(mesh->surface_get_array_index_len(surface)) * 8;
 			}
 		}
-		if (mesh.is_valid()) {
+		if (mesh.is_valid() && virtual_mesh.is_null()) {
 			geometry_bytes += 1024;
 		}
 		Ref<Texture2D> texture = resource;
@@ -674,13 +685,19 @@ inline Error Record(const String &path, Dictionary &output,
 		Dictionary dependency;
 		dependency["path"] = ReferencePath(path, current);
 		dependency["md5"] = Digest(current, digests);
+		const bool deferred = current.ends_with(".vgp");
+		if (deferred) {
+			dependency["deferred"] = true;
+		}
 		const Ref<FileAccess> file = FileAccess::open(current, FileAccess::READ);
 		ERR_FAIL_COND_V(file.is_null(), ERR_FILE_CANT_READ);
 		dependency["bytes"] = int64_t(file->get_length());
 		closure.push_back(dependency);
 		List<String> dependencies;
 		Array direct;
-		ResourceLoader::get_dependencies(current, &dependencies, true);
+		if (!deferred) {
+			ResourceLoader::get_dependencies(current, &dependencies, true);
+		}
 		for (const String &reference : dependencies) {
 			const PackedStringArray parts = reference.split("::");
 			String next = parts[0];
@@ -694,6 +711,12 @@ inline Error Record(const String &path, Dictionary &output,
 			next = next.simplify_path();
 			direct.push_back(ReferencePath(path, next));
 			pending.push_back(next);
+		}
+		if (const auto *containers = measure.page_containers.getptr(current)) {
+			for (const String &container : *containers) {
+				direct.push_back(ReferencePath(path, container));
+				pending.push_back(container);
+			}
 		}
 		Dictionary entry;
 		entry["path"] = ReferencePath(path, current);
