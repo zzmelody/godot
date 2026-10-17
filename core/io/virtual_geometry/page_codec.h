@@ -78,6 +78,8 @@ PageCodecResult measure_geometry_page(const GeometryPage &p_page, GeometryPageSi
 // zero padding, no serialized native structs. All clusters are self-contained
 // in this initial disk representation; cross-cluster vertex references and
 // byte-plane deltas are not implemented yet. Input is borrowed for the call.
+// Disk record word 71 is the canonical GPU payload byte offset. The GPU record
+// keeps word 71 zero; no physical page/pool address is stored in an asset.
 // Old output survives every refusal. No file, engine object or GPU operations.
 PageCodecResult encode_geometry_page(const GeometryPage &p_page, std::vector<uint8_t> &r_bytes);
 PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, GeometryPage &r_page);

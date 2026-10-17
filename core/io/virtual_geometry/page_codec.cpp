@@ -61,6 +61,12 @@ size_t gpu_index_bytes(uint32_t p_vertices, uint32_t p_triangles) {
 	return ((static_cast<size_t>(p_triangles) * (bits + 10) + 31) / 32) * 4;
 }
 
+size_t gpu_payload_bytes(const GeometryPageCluster &p_cluster) {
+	return aligned(p_cluster.position_bytes.size()) + aligned(p_cluster.attributes.bytes.size()) +
+			gpu_index_bytes(p_cluster.positions.vertices, p_cluster.topology.layout.triangles) +
+			(p_cluster.materials.table.size() + p_cluster.material_palette.size() + p_cluster.reuse_batch_words.size()) * 4;
+}
+
 bool slow_material(uint32_t p_info) {
 	return p_info >> 25 == 127;
 }
@@ -225,9 +231,15 @@ PageCodecResult write_page(const GeometryPage &p_page, bool p_gpu, const Geometr
 	write_word(candidate, 20, p_sizes.gpu_bytes);
 	write_word(candidate, 24, GEOMETRY_PAGE_HEADER_BYTES);
 	size_t cursor = GEOMETRY_PAGE_HEADER_BYTES + p_page.clusters.size() * GEOMETRY_PAGE_CLUSTER_BYTES;
+	size_t gpu_cursor = cursor;
 	for (size_t cluster = 0; cluster < p_page.clusters.size(); ++cluster) {
 		const auto &source = p_page.clusters[cluster];
 		Record record = make_record(source);
+		// The installer dispatches independent cluster workgroups. Store the
+		// canonical destination once offline, rather than prefix-scanning all
+		// earlier clusters on every GPU installation. GPU records keep zero.
+		record[71] = p_gpu ? 0 : static_cast<uint32_t>(gpu_cursor);
+		gpu_cursor += gpu_payload_bytes(source);
 		write_bytes(candidate, cursor, record, 31, 32, source.position_bytes);
 		write_bytes(candidate, cursor, record, 37, 38, source.attributes.bytes);
 		if (p_gpu) {
@@ -256,7 +268,7 @@ PageCodecResult write_page(const GeometryPage &p_page, bool p_gpu, const Geometr
 			write_word(candidate, GEOMETRY_PAGE_HEADER_BYTES + cluster * GEOMETRY_PAGE_CLUSTER_BYTES + word * 4, record[word]);
 		}
 	}
-	if (cursor != candidate.size()) {
+	if (cursor != candidate.size() || gpu_cursor != p_sizes.gpu_bytes) {
 		return { PageCodecError::INVALID_LENGTH };
 	}
 	r_bytes = std::move(candidate);
@@ -290,7 +302,7 @@ bool read_words(const uint8_t *p_bytes, size_t p_size, size_t &r_cursor, uint32_
 }
 
 PageCodecError read_cluster(const Record &p_record, const uint8_t *p_bytes, size_t p_size, size_t &r_cursor, GeometryPageCluster &r_cluster) {
-	if ((p_record[7] & ~15u) != 0 || p_record[71] != 0 || (p_record[35] & ~7u) != 0 || (p_record[40] >> 16) != 0 ||
+	if ((p_record[7] & ~15u) != 0 || (p_record[35] & ~7u) != 0 || (p_record[40] >> 16) != 0 ||
 			p_record[4] < 3 || p_record[4] > MAX_CLUSTER_VERTICES || p_record[5] == 0 || p_record[5] > MAX_CLUSTER_TRIANGLES ||
 			p_record[6] == 0 || p_record[6] > MAX_CLUSTER_MATERIALS || p_record[32] > 2016 || p_record[38] > 10592 ||
 			p_record[64] > 240 || p_record[67] > MAX_CLUSTER_MATERIALS || p_record[70] > 28) {
@@ -379,7 +391,7 @@ PageCodecResult measure_geometry_page(const GeometryPage &p_page, GeometryPageSi
 		const size_t common = aligned(cluster.position_bytes.size()) + aligned(cluster.attributes.bytes.size()) +
 				(cluster.materials.table.size() + cluster.material_palette.size() + cluster.reuse_batch_words.size()) * 4;
 		disk += common + aligned(cluster.topology.references.size());
-		gpu += common + gpu_index_bytes(cluster.positions.vertices, cluster.topology.layout.triangles);
+		gpu += gpu_payload_bytes(cluster);
 	}
 	if (disk > MAX_DISK_BYTES || gpu > (p_page.root ? ROOT_PAGE_GPU_CAPACITY : STREAMING_PAGE_GPU_CAPACITY)) {
 		return { PageCodecError::CAPACITY };
@@ -425,6 +437,7 @@ PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, Geom
 		return { PageCodecError::CAPACITY };
 	}
 	size_t cursor = GEOMETRY_PAGE_HEADER_BYTES + static_cast<size_t>(count) * GEOMETRY_PAGE_CLUSTER_BYTES;
+	size_t gpu_cursor = cursor;
 	if (read_word(p_bytes, 16) != p_size || cursor > p_size) {
 		return { PageCodecError::INVALID_LENGTH };
 	}
@@ -441,6 +454,10 @@ PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, Geom
 			if (valid != PageCodecError::OK) {
 				return { valid, cluster };
 			}
+			if (record[71] != gpu_cursor) {
+				return { PageCodecError::INVALID_OFFSET, cluster };
+			}
+			gpu_cursor += gpu_payload_bytes(candidate.clusters[cluster]);
 			for (uint32_t previous = 0; previous < cluster; ++previous) {
 				if (candidate.clusters[previous].cluster == candidate.clusters[cluster].cluster) {
 					return { PageCodecError::INVALID_METADATA, cluster };
@@ -452,7 +469,7 @@ PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, Geom
 		if (measured.error != PageCodecError::OK) {
 			return measured;
 		}
-		if (cursor != p_size || sizes.disk_bytes != p_size || sizes.gpu_bytes != gpu_bytes) {
+		if (cursor != p_size || sizes.disk_bytes != p_size || sizes.gpu_bytes != gpu_bytes || gpu_cursor != gpu_bytes) {
 			return { PageCodecError::INVALID_LENGTH };
 		}
 		r_page = std::move(candidate);
