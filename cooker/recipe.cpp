@@ -1929,8 +1929,8 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		// Shader includes are not all exposed by ResourceLoader's dependency list.
 		// Resolve them through the same bounded collector used by pack jobs.
 		HashSet<ObjectID> visited;
-		error = CookerFiles::collect_shader_includes(resource, visited, files);
-		if (error != OK) return reject(r_result, "input shader dependency validation failed", error);
+		error = CookerFiles::collect_render_payloads(resource, visited, files, true);
+		if (error != OK) return reject(r_result, "input render dependency validation failed", error);
 		for (const String &dependency : files) {
 			if (inspected_inputs.has(dependency)) continue;
 			inspected_inputs.insert(dependency);
