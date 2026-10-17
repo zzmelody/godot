@@ -35,7 +35,6 @@
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
-#include "scene/resources/3d/virtual_geometry_mesh.h"
 #include "core/os/os.h"
 #include "scene/animation/animation_blend_space_1d.h"
 #include "scene/animation/animation_blend_space_2d.h"
@@ -283,6 +282,7 @@
 #include "scene/resources/3d/navigation_mesh_source_geometry_data_3d.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/3d/sky_material.h"
+#include "scene/resources/3d/virtual_geometry_mesh.h"
 #include "scene/resources/3d/world_3d.h"
 #ifndef NAVIGATION_3D_DISABLED
 #include "scene/3d/navigation/navigation_agent_3d.h"
@@ -894,7 +894,6 @@ void register_scene_types() {
 	GDREGISTER_VIRTUAL_CLASS(Mesh);
 	GDREGISTER_CLASS(MeshConvexDecompositionSettings);
 	GDREGISTER_CLASS(ArrayMesh);
-	GDREGISTER_CLASS(VirtualGeometryMesh);
 	GDREGISTER_CLASS(PlaceholderMesh);
 	GDREGISTER_CLASS(ImmediateMesh);
 	GDREGISTER_CLASS(MultiMesh);
@@ -903,6 +902,7 @@ void register_scene_types() {
 
 #ifndef _3D_DISABLED
 	GDREGISTER_CLASS(AudioStreamPlayer3D);
+	GDREGISTER_CLASS(VirtualGeometryMesh);
 	GDREGISTER_VIRTUAL_CLASS(PrimitiveMesh);
 	GDREGISTER_CLASS(BoxMesh);
 	GDREGISTER_CLASS(CapsuleMesh);
