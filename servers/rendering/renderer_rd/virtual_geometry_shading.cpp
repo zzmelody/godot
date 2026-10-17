@@ -37,7 +37,7 @@ void dispatch_items(RD::ComputeListID p_list, uint32_t p_items, uint32_t p_threa
 } // namespace
 
 VirtualGeometryShading::~VirtualGeometryShading() {
-	for (RID rid : { scene_buffer, bins_buffer, arguments, dummy_transforms, material_view }) {
+	for (RID rid : { scene_buffer, bins_buffer, arguments, dummy_transforms, material_view, raster_material_buffer }) {
 		if (rid.is_valid()) {
 			RD::get_singleton()->free_rid(rid);
 		}
@@ -62,6 +62,7 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 
 Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry) {
 	materials.clear();
+	material_cull_modes.clear();
 	material_ids.clear();
 	material_map.clear();
 	sources.clear();
@@ -103,6 +104,18 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		}
 	}
 	const uint64_t references_word = 4 + instances * 48;
+	for (RID material : materials) {
+		const auto mode = storage->material_get_cull_mode(material);
+		material_cull_modes.push_back(mode == RSE::CULL_MODE_BACK ? 1 : mode == RSE::CULL_MODE_FRONT ? 2
+																									 : 0);
+	}
+	Error cull_error = ensure_words(raster_material_buffer, raster_material_words, material_cull_modes.size());
+	if (cull_error != OK) {
+		return cull_error;
+	}
+	if (!material_cull_modes.is_empty()) {
+		RD::get_singleton()->buffer_update(raster_material_buffer, 0, material_cull_modes.size() * 4, material_cull_modes.ptr());
+	}
 	const uint64_t materials_word = references_word + visible * 2;
 	const uint64_t total_words = materials_word + material_map.size();
 	Error error = ensure_words(scene_buffer, scene_words, total_words);
@@ -332,7 +345,7 @@ Error VirtualGeometryShading::record_materials(const Ref<RenderSceneBuffersRD> &
 }
 
 uint64_t VirtualGeometryShading::get_buffer_bytes() const {
-	return uint64_t(scene_words + bins_words + argument_words) * 4 + (dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 304 : 0) + uint64_t(surface_size.x) * surface_size.y * 52;
+	return uint64_t(scene_words + bins_words + argument_words + raster_material_words) * 4 + (dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 304 : 0) + uint64_t(surface_size.x) * surface_size.y * 52;
 }
 
 } // namespace RendererRD

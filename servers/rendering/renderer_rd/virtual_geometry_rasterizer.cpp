@@ -70,6 +70,7 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 		modes.push_back("");
 		bin_shader.initialize(modes);
 		dispatch_shader.initialize(modes);
+		modes.write[0] = "#define VG_RASTER_MATERIALS\n";
 		software_shader.initialize(modes);
 		hardware_shader.initialize(modes);
 		bin_version = bin_shader.version_create();
@@ -112,10 +113,11 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 		const RD::Uniform pixels(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { visibility });
 		const RD::Uniform arguments(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { slot.arguments });
 		const RD::Uniform scene(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() });
+		const RD::Uniform materials(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { shading.get_raster_materials() });
 		slot.build_uniforms = cache->get_cache(bin_shader.version_get_shader(bin_version, 0), 0, geometry, parameters, work, bins, scene);
 		slot.dispatch_uniforms = cache->get_cache(dispatch_shader.version_get_shader(dispatch_version, 0), 0, work, bins, arguments);
-		slot.software_uniforms = cache->get_cache(software_shader.version_get_shader(software_version, 0), 0, geometry, parameters, work, bins, pixels);
-		slot.hardware_uniforms = cache->get_cache(hardware_shader.version_get_shader(hardware_version, 0), 0, geometry, parameters, work, bins, pixels);
+		slot.software_uniforms = cache->get_cache(software_shader.version_get_shader(software_version, 0), 0, geometry, parameters, work, bins, pixels, scene, materials);
+		slot.hardware_uniforms = cache->get_cache(hardware_shader.version_get_shader(hardware_version, 0), 0, geometry, parameters, work, bins, pixels, scene, materials);
 		ERR_FAIL_COND_V(slot.build_uniforms.is_null() || slot.dispatch_uniforms.is_null() || slot.software_uniforms.is_null() || slot.hardware_uniforms.is_null(), ERR_CANT_CREATE);
 	}
 	return OK;

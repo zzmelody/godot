@@ -11,9 +11,9 @@
 
 namespace RendererRD {
 
-// View-owned frame source/visibility lookup and primitive-preserving material
-// quad bins. Materials and source buffers remain borrowed renderer resources.
-// Material evaluation and surface/lighting output are separate later stages.
+// View-owned source snapshots, primitive-preserving material quad bins and
+// compute material dispatch. Material/geometry RIDs remain borrowed. Surface
+// textures belong to RenderSceneBuffersRD; lighting is a separate consumer.
 class VirtualGeometryShading {
 public:
 	Error prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry);
@@ -24,6 +24,7 @@ public:
 	RID get_scene() const { return scene_buffer; }
 	RID get_bins() const { return bins_buffer; }
 	RID get_arguments() const { return arguments; }
+	RID get_raster_materials() const { return raster_material_buffer; }
 	uint32_t get_entries_word() const { return entries_word; }
 	uint32_t get_source_base(uint32_t p_batch) const { return sources[p_batch].first; }
 	Span<RID> get_materials() const { return Span<RID>(materials.ptr(), materials.size()); }
@@ -50,6 +51,9 @@ private:
 	PipelineDeferredRD init_pipeline, bin_pipeline, scan_pipeline, dispatch_pipeline;
 	RID scene_buffer, bins_buffer, arguments, dummy_transforms;
 	RID material_view;
+	RID raster_material_buffer;
+	uint32_t raster_material_words = 0;
+	LocalVector<uint32_t> material_cull_modes;
 	RID surfaces[7];
 	Size2i surface_size;
 	struct MaterialWork {

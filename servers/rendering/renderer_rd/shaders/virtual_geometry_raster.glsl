@@ -30,11 +30,26 @@ void main() {
 
 #VERSION_DEFINES
 
-layout(push_constant, std430) uniform RasterParameters { uvec4 raster; vec2 jitter; uint source_base; } raster_info;
+layout(push_constant, std430) uniform RasterParameters {
+	uvec4 raster;
+	vec2 jitter;
+	uint source_base;
+}
+raster_info;
 layout(location = 0) flat in uint pixel_value;
 
+#ifdef VG_RASTER_MATERIALS
+layout(set = 0, binding = 1, std430) readonly buffer Geometry {
+	uint data[];
+}
+geometry;
+#endif
+#include "virtual_geometry_raster_cull_inc.glsl"
 #include "virtual_geometry_write_inc.glsl"
 
 void main() {
+	if (vg_cull_material(pixel_value, gl_FrontFacing)) {
+		discard;
+	}
 	vg_write_pixel(ivec2(gl_FragCoord.xy), gl_FragCoord.z, pixel_value);
 }
