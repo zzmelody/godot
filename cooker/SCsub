@@ -72,6 +72,8 @@ geometry_library = geometry_env.add_library("#cooker/virtual_geometry", [
     "#cooker/virtual_geometry/cluster_stripifier.cpp",
     "#cooker/virtual_geometry/cluster_encoding.cpp",
     "#cooker/virtual_geometry/page_builder.cpp",
+    "#cooker/virtual_geometry/metadata_bounds.cpp",
+    "#cooker/virtual_geometry/hierarchy_builder.cpp",
 ])
 recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp", "#cooker/usd_import.cpp"])
 # Portable USD transport is Cooker-only; no PXR runtime or Python dependency.

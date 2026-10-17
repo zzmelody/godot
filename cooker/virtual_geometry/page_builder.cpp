@@ -1,5 +1,7 @@
 #include "page_builder.h"
 
+#include "metadata_bounds.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -10,37 +12,11 @@
 namespace VirtualGeometry {
 namespace {
 
-bool outward_float(double p_value, float &r_value) {
-	if (!std::isfinite(p_value) || p_value < 0 || p_value > std::numeric_limits<float>::max()) {
-		return false;
-	}
-	float value = static_cast<float>(p_value);
-	if (value < p_value) {
-		value = std::nextafter(value, std::numeric_limits<float>::infinity());
-	}
-	if (!std::isfinite(value)) {
-		return false;
-	}
-	r_value = value;
-	return true;
-}
-
-bool outward_sphere(const GeometrySphere &p_sphere, std::array<float, 4> &r_sphere) {
-	for (uint32_t axis = 0; axis < 3; ++axis) {
-		if (!std::isfinite(p_sphere.center[axis]) || std::abs(p_sphere.center[axis]) > std::numeric_limits<float>::max()) {
-			return false;
-		}
-		r_sphere[axis] = static_cast<float>(p_sphere.center[axis]);
-	}
-	const double offset = std::hypot(p_sphere.center[0] - r_sphere[0], p_sphere.center[1] - r_sphere[1], p_sphere.center[2] - r_sphere[2]);
-	const double radius = offset > 0 ? std::nextafter(p_sphere.radius + offset, std::numeric_limits<double>::infinity()) : p_sphere.radius;
-	return std::isfinite(p_sphere.radius) && p_sphere.radius >= 0 && outward_float(radius, r_sphere[3]);
-}
-
 bool page_cluster(const EncodableGeometry &p_geometry, uint32_t p_id, GeometryPageCluster &r_cluster) {
 	const auto &source = p_geometry.clusters[p_id];
-	if (!outward_sphere(source.geometry.bounds, r_cluster.bounds) || !outward_sphere(source.geometry.lod_bounds, r_cluster.lod_bounds) ||
-			!outward_float(source.geometry.lod_error, r_cluster.lod_error) || !outward_float(p_geometry.max_position_error, r_cluster.position_error)) {
+	if (source.geometry.lod_error < 0 || p_geometry.max_position_error < 0 ||
+			!round_metadata_sphere(source.geometry.bounds, r_cluster.bounds) || !round_metadata_sphere(source.geometry.lod_bounds, r_cluster.lod_bounds) ||
+			!round_metadata_error(source.geometry.lod_error, true, r_cluster.lod_error) || !round_metadata_error(p_geometry.max_position_error, true, r_cluster.position_error)) {
 		return false;
 	}
 	r_cluster.cluster = p_id;
