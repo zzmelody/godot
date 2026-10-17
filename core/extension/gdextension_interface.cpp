@@ -31,12 +31,19 @@
 #include "gdextension_interface.gen.h"
 
 #include "core/config/engine.h"
+#ifndef VEYA_COOKER
+#include "servers/rendering/renderer_rd/effects/external_temporal_upscaler.h"
+#include "servers/rendering/rendering_server.h"
+#include "servers/rendering/renderer_viewport.h"
+#include "servers/rendering/rendering_server_globals.h"
+#endif
 #include "core/extension/gdextension.h"
 #include "core/extension/gdextension_special_compat_hashes.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/xml_parser.h"
 #include "core/object/class_db.h"
+#include "core/object/callable_mp.h"
 #include "core/object/script_language_extension.h"
 #include "core/object/worker_thread_pool.h"
 #include "core/os/memory.h"
@@ -1706,9 +1713,42 @@ static void gdextension_editor_help_load_xml_from_utf8_chars(const char *p_data)
 #endif
 }
 
+#ifndef VEYA_COOKER
+static void gdextension_veya_temporal_unregister() {
+	ExternalTemporalUpscaler::register_provider(nullptr);
+}
+
+static void gdextension_veya_temporal_reset_render(uint64_t p_viewport) {
+	RSG::viewport->viewport_reset_external_temporal_history(RID::from_uint64(p_viewport));
+}
+
+static void gdextension_veya_temporal_upscaler_reset_v1(uint64_t p_viewport) {
+	RenderingServer *server = RenderingServer::get_singleton();
+	if (server->is_on_render_thread()) {
+		gdextension_veya_temporal_reset_render(p_viewport);
+	} else {
+		server->call_on_render_thread(callable_mp_static(gdextension_veya_temporal_reset_render).bind(p_viewport));
+	}
+}
+
+static uint32_t gdextension_veya_temporal_upscaler_register_v1(const VeyaTemporalProvider *p_provider) {
+	RenderingServer *server = RenderingServer::get_singleton();
+	if (!p_provider && server && !server->is_on_render_thread()) {
+		server->call_on_render_thread(callable_mp_static(gdextension_veya_temporal_unregister));
+		server->sync();
+		return 1;
+	}
+	return ExternalTemporalUpscaler::register_provider(p_provider);
+}
+#endif
+
 #define REGISTER_INTERFACE_FUNC(m_name) GDExtension::register_interface_function(#m_name, (GDExtensionInterfaceFunctionPtr) & gdextension_##m_name)
 
 void gdextension_setup_interface() {
+#ifndef VEYA_COOKER
+	REGISTER_INTERFACE_FUNC(veya_temporal_upscaler_register_v1);
+	REGISTER_INTERFACE_FUNC(veya_temporal_upscaler_reset_v1);
+#endif
 #ifndef DISABLE_DEPRECATED
 	REGISTER_INTERFACE_FUNC(get_godot_version);
 #endif // DISABLE_DEPRECATED

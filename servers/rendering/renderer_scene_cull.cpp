@@ -2689,7 +2689,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 	return animated_material_found;
 }
 
-void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_camera, RID p_scenario, RID p_viewport, Size2 p_viewport_size, uint32_t p_jitter_phase_count, float p_screen_mesh_lod_threshold, RID p_shadow_atlas, Ref<XRInterface> &p_xr_interface, float p_window_output_max_value, RenderingServerTypes::RenderInfo *r_render_info) {
+void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_camera, RID p_scenario, RID p_viewport, Size2 p_viewport_size, uint32_t p_jitter_phase_count, float p_screen_mesh_lod_threshold, RID p_shadow_atlas, Ref<XRInterface> &p_xr_interface, float p_window_output_max_value, RenderingServerTypes::RenderInfo *r_render_info, const Vector2 *p_external_jitter) {
 	GodotProfileZoneGroupedFirst(camera_profile, "Render/Camera");
 	GodotProfileZoneGroupedValue(camera_profile, p_viewport.get_id());
 	GodotProfileZoneGroupedFirst(camera_stage, "Render/Camera/setup");
@@ -2700,7 +2700,9 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 
 	Vector2 jitter;
 	float taa_frame_count = 0.0f;
-	if (p_jitter_phase_count > 0) {
+	if (p_external_jitter) {
+		jitter = *p_external_jitter * 2.0 / p_viewport_size;
+	} else if (p_jitter_phase_count > 0) {
 		uint32_t current_jitter_count = camera_jitter_array.size();
 		if (p_jitter_phase_count != current_jitter_count) {
 			// Resize the jitter array and fill it with the pre-computed Halton sequence.

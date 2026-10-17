@@ -43,6 +43,9 @@
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_method.h"
 #include "servers/rendering/rendering_server_globals.h"
+#ifndef VEYA_COOKER
+#include "servers/rendering/renderer_rd/effects/external_temporal_upscaler.h"
+#endif
 #include "servers/rendering/storage/texture_storage.h"
 
 #ifndef XR_DISABLED
@@ -143,6 +146,19 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			RSE::ViewportScaling3DMode scaling_3d_mode = p_viewport->scaling_3d_mode;
 			bool upscaler_available = p_viewport->fsr_enabled;
 			RSE::ViewportScaling3DType scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
+			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL) {
+				bool supported = false;
+#ifndef VEYA_COOKER
+				supported = OS::get_singleton()->get_current_rendering_method() == "forward_plus" &&
+						ExternalTemporalUpscaler::available() && p_viewport->view_count == 1 &&
+						p_viewport->msaa_3d == RSE::VIEWPORT_MSAA_DISABLED && !p_viewport->transparent_bg;
+#endif
+				if (!supported) {
+					ERR_PRINT("External temporal upscaling requires its provider, Vulkan Forward+, one view, no MSAA and an opaque viewport.");
+					scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
+					scaling_type = RSE::VIEWPORT_SCALING_3D_TYPE_SPATIAL;
+				}
+			}
 
 			if ((!upscaler_available || (scaling_type == RSE::VIEWPORT_SCALING_3D_TYPE_SPATIAL)) && scaling_3d_scale >= (1.0 - EPSILON) && scaling_3d_scale <= (1.0 + EPSILON)) {
 				// No 3D scaling for spatial modes? Ignore scaling mode, this just introduces overhead.
@@ -239,6 +255,23 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 					render_width = CLAMP(target_width * scaling_3d_scale, 1, 16384);
 					render_height = CLAMP(target_height * scaling_3d_scale, 1, 16384);
 					break;
+				case RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL: {
+					target_width = p_viewport->size.width;
+					target_height = p_viewport->size.height;
+					Size2i resolved;
+#ifndef VEYA_COOKER
+					if (ExternalTemporalUpscaler::resolve_size(p_viewport->size, scaling_3d_scale, resolved)) {
+						render_width = resolved.x;
+						render_height = resolved.y;
+						break;
+					}
+#endif
+					ERR_PRINT("External temporal scale is not an admitted SDK quality mode.");
+					scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
+					scaling_type = RSE::VIEWPORT_SCALING_3D_TYPE_SPATIAL;
+					render_width = MAX(int(target_width * scaling_3d_scale), 1);
+					render_height = MAX(int(target_height * scaling_3d_scale), 1);
+				} break;
 				case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL:
 				case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
 				case RSE::VIEWPORT_SCALING_3D_MODE_FSR:
@@ -333,7 +366,10 @@ void RendererViewport::_draw_3d(Viewport *p_viewport) {
 
 	float screen_mesh_lod_threshold = p_viewport->mesh_lod_threshold / float(p_viewport->size.width);
 	GodotProfileZoneGrouped(scene_stage, "Render/Viewport/camera");
-	RSG::scene->render_camera(p_viewport->render_buffers, p_viewport->camera, p_viewport->scenario, p_viewport->self, p_viewport->internal_size, p_viewport->jitter_phase_count, screen_mesh_lod_threshold, p_viewport->shadow_atlas, xr_interface, p_viewport->window_output_max_value, &p_viewport->render_info);
+	Vector2 external_jitter;
+	const Vector2 *external_jitter_ptr = p_viewport->render_buffers->get_external_temporal_jitter(external_jitter) ? &external_jitter : nullptr;
+	const uint32_t jitter_phase_count = p_viewport->scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL && !external_jitter_ptr ? 0 : p_viewport->jitter_phase_count;
+	RSG::scene->render_camera(p_viewport->render_buffers, p_viewport->camera, p_viewport->scenario, p_viewport->self, p_viewport->internal_size, jitter_phase_count, screen_mesh_lod_threshold, p_viewport->shadow_atlas, xr_interface, p_viewport->window_output_max_value, &p_viewport->render_info, external_jitter_ptr);
 
 	RENDER_TIMESTAMP("< Render 3D Scene");
 #endif // _3D_DISABLED
@@ -1310,10 +1346,21 @@ void RendererViewport::viewport_set_disable_3d(RID p_viewport, bool p_disable) {
 	viewport->disable_3d = p_disable;
 }
 
+void RendererViewport::viewport_reset_external_temporal_history(RID p_viewport) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	if (viewport->render_buffers.is_valid()) {
+		viewport->render_buffers->reset_external_temporal_history();
+	}
+}
+
 void RendererViewport::viewport_attach_camera(RID p_viewport, RID p_camera) {
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);
 
+	if (viewport->camera != p_camera && viewport->render_buffers.is_valid()) {
+		viewport->render_buffers->reset_external_temporal_history();
+	}
 	viewport->camera = p_camera;
 }
 
@@ -1325,6 +1372,9 @@ void RendererViewport::viewport_set_scenario(RID p_viewport, RID p_scenario) {
 		RSG::scene->scenario_remove_viewport_visibility_mask(viewport->scenario, p_viewport);
 	}
 
+	if (viewport->scenario != p_scenario && viewport->render_buffers.is_valid()) {
+		viewport->render_buffers->reset_external_temporal_history();
+	}
 	viewport->scenario = p_scenario;
 	if (viewport->use_occlusion_culling) {
 		RendererSceneOcclusionCull::get_singleton()->buffer_set_scenario(p_viewport, p_scenario);

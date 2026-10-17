@@ -1180,7 +1180,7 @@ Error RenderingDevice::buffer_update(RID p_buffer, uint32_t p_offset, uint32_t p
 	return _buffer_update(buffer, p_buffer, p_offset, p_size, p_data);
 }
 
-Error RenderingDevice::driver_callback_add(RDD::DriverCallback p_callback, void *p_userdata, VectorView<CallbackResource> p_resources) {
+Error RenderingDevice::driver_callback_add(RDD::DriverCallback p_callback, void *p_userdata, VectorView<CallbackResource> p_resources, void (*p_cancel)(void *)) {
 	ERR_RENDER_THREAD_GUARD_V(ERR_UNAVAILABLE);
 
 	ERR_FAIL_COND_V_MSG(draw_list.active, ERR_INVALID_PARAMETER,
@@ -1230,7 +1230,7 @@ Error RenderingDevice::driver_callback_add(RDD::DriverCallback p_callback, void 
 		}
 	}
 
-	draw_graph.add_driver_callback(p_callback, p_userdata, trackers, usages);
+	draw_graph.add_driver_callback(p_callback, p_userdata, trackers, usages, p_cancel);
 
 	return OK;
 }
@@ -7903,7 +7903,21 @@ void RenderingDevice::sync() {
 	local_device_processing = false;
 }
 
+void RenderingDevice::defer_native_destroy(void (*p_callback)(void *), void *p_userdata) {
+	ERR_RENDER_THREAD_GUARD();
+	frames[frame].native_retirements.push_back({p_callback, p_userdata});
+	frames_pending_resources_for_processing = frames.size();
+}
+
 void RenderingDevice::_free_pending_resources(int p_frame) {
+	// The caller has waited for this frame's fence. Move the callbacks first:
+	// provider destruction can itself retire RD-owned helper resources.
+	LocalVector<NativeRetirement> retirements;
+	SWAP(retirements, frames[p_frame].native_retirements);
+	for (const NativeRetirement &retirement : retirements) {
+		retirement.callback(retirement.userdata);
+	}
+
 	// Free in dependency usage order, so nothing weird happens.
 	// Pipelines.
 	while (frames[p_frame].render_pipelines_to_dispose_of.front()) {

@@ -315,7 +315,7 @@ public:
 		CallbackResourceUsage usage = CALLBACK_RESOURCE_USAGE_NONE;
 	};
 
-	Error driver_callback_add(RDD::DriverCallback p_callback, void *p_userdata, VectorView<CallbackResource> p_resources);
+	Error driver_callback_add(RDD::DriverCallback p_callback, void *p_userdata, VectorView<CallbackResource> p_resources, void (*p_cancel)(void *) = nullptr);
 
 	/*****************/
 	/**** TEXTURE ****/
@@ -1777,7 +1777,13 @@ private:
 	// nature of the GPU. They will get deleted
 	// when the frame is cycled.
 
+	struct NativeRetirement {
+		void (*callback)(void *) = nullptr;
+		void *userdata = nullptr;
+	};
+
 	struct Frame {
+		LocalVector<NativeRetirement> native_retirements;
 		// List in usage order, from last to free to first to free.
 		List<Buffer> buffers_to_dispose_of;
 		List<Texture> textures_to_dispose_of;
@@ -1873,6 +1879,7 @@ protected:
 			RenderingDeviceDriver::SemaphoreID p_dst_draw_semaphore_to_signal);
 
 public:
+	void defer_native_destroy(void (*p_callback)(void *), void *p_userdata);
 	void _free_internal(RID p_id);
 	void _begin_frame(bool p_presented = false);
 	void _end_frame();

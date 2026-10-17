@@ -258,6 +258,7 @@ public:
 	bool viewport_is_environment_disabled(Viewport *viewport);
 
 	void viewport_attach_camera(RID p_viewport, RID p_camera);
+	void viewport_reset_external_temporal_history(RID p_viewport);
 	void viewport_set_scenario(RID p_viewport, RID p_scenario);
 	void viewport_attach_canvas(RID p_viewport, RID p_canvas);
 	void viewport_remove_canvas(RID p_viewport, RID p_canvas);

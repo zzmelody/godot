@@ -1143,6 +1143,7 @@ void RenderingDeviceGraph::_run_render_commands(int32_t p_level, const RecordedC
 			case RecordedCommand::TYPE_DRIVER_CALLBACK: {
 				const RecordedDriverCallbackCommand *driver_callback_command = reinterpret_cast<const RecordedDriverCallbackCommand *>(command);
 				driver_callback_command->callback(driver, r_command_buffer, driver_callback_command->userdata);
+				const_cast<RecordedDriverCallbackCommand *>(driver_callback_command)->cancel = nullptr;
 			} break;
 			case RecordedCommand::TYPE_RAYTRACING_LIST: {
 				const RecordedRaytracingListCommand *raytracing_list_command = reinterpret_cast<const RecordedRaytracingListCommand *>(command);
@@ -1786,6 +1787,17 @@ void RenderingDeviceGraph::initialize(RDD *p_driver, RenderPassCreationFunction 
 }
 
 void RenderingDeviceGraph::finalize() {
+
+	for (uint32_t i = 0; i < command_count; i++) {
+		RecordedCommand *command = reinterpret_cast<RecordedCommand *>(&command_data[command_data_offsets[i]]);
+		if (command->type == RecordedCommand::TYPE_DRIVER_CALLBACK) {
+			RecordedDriverCallbackCommand *callback = static_cast<RecordedDriverCallbackCommand *>(command);
+			if (callback->cancel) {
+				callback->cancel(callback->userdata);
+				callback->cancel = nullptr;
+			}
+		}
+	}
 	if (!frames.is_empty()) {
 		_wait_for_secondary_command_buffer_tasks();
 	}
@@ -1802,6 +1814,17 @@ void RenderingDeviceGraph::finalize() {
 }
 
 void RenderingDeviceGraph::begin() {
+
+	for (uint32_t i = 0; i < command_count; i++) {
+		RecordedCommand *command = reinterpret_cast<RecordedCommand *>(&command_data[command_data_offsets[i]]);
+		if (command->type == RecordedCommand::TYPE_DRIVER_CALLBACK) {
+			RecordedDriverCallbackCommand *callback = static_cast<RecordedDriverCallbackCommand *>(command);
+			if (callback->cancel) {
+				callback->cancel(callback->userdata);
+				callback->cancel = nullptr;
+			}
+		}
+	}
 	command_data.clear();
 	command_data_offsets.clear();
 	command_normalization_barriers.clear();
@@ -1966,13 +1989,15 @@ void RenderingDeviceGraph::add_buffer_update(RDD::BufferID p_dst, ResourceTracke
 	_add_command_to_graph(&p_dst_tracker, &buffer_usage, 1, command_index, command);
 }
 
-void RenderingDeviceGraph::add_driver_callback(RDD::DriverCallback p_callback, void *p_userdata, VectorView<ResourceTracker *> p_trackers, VectorView<RenderingDeviceGraph::ResourceUsage> p_usages) {
+void RenderingDeviceGraph::add_driver_callback(RDD::DriverCallback p_callback, void *p_userdata, VectorView<ResourceTracker *> p_trackers, VectorView<RenderingDeviceGraph::ResourceUsage> p_usages, void (*p_cancel)(void *)) {
 	DEV_ASSERT(p_trackers.size() == p_usages.size());
 
 	int32_t command_index;
 	RecordedDriverCallbackCommand *command = static_cast<RecordedDriverCallbackCommand *>(_allocate_command(sizeof(RecordedDriverCallbackCommand), command_index));
 	command->type = RecordedCommand::TYPE_DRIVER_CALLBACK;
 	command->callback = p_callback;
+	command->cancel = p_cancel;
+	command->self_stages = RDD::PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 	command->userdata = p_userdata;
 	_add_command_to_graph((ResourceTracker **)p_trackers.ptr(), (ResourceUsage *)p_usages.ptr(), p_trackers.size(), command_index, command);
 }

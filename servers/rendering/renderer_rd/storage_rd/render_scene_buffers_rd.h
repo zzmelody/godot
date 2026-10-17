@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/templates/hash_map.h"
+#include "servers/rendering/renderer_rd/effects/external_temporal_upscaler.h"
 #include "core/variant/dictionary.h"
 #include "servers/rendering/renderer_rd/effects/vrs.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
@@ -68,6 +69,7 @@ class RenderSceneBuffersRD : public RenderSceneBuffers {
 	GDCLASS(RenderSceneBuffersRD, RenderSceneBuffers);
 
 private:
+	ExternalTemporalUpscaler *external_temporal = nullptr;
 	bool can_be_storage = true;
 	int gpu_occlusion_mode = 0;
 	uint64_t gpu_occlusion_epoch = 0;
@@ -199,6 +201,9 @@ public:
 
 	// info from our renderer
 	void set_can_be_storage(const bool p_can_be_storage) { can_be_storage = p_can_be_storage; }
+	ExternalTemporalUpscaler *get_external_temporal() const { return external_temporal; }
+	bool get_external_temporal_jitter(Vector2 &r_jitter) override { return external_temporal && external_temporal->get_jitter(r_jitter); }
+	void reset_external_temporal_history() override { if (external_temporal) { external_temporal->reset_history(); } }
 	bool get_can_be_storage() const { return can_be_storage; }
 	void set_max_cluster_elements(const uint32_t p_max_elements) { max_cluster_elements = p_max_elements; }
 	uint32_t get_max_cluster_elements() { return max_cluster_elements; }
