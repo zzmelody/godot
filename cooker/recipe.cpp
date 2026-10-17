@@ -1084,66 +1084,66 @@ struct Recipe {
 				"minimum_visual requires valid static geometry or material");
 		return s.push_resource(output);
 	}
-  static int virtual_geometry(lua_State *p_state) {
-	  auto &s = self(p_state);
-	  s.arity(2);
-	  Ref<Resource> resource;
-	  if (lua_type(p_state, 1) == LUA_TSTRING) {
-		  const String name = s.string(1);
-		  s.require(s.inputs.has(name), "virtual_geometry input is not declared");
-		  resource = s.inputs[name];
-	  } else {
-		  resource = s.handle(1);
-	  }
-	  const Ref<Mesh> source = resource;
-	  s.require(source.is_valid() && Ref<VirtualGeometryMesh>(source).is_null(), "virtual_geometry requires an ordinary source Mesh");
-	  s.fields(2, { "preserve_area", "max_edge_length_factor", "position_precision", "normal_bits", "tangent_bits", "interpolate_uvs" });
-	  CookerVirtualGeometry::Settings settings;
-	  settings.dag.preserve_area = s.boolean_field(2, "preserve_area", false);
-	  settings.dag.max_edge_length_factor = s.number_field(2, "max_edge_length_factor", 0, 0, 100000);
-	  settings.interpolate_uvs = s.boolean_field(2, "interpolate_uvs", true);
-	  s.field(2, "position_precision");
-	  if (!lua_isnil(p_state, -1)) {
-		  const double value = s.number(-1, -20, 43);
-		  s.require(value == std::floor(value), "position_precision must be an integer");
-		  settings.encoding.position_precision = int32_t(value);
-	  }
-	  lua_pop(p_state, 1);
-	  const double normal_bits = s.number_field(2, "normal_bits", 8, 1, 15);
-	  const double tangent_bits = s.number_field(2, "tangent_bits", 7, 1, 12);
-	  s.require(normal_bits == std::floor(normal_bits) && tangent_bits == std::floor(tangent_bits), "virtual geometry attribute precision must be integral");
-	  settings.encoding.normal_bits = uint32_t(normal_bits);
-	  settings.encoding.tangent_bits = uint32_t(tangent_bits);
-	  const GeometryCacheKey key = std::make_tuple(uint64_t(source->get_instance_id()), settings.dag.preserve_area,
-			  settings.dag.max_edge_length_factor, settings.encoding.position_precision, settings.encoding.normal_bits,
-			  settings.encoding.tangent_bits, settings.interpolate_uvs);
-	  const auto cached = s.geometry_cache.find(key);
-	  if (cached != s.geometry_cache.end()) {
-		  return s.push_resource(s.geometry_builds.at(cached->second).mesh);
-	  }
-	  s.require(s.resources.size() < size_t(s.limits.max_resources), "asset resource limit exceeded");
-	  const bool source_accounted = s.accounted_meshes.has(source->get_instance_id());
-	  settings.max_source_vertices = uint32_t(source_accounted ? s.limits.max_vertices : s.limits.max_vertices - s.vertices);
-	  settings.max_output_bytes = uint64_t(s.limits.output_mb) * 1024 * 1024 - s.geometry_pending_bytes;
-	  s.require(settings.max_output_bytes > 0, "virtual geometry output budget exceeded");
-	  CookerVirtualGeometry::BuildOutput built;
-	  String message;
-	  const Error error = CookerVirtualGeometry::build(source, settings, built, message);
-	  if (error != OK) {
-		  s.host_message = message.utf8().get_data();
-		  s.require(false, s.host_message.c_str());
-	  }
-	  const Ref<VirtualGeometryMesh> mesh = built.mesh;
-	  const ObjectID id = mesh->get_instance_id();
-	  if (!source_accounted) {
-		  s.accounted_meshes.insert(source->get_instance_id());
-		  s.vertices += built.source_vertices;
-	  }
-	  s.geometry_pending_bytes += built.container.size() + uint64_t(int64_t(built.report["root_bytes"]));
-	  s.geometry_builds.emplace(id, std::move(built));
-	  s.geometry_cache.emplace(key, id);
-	  return s.push_resource(mesh);
-  }
+	static int virtual_geometry(lua_State *p_state) {
+		auto &s = self(p_state);
+		s.arity(2);
+		Ref<Resource> resource;
+		if (lua_type(p_state, 1) == LUA_TSTRING) {
+			const String name = s.string(1);
+			s.require(s.inputs.has(name), "virtual_geometry input is not declared");
+			resource = s.inputs[name];
+		} else {
+			resource = s.handle(1);
+		}
+		const Ref<Mesh> source = resource;
+		s.require(source.is_valid() && Ref<VirtualGeometryMesh>(source).is_null(), "virtual_geometry requires an ordinary source Mesh");
+		s.fields(2, { "preserve_area", "max_edge_length_factor", "position_precision", "normal_bits", "tangent_bits", "interpolate_uvs" });
+		CookerVirtualGeometry::Settings settings;
+		settings.dag.preserve_area = s.boolean_field(2, "preserve_area", false);
+		settings.dag.max_edge_length_factor = s.number_field(2, "max_edge_length_factor", 0, 0, 100000);
+		settings.interpolate_uvs = s.boolean_field(2, "interpolate_uvs", true);
+		s.field(2, "position_precision");
+		if (!lua_isnil(p_state, -1)) {
+			const double value = s.number(-1, -20, 43);
+			s.require(value == std::floor(value), "position_precision must be an integer");
+			settings.encoding.position_precision = int32_t(value);
+		}
+		lua_pop(p_state, 1);
+		const double normal_bits = s.number_field(2, "normal_bits", 8, 1, 15);
+		const double tangent_bits = s.number_field(2, "tangent_bits", 7, 1, 12);
+		s.require(normal_bits == std::floor(normal_bits) && tangent_bits == std::floor(tangent_bits), "virtual geometry attribute precision must be integral");
+		settings.encoding.normal_bits = uint32_t(normal_bits);
+		settings.encoding.tangent_bits = uint32_t(tangent_bits);
+		const GeometryCacheKey key = std::make_tuple(uint64_t(source->get_instance_id()), settings.dag.preserve_area,
+				settings.dag.max_edge_length_factor, settings.encoding.position_precision, settings.encoding.normal_bits,
+				settings.encoding.tangent_bits, settings.interpolate_uvs);
+		const auto cached = s.geometry_cache.find(key);
+		if (cached != s.geometry_cache.end()) {
+			return s.push_resource(s.geometry_builds.at(cached->second).mesh);
+		}
+		s.require(s.resources.size() < size_t(s.limits.max_resources), "asset resource limit exceeded");
+		const bool source_accounted = s.accounted_meshes.has(source->get_instance_id());
+		settings.max_source_vertices = uint32_t(source_accounted ? s.limits.max_vertices : s.limits.max_vertices - s.vertices);
+		settings.max_output_bytes = uint64_t(s.limits.output_mb) * 1024 * 1024 - s.geometry_pending_bytes;
+		s.require(settings.max_output_bytes > 0, "virtual geometry output budget exceeded");
+		CookerVirtualGeometry::BuildOutput built;
+		String message;
+		const Error error = CookerVirtualGeometry::build(source, settings, built, message);
+		if (error != OK) {
+			s.host_message = message.utf8().get_data();
+			s.require(false, s.host_message.c_str());
+		}
+		const Ref<VirtualGeometryMesh> mesh = built.mesh;
+		const ObjectID id = mesh->get_instance_id();
+		if (!source_accounted) {
+			s.accounted_meshes.insert(source->get_instance_id());
+			s.vertices += built.source_vertices;
+		}
+		s.geometry_pending_bytes += built.container.size() + uint64_t(int64_t(built.report["root_bytes"]));
+		s.geometry_builds.emplace(id, std::move(built));
+		s.geometry_cache.emplace(key, id);
+		return s.push_resource(mesh);
+	}
 
   static int primitive(lua_State* p_state) {
     auto& s = self(p_state);
