@@ -390,8 +390,10 @@ ClusterEncodingResult quantize(const ClusterEncodingSettings &p_settings, Encoda
 
 ClusterEncodingResult prepare_cluster_encoding(const GeometryDag &p_dag, const ClusterEncodingSettings &p_settings,
 		EncodableGeometry &r_geometry) {
-	if (p_settings.position_precision != INT32_MIN &&
-			(p_settings.position_precision < MIN_POSITION_PRECISION || p_settings.position_precision > MAX_POSITION_PRECISION)) {
+	if ((p_settings.position_precision != INT32_MIN &&
+				(p_settings.position_precision < MIN_POSITION_PRECISION || p_settings.position_precision > MAX_POSITION_PRECISION)) ||
+			p_settings.normal_bits == 0 || p_settings.normal_bits > 15 || p_settings.tangent_bits > 12 ||
+			(p_dag.layout.has_tangents && p_settings.tangent_bits == 0)) {
 		return { ClusterEncodingError::INVALID_SETTINGS };
 	}
 	try {
@@ -419,6 +421,30 @@ ClusterEncodingResult prepare_cluster_encoding(const GeometryDag &p_dag, const C
 		const auto quantized = quantize(p_settings, candidate);
 		if (quantized.error != ClusterEncodingError::OK) {
 			return quantized;
+		}
+		ClusterAttributeFormat format;
+		format.has_tangents = p_dag.layout.has_tangents;
+		format.has_colors = p_dag.layout.has_colors;
+		format.uv_sets = p_dag.layout.uv_sets;
+		format.lossless_uvs = !p_dag.layout.interpolate_uvs;
+		format.normal_bits = p_settings.normal_bits;
+		format.tangent_bits = p_settings.tangent_bits;
+		for (auto &cluster : candidate.clusters) {
+			const auto result = pack_cluster_attributes(format, cluster.geometry.attributes,
+					static_cast<uint32_t>(cluster.geometry.mesh.positions.size()), cluster.encoded_attributes);
+			if (result.error != AttributeCodecError::OK) {
+				ClusterEncodingResult error;
+				error.error = ClusterEncodingError::ATTRIBUTES;
+				error.cluster = cluster.source_cluster;
+				error.attribute_result = result;
+				return error;
+			}
+			const auto &measured = cluster.encoded_attributes.errors;
+			candidate.attribute_errors.normal_radians = std::max(candidate.attribute_errors.normal_radians, measured.normal_radians);
+			candidate.attribute_errors.tangent_radians = std::max(candidate.attribute_errors.tangent_radians, measured.tangent_radians);
+			candidate.attribute_errors.color_absolute = std::max(candidate.attribute_errors.color_absolute, measured.color_absolute);
+			candidate.attribute_errors.uv_absolute = std::max(candidate.attribute_errors.uv_absolute, measured.uv_absolute);
+			candidate.attribute_errors.uv_relative = std::max(candidate.attribute_errors.uv_relative, measured.uv_relative);
 		}
 		r_geometry = std::move(candidate);
 		return {};

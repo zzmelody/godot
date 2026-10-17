@@ -4,6 +4,7 @@
 #include "cluster_dag.h"
 #include "cluster_stripifier.h"
 
+#include "core/io/virtual_geometry/attribute_codec.h"
 #include "core/io/virtual_geometry/cluster_codec.h"
 
 #include <array>
@@ -16,6 +17,8 @@ namespace VirtualGeometry {
 struct ClusterEncodingSettings {
 	// Automatic density heuristic in model meters. One grid serves all levels.
 	int32_t position_precision = std::numeric_limits<int32_t>::min();
+	uint32_t normal_bits = 8;
+	uint32_t tangent_bits = 7;
 };
 
 struct EncodableCluster {
@@ -33,6 +36,7 @@ struct EncodableCluster {
 	PackedClusterTopology topology;
 	std::vector<std::vector<uint8_t>> reuse_batches;
 	std::vector<uint32_t> reuse_batch_words;
+	PackedClusterAttributes encoded_attributes;
 };
 
 struct EncodableGeometry {
@@ -45,6 +49,7 @@ struct EncodableGeometry {
 	std::array<double, 3> lower = {};
 	std::array<double, 3> upper = {};
 	double max_position_error = 0;
+	AttributeEncodingError attribute_errors;
 	int32_t position_precision = 0;
 	uint32_t leaf_count = 0;
 	uint32_t root_group = UINT32_MAX;
@@ -60,6 +65,7 @@ enum class ClusterEncodingError {
 	QUANTIZATION_COLLAPSE,
 	MEMORY,
 	TOPOLOGY,
+	ATTRIBUTES,
 };
 
 struct ClusterEncodingResult {
@@ -68,6 +74,7 @@ struct ClusterEncodingResult {
 	MaterialCodecError material_error = MaterialCodecError::OK;
 	PositionCodecError position_error = PositionCodecError::OK;
 	TopologyCodecError topology_error = TopologyCodecError::OK;
+	AttributeCodecResult attribute_result;
 };
 
 // Material sorting/splits preserve every source triangle, attribute and boundary.
