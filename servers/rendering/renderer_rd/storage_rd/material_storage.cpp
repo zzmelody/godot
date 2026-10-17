@@ -38,6 +38,7 @@
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
+#include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/storage/variant_converters.h"
 
 using namespace RendererRD;
@@ -1246,6 +1247,26 @@ bool MaterialStorage::MaterialData::update_parameters_uniform_set(const HashMap<
 	RD::get_singleton()->uniform_set_set_invalidation_callback(uniform_set, MaterialStorage::_material_uniform_set_erased, &self);
 
 	return true;
+}
+
+RID MaterialStorage::MaterialData::get_parameters_uniform_set(RID p_shader, uint32_t p_set, bool p_use_linear_color, const Vector<ShaderCompiler::GeneratedCode::Texture> &p_textures) const {
+	LocalVector<RD::Uniform> uniforms;
+	if (uniform_buffer[p_use_linear_color].is_valid()) {
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 0, { uniform_buffer[p_use_linear_color] }));
+	}
+	uint32_t index = 0;
+	for (const auto &texture : p_textures) {
+		RD::Uniform uniform;
+		uniform.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		uniform.binding = 1 + index;
+		const uint32_t count = MAX(1, texture.array_size);
+		ERR_FAIL_COND_V(index + count > uint32_t(texture_cache.size()), RID());
+		for (uint32_t element = 0; element < count; ++element) {
+			uniform.append_id(texture_cache[index++]);
+		}
+		uniforms.push_back(uniform);
+	}
+	return uniforms.is_empty() ? RID() : UniformSetCacheRD::get_singleton()->get_cache_vec(p_shader, p_set, uniforms);
 }
 
 void MaterialStorage::MaterialData::set_as_used() {

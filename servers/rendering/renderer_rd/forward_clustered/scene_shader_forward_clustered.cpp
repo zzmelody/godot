@@ -40,6 +40,13 @@ using namespace RendererSceneRenderImplementation;
 
 void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	//compile
+	virtual_geometry_pipeline.free();
+	if (virtual_geometry_version.is_valid()) {
+		SceneShaderForwardClustered::singleton->virtual_geometry_shader.version_free(virtual_geometry_version);
+		virtual_geometry_version = RID();
+	}
+	virtual_geometry_attempted = false;
+	virtual_geometry_error = String();
 
 	code = p_code;
 	ubo_size = 0;
@@ -561,6 +568,49 @@ bool SceneShaderForwardClustered::ShaderData::is_valid() const {
 	}
 }
 
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String &r_error) {
+	MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+	auto *owner = SceneShaderForwardClustered::singleton;
+	if (!virtual_geometry_attempted) {
+		virtual_geometry_attempted = true;
+		const uint32_t required = RD::SUBGROUP_BASIC_BIT | RD::SUBGROUP_BALLOT_BIT | RD::SUBGROUP_QUAD_BIT;
+		if ((RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & required) != required ||
+				(RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) == 0) {
+			virtual_geometry_error = "Virtual geometry material evaluation requires compute subgroup ballot and quad operations.";
+		} else if (!is_valid() || uses_vertex || uses_position || writes_tangent || writes_modelview_or_projection ||
+				uses_world_coordinates || uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_clip || uses_discard ||
+				uses_sss || uses_transmittance || uses_bent_normal_map || stencil_enabled || wireframe) {
+			virtual_geometry_error = "Virtual geometry material coverage, deformation or advanced material features are not connected yet: " + path;
+		} else {
+			ShaderCompiler::IdentifierActions actions;
+			actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
+			actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
+			actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
+			ShaderCompiler::GeneratedCode generated;
+			HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> generated_uniforms;
+			actions.uniforms = &generated_uniforms;
+			Error error = owner->virtual_geometry_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, generated);
+			if (error != OK || generated.uniform_total_size != ubo_size || generated.uniform_offsets != ubo_offsets || generated.texture_uniforms.size() != texture_uniforms.size()) {
+				virtual_geometry_error = "Virtual geometry material compilation or shared parameter layout failed: " + path;
+			} else if (generated.code.has("light")) {
+				virtual_geometry_error = "Virtual geometry custom light functions are not connected yet: " + path;
+			} else {
+				virtual_geometry_version = owner->virtual_geometry_shader.version_create(false);
+				owner->virtual_geometry_shader.version_set_compute_code(virtual_geometry_version, generated.code, generated.uniforms, generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
+				RID program = owner->virtual_geometry_shader.version_get_shader(virtual_geometry_version, 0);
+				if (program.is_valid()) {
+					virtual_geometry_pipeline.create_compute_pipeline(program);
+				}
+				if (program.is_null() || virtual_geometry_pipeline.get_rid().is_null()) {
+					virtual_geometry_error = "Virtual geometry compute material pipeline creation failed: " + path;
+				}
+			}
+		}
+	}
+	r_error = virtual_geometry_error;
+	return r_error.is_empty() && virtual_geometry_version.is_valid() ? owner->virtual_geometry_shader.version_get_shader(virtual_geometry_version, 0) : RID();
+}
+
 SceneShaderForwardClustered::ShaderData::ShaderData() :
 		shader_list_element(this) {
 	pipeline_hash_map.set_creation_object_and_function(this, &ShaderData::_create_pipeline);
@@ -569,6 +619,10 @@ SceneShaderForwardClustered::ShaderData::ShaderData() :
 
 SceneShaderForwardClustered::ShaderData::~ShaderData() {
 	pipeline_hash_map.clear_pipelines();
+	virtual_geometry_pipeline.free();
+	if (virtual_geometry_version.is_valid()) {
+		SceneShaderForwardClustered::singleton->virtual_geometry_shader.version_free(virtual_geometry_version);
+	}
 
 	if (version.is_valid()) {
 		ERR_FAIL_NULL(SceneShaderForwardClustered::singleton);
@@ -911,6 +965,45 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.check_multiview_samplers = true;
 
 		compiler.initialize(actions);
+		actions.compute_material_varyings = true;
+		actions.separate_texture_function_samplers = true;
+		actions.discard_function = "vg_discard";
+		actions.check_multiview_samplers = false;
+		actions.instance_uniform_index_variable = "scene.data[vg_source_word(vg_source) + 45u]";
+		actions.renames["INSTANCE_ID"] = "int(scene.data[vg_source_word(vg_source) + 44u])";
+		actions.renames["FRAGCOORD"] = "vg_fragcoord";
+		actions.renames["FRONT_FACING"] = "vg_front_facing";
+		actions.renames["TIME"] = "vg_view.state.x";
+		actions.renames["EXPOSURE"] = "vg_view.state.y";
+		actions.renames["VIEW_MATRIX"] = "vg_view.view";
+		actions.renames["INV_VIEW_MATRIX"] = "vg_view.inverse_view";
+		actions.renames["INV_PROJECTION_MATRIX"] = "vg_view.inverse_projection";
+		actions.renames["MAIN_CAM_INV_VIEW_MATRIX"] = "vg_view.inverse_view";
+		actions.renames["VIEWPORT_SIZE"] = "vg_view.dimensions.xy";
+		actions.renames["SCREEN_UV"] = "(vg_fragcoord.xy / vg_view.dimensions.xy)";
+		actions.renames["IN_SHADOW_PASS"] = "false";
+		actions.renames["OUTPUT_IS_SRGB"] = "false";
+		actions.renames["CLIP_SPACE_FAR"] = "0.0";
+		actions.renames["NODE_POSITION_VIEW"] = "modelview[3].xyz";
+		actions.renames["CAMERA_POSITION_WORLD"] = "vg_view.inverse_view[3].xyz";
+		actions.renames["CAMERA_DIRECTION_WORLD"] = "vg_view.inverse_view[2].xyz";
+		actions.renames["CAMERA_VISIBLE_LAYERS"] = "vg_view.flags.x";
+		actions.renames["IS_MULTIVIEW"] = "false";
+		actions.renames["VIEW_INDEX"] = "0";
+		actions.renames["EYE_OFFSET"] = "vec3(0.0)";
+		for (const char *name : { "dFdx", "dFdy", "dFdxFine", "dFdyFine", "dFdxCoarse", "dFdyCoarse", "fwidth", "fwidthFine", "fwidthCoarse", "texture", "textureProj" }) {
+			String replacement = name;
+			if (replacement == "dFdx" || replacement == "dFdy") {
+				replacement += "Fine";
+			} else if (replacement == "fwidthFine") {
+				replacement = "fwidth";
+			}
+			actions.builtin_function_renames[name] = "vg_" + replacement;
+		}
+		virtual_geometry_compiler.initialize(actions);
+		Vector<String> modes;
+		modes.push_back("");
+		virtual_geometry_shader.initialize(modes);
 	}
 
 	{

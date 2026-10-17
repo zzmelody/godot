@@ -30,8 +30,10 @@
 
 #pragma once
 
+#include "servers/rendering/renderer_rd/pipeline_deferred_rd.h"
 #include "servers/rendering/renderer_rd/pipeline_hash_map_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_material.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/rendering_server_types.h"
 
@@ -219,6 +221,10 @@ public:
 		PipelineHashMapRD<PipelineKey, ShaderData, void (ShaderData::*)(PipelineKey)> pipeline_hash_map;
 
 		RID version;
+		RID virtual_geometry_version;
+		PipelineDeferredRD virtual_geometry_pipeline;
+		bool virtual_geometry_attempted = false;
+		String virtual_geometry_error;
 
 		static const uint32_t VERTEX_INPUT_MASKS_SIZE = ShaderVersion::SHADER_VERSION_COLOR_PASS * 2 + SHADER_COLOR_PASS_FLAG_COUNT;
 		std::atomic<uint64_t> vertex_input_masks[VERTEX_INPUT_MASKS_SIZE] = {};
@@ -313,6 +319,8 @@ public:
 		uint64_t get_vertex_input_mask(PipelineVersion p_pipeline_version, uint32_t p_color_pass_flags, bool p_ubershader);
 		RD::PolygonCullMode get_cull_mode_from_cull_variant(CullVariant p_cull_variant);
 		bool is_valid() const;
+		RID get_virtual_geometry_shader(String &r_error);
+		RID get_virtual_geometry_pipeline() { return virtual_geometry_pipeline.get_rid(); }
 
 		SelfList<ShaderData> shader_list_element;
 		ShaderData();
@@ -346,6 +354,8 @@ public:
 
 	SceneForwardClusteredShaderRD shader;
 	ShaderCompiler compiler;
+	VirtualGeometryMaterialShaderRD virtual_geometry_shader;
+	ShaderCompiler virtual_geometry_compiler;
 	bool emulate_point_size = false;
 
 	RID default_shader;

@@ -4239,6 +4239,22 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			//remove materials no longer used and un-own them
 
 			int new_mat_count = RSG::mesh_storage->mesh_get_surface_count(p_instance->base);
+			const auto bindings = RSG::mesh_storage->mesh_get_virtual_geometry_materials(p_instance->base);
+			if (!bindings.rids.is_empty()) {
+				// Virtual material identities need no physical mesh surfaces. Retain
+				// only explicitly set overrides that still belong to this model.
+				for (uint32_t index = 0; index < uint32_t(p_instance->materials.size()); ++index) {
+					bool present = false;
+					for (uint32_t identity : bindings.identities) {
+						present |= identity == index;
+					}
+					if (present && p_instance->materials[index].is_valid()) {
+						new_mat_count = index + 1;
+					} else {
+						p_instance->materials.write[index] = RID();
+					}
+				}
+			}
 			p_instance->materials.resize(new_mat_count);
 
 			_instance_update_mesh_instance(p_instance);
@@ -4255,6 +4271,16 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 		if ((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) {
 			InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(p_instance->base_data);
+			RID metadata_mesh;
+			if (p_instance->base_type == RSE::INSTANCE_MESH) {
+				metadata_mesh = p_instance->base;
+			} else if (p_instance->base_type == RSE::INSTANCE_MULTIMESH) {
+				metadata_mesh = RSG::mesh_storage->multimesh_get_mesh(p_instance->base);
+			}
+			const auto metadata_materials = metadata_mesh.is_valid() ? RSG::mesh_storage->mesh_get_virtual_geometry_materials(metadata_mesh) : RendererMeshStorage::VirtualGeometryMaterials();
+			if (p_instance->base_type == RSE::INSTANCE_MESH && !metadata_materials.rids.is_empty()) {
+				geom->geometry_instance->set_surface_materials(p_instance->materials);
+			}
 
 			bool can_cast_shadows = true;
 			bool is_animated = false;
@@ -4272,7 +4298,25 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 				is_animated = RSG::material_storage->material_is_animated(p_instance->material_override);
 				p_instance->instance_uniforms.materials_append(p_instance->material_override);
 			} else {
-				if (p_instance->base_type == RSE::INSTANCE_MESH) {
+				if (!metadata_materials.rids.is_empty()) {
+					bool cast_shadows = false;
+					for (uint32_t index = 0; index < metadata_materials.rids.size(); ++index) {
+						const uint32_t identity = metadata_materials.identities[index];
+						RID mat = metadata_materials.rids[index];
+						if (p_instance->base_type == RSE::INSTANCE_MESH && identity < uint32_t(p_instance->materials.size()) && p_instance->materials[identity].is_valid()) {
+							mat = p_instance->materials[identity];
+						}
+						if (mat.is_null()) {
+							cast_shadows = true;
+							continue;
+						}
+						cast_shadows |= RSG::material_storage->material_casts_shadows(mat);
+						is_animated |= RSG::material_storage->material_is_animated(mat);
+						p_instance->instance_uniforms.materials_append(mat);
+						RSG::material_storage->material_update_dependency(mat, &p_instance->dependency_tracker);
+					}
+					can_cast_shadows &= cast_shadows;
+				} else if (p_instance->base_type == RSE::INSTANCE_MESH) {
 					RID mesh = p_instance->base;
 
 					if (mesh.is_valid()) {

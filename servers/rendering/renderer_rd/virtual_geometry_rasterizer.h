@@ -19,6 +19,7 @@ public:
 	RID get_visibility() const { return ready ? visibility : RID(); }
 	uint64_t get_buffer_bytes() const;
 	const VirtualGeometryShading &get_shading() const { return shading; }
+	VirtualGeometryShading &get_shading() { return shading; }
 	~VirtualGeometryRasterizer();
 
 private:

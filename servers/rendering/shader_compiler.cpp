@@ -693,10 +693,36 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 			}
 
 			varying_names.sort_custom<StringName::AlphCompare>(); //ensure order is deterministic so the same shader is always produced
+			String compute_fields;
+			String compute_interpolation;
 
 			for (int k = 0; k < varying_names.size(); k++) {
 				const StringName &varying_name = varying_names[k];
 				const SL::ShaderNode::Varying &varying = pnode->varyings[varying_name];
+				if (p_default_actions.compute_material_varyings) {
+					const String name = _mkid(varying_name);
+					compute_fields += _typestr(varying.type) + " " + name;
+					if (varying.array_size > 0) {
+						compute_fields += "[" + itos(varying.array_size) + "]";
+					}
+					compute_fields += ";\n";
+					if (varying.stage != SL::ShaderNode::Varying::STAGE_FRAGMENT) {
+						String member = name;
+						if (varying.array_size > 0) {
+							compute_interpolation += "for (int vg_i=0; vg_i<" + itos(varying.array_size) + "; ++vg_i) {\n";
+							member += "[vg_i]";
+						}
+						compute_interpolation += "vg_varyings." + member + " = vg_corners[0]." + member;
+						if (varying.interpolation != SL::INTERPOLATION_FLAT) {
+							compute_interpolation += " * b.x + vg_corners[1]." + member + " * b.y + vg_corners[2]." + member + " * b.z";
+						}
+						compute_interpolation += ";\n";
+						if (varying.array_size > 0) {
+							compute_interpolation += "}\n";
+						}
+					}
+					continue;
+				}
 
 				if (varying.stage == SL::ShaderNode::Varying::STAGE_FRAGMENT) {
 					var_frag_to_light.push_back(Pair<StringName, SL::ShaderNode::Varying>(varying_name, varying));
@@ -732,6 +758,13 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				index += inc;
 			}
 
+			if (p_default_actions.compute_material_varyings) {
+				if (compute_fields.is_empty()) {
+					compute_fields = "float unused;\n";
+				}
+				r_gen_code.stage_globals[STAGE_COMPUTE] += "struct VGCustomVaryings {\n" + compute_fields + "};\nVGCustomVaryings vg_varyings;\nVGCustomVaryings vg_corners[3];\n";
+				r_gen_code.code["virtual_geometry_varyings"] = compute_interpolation;
+			}
 			if (var_frag_to_light.size() > 0) {
 				String gcode = "\n\nstruct {\n";
 				for (const Pair<StringName, SL::ShaderNode::Varying> &E : var_frag_to_light) {
@@ -985,7 +1018,9 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					}
 
 				} else {
-					if (use_fragment_varying) {
+					if (p_default_actions.compute_material_varyings && !vnode->is_local && shader->varyings.has(vnode->name)) {
+						code = "vg_varyings.";
+					} else if (use_fragment_varying) {
 						code = "frag_to_light.";
 					}
 					code += _mkid(vnode->name); //its something else (local var most likely) use as is
@@ -1093,7 +1128,9 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						}
 					}
 				} else {
-					if (use_fragment_varying) {
+					if (p_default_actions.compute_material_varyings && !anode->is_local && shader->varyings.has(anode->name)) {
+						code = "vg_varyings.";
+					} else if (use_fragment_varying) {
 						code = "frag_to_light.";
 					}
 					code += _mkid(anode->name);
@@ -1219,7 +1256,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						}
 
 						if (is_internal_func) {
-							code += vnode->name;
+							code += p_default_actions.builtin_function_renames.has(vnode->name) ? p_default_actions.builtin_function_renames[vnode->name] : String(vnode->name);
 							is_texture_func = texture_functions.has(vnode->name);
 							texture_func_no_uv = (vnode->name == "textureSize" || vnode->name == "textureQueryLevels");
 							texture_func_returns_data = texture_func_no_uv || vnode->name == "textureQueryLod";
@@ -1370,7 +1407,11 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 									data_type_name = ShaderLanguage::get_datatype_name(onode->arguments[i]->get_datatype());
 								}
 
-								code += data_type_name + "(" + node_code + ", " + sampler_name + ")";
+								if (p_default_actions.separate_texture_function_samplers && p_default_actions.builtin_function_renames.has(vnode->name)) {
+									code += node_code + ", " + sampler_name;
+								} else {
+									code += data_type_name + "(" + node_code + ", " + sampler_name + ")";
+								}
 							} else if (correct_texture_uniform && RS::get_singleton()->is_low_end()) {
 								// Texture function on low end hardware (i.e. OpenGL).
 
@@ -1502,7 +1543,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					used_flag_pointers.insert("DISCARD");
 				}
 
-				code = "discard;";
+				code = p_default_actions.discard_function.is_empty() ? "discard;" : p_default_actions.discard_function + "();";
 			} else if (cfnode->flow_op == SL::FLOW_OP_CONTINUE) {
 				code = "continue;";
 			} else if (cfnode->flow_op == SL::FLOW_OP_BREAK) {

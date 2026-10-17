@@ -1,4 +1,6 @@
 // Decodes the existing admitted vertex bit stream; no resource or page writes.
+#ifndef VIRTUAL_GEOMETRY_ATTRIBUTES_INC
+#define VIRTUAL_GEOMETRY_ATTRIBUTES_INC
 #include "virtual_geometry_page_inc.glsl"
 
 struct VGVertex {
@@ -88,3 +90,4 @@ VGVertex vg_vertex(uint reference, uint vertex) {
 	}
 	return result;
 }
+#endif

@@ -52,7 +52,7 @@ const VirtualGeometryStorage::Bindings *VirtualGeometryStorage::get_bindings(RID
 	return found != nullptr && (*found)->roots_published == (*found)->root.hierarchy.root_pages ? &(*found)->bindings : nullptr;
 }
 
-VirtualGeometryStorage::Materials VirtualGeometryStorage::get_materials(RID p_mesh) const {
+RendererMeshStorage::VirtualGeometryMaterials VirtualGeometryStorage::get_materials(RID p_mesh) const {
 	Asset *const *found = assets.getptr(p_mesh);
 	if (found == nullptr) {
 		return {};

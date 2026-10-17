@@ -1796,6 +1796,14 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		}
 		const Error error = data->virtual_geometry_raster->record(buffers->get_internal_size(), p_render_data->scene_data->taa_jitter, data->virtual_geometry->get_results(), scene_shader.default_material);
 		ERR_FAIL_COND_MSG(error != OK, "Virtual geometry mixed raster refused this view: " + itos(error));
+		const auto results = data->virtual_geometry->get_results();
+		Projection correction;
+		correction.set_depth_correction(p_render_data->scene_data->flip_y);
+		const float normalization = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : (p_render_data->scene_data->emissive_exposure_normalization > 0 ? p_render_data->scene_data->emissive_exposure_normalization : 1.0f);
+		const Error shading_error = data->virtual_geometry_raster->get_shading().record_materials(buffers, results.is_empty() ? RID() : results[0].batch.geometry.geometry,
+				correction * p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform, p_render_data->scene_data->taa_jitter,
+				time, 1.0f / normalization, p_render_data->scene_data->camera_visible_layers);
+		ERR_FAIL_COND_MSG(shading_error != OK, "Virtual geometry material evaluation refused this view: " + itos(shading_error));
 	}
 }
 

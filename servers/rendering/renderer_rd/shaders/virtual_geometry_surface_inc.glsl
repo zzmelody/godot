@@ -66,6 +66,7 @@ struct VGSurface {
 	vec2 uv_dx[4];
 	vec2 uv_dy[4];
 	float depth;
+	float reciprocal_w;
 };
 
 vec3 vg_frame_tangent(vec3 normal) {
@@ -86,6 +87,9 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 	mat4 model_view = vg_source_matrix(visible.x, 12u);
 	for (uint corner = 0u; corner < 3u; ++corner) {
 		v[corner] = vg_vertex(visible.y, vertices[corner]);
+#ifdef VG_EVALUATE_VERTEX
+		VG_EVALUATE_VERTEX(v[corner], visible.x, corner);
+#endif
 		vec4 clip = projection * model_view * vec4(v[corner].position, 1.0);
 		clip.xy += jitter * clip.w;
 		clips[corner] = vg_snap_clip(clip, size);
@@ -138,7 +142,10 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 	candidate.view_position = (model_view * vec4(candidate.local_position, 1.0)).xyz;
 	candidate.world_dx = mat3(model) * (v[0].position * bx.x + v[1].position * bx.y + v[2].position * bx.z);
 	candidate.world_dy = mat3(model) * (v[0].position * by.x + v[1].position * by.y + v[2].position * by.z);
-	candidate.color = (v[0].color * b.x + v[1].color * b.y + v[2].color * b.z) * vg_source_vector(visible.x, 36u);
+	candidate.color = v[0].color * b.x + v[1].color * b.y + v[2].color * b.z;
+#ifndef VG_EVALUATE_VERTEX
+	candidate.color *= vg_source_vector(visible.x, 36u);
+#endif
 	for (uint uv = 0u; uv < 4u; ++uv) {
 		candidate.uv[uv] = v[0].uv[uv] * b.x + v[1].uv[uv] * b.y + v[2].uv[uv] * b.z;
 		candidate.uv_dx[uv] = v[0].uv[uv] * bx.x + v[1].uv[uv] * bx.y + v[2].uv[uv] * bx.z;
@@ -149,10 +156,11 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 	}
 	vec4 clip_position = clips[0] * b.x + clips[1] * b.y + clips[2] * b.z;
 	candidate.depth = clip_position.z / clip_position.w;
+	candidate.reciprocal_w = 1.0 / clip_position.w;
 	if (!vg_finite(candidate.world_position) || !vg_finite(candidate.view_position) ||
 			!vg_finite(candidate.world_dx) || !vg_finite(candidate.world_dy) || !vg_finite(candidate.normal) ||
 			!vg_finite(candidate.tangent) || !vg_finite(candidate.binormal) ||
-			any(isnan(candidate.color)) || any(isinf(candidate.color)) || isnan(candidate.depth) || isinf(candidate.depth)) {
+			any(isnan(candidate.color)) || any(isinf(candidate.color)) || isnan(candidate.depth) || isinf(candidate.depth) || isnan(candidate.reciprocal_w) || isinf(candidate.reciprocal_w)) {
 		return false;
 	}
 	result = candidate;

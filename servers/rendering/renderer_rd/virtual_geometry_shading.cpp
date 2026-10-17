@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "virtual_geometry_shading.h"
 
+#include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
@@ -36,7 +37,7 @@ void dispatch_items(RD::ComputeListID p_list, uint32_t p_items, uint32_t p_threa
 } // namespace
 
 VirtualGeometryShading::~VirtualGeometryShading() {
-	for (RID rid : { scene_buffer, bins_buffer, arguments, dummy_transforms }) {
+	for (RID rid : { scene_buffer, bins_buffer, arguments, dummy_transforms, material_view }) {
 		if (rid.is_valid()) {
 			RD::get_singleton()->free_rid(rid);
 		}
@@ -240,8 +241,98 @@ void VirtualGeometryShading::record_bins() {
 	RENDER_TIMESTAMP("Virtual Geometry Shading Bins End");
 }
 
+Error VirtualGeometryShading::record_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const Projection &p_projection, const Transform3D &p_camera, const Vector2 &p_jitter, float p_time, float p_exposure, uint32_t p_layers) {
+	RD *rd = RD::get_singleton();
+	MaterialStorage *storage = MaterialStorage::get_singleton();
+	using SceneShader = RendererSceneRenderImplementation::SceneShaderForwardClustered;
+	material_work.clear();
+	if (surface_size != size || surfaces[0].is_null()) {
+		p_buffers->clear_context("virtual_geometry");
+		const char *names[7] = { "albedo_metallic", "normal_roughness", "emission_ao", "specular_rim_clearcoat", "backlight_ao", "anisotropy", "surface_flags" };
+		for (uint32_t index = 0; index < 7; ++index) {
+			RD::TextureFormat format;
+			format.width = size.x;
+			format.height = size.y;
+			format.format = index == 6 ? RD::DATA_FORMAT_R32_UINT : RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
+			format.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+			surfaces[index] = p_buffers->create_texture_from_format("virtual_geometry", names[index], format);
+			ERR_FAIL_COND_V(surfaces[index].is_null(), ERR_CANT_CREATE);
+		}
+		surface_size = size;
+	}
+	rd->texture_clear(surfaces[6], Color(), 0, 1, 0, 1);
+	if (materials.is_empty()) {
+		return OK;
+	}
+	if (material_view.is_null()) {
+		material_view = rd->uniform_buffer_create(304);
+	}
+	ERR_FAIL_COND_V(material_view.is_null(), ERR_CANT_CREATE);
+	struct View {
+		float projection[16];
+		float inverse_projection[16];
+		float view[16];
+		float inverse_view[16];
+		float dimensions[4];
+		float state[4];
+		uint32_t flags[4];
+	} view = {};
+	static_assert(sizeof(View) == 304);
+	MaterialStorage::store_camera(p_projection, view.projection);
+	MaterialStorage::store_camera(p_projection.inverse(), view.inverse_projection);
+	MaterialStorage::store_transform(p_camera.affine_inverse(), view.view);
+	MaterialStorage::store_transform(p_camera, view.inverse_view);
+	view.dimensions[0] = size.x;
+	view.dimensions[1] = size.y;
+	view.dimensions[2] = p_jitter.x;
+	view.dimensions[3] = p_jitter.y;
+	view.state[0] = p_time;
+	view.state[1] = p_exposure;
+	view.flags[0] = p_layers;
+	rd->buffer_update(material_view, 0, sizeof(view), &view);
+	for (RID material : materials) {
+		auto *data = static_cast<SceneShader::MaterialData *>(storage->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
+		ERR_FAIL_COND_V(data == nullptr || data->shader_data == nullptr, ERR_INVALID_DATA);
+		String message;
+		RID program = data->shader_data->get_virtual_geometry_shader(message);
+		ERR_FAIL_COND_V_MSG(program.is_null(), ERR_UNAVAILABLE, message);
+		LocalVector<RD::Uniform> uniforms;
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_geometry }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, { bins_buffer }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { storage->global_shader_uniforms_get_storage_buffer() }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 12, { material_view }));
+		for (uint32_t index = 0; index < 7; ++index) {
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16 + index, { surfaces[index] }));
+		}
+		storage->samplers_rd_get_default().append_uniforms(uniforms, 32);
+		RID scene = UniformSetCacheRD::get_singleton()->get_cache_vec(program, 0, uniforms);
+		ERR_FAIL_COND_V(scene.is_null(), ERR_CANT_CREATE);
+		RID parameters = data->get_parameters_uniform_set(program, 3, true, data->shader_data->texture_uniforms);
+		ERR_FAIL_COND_V(parameters.is_null() && (data->shader_data->ubo_size != 0 || !data->shader_data->texture_uniforms.is_empty()), ERR_CANT_CREATE);
+		data->set_as_used();
+		material_work.push_back({ data->shader_data->get_virtual_geometry_pipeline(), scene, parameters });
+	}
+	RENDER_TIMESTAMP("Virtual Geometry Materials Begin");
+	const RD::ComputeListID list = rd->compute_list_begin();
+	for (uint32_t index = 0; index < material_work.size(); ++index) {
+		const auto &work = material_work[index];
+		const uint32_t push[3] = { index, uint32_t(materials.size()), entries_word };
+		rd->compute_list_bind_compute_pipeline(list, work.pipeline);
+		rd->compute_list_bind_uniform_set(list, work.scene, 0);
+		if (work.material.is_valid()) {
+			rd->compute_list_bind_uniform_set(list, work.material, 3);
+		}
+		rd->compute_list_set_push_constant(list, push, sizeof(push));
+		rd->compute_list_dispatch_indirect(list, arguments, index * 12);
+	}
+	rd->compute_list_end();
+	RENDER_TIMESTAMP("Virtual Geometry Materials End");
+	return OK;
+}
+
 uint64_t VirtualGeometryShading::get_buffer_bytes() const {
-	return uint64_t(scene_words + bins_words + argument_words) * 4 + (dummy_transforms.is_valid() ? 48 : 0);
+	return uint64_t(scene_words + bins_words + argument_words) * 4 + (dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 304 : 0) + uint64_t(surface_size.x) * surface_size.y * 52;
 }
 
 } // namespace RendererRD

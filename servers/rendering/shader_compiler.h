@@ -94,6 +94,11 @@ public:
 
 	struct DefaultIdentifierActions {
 		HashMap<StringName, String> renames;
+		// Call-node lowering keeps sampler conversion and type checking intact.
+		HashMap<StringName, String> builtin_function_renames;
+		bool separate_texture_function_samplers = false;
+		bool compute_material_varyings = false;
+		String discard_function;
 		HashMap<StringName, String> render_mode_defines;
 		HashMap<StringName, String> usage_defines;
 		HashMap<StringName, String> custom_samplers;
