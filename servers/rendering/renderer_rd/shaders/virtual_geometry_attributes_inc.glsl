@@ -17,10 +17,11 @@ uint vg_read_bits(uint base, inout uint cursor, uint count) {
 
 vec3 vg_decode_normal(uint code, uint bits) {
 	uint mask = (1u << bits) - 1u;
-	vec2 xy = vec2(code & mask, code >> bits) * (2.0 / float(mask)) - 1.0;
-	float z = 1.0 - abs(xy.x) - abs(xy.y);
-	float shift = clamp(-z, 0.0, 1.0);
-	xy += vec2(xy.x >= 0.0 ? -shift : shift, xy.y >= 0.0 ? -shift : shift);
+	// Keep axis ties exact before the tangent basis selects its reference axis.
+	ivec2 xy = ivec2(code & mask, code >> bits) * 2 - int(mask);
+	int z = int(mask) - abs(xy.x) - abs(xy.y);
+	int shift = max(-z, 0);
+	xy += ivec2(xy.x >= 0 ? -shift : shift, xy.y >= 0 ? -shift : shift);
 	return normalize(vec3(xy, z));
 }
 

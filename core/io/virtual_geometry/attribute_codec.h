@@ -67,6 +67,8 @@ AttributeCodecError decode_attribute_uv(uint32_t p_code, float &r_value);
 // Vertex-major order: normal3, optional tangent3/sign1, optional RGBA4, UV pairs.
 // The payload stores two octahedral normal coordinates, tangent angle/sign,
 // relative linear RGBA8, then relative UV float codes (or exact float32 bits).
+// Octahedral coordinates unfold as integers before normalization. Equal absolute
+// X/Z components select the unswapped tangent basis on CPU and GPU (page v2).
 // Tangents use the decoded normal. Zero/parallel tangent data is refused rather
 // than copied from a preceding vertex. Input, layout and old output are owned
 // by the caller. Arrays are bounded by 256 vertices and four UV sets.

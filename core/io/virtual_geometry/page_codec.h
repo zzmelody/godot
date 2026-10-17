@@ -8,7 +8,7 @@ namespace VirtualGeometry {
 
 constexpr uint32_t GEOMETRY_DISK_PAGE_MAGIC = 0x47504756; // VGPG
 constexpr uint32_t GEOMETRY_GPU_PAGE_MAGIC = 0x50474756; // VGGP
-constexpr uint32_t GEOMETRY_PAGE_VERSION = 1;
+constexpr uint32_t GEOMETRY_PAGE_VERSION = 2;
 constexpr uint32_t GEOMETRY_PAGE_HEADER_BYTES = 32;
 constexpr uint32_t GEOMETRY_PAGE_CLUSTER_BYTES = 288;
 

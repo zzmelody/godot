@@ -9,7 +9,7 @@ namespace VirtualGeometry {
 
 constexpr uint32_t MODEL_ROOT_MAGIC = 0x524d4756; // VGMR
 constexpr uint32_t MODEL_FIXUP_MAGIC = 0x58464756; // VGFX
-constexpr uint32_t MODEL_FORMAT_VERSION = 1;
+constexpr uint32_t MODEL_FORMAT_VERSION = 2;
 constexpr uint32_t MODEL_ROOT_HEADER_BYTES = 208;
 constexpr uint32_t MODEL_NODE_BYTES = 256;
 constexpr uint32_t MODEL_PART_BYTES = 32;
