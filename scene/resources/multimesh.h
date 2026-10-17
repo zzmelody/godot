@@ -51,6 +51,7 @@ public:
 private:
 	Ref<Mesh> mesh;
 	RID multimesh;
+	void _virtual_geometry_mesh_changed();
 	TransformFormat transform_format = TRANSFORM_2D;
 	AABB custom_aabb;
 	bool use_colors = false;
@@ -84,6 +85,7 @@ protected:
 public:
 	void set_mesh(const Ref<Mesh> &p_mesh);
 	Ref<Mesh> get_mesh() const;
+	Error prepare_virtual_geometry() const;
 
 	void set_use_colors(bool p_enable);
 	bool is_using_colors() const;

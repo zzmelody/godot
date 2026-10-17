@@ -2,6 +2,8 @@
 
 #include "core/object/class_db.h"
 #include "scene/resources/material.h"
+#include "servers/rendering/rendering_server.h"
+#include "servers/rendering/virtual_geometry_streaming.h"
 
 #include <cmath>
 #include <limits>
@@ -28,6 +30,12 @@ bool valid_container_file(const String &p_file) {
 } // namespace
 
 Error VirtualGeometryMesh::set_geometry_data(const Dictionary &p_data) {
+	// Published roots are immutable once they own a rendering identity. World
+	// updates prepare a fresh Resource and publish it through the existing host
+	// transaction, preserving the old root until the replacement is ready.
+	if (mesh.is_valid()) {
+		return ERR_ALREADY_IN_USE;
+	}
 	if (p_data.size() != 4 || p_data.get("root", Variant()).get_type() != Variant::PACKED_BYTE_ARRAY ||
 			p_data.get("container", Variant()).get_type() != Variant::STRING ||
 			p_data.get("container_bytes", Variant()).get_type() != Variant::INT ||
@@ -169,6 +177,9 @@ Mesh::PrimitiveType VirtualGeometryMesh::surface_get_primitive_type(int p_idx) c
 void VirtualGeometryMesh::surface_set_material(int p_idx, const Ref<Material> &p_material) {
 	ERR_FAIL_INDEX(p_idx, materials.size());
 	materials.write[p_idx] = p_material;
+	if (mesh.is_valid()) {
+		RS::get_singleton()->mesh_surface_set_material(mesh, p_idx, p_material.is_valid() ? p_material->get_rid() : RID());
+	}
 	emit_changed();
 }
 
@@ -194,13 +205,116 @@ AABB VirtualGeometryMesh::get_aabb() const {
 }
 
 RID VirtualGeometryMesh::get_rid() const {
-	// Never return an ordinary mesh RID with absent vertex buffers. The renderer
-	// will own a typed virtual geometry RID when GPU installation is connected.
-	ERR_FAIL_V_MSG(RID(), "Virtual geometry GPU storage and rendering are not connected in this build.");
+	if (mesh.is_null() && has_geometry()) {
+		const Error error = _install(root_data, model, materials, container_file, mesh);
+		ERR_FAIL_COND_V_MSG(error != OK, RID(), vformat("Virtual geometry installation failed for %s (error %s).", get_path(), error));
+		const_cast<VirtualGeometryMesh *>(this)->emit_changed();
+	}
+	return mesh;
+}
+
+Error VirtualGeometryMesh::_install(const PackedByteArray &p_root, const VirtualGeometry::GeometryModelRoot &p_model,
+		const Vector<Ref<Material>> &p_materials, const String &p_file, RID &r_mesh) const {
+	TypedArray<RID> slots;
+	for (const Ref<Material> &material : p_materials) {
+		slots.push_back(material.is_valid() ? material->get_rid() : RID());
+	}
+	RS *server = RS::get_singleton();
+	if (server->get_rendering_device() == nullptr) {
+		// The Cooker/headless Dummy owns typed bounds and materials only. Other
+		// unsupported renderers refuse mesh_set_virtual_geometry explicitly.
+		RID candidate = server->mesh_create();
+		const Error error = server->mesh_set_virtual_geometry(candidate, 1, p_root, slots);
+		if (error != OK) {
+			server->free_rid(candidate);
+			return error;
+		}
+		r_mesh = candidate;
+		return OK;
+	}
+	const String owner_file = get_path().get_slice("::", 0);
+	if (owner_file.is_empty() || !owner_file.is_absolute_path()) {
+		return ERR_FILE_BAD_PATH;
+	}
+	VirtualGeometryStreaming *streaming = VirtualGeometryStreaming::get_singleton();
+	if (streaming == nullptr) {
+		return ERR_UNCONFIGURED;
+	}
+	const Error error = streaming->install(p_root, p_model, slots, owner_file.get_base_dir().path_join(p_file), r_mesh);
+	if (error == OK) {
+		streamed = true;
+	}
+	return error;
+}
+
+void VirtualGeometryMesh::_release_mesh() {
+	if (mesh.is_null() || RS::get_singleton() == nullptr) {
+		return;
+	}
+	VirtualGeometryStreaming *streaming = VirtualGeometryStreaming::get_singleton();
+	if (streamed) {
+		if (streaming != nullptr) {
+			streaming->remove(mesh);
+		}
+	} else {
+		RS::get_singleton()->free_rid(mesh);
+	}
+	mesh = RID();
+}
+
+bool VirtualGeometryMesh::is_render_ready() const {
+	if (!streamed || mesh.is_null() || VirtualGeometryStreaming::get_singleton() == nullptr) {
+		return false;
+	}
+	bool ready = false;
+	return VirtualGeometryStreaming::get_singleton()->get_status(mesh, ready) == OK && ready;
+}
+
+Error VirtualGeometryMesh::get_streaming_error() const {
+	if (!streamed || mesh.is_null() || VirtualGeometryStreaming::get_singleton() == nullptr) {
+		return ERR_UNCONFIGURED;
+	}
+	bool ready = false;
+	return VirtualGeometryStreaming::get_singleton()->get_status(mesh, ready);
+}
+
+Error VirtualGeometryMesh::prepare_virtual_geometry() const {
+	if (!has_geometry()) {
+		return ERR_UNCONFIGURED;
+	}
+	if (mesh.is_null()) {
+		const Error error = _install(root_data, model, materials, container_file, mesh);
+		if (error != OK) {
+			return error;
+		}
+		const_cast<VirtualGeometryMesh *>(this)->emit_changed();
+	}
+	if (!streamed) {
+		return OK; // Dummy data preparation has no GPU readiness claim.
+	}
+	TypedArray<RID> material_rids;
+	for (const Ref<Material> &material : materials) {
+		material_rids.push_back(material.is_valid() ? material->get_rid() : RID());
+	}
+	const Error material_error = RS::get_singleton()->virtual_geometry_prepare_materials(material_rids);
+	if (material_error != OK) {
+		return material_error;
+	}
+	bool ready = false;
+	const Error error = VirtualGeometryStreaming::get_singleton()->get_status(mesh, ready);
+	return error != OK ? error : ready ? OK
+									   : ERR_BUSY;
+}
+
+VirtualGeometryMesh::~VirtualGeometryMesh() {
+	_release_mesh();
 }
 
 void VirtualGeometryMesh::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_geometry_data", "data"), &VirtualGeometryMesh::set_geometry_data);
 	ClassDB::bind_method(D_METHOD("get_geometry_data"), &VirtualGeometryMesh::get_geometry_data);
 	ClassDB::bind_method(D_METHOD("has_geometry"), &VirtualGeometryMesh::has_geometry);
+	ClassDB::bind_method(D_METHOD("is_render_ready"), &VirtualGeometryMesh::is_render_ready);
+	ClassDB::bind_method(D_METHOD("get_streaming_error"), &VirtualGeometryMesh::get_streaming_error);
+	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry"), &VirtualGeometryMesh::prepare_virtual_geometry);
 }

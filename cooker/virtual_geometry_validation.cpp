@@ -1,11 +1,18 @@
 #include "virtual_geometry_validation.h"
 
 #include "asset_files.h"
+#include "core/crypto/crypto_core.h"
+#include "core/os/thread.h"
+
+#include <array>
+#include <new>
+#include <set>
 
 namespace CookerVirtualGeometry {
 namespace vg = VirtualGeometry;
 
 Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p_resource_path) {
+	ERR_FAIL_COND_V(!Thread::is_main_thread(), ERR_UNAUTHORIZED);
 	ERR_FAIL_COND_V(p_mesh.is_null() || !p_mesh->has_geometry(), ERR_INVALID_DATA);
 	const String path = p_resource_path.get_base_dir().path_join(p_mesh->get_container_file());
 	Error error = CookerFiles::check_path(path);
@@ -13,20 +20,64 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 	const Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ, &error);
 	ERR_FAIL_COND_V(file.is_null(), error == OK ? ERR_FILE_CANT_READ : error);
 	ERR_FAIL_COND_V(file->get_length() != p_mesh->get_container_bytes(), ERR_INVALID_DATA);
-	const String digest = FileAccess::get_sha256(path);
-	ERR_FAIL_COND_V(digest.length() != 64 || p_mesh->get_container_file() != "geometry--" + digest + ".vgp", ERR_INVALID_DATA);
+	// A bounded snapshot ties the cache key to the exact bytes being validated,
+	// even if another process atomically replaces the source path during a job.
+	Vector<uint8_t> snapshot;
+	String digest;
+	if (file->get_length() <= 16 * 1024 * 1024) {
+		snapshot = file->get_buffer(file->get_length());
+		ERR_FAIL_COND_V(uint64_t(snapshot.size()) != p_mesh->get_container_bytes(), ERR_FILE_CANT_READ);
+		std::array<uint8_t, 32> hash;
+		CryptoCore::SHA256Context container_hash;
+		ERR_FAIL_COND_V(container_hash.start() != OK || container_hash.update(snapshot.ptr(), snapshot.size()) != OK || container_hash.finish(hash.data()) != OK, FAILED);
+		digest = String::hex_encode_buffer(hash.data(), hash.size());
+	} else {
+		digest = FileAccess::get_sha256(path);
+	}
+	ERR_FAIL_COND_V(digest.length() != 64, ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(p_mesh->get_container_file().begins_with("geometry--") && p_mesh->get_container_file() != "geometry--" + digest + ".vgp", ERR_INVALID_DATA);
+	// A pipeline can publish hundreds of fragments of the same immutable Mesh.
+	// Hash actual bytes on every call, but decode/transcode an identical pair only
+	// once. The cache owns value digests; it never retains a Resource or file.
+	std::array<uint8_t, 96> validation_key = {};
+	for (uint32_t index = 0; index < 64; ++index) {
+		validation_key[index] = static_cast<uint8_t>(digest[index]);
+	}
+	const PackedByteArray root = p_mesh->get_geometry_data()["root"];
+	CryptoCore::SHA256Context root_hash;
+	ERR_FAIL_COND_V(root_hash.start() != OK || root_hash.update(root.ptr(), root.size()) != OK || root_hash.finish(validation_key.data() + 64) != OK, FAILED);
+	static std::set<std::array<uint8_t, 96>> validated;
+	if (!snapshot.is_empty() && validated.count(validation_key) != 0) {
+		return OK;
+	}
 	const auto &model = p_mesh->get_model();
 	Vector<uint8_t> bytes;
 	for (uint32_t page = 0; page < model.directory.pages.size(); ++page) {
 		const auto &location = model.directory.pages[page];
-		ERR_FAIL_COND_V(bytes.resize(location.disk_bytes) != OK, ERR_OUT_OF_MEMORY);
-		file->seek(location.container_offset);
-		ERR_FAIL_COND_V(file->get_buffer(bytes.ptrw(), bytes.size()) != static_cast<uint64_t>(bytes.size()), ERR_FILE_CANT_READ);
+		const uint8_t *page_bytes = nullptr;
+		if (!snapshot.is_empty()) {
+			page_bytes = snapshot.ptr() + location.container_offset;
+		} else {
+			ERR_FAIL_COND_V(bytes.resize(location.disk_bytes) != OK, ERR_OUT_OF_MEMORY);
+			file->seek(location.container_offset);
+			ERR_FAIL_COND_V(file->get_buffer(bytes.ptrw(), bytes.size()) != static_cast<uint64_t>(bytes.size()), ERR_FILE_CANT_READ);
+			page_bytes = bytes.ptr();
+		}
 		vg::GeometryPage geometry;
 		vg::HierarchyPage fixups;
-		ERR_FAIL_COND_V(vg::decode_geometry_model_page(model, page, bytes.ptr(), bytes.size(), geometry, fixups).error != vg::ModelCodecError::OK, ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(vg::decode_geometry_model_page(model, page, page_bytes, location.disk_bytes, geometry, fixups).error != vg::ModelCodecError::OK, ERR_INVALID_DATA);
 		std::vector<uint8_t> gpu;
-		ERR_FAIL_COND_V(vg::transcode_geometry_page_cpu(bytes.ptr(), location.fixup_offset, gpu).error != vg::PageCodecError::OK || gpu.size() != location.gpu_bytes, ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(vg::transcode_geometry_page_cpu(page_bytes, location.fixup_offset, gpu).error != vg::PageCodecError::OK || gpu.size() != location.gpu_bytes, ERR_INVALID_DATA);
+	}
+	if (!snapshot.is_empty()) {
+		try {
+			if (validated.size() == 256) {
+				validated.clear();
+			}
+			validated.insert(validation_key);
+		} catch (const std::bad_alloc &) {
+			// Validation completed. Failure to remember it only loses reuse.
+		}
 	}
 	return OK;
 }

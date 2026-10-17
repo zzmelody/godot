@@ -153,7 +153,16 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 		ERR_FAIL_COND_V(prior_auxiliary.size() > 256, ERR_INVALID_DATA);
 		for (const Variant *key = prior_auxiliary.next(); key; key = prior_auxiliary.next(key)) {
 			const String path = *key;
-			ERR_FAIL_COND_V(!path.begins_with(output.get_base_dir().path_join("render-resources") + "/") || path.get_extension() != "res", ERR_INVALID_DATA);
+			error = CookerFiles::check_path(path, true);
+			ERR_FAIL_COND_V(error != OK || !path.begins_with(output.get_base_dir().path_join("render-resources") + "/"), ERR_INVALID_DATA);
+			if (path.get_extension() != "res") {
+				// The current scene producer also owns its content-addressed page
+				// containers. They retain the same exact-byte auxiliary integrity
+				// check below; arbitrary paths or payload extensions are refused.
+				const String digest = prior_auxiliary.get(path, "");
+				ERR_FAIL_COND_V(digest.length() != 64 || digest != digest.to_lower() || !digest.is_valid_hex_number(false) ||
+						path.get_file() != "geometry--" + digest + ".vgp", ERR_INVALID_DATA);
+			}
 			receipt.auxiliary_outputs[path] = "";
 		}
 	}

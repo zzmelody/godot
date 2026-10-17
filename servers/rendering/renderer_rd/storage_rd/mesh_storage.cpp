@@ -254,6 +254,10 @@ Vector<uint8_t> MeshStorage::virtual_geometry_get_feedback(uint64_t p_after_sequ
 	return virtual_geometry.get_feedback(p_after_sequence);
 }
 
+Vector<uint8_t> MeshStorage::virtual_geometry_get_requests(uint64_t p_after_sequence) const {
+	return virtual_geometry.get_requests(p_after_sequence);
+}
+
 void MeshStorage::update_virtual_geometry() {
 	virtual_geometry.update();
 }
@@ -663,6 +667,12 @@ void RendererRD::MeshStorage::mesh_surface_update_index_region(RID p_mesh, int p
 void MeshStorage::mesh_surface_set_material(RID p_mesh, int p_surface, RID p_material) {
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL(mesh);
+	if (virtual_geometry.has(p_mesh)) {
+		ERR_FAIL_COND(p_material.is_valid() && !MaterialStorage::get_singleton()->owns_material(p_material));
+		ERR_FAIL_COND(virtual_geometry.set_material(p_mesh, uint32_t(p_surface), p_material) != OK);
+		mesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+		return;
+	}
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_surface, mesh->surface_count);
 	mesh->surfaces[p_surface]->material = p_material;
 
@@ -673,6 +683,11 @@ void MeshStorage::mesh_surface_set_material(RID p_mesh, int p_surface, RID p_mat
 RID MeshStorage::mesh_surface_get_material(RID p_mesh, int p_surface) const {
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL_V(mesh, RID());
+	if (virtual_geometry.has(p_mesh)) {
+		const auto materials = virtual_geometry.get_materials(p_mesh);
+		ERR_FAIL_UNSIGNED_INDEX_V(uint32_t(p_surface), materials.rids.size(), RID());
+		return materials.rids[p_surface];
+	}
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_surface, mesh->surface_count, RID());
 
 	return mesh->surfaces[p_surface]->material;

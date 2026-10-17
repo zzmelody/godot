@@ -8,25 +8,13 @@
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/utilities.h"
 
+#include <utility>
+
 namespace RendererRD {
 namespace {
 
-Error ensure_words(RID &r_buffer, uint32_t &r_capacity, uint64_t p_words, bool p_indirect = false) {
-	ERR_FAIL_COND_V(p_words > UINT32_MAX / 4, ERR_OUT_OF_MEMORY);
-	if (r_capacity >= p_words && r_buffer.is_valid()) {
-		return OK;
-	}
-	RD *rd = RD::get_singleton();
-	if (r_buffer.is_valid()) {
-		rd->free_rid(r_buffer);
-	}
-	uint32_t capacity = Math::next_power_of_2(uint32_t(MAX(uint64_t(1), p_words)));
-	if (uint64_t(capacity) * 4 > UINT32_MAX) {
-		capacity = p_words;
-	}
-	r_buffer = rd->storage_buffer_create(capacity * 4, {}, p_indirect ? RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT : 0);
-	r_capacity = capacity;
-	return r_buffer.is_valid() ? OK : ERR_CANT_CREATE;
+Error ensure_words(VirtualGeometryWorkMemory &p_memory, RID &r_buffer, uint32_t &r_capacity, uint64_t p_words, bool p_indirect = false) {
+	return p_memory.ensure(r_buffer, r_capacity, p_words, p_indirect);
 }
 
 void dispatch_items(RD::ComputeListID p_list, uint32_t p_items, uint32_t p_threads) {
@@ -37,10 +25,13 @@ void dispatch_items(RD::ComputeListID p_list, uint32_t p_items, uint32_t p_threa
 } // namespace
 
 VirtualGeometryShading::~VirtualGeometryShading() {
-	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, dummy_transforms, material_view, view_status, raster_material_buffer }) {
+	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, dummy_transforms, material_view, frame_history, previous_sources, view_status, raster_material_buffer }) {
 		if (rid.is_valid()) {
-			RD::get_singleton()->free_rid(rid);
+			memory.free(rid);
 		}
+	}
+	for (RID parameters : previous_parameters) {
+		memory.free(parameters);
 	}
 	init_pipeline.free();
 	bin_pipeline.free();
@@ -60,10 +51,13 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 	}
 }
 
-Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry) {
+Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only) {
+	depth_only = p_depth_only;
 	materials.clear();
 	raster_material_data.clear();
-	material_ids.clear();
+	material_ids[0].clear();
+	material_ids[1].clear();
+	material_two_sided.clear();
 	material_map.clear();
 	sources.clear();
 	levels.clear();
@@ -74,33 +68,40 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		const auto &batch = result.batch;
 		const auto slots = MeshStorage::get_singleton()->mesh_get_virtual_geometry_materials(batch.mesh);
 		ERR_FAIL_COND_V(slots.rids.size() != slots.identities.size() || slots.rids.is_empty(), ERR_INVALID_DATA);
-		ERR_FAIL_COND_V(instances > UINT32_MAX || material_map.size() > UINT32_MAX, ERR_OUT_OF_MEMORY);
-		sources.push_back({ uint32_t(instances), uint32_t(material_map.size()) });
+		ERR_FAIL_COND_V(instances > 0xffffffu || material_map.size() > UINT32_MAX, ERR_OUT_OF_MEMORY);
+		sources.push_back({ uint32_t(instances), uint32_t(material_map.size()), uint32_t(visible), uint32_t(slots.rids.size()) });
 		instances += batch.count;
 		visible += result.selected_capacity;
+		ERR_FAIL_COND_V(instances > 0xffffffu, ERR_OUT_OF_MEMORY);
 		for (uint32_t slot = 0; slot < slots.rids.size(); ++slot) {
 			const RID material = slots.resolve(slot, batch.surface_materials, batch.material_override, p_default_material);
 			ERR_FAIL_COND_V(!storage->owns_material(material), ERR_INVALID_DATA);
-			const uint32_t *found = material_ids.getptr(material);
+			const uint32_t two_sided = depth_only && batch.shadow_double_sided ? 1 : 0;
+			const uint32_t *found = material_ids[two_sided].getptr(material);
 			uint32_t index;
 			if (found) {
 				index = *found;
 			} else {
 				index = materials.size();
-				material_ids.insert(material, index);
+				material_ids[two_sided].insert(material, index);
 				materials.push_back(material);
+				material_two_sided.push_back(two_sided);
 			}
 			material_map.push_back(index);
 		}
 	}
-	const uint64_t references_word = 4 + instances * 48;
-	for (RID material : materials) {
+	const uint64_t references_word = 4 + instances * 64;
+	for (uint32_t index = 0; index < materials.size(); ++index) {
+		const RID material = materials[index];
 		const auto mode = storage->material_get_cull_mode(material);
 		uint32_t cull = 0;
 		if (mode == RSE::CULL_MODE_BACK) {
 			cull = 1;
 		} else if (mode == RSE::CULL_MODE_FRONT) {
 			cull = 2;
+		}
+		if (material_two_sided[index]) {
+			cull = 0;
 		}
 		raster_material_data.push_back(cull);
 		const float maximum = storage->material_get_max_vertex_displacement(material);
@@ -110,7 +111,7 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		raster_material_data.push_back(0);
 		raster_material_data.push_back(0);
 	}
-	Error cull_error = ensure_words(raster_material_buffer, raster_material_words, raster_material_data.size());
+	Error cull_error = ensure_words(memory, raster_material_buffer, raster_material_words, raster_material_data.size());
 	if (cull_error != OK) {
 		return cull_error;
 	}
@@ -119,7 +120,11 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	}
 	const uint64_t materials_word = references_word + visible * 2;
 	const uint64_t total_words = materials_word + material_map.size();
-	Error error = ensure_words(scene_buffer, scene_words, total_words);
+	Error error = ensure_words(memory, scene_buffer, scene_words, total_words);
+	if (error != OK) {
+		return error;
+	}
+	error = ensure_words(memory, previous_sources, previous_source_words, MAX(uint64_t(1), instances) * 24);
 	if (error != OK) {
 		return error;
 	}
@@ -147,15 +152,15 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	}
 	ERR_FAIL_COND_V(scratch > UINT32_MAX, ERR_OUT_OF_MEMORY);
 	entries_word = scratch;
-	error = ensure_words(bins_buffer, bins_words, scratch + uint64_t(size.x) * size.y * 3);
+	error = ensure_words(memory, bins_buffer, bins_words, depth_only ? 2 : scratch + uint64_t(size.x) * size.y * 3);
 	if (error != OK) {
 		return error;
 	}
-	error = ensure_words(arguments, argument_words, MAX(uint64_t(3), uint64_t(materials.size()) * 3), true);
+	error = ensure_words(memory, arguments, argument_words, MAX(uint64_t(3), uint64_t(materials.size()) * 3), true);
 	if (error != OK) {
 		return error;
 	}
-	error = ensure_words(draw_arguments, draw_argument_words, MAX(uint64_t(4), uint64_t(materials.size()) * 4), true);
+	error = ensure_words(memory, draw_arguments, draw_argument_words, MAX(uint64_t(4), uint64_t(materials.size()) * 4), true);
 	if (error != OK) {
 		return error;
 	}
@@ -174,19 +179,38 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		bin_pipeline.create_compute_pipeline(bin_shader.version_get_shader(bin_version, 0));
 		scan_pipeline.create_compute_pipeline(scan_shader.version_get_shader(scan_version, 0));
 		dispatch_pipeline.create_compute_pipeline(dispatch_shader.version_get_shader(dispatch_version, 0));
-		dummy_transforms = rd->storage_buffer_create(48);
+	}
+	if (dummy_transforms.is_null()) {
+		dummy_transforms = memory.storage(48);
 	}
 	ERR_FAIL_COND_V(init_pipeline.get_rid().is_null() || bin_pipeline.get_rid().is_null() || scan_pipeline.get_rid().is_null() || dispatch_pipeline.get_rid().is_null() || dummy_transforms.is_null(), ERR_CANT_CREATE);
 	UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
+	if (previous_parameters.size() < p_sources.size()) {
+		previous_parameters.resize(p_sources.size());
+	}
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
+		if (previous_parameters[index].is_null()) {
+			previous_parameters[index] = memory.uniform(80);
+		}
+		ERR_FAIL_COND_V(previous_parameters[index].is_null(), ERR_CANT_CREATE);
+		struct PreviousBatch {
+			float model[16];
+			uint32_t info[4];
+		} previous = {};
+		static_assert(sizeof(PreviousBatch) == 80);
+		MaterialStorage::store_transform(source.batch.previous_model, previous.model);
+		previous.info[0] = source.batch.previous_transform_offset;
+		rd->buffer_update(previous_parameters[index], 0, sizeof(previous), &previous);
 		sources[index].uniforms = cache->get_cache(init_shader.version_get_shader(init_version, 0), 0,
 				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { source.batch.stride != 0 ? source.batch.transforms : dummy_transforms }),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { source.parameters }), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { source.work }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }));
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }),
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 27, { previous_parameters[index] }));
 		ERR_FAIL_COND_V(sources[index].uniforms.is_null(), ERR_CANT_CREATE);
 	}
-	if (!materials.is_empty()) {
+	if (!materials.is_empty() && !depth_only) {
 		bin_uniforms = cache->get_cache(bin_shader.version_get_shader(bin_version, 0), 0,
 				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_geometry }), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { p_visibility }),
 				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, { bins_buffer }));
@@ -209,10 +233,18 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 	rd->compute_list_bind_compute_pipeline(list, init_pipeline.get_rid());
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
-		const uint32_t push[6] = { sources[index].first, sources[index].map, uint32_t(source.batch.has_color), uint32_t(source.batch.has_custom), uint32_t(source.batch.shader_uniforms_offset), source.batch.layer_mask };
+		uint32_t push[20] = { sources[index].first, sources[index].map, uint32_t(source.batch.has_color), uint32_t(source.batch.has_custom), uint32_t(source.batch.shader_uniforms_offset), source.batch.layer_mask,
+			sources[index].visible_base, source.selected_capacity, sources[index].material_slots, source.batch.render_flags, source.batch.gi_offset, 0 };
+		const Rect2 &uv = source.batch.lightmap_uv_scale;
+		const float lightmap_uv[4] = { uv.position.x, uv.position.y, uv.size.x, uv.size.y };
+		memcpy(push + 12, lightmap_uv, sizeof(lightmap_uv));
+		push[16] = uint32_t(source.batch.source.get_id());
+		push[17] = uint32_t(source.batch.source.get_id() >> 32);
+		push[18] = uint32_t(source.batch.mesh.get_id());
+		push[19] = uint32_t(source.batch.mesh.get_id() >> 32);
 		rd->compute_list_bind_uniform_set(list, sources[index].uniforms, 0);
 		rd->compute_list_set_push_constant(list, push, sizeof(push));
-		dispatch_items(list, source.batch.count, 64);
+		dispatch_items(list, MAX(source.batch.count, source.selected_capacity), 64);
 	}
 	rd->compute_list_end();
 	RENDER_TIMESTAMP("Virtual Geometry Material Sources End");
@@ -220,6 +252,10 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 
 void VirtualGeometryShading::record_bins() {
 	RD *rd = RD::get_singleton();
+	if (depth_only) {
+		rd->buffer_clear(bins_buffer, 0, 8);
+		return;
+	}
 	rd->buffer_clear(bins_buffer, 0, (2 + materials.size() * 3) * 4);
 	if (materials.is_empty()) {
 		return;
@@ -267,33 +303,88 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 	using SceneShader = RendererSceneRenderImplementation::SceneShaderForwardClustered;
 	material_work.clear();
 	raster_work.clear();
-	if (surface_size != size || surfaces[0].is_null()) {
-		p_buffers->clear_context("virtual_geometry");
-		const char *names[9] = { "albedo_metallic", "normal_roughness", "emission_ao", "specular_rim_clearcoat", "backlight_ao", "anisotropy", "surface_flags", "tangent", "geometric_normal" };
-		for (uint32_t index = 0; index < 9; ++index) {
+	surface_context = "virtual_geometry_" + itos(p_view.view_index);
+	motion_context = "virtual_geometry_motion_" + itos(p_view.view_index);
+	if (!depth_only && (surface_size != size || surfaces[0].is_null())) {
+		p_buffers->clear_context(surface_context);
+		const char *names[10] = { "albedo_metallic", "normal_roughness", "emission_ao", "specular_rim_clearcoat", "backlight_ao", "anisotropy", "surface_flags", "tangent", "geometric_normal", "lightmap_uv" };
+		for (uint32_t index = 0; index < 10; ++index) {
 			RD::TextureFormat format;
 			format.width = size.x;
 			format.height = size.y;
-			format.format = index == 6 ? RD::DATA_FORMAT_R32_UINT : RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
+			format.format = index == 6 ? RD::DATA_FORMAT_R32_UINT : (index == 9 ? RD::DATA_FORMAT_R16G16_SFLOAT : RD::DATA_FORMAT_R16G16B16A16_SFLOAT);
 			format.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
-			surfaces[index] = p_buffers->create_texture_from_format("virtual_geometry", names[index], format);
+			surfaces[index] = p_buffers->create_texture_from_format(surface_context, names[index], format);
 			ERR_FAIL_COND_V(surfaces[index].is_null(), ERR_CANT_CREATE);
 		}
 		surface_size = size;
 	}
-	rd->texture_clear(surfaces[6], Color(), 0, 1, 0, 1);
+	if (!depth_only) {
+		rd->texture_clear(surfaces[6], Color(), 0, 1, 0, 1);
+		const Size2i expected_motion = p_view.motion ? size : Size2i(1, 1);
+		if (motion_size != expected_motion || motion_surface.is_null()) {
+			p_buffers->clear_context(motion_context);
+			RD::TextureFormat format;
+			format.width = expected_motion.x;
+			format.height = expected_motion.y;
+			format.format = RD::DATA_FORMAT_R16G16_SFLOAT;
+			format.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+			motion_surface = p_buffers->create_texture_from_format(motion_context, "motion", format);
+			format.format = RD::DATA_FORMAT_R32_SFLOAT;
+			reactive_surface = p_buffers->create_texture_from_format(motion_context, "reactivity", format);
+			ERR_FAIL_COND_V(motion_surface.is_null() || reactive_surface.is_null(), ERR_CANT_CREATE);
+			motion_size = expected_motion;
+		}
+	}
+	if (!depth_only) {
+		std::swap(temporal_keys[0], temporal_keys[1]);
+		std::swap(temporal_key_words[0], temporal_key_words[1]);
+		const uint64_t words = p_view.motion ? uint64_t(size.x) * size.y * 4 : 4;
+		for (uint32_t index = 0; index < 2; ++index) {
+			const bool replaced = temporal_key_words[index] < words || temporal_keys[index].is_null();
+			const Error error = memory.ensure(temporal_keys[index], temporal_key_words[index], words);
+			if (error != OK) {
+				return error;
+			}
+			if (replaced || index == 0 || !p_view.history_valid) {
+				rd->buffer_clear(temporal_keys[index], 0, temporal_key_words[index] * 4);
+			}
+		}
+		rd->texture_clear(reactive_surface, Color(), 0, 1, 0, 1);
+	}
 	if (materials.is_empty()) {
 		return OK;
 	}
 	if (view_status.is_null()) {
-		view_status = rd->storage_buffer_create(4);
+		view_status = memory.storage(4);
 	}
 	ERR_FAIL_COND_V(view_status.is_null(), ERR_CANT_CREATE);
 	rd->buffer_clear(view_status, 0, 4);
 	if (material_view.is_null()) {
-		material_view = rd->uniform_buffer_create(304);
+		material_view = memory.uniform(320);
 	}
 	ERR_FAIL_COND_V(material_view.is_null(), ERR_CANT_CREATE);
+	if (frame_history.is_null()) {
+		frame_history = memory.uniform(272);
+	}
+	ERR_FAIL_COND_V(frame_history.is_null(), ERR_CANT_CREATE);
+	struct FrameHistory {
+		float projection[16];
+		float view[16];
+		float inverse_view[16];
+		float main_camera[16];
+		float state[4];
+	} history = {};
+	static_assert(sizeof(FrameHistory) == 272);
+	MaterialStorage::store_camera(p_view.previous_projection, history.projection);
+	MaterialStorage::store_transform(p_view.previous_camera.affine_inverse(), history.view);
+	MaterialStorage::store_transform(p_view.previous_camera, history.inverse_view);
+	MaterialStorage::store_transform(p_view.main_camera, history.main_camera);
+	history.state[0] = p_view.previous_time;
+	history.state[1] = p_view.motion && !depth_only ? 1.0f : 0.0f;
+	history.state[2] = p_view.previous_jitter.x;
+	history.state[3] = p_view.previous_jitter.y;
+	rd->buffer_update(frame_history, 0, sizeof(history), &history);
 	struct ViewUniforms {
 		float projection[16];
 		float inverse_projection[16];
@@ -302,8 +393,9 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 		float dimensions[4];
 		float state[4];
 		uint32_t flags[4];
+		float eye_offset[4];
 	} view = {};
-	static_assert(sizeof(ViewUniforms) == 304);
+	static_assert(sizeof(ViewUniforms) == 320);
 	MaterialStorage::store_camera(p_view.projection, view.projection);
 	MaterialStorage::store_camera(p_view.projection.inverse(), view.inverse_projection);
 	MaterialStorage::store_transform(p_view.camera.affine_inverse(), view.view);
@@ -314,9 +406,19 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 	view.dimensions[3] = p_view.jitter.y;
 	view.state[0] = p_view.time;
 	view.state[1] = p_view.exposure;
+	view.state[2] = p_view.shadow_far;
 	view.flags[0] = p_view.layers;
+	view.flags[1] = p_view.shadow_flags;
+	view.flags[2] = p_view.history_valid;
+	view.eye_offset[0] = p_view.eye_offset.x;
+	view.eye_offset[1] = p_view.eye_offset.y;
+	view.eye_offset[2] = p_view.eye_offset.z;
+	view.eye_offset[3] = p_view.view_index;
 	rd->buffer_update(material_view, 0, sizeof(view), &view);
 	for (uint32_t material_index = 0; material_index < materials.size(); ++material_index) {
+		if (depth_only && p_view.reverse_cull && raster_material_data[material_index * 4] != 0) {
+			raster_material_data[material_index * 4] = 3 - raster_material_data[material_index * 4];
+		}
 		RID material = materials[material_index];
 		auto *data = static_cast<SceneShader::MaterialData *>(storage->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
 		ERR_FAIL_COND_V(data == nullptr || data->shader_data == nullptr, ERR_INVALID_DATA);
@@ -327,8 +429,8 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 						data->shader_data->get_virtual_geometry_composite_shader(true).is_null(),
 				ERR_UNAVAILABLE,
 				"Virtual geometry scene lighting shader compilation failed.");
-		if (data->shader_data->uses_vertex) {
-			ERR_FAIL_COND_V_MSG(storage->material_get_max_vertex_displacement(material) <= 0.0f, ERR_UNAVAILABLE, "Virtual geometry vertex deformation requires a positive max_vertex_displacement.");
+		if (data->shader_data->uses_vertex || data->shader_data->uses_alpha_clip || data->shader_data->uses_discard) {
+			ERR_FAIL_COND_V_MSG(data->shader_data->uses_vertex && storage->material_get_max_vertex_displacement(material) <= 0.0f, ERR_UNAVAILABLE, "Virtual geometry vertex deformation requires a positive max_vertex_displacement.");
 			raster_material_data[material_index * 4 + 2] = 1;
 			RasterMaterialWork raster;
 			raster.material = material_index;
@@ -342,6 +444,9 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 			}
 			raster_work.push_back(raster);
 		}
+		if (depth_only) {
+			continue;
+		}
 		LocalVector<RD::Uniform> uniforms;
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_geometry }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }));
@@ -350,8 +455,14 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 12, { material_view }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 13, { raster_material_buffer }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 15, { view_status }));
-		for (uint32_t index = 0; index < 9; ++index) {
-			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 16 + index, { surfaces[index] }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 25, { motion_surface }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 27, { reactive_surface }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 30, { temporal_keys[1] }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 31, { temporal_keys[0] }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 28, { frame_history }));
+		for (uint32_t index = 0; index < 10; ++index) {
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, index == 9 ? 29 : 16 + index, { surfaces[index] }));
 		}
 		storage->samplers_rd_get_default().append_uniforms(uniforms, 32);
 		RID scene = UniformSetCacheRD::get_singleton()->get_cache_vec(program, 0, uniforms);
@@ -366,6 +477,10 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 }
 
 void VirtualGeometryShading::record_materials() {
+	if (depth_only) {
+		materials_ready = true;
+		return;
+	}
 	if (material_work.is_empty()) {
 		return;
 	}
@@ -389,7 +504,40 @@ void VirtualGeometryShading::record_materials() {
 }
 
 uint64_t VirtualGeometryShading::get_buffer_bytes() const {
-	return uint64_t(scene_words + bins_words + argument_words + draw_argument_words + raster_material_words) * 4 + (dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 304 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 68;
+	return uint64_t(scene_words + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words) * 4 +
+			uint64_t(previous_parameters.size()) * 80 + (dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 320 : 0) +
+			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;
+}
+
+uint64_t VirtualGeometryShading::get_raster_candidate_capacity(Span<VirtualGeometrySelection::Result> p_sources) {
+	const uint32_t buckets = materials.size() + 1;
+	if (raster_bucket_marks.size() < buckets) {
+		raster_bucket_marks.resize(buckets);
+		for (uint32_t &mark : raster_bucket_marks) {
+			mark = 0;
+		}
+	}
+	uint64_t capacity = 0;
+	for (uint32_t index = 0; index < p_sources.size(); ++index) {
+		if (++raster_bucket_epoch == 0) {
+			for (uint32_t &mark : raster_bucket_marks) {
+				mark = 0;
+			}
+			++raster_bucket_epoch;
+		}
+		uint32_t pipelines = 0;
+		const Source &source = sources[index];
+		for (uint32_t slot = 0; slot < source.material_slots; ++slot) {
+			const uint32_t material = material_map[source.map + slot];
+			const uint32_t bucket = raster_material_data[material * 4u + 2u] == 0 ? 0 : material + 1;
+			if (raster_bucket_marks[bucket] != raster_bucket_epoch) {
+				raster_bucket_marks[bucket] = raster_bucket_epoch;
+				++pipelines;
+			}
+		}
+		capacity += uint64_t(p_sources[index].selected_capacity) * MIN(64u, pipelines);
+	}
+	return capacity;
 }
 
 } // namespace RendererRD

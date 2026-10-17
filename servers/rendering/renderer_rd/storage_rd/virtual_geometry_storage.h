@@ -4,11 +4,14 @@
 #include "core/io/virtual_geometry/runtime_fixups.h"
 #include "core/math/aabb.h"
 #include "core/os/mutex.h"
+#include "core/object/ref_counted.h"
 #include "core/templates/hash_set.h"
 #include "core/templates/local_vector.h"
+#include "core/templates/self_list.h"
 #include "core/templates/span.h"
 #include "core/variant/typed_array.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_fixup.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_requests.glsl.gen.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_transcoder.h"
 #include "servers/rendering/storage/mesh_storage.h"
 
@@ -66,6 +69,10 @@ private:
 		Error install_error = ERR_SKIP;
 	};
 	struct Asset {
+		SelfList<Asset> request_waiter;
+		uint64_t request_seen_epoch = 0;
+		Asset() :
+				request_waiter(this) {}
 		RID mesh;
 		uint64_t generation = 0;
 		uint64_t metadata = 0;
@@ -95,10 +102,36 @@ private:
 		Error error;
 		uint64_t completed;
 	};
+	// The callback holds this value owner alive. It never borrows an Asset or
+	// the storage service, so a canceled mesh/view cannot become a dangling call.
+	class RequestReadback : public RefCounted {
+	public:
+		Vector<uint8_t> bytes;
+		bool ready = false;
+		void complete(const Vector<uint8_t> &p_bytes, const Ref<RefCounted> &p_keep_alive) {
+			bytes = p_bytes;
+			ready = true;
+		}
+	};
+	struct RequestSlot {
+		RID buffer;
+		uint64_t charge = 0;
+		RID mesh;
+		uint64_t generation = 0;
+		Ref<RequestReadback> readback;
+	};
+	struct RequestRecord {
+		uint64_t sequence;
+		uint64_t mesh;
+		uint64_t generation;
+		uint32_t page;
+		uint32_t priority;
+	};
 	struct FreedBuffer {
 		uint64_t serial;
 		uint64_t bytes;
 		bool metadata = false;
+		bool staging = true;
 	};
 	struct PatchBatch {
 		Page *page = nullptr;
@@ -111,6 +144,12 @@ private:
 	static constexpr uint32_t REQUEST_BYTES = 44;
 	static constexpr uint32_t OUTCOME_BYTES = 60;
 	static constexpr uint32_t SNAPSHOT_BYTES = 88;
+	static constexpr uint32_t MAX_REQUESTS = 1024;
+	static constexpr uint32_t REQUEST_SLOTS = 4;
+	static constexpr uint32_t REQUEST_CAPACITY = 128;
+	static constexpr uint32_t REQUEST_BUFFER_BYTES = 16 + REQUEST_CAPACITY * 8;
+	static constexpr uint32_t REQUEST_RECORD_BYTES = 32;
+	static constexpr uint32_t REQUEST_HEADER_BYTES = 32;
 	enum PageResult { PAGE_RESIDENT,
 		PAGE_RETIRED,
 		PAGE_FAILED,
@@ -132,6 +171,16 @@ private:
 	RID fixup_version;
 	PipelineDeferredRD fixup_pipeline;
 	RID pool;
+	VirtualGeometryRequestsShaderRD request_shader;
+	RID request_version;
+	PipelineDeferredRD request_pipeline;
+	RequestSlot request_slots[REQUEST_SLOTS];
+	SelfList<Asset>::List request_waiters;
+	uint64_t request_epoch = 0;
+	LocalVector<RequestRecord> requests;
+	Vector<uint8_t> request_snapshot, request_spare;
+	mutable std::atomic<uint64_t> requests_acknowledged{ 0 };
+	uint64_t request_sequence = 0, request_overflow = 0, request_invalid = 0;
 	uint64_t pool_bytes = 0;
 	uint64_t metadata_budget = 0;
 	uint64_t work_budget = 0;
@@ -168,6 +217,8 @@ private:
 	void _delete_page(Page *p_page);
 	uint32_t _allocate(uint32_t p_units);
 	void _free_source(Page *p_page);
+	void _consume_requests();
+	void _publish_requests();
 
 public:
 	~VirtualGeometryStorage();
@@ -176,7 +227,10 @@ public:
 	// result means the complete root set has not finished GPU publication.
 	const Bindings *get_bindings(RID p_mesh) const;
 	RendererMeshStorage::VirtualGeometryMaterials get_materials(RID p_mesh) const;
+	Error set_material(RID p_mesh, uint32_t p_slot, RID p_material);
 	Error set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes);
+	bool reserve_view_work(uint64_t p_bytes);
+	void retire_view_work(uint64_t p_bytes);
 	Error register_mesh(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials, AABB &r_bounds);
 	void release_mesh(RID p_mesh);
 	// Whole-batch refusal retains caller ownership. Accepted input uses COW owned
@@ -184,6 +238,10 @@ public:
 	// while an uncanceled finer page still owns a dependency on them.
 	Error submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads);
 	Vector<uint8_t> get_feedback(uint64_t p_after_sequence) const;
+	// Bounded asynchronous feedback, separate from install/retirement outcomes.
+	// A saturated feedback queue delays detail; it never removes root coverage.
+	Error record_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity);
+	Vector<uint8_t> get_requests(uint64_t p_after_sequence) const;
 	void update();
 };
 

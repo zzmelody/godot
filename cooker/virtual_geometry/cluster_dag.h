@@ -64,8 +64,9 @@ struct GeometryDag {
 	std::array<double, 3> lower = {};
 	std::array<double, 3> upper = {};
 	uint32_t leaf_count = 0;
-	uint32_t root_cluster = UINT32_MAX;
+	std::vector<uint32_t> root_clusters;
 	uint32_t root_group = UINT32_MAX;
+	uint32_t retained_boundary_groups = 0;
 };
 
 enum class DagBuildError {
@@ -95,7 +96,10 @@ struct DagBuildResult {
 // Groups use 8/32 strict graph targets. Reduction retries start from the same
 // merged input, with target cluster sizes 126,124,...,66. Every parent of one
 // group shares its LOD sphere/error; error inherits max(child errors).
-// Boundary movement or unaccounted fallback removal refuses the whole result.
+// Unsafe boundary/fallback removal retries with more parents, up to one fewer
+// than the child count, before refusal. This is Veya's coverage admission.
+// An irreducible group retains its last complete cluster coverage in the root
+// set. Published groups never contain boundary movement or fallback removal.
 // Input and old output survive refusal. This owns CPU build geometry only;
 // encoded vertex/material limits, pages and GPU traversal are separate stages.
 DagBuildResult build_cluster_dag(const GeometryBuildInput &p_input, const DagBuildSettings &p_settings, GeometryDag &r_dag);

@@ -60,6 +60,7 @@
 #include "servers/rendering/dummy/rasterizer_dummy.h"
 #include "servers/rendering/rendering_server_default.h"
 #include "cooker/asset_files.h"
+#include "cooker/virtual_geometry_mesh.h"
 #include "cooker/pipeline.h"
 #include "cooker/recipe.h"
 #include "cooker/streaming_record.h"
@@ -859,6 +860,18 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		}
 		Ref<Resource> imported = ResourceLoader::load(imported_path, type, ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
 		ERR_FAIL_COND_V(imported.is_null() || error != OK, ERR_INVALID_DATA);
+		std::map<ObjectID, CookerVirtualGeometry::BuildOutput> geometry_builds;
+		Dictionary geometry_report;
+		String geometry_message;
+		Ref<Resource> prepared;
+		error = CookerVirtualGeometry::convert_imported_scene(imported, prepared, geometry_builds, geometry_report, geometry_message);
+		ERR_FAIL_COND_V_MSG(error != OK, error, geometry_message);
+		imported = prepared;
+		Array geometry_outputs;
+		error = CookerVirtualGeometry::publish_resource_containers(imported, geometry_builds, published_path, 256ull * 1024 * 1024, geometry_outputs);
+		ERR_FAIL_COND_V(error != OK, error);
+		r_result["virtual_geometry"] = geometry_report;
+		r_result["geometry_outputs"] = geometry_outputs;
 		error = CookerAtomicSave::save_resource(imported, imported_path,
 				ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
 		ERR_FAIL_COND_V(error != OK, error);

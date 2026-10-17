@@ -152,8 +152,14 @@ layout(location = 9) out float dp_clip;
 layout(location = 10) out flat uint instance_index_interp;
 
 #ifdef USE_MULTIVIEW
+#ifdef VG_COMPOSITE
+// Virtual geometry submits each independently selected eye into its 2D layer.
+// Scene lighting still samples the original array resources at this eye.
+#define ViewIndex draw_call.multimesh_motion_vectors_previous_offset
+#else
 #extension GL_EXT_multiview : enable
 #define ViewIndex gl_ViewIndex
+#endif
 
 vec3 multiview_uv(vec2 uv) {
 	return vec3(uv, ViewIndex);
@@ -1000,15 +1006,23 @@ vec4 textureArray_bicubic(texture2DArray tex, vec3 uv, vec2 texture_size) {
 #endif //USE_LIGHTMAP
 
 #ifdef USE_MULTIVIEW
+#ifdef VG_COMPOSITE
+// Virtual geometry submits each independently selected eye into its 2D layer.
+// Scene lighting still samples the original array resources at this eye.
+#define ViewIndex draw_call.multimesh_motion_vectors_previous_offset
+#else
 #extension GL_EXT_multiview : enable
 #define ViewIndex gl_ViewIndex
+#endif
 vec3 multiview_uv(vec2 uv) {
 	return vec3(uv, ViewIndex);
 }
 ivec3 multiview_uv(ivec2 uv) {
 	return ivec3(uv, int(ViewIndex));
 }
+#ifndef VG_COMPOSITE
 layout(location = 11) in vec4 combined_projected;
+#endif
 #else // USE_MULTIVIEW
 #define ViewIndex 0
 vec2 multiview_uv(vec2 uv) {
@@ -1267,7 +1281,12 @@ void fragment_shader(in SceneData scene_data) {
 
 	// UV in our combined frustum space is used for certain screen uv processes where it's
 	// overkill to render separate left and right eye views
+#ifdef VG_COMPOSITE
+	vec4 vg_combined = scene_data.projection_matrix * vec4(vertex, 1.0);
+	vec2 combined_uv = (vg_combined.xy / vg_combined.w) * 0.5 + 0.5;
+#else
 	vec2 combined_uv = (combined_projected.xy / combined_projected.w) * 0.5 + 0.5;
+#endif
 #else
 	vec3 eye_offset = vec3(0.0, 0.0, 0.0);
 	vec3 view_highp = -normalize(vertex);
@@ -1333,7 +1352,11 @@ void fragment_shader(in SceneData scene_data) {
 #endif
 
 #if defined(UV2_USED) || defined(USE_LIGHTMAP)
+#ifdef VG_COMPOSITE
+	vec2 uv2 = texelFetch(sampler2D(vg_lightmap_uv, SAMPLER_NEAREST_CLAMP), vg_pixel, 0).xy;
+#else
 	vec2 uv2 = uv2_interp;
+#endif
 #endif
 
 #if defined(COLOR_USED)
@@ -1824,9 +1847,13 @@ void fragment_shader(in SceneData scene_data) {
 	indirect_specular_light = mix(indirect_specular_light, custom_radiance.rgb, custom_radiance.a);
 #endif
 
-#ifndef USE_LIGHTMAP
+#if !defined(USE_LIGHTMAP) || defined(VG_COMPOSITE)
 	//lightmap overrides everything
-	if (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_AMBIENT_LIGHT)) {
+	if (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_AMBIENT_LIGHT)
+#ifdef VG_COMPOSITE
+			&& (fragment_instance.flags & (INSTANCE_FLAGS_USE_LIGHTMAP | INSTANCE_FLAGS_USE_LIGHTMAP_CAPTURE)) == 0u
+#endif
+	) {
 		ambient_light = scene_data.ambient_light_color_energy.rgb;
 
 		if (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_AMBIENT_CUBEMAP)) {
@@ -1958,7 +1985,8 @@ void fragment_shader(in SceneData scene_data) {
 			}
 		}
 	}
-#else
+#endif // USE_LIGHTMAP
+#if !defined(USE_LIGHTMAP) || defined(VG_COMPOSITE)
 
 	if (sc_use_forward_gi() && bool(fragment_instance.flags & INSTANCE_FLAGS_USE_SDFGI)) { //has lightmap capture
 

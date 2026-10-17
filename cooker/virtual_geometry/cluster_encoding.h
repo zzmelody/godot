@@ -15,7 +15,9 @@
 namespace VirtualGeometry {
 
 struct ClusterEncodingSettings {
-	// Automatic density heuristic in model meters. One grid serves all levels.
+	// Automatic density heuristic in model meters, refined to preserve triangle
+	// endpoints where representable. One grid serves all levels within the
+	// coordinate/extent limits; automatic mode retains degenerate topology.
 	int32_t position_precision = std::numeric_limits<int32_t>::min();
 	uint32_t normal_bits = 8;
 	uint32_t tangent_bits = 7;
@@ -53,6 +55,7 @@ struct EncodableGeometry {
 	int32_t position_precision = 0;
 	uint32_t leaf_count = 0;
 	uint32_t root_group = UINT32_MAX;
+	uint64_t quantized_degenerate_triangles = 0;
 };
 
 enum class ClusterEncodingError {

@@ -199,6 +199,12 @@ public:
 	virtual Error virtual_geometry_submit_pages(const PackedByteArray &p_records, const TypedArray<PackedByteArray> &p_payloads) = 0;
 	// Value snapshot only: no rendering-thread synchronization or GPU wait.
 	virtual PackedByteArray virtual_geometry_get_feedback(uint64_t p_after_sequence) const = 0;
+	virtual PackedByteArray virtual_geometry_get_requests(uint64_t p_after_sequence) const = 0;
+	virtual Error virtual_geometry_set_streaming_admission(const Callable &p_acquire, const Callable &p_received, const Callable &p_release) = 0;
+	virtual Dictionary virtual_geometry_get_streaming_statistics() const = 0;
+	virtual void virtual_geometry_shutdown_streaming() = 0;
+	virtual Error virtual_geometry_initialize_streaming() = 0;
+	virtual Error virtual_geometry_prepare_materials(const TypedArray<RID> &p_materials) = 0;
 
 	virtual void mesh_set_blend_shape_count(RID p_mesh, int p_blend_shape_count) = 0;
 

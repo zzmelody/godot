@@ -26,6 +26,17 @@ layout(set = 0, binding = 21, rgba16f) uniform writeonly image2D vg_anisotropy;
 layout(set = 0, binding = 22, r32ui) uniform writeonly uimage2D vg_flags;
 layout(set = 0, binding = 23, rgba16f) uniform writeonly image2D vg_tangent;
 layout(set = 0, binding = 24, rgba16f) uniform writeonly image2D vg_geo_normal;
+layout(set = 0, binding = 25, rg16f) uniform writeonly image2D vg_velocity;
+layout(set = 0, binding = 29, rg16f) uniform writeonly image2D vg_lightmap_uv;
+layout(set = 0, binding = 27, r32f) uniform writeonly image2D vg_reactivity;
+layout(set = 0, binding = 30, std430) readonly buffer PreviousKeys {
+	uvec4 data[];
+}
+previous_keys;
+layout(set = 0, binding = 31, std430) writeonly buffer CurrentKeys {
+	uvec4 data[];
+}
+current_keys;
 layout(push_constant, std430) uniform Parameters {
 	uint material;
 	uint materials;
@@ -36,11 +47,11 @@ params;
 #define VG_GLOBALS_BINDING 11
 #define VG_MATERIAL_INDEX params.material
 #include "virtual_geometry_material_vertex_inc.glsl"
-void vg_user_fragment() {
-#CODE : FRAGMENT
-}
 #define VG_EVALUATE_VERTEX vg_evaluate_vertex
 #include "virtual_geometry_surface_inc.glsl"
+#define VG_COMPUTE_FRAGMENT
+#include "virtual_geometry_material_fragment_inc.glsl"
+#include "virtual_geometry_motion_inc.glsl"
 
 void main() {
 	uint quad, lane;
@@ -65,41 +76,7 @@ void main() {
 		atomicOr(shading.data[1], 8u);
 		return;
 	}
-	vec3 b = surface.barycentrics.value;
-#CODE : VIRTUAL_GEOMETRY_VARYINGS
-	vertex = surface.view_position;
-	normal_highp = mat3(vg_view.view) * surface.normal;
-	tangent = mat3(vg_view.view) * surface.tangent;
-	binormal = mat3(vg_view.view) * surface.binormal;
-	vg_front_facing = surface.barycentrics.front_facing;
-#ifdef DO_SIDE_CHECK
-	if (!vg_front_facing) {
-		normal_highp = -normal_highp;
-	}
-#endif
-	view_highp = -normalize(vertex);
-	uv_interp = surface.uv[0];
-	uv2_interp = surface.uv[1];
-	color_interp = surface.color;
-	vg_fragcoord = vec4(vec2(point) + 0.5, surface.depth, surface.reciprocal_w);
-	albedo_highp = vec3(1.0);
-	alpha_highp = 1.0;
-	metallic_highp = 0.0;
-	roughness_highp = 1.0;
-	specular = 0.5;
-	emission = vec3(0.0);
-	backlight = vec3(0.0);
-	normal_map = vec3(0.5);
-	normal_map_depth = 1.0;
-	ao = 1.0;
-	ao_light_affect = 0.0;
-	rim = 0.0;
-	rim_tint = 0.0;
-	clearcoat = 0.0;
-	clearcoat_roughness = 0.0;
-	anisotropy = 0.0;
-	anisotropy_flow = vec2(1.0, 0.0);
-	vg_user_fragment();
+	vg_evaluate_fragment(surface, vec2(point) + 0.5);
 	vec3 normal = normalize(normal_highp);
 #ifdef NORMAL_MAP_USED
 	normal_map.xy = normal_map.xy * 2.0 - 1.0;
@@ -121,7 +98,35 @@ void main() {
 	float frame_sign = dot(cross(geometric_normal, tangent), binormal) < 0.0 ? -1.0 : 1.0;
 	imageStore(vg_tangent, pixel, vec4(normalize(tangent), frame_sign));
 	imageStore(vg_geo_normal, pixel, vec4(geometric_normal, 0.0));
+	imageStore(vg_lightmap_uv, pixel, vec4(uv2_interp, 0.0, 0.0));
 	uint flags = vg_source + 1u;
+	if (vg_history_view.state.y != 0.0) {
+		vec2 velocity = vg_motion(payload, surface);
+		imageStore(vg_velocity, pixel, vec4(velocity, 0.0, 0.0));
+		uint identity_word = vg_source_word(vg_source) + 60u;
+		uvec2 source_id = uvec2(scene.data[identity_word], scene.data[identity_word + 1u]);
+		uvec2 mesh_id = uvec2(scene.data[identity_word + 2u], scene.data[identity_word + 3u]);
+		// Temporal tags are hashes, never object or asset authority.
+		uvec2 tag = (source_id ^ (mesh_id.yx * uvec2(0x9e3779b9u, 0x85ebca6bu))) * uvec2(0xc2b2ae35u, 0x27d4eb2fu);
+		uvec2 reference = vg_visible_reference((payload >> 7u) - 1u);
+		// Physical slots can be reused for another page between frames. The
+		// model's logical cluster identity survives relocation and distinguishes
+		// replacement geometry even when its physical address is identical.
+		uint cluster = geometry.data[vg_record(reference.y)];
+		uvec4 key = uvec4(tag, scene.data[vg_source_word(vg_source) + 44u], cluster);
+		uint index = point.y * uint(vg_view.dimensions.x) + point.x;
+		current_keys.data[index] = key;
+		vec2 previous_point = vec2(point) + 0.5 + velocity * vg_view.dimensions.xy + (vg_history_view.state.zw - vg_view.dimensions.zw) * 0.5 * vg_view.dimensions.xy;
+		bool stable = vg_view.flags.z != 0u && all(greaterThanEqual(previous_point, vec2(0.0))) && all(lessThan(previous_point, vg_view.dimensions.xy));
+		if (stable) {
+			uvec2 previous_pixel = uvec2(previous_point);
+			stable = all(equal(previous_keys.data[previous_pixel.y * uint(vg_view.dimensions.x) + previous_pixel.x], key));
+		}
+		if (!stable) {
+			flags |= 1u << 25u;
+		}
+		imageStore(vg_reactivity, pixel, vec4(stable ? 0.0 : 1.0));
+	}
 #ifdef MODE_UNSHADED
 	flags |= 1u << 24u;
 #endif

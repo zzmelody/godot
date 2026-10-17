@@ -7,6 +7,7 @@
 #include "minimum_visual.h"
 #include "render_dependencies.h"
 #include "virtual_geometry_mesh.h"
+#include "virtual_geometry_validation.h"
 
 #include "core/io/json.h"
 #include "core/io/image.h"
@@ -110,7 +111,7 @@ struct Recipe {
 	std::map<ObjectID, OwnedNode> part_roots;
 	std::map<ObjectID, size_t> part_handles;
 	using GeometryCacheKey = std::tuple<uint64_t, bool, double, int32_t, uint32_t, uint32_t, bool>;
-	std::map<GeometryCacheKey, ObjectID> geometry_cache;
+	std::map<GeometryCacheKey, Ref<Resource>> geometry_cache;
 	std::map<ObjectID, CookerVirtualGeometry::BuildOutput> geometry_builds;
 	uint64_t geometry_pending_bytes = 0;
 
@@ -302,17 +303,9 @@ struct Recipe {
 		check_budget();
 		require(p_resource.is_valid() && resources.size() < size_t(limits.max_resources), "asset resource limit exceeded");
 		Ref<Mesh> mesh = p_resource;
-		if (mesh.is_valid() && !accounted_meshes.has(mesh->get_instance_id())) {
-			accounted_meshes.insert(mesh->get_instance_id());
-			if (Ref<VirtualGeometryMesh>(mesh).is_valid()) {
-				const auto built = geometry_builds.find(mesh->get_instance_id());
-				require(built != geometry_builds.end(), "virtual geometry source accounting is missing");
-			} else {
-				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
-					vertices += mesh->surface_get_array_len(surface);
-					require(vertices <= limits.max_vertices, "mesh vertex budget exceeded");
-				}
-			}
+		if (mesh.is_valid()) {
+			vertices += account_mesh(mesh);
+			require(vertices <= limits.max_vertices, "mesh vertex budget exceeded");
 		}
 		Ref<PackedScene> packed = p_resource;
 		if (packed.is_valid()) {
@@ -335,21 +328,30 @@ struct Recipe {
 		*static_cast<size_t *>(lua_newuserdatatagged(L, sizeof(size_t), HANDLE_TAG)) = id;
 		return 1;
 	}
+	int account_mesh(const Ref<Mesh> &p_mesh) {
+		if (p_mesh.is_null() || accounted_meshes.has(p_mesh->get_instance_id())) { return 0; }
+		uint64_t count = 0;
+		const Ref<VirtualGeometryMesh> geometry = p_mesh;
+		if (geometry.is_valid()) {
+			require(geometry->has_geometry(), "virtual geometry input has no valid root");
+			// A published root has no CPU vertex arrays. Fresh builds already
+			// charged their ordinary source. Root/resource bytes and container
+			// dependencies are accounted by the existing input/output byte limits.
+		} else {
+			for (int surface = 0; surface < p_mesh->get_surface_count(); ++surface) { count += p_mesh->surface_get_array_len(surface); }
+		}
+		require(count <= uint64_t(limits.max_vertices - vertices), "mesh vertex budget exceeded");
+		accounted_meshes.insert(p_mesh->get_instance_id());
+		return int(count);
+	}
 	int count_vertices(Node *p_node) {
 		int count = 0;
-		MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node);
-		if (mesh_instance && mesh_instance->get_mesh().is_valid() && !accounted_meshes.has(mesh_instance->get_mesh()->get_instance_id())) {
-			Ref<Mesh> mesh = mesh_instance->get_mesh();
-			accounted_meshes.insert(mesh->get_instance_id());
-			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) count += mesh->surface_get_array_len(surface);
+		if (const auto *instance = Object::cast_to<MeshInstance3D>(p_node)) { count += account_mesh(instance->get_mesh()); }
+		if (const auto *instance = Object::cast_to<MultiMeshInstance3D>(p_node); instance && instance->get_multimesh().is_valid()) { count += account_mesh(instance->get_multimesh()->get_mesh()); }
+		for (int child = 0; child < p_node->get_child_count(); ++child) {
+			count += count_vertices(p_node->get_child(child));
+			require(count <= limits.max_vertices - vertices, "scene vertex budget exceeded");
 		}
-		MultiMeshInstance3D *multi_instance = Object::cast_to<MultiMeshInstance3D>(p_node);
-		if (multi_instance && multi_instance->get_multimesh().is_valid() && multi_instance->get_multimesh()->get_mesh().is_valid() && !accounted_meshes.has(multi_instance->get_multimesh()->get_mesh()->get_instance_id())) {
-			Ref<Mesh> mesh = multi_instance->get_multimesh()->get_mesh();
-			accounted_meshes.insert(mesh->get_instance_id());
-			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) count += mesh->surface_get_array_len(surface);
-		}
-		for (int i = 0; i < p_node->get_child_count(); ++i) count += count_vertices(p_node->get_child(i));
 		return count;
 	}
 	static void collect_bounds(Node *p_node, const Transform3D &p_parent, AABB &r_bounds, bool &r_has_bounds) {
@@ -1077,7 +1079,6 @@ struct Recipe {
 						options.texture_size >= 16 && options.texture_size <= 1024 &&
 						options.minimum_height >= 0 && options.minimum_height <= 100,
 				"minimum_visual options are outside the supported range");
-		s.require(Ref<VirtualGeometryMesh>(resource).is_null(), "minimum_visual requires the original ordinary resource");
 		CookerMinimum::Builder builder(options);
 		Ref<Resource> output = builder.Build(resource);
 		s.require(output.is_valid(),
@@ -1096,7 +1097,8 @@ struct Recipe {
 			resource = s.handle(1);
 		}
 		const Ref<Mesh> source = resource;
-		s.require(source.is_valid() && Ref<VirtualGeometryMesh>(source).is_null(), "virtual_geometry requires an ordinary source Mesh");
+		const Ref<PackedScene> source_scene = resource;
+		s.require((source.is_valid() && Ref<VirtualGeometryMesh>(source).is_null()) || source_scene.is_valid(), "virtual_geometry requires an ordinary source Mesh or PackedScene");
 		s.fields(2, { "preserve_area", "max_edge_length_factor", "position_precision", "normal_bits", "tangent_bits", "interpolate_uvs" });
 		CookerVirtualGeometry::Settings settings;
 		settings.dag.preserve_area = s.boolean_field(2, "preserve_area", false);
@@ -1114,14 +1116,34 @@ struct Recipe {
 		s.require(normal_bits == std::floor(normal_bits) && tangent_bits == std::floor(tangent_bits), "virtual geometry attribute precision must be integral");
 		settings.encoding.normal_bits = uint32_t(normal_bits);
 		settings.encoding.tangent_bits = uint32_t(tangent_bits);
-		const GeometryCacheKey key = std::make_tuple(uint64_t(source->get_instance_id()), settings.dag.preserve_area,
+		const GeometryCacheKey key = std::make_tuple(uint64_t(resource->get_instance_id()), settings.dag.preserve_area,
 				settings.dag.max_edge_length_factor, settings.encoding.position_precision, settings.encoding.normal_bits,
 				settings.encoding.tangent_bits, settings.interpolate_uvs);
 		const auto cached = s.geometry_cache.find(key);
 		if (cached != s.geometry_cache.end()) {
-			return s.push_resource(s.geometry_builds.at(cached->second).mesh);
+			return s.push_resource(cached->second);
 		}
 		s.require(s.resources.size() < size_t(s.limits.max_resources), "asset resource limit exceeded");
+		if (source_scene.is_valid()) {
+			settings.max_source_vertices = s.limits.max_vertices;
+			settings.max_output_bytes = uint64_t(s.limits.output_mb) * 1024 * 1024 - s.geometry_pending_bytes;
+			s.require(settings.max_output_bytes > 0, "virtual geometry output budget exceeded");
+			Ref<Resource> prepared;
+			std::map<ObjectID, CookerVirtualGeometry::BuildOutput> builds;
+			Dictionary report;
+			String message;
+			const Error error = CookerVirtualGeometry::convert_imported_scene(source_scene, prepared, builds, report, message, &settings);
+			if (error != OK) {
+				s.host_message = message.utf8().get_data();
+				s.require(false, s.host_message.c_str());
+			}
+			for (auto &entry : builds) {
+				s.geometry_pending_bytes += entry.second.container.size() + uint64_t(int64_t(entry.second.report["root_bytes"]));
+				s.geometry_builds.emplace(entry.first, std::move(entry.second));
+			}
+			s.geometry_cache.emplace(key, prepared);
+			return s.push_resource(prepared);
+		}
 		const bool source_accounted = s.accounted_meshes.has(source->get_instance_id());
 		settings.max_source_vertices = uint32_t(source_accounted ? s.limits.max_vertices : s.limits.max_vertices - s.vertices);
 		settings.max_output_bytes = uint64_t(s.limits.output_mb) * 1024 * 1024 - s.geometry_pending_bytes;
@@ -1141,7 +1163,7 @@ struct Recipe {
 		}
 		s.geometry_pending_bytes += built.container.size() + uint64_t(int64_t(built.report["root_bytes"]));
 		s.geometry_builds.emplace(id, std::move(built));
-		s.geometry_cache.emplace(key, id);
+		s.geometry_cache.emplace(key, mesh);
 		return s.push_resource(mesh);
 	}
 
@@ -1270,8 +1292,8 @@ struct Recipe {
 			s.require(cull_margin >= 0 && cull_margin <= 32, "cull_margin must be in [0,32]");
 			Ref<Mesh> mesh = asset;
 			if (mesh.is_valid()) {
-				s.require(Ref<VirtualGeometryMesh>(mesh).is_null(), "virtual geometry scene installation requires GPU storage, which is not connected yet");
 				if (s.boolean_field(item, "lightmap", false)) {
+					s.require(Ref<VirtualGeometryMesh>(mesh).is_null(), "virtual geometry requires separately prepared lightmap geometry");
 					auto *node = memnew(MeshInstance3D);
 					node->set_name(s.string_field(item, "name", "Mesh" + itos(i)));
 					s.require(!node->get_name().is_empty(), "lightmap mesh requires a name");
@@ -1846,7 +1868,7 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 10;
+	result["api_version"] = 11;
 	result["operation"] = "run-recipe";
 	Array apis;
 	for (const char *name : { "resource_index", "primitive", "mesh", "collision", "minimum_visual", "virtual_geometry", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "child_names", "children", "parts", "input", "bounds", "random", "parameters" }) {
@@ -1961,9 +1983,18 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	// staging path stable so identical Luau inputs/seed produce identical bytes.
 	if (bool(p_job.get("external_render_resources", false))) {
 		Array render_outputs;
-		error = CookerRender::save(scene, output.get_base_dir(), render_outputs, uint64_t(recipe.limits.output_mb) * 1024 * 1024);
+		error = CookerRender::save(scene, output.get_base_dir(), render_outputs, uint64_t(recipe.limits.output_mb) * 1024 * 1024, &recipe.geometry_builds);
 		if (error != OK) return reject(r_result, "cannot publish shared render resources", error);
 		r_result["render_outputs"] = render_outputs;
+	}
+	if (scene.is_valid() && !bool(p_job.get("external_render_resources", false))) {
+		Array containers;
+		error = CookerVirtualGeometry::publish_resource_containers(scene, recipe.geometry_builds, output,
+				uint64_t(recipe.limits.output_mb) * 1024 * 1024, containers);
+		if (error != OK) {
+			return reject(r_result, "cannot publish scene virtual geometry containers", error);
+		}
+		r_result["geometry_outputs"] = containers;
 	}
 	String temporary = output.get_basename() + ".recipe-tmp." + output.get_extension();
 	// An interrupted earlier run may leave this staging file; the per-output

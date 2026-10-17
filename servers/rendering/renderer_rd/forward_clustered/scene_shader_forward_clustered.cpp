@@ -589,7 +589,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 				(RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) == 0) {
 			virtual_geometry_error = "Virtual geometry material evaluation requires compute subgroup ballot and quad operations.";
 		} else if (!is_valid() || uses_vertex_id || uses_position || writes_tangent || writes_modelview_or_projection ||
-				uses_world_coordinates || uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_clip || uses_discard ||
+				uses_world_coordinates || uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_antialiasing ||
 				uses_sss || uses_transmittance || uses_bent_normal_map || stencil_enabled || wireframe) {
 			virtual_geometry_error = "Virtual geometry material requires an unsupported coverage, vertex input or shading feature: " + path;
 		} else {
@@ -612,7 +612,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 				virtual_geometry_error = "Virtual geometry static material mode is not connected: " + path;
 			} else {
 				Vector<String> composite_defines;
-				composite_defines.push_back("#define VG_COMPOSITE\n");
+				composite_defines.push_back("#define VG_COMPOSITE\n#define USE_LIGHTMAP\n");
 				for (const String &define : generated.defines) {
 					// Attribute/varying, material UBO and texture declarations belong
 					// to compute evaluation. Keep only the scene's lighting choices.
@@ -622,24 +622,44 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 						composite_defines.push_back(define);
 					}
 				}
-				if (uses_vertex) {
+				if (uses_vertex || uses_alpha_clip || uses_discard) {
+					const bool masked = uses_alpha_clip || uses_discard;
 					ShaderCompiler::IdentifierActions vertex_actions;
 					vertex_actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
 					HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> vertex_uniforms;
 					vertex_actions.uniforms = &vertex_uniforms;
 					ShaderCompiler::GeneratedCode vertex_code;
 					Error vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &vertex_actions, path, vertex_code);
+					ShaderCompiler::GeneratedCode fragment_code;
+					if (vertex_error == OK && masked) {
+						ShaderCompiler::IdentifierActions fragment_actions;
+						fragment_actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
+						fragment_actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
+						HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> fragment_uniforms;
+						fragment_actions.uniforms = &fragment_uniforms;
+						vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &fragment_actions, path, fragment_code);
+						if (vertex_error == OK && (fragment_code.uniform_total_size != ubo_size || fragment_code.uniform_offsets != ubo_offsets || fragment_code.texture_uniforms.size() != texture_uniforms.size())) {
+							vertex_error = ERR_INVALID_DATA;
+						}
+					}
 					if (vertex_error != OK || vertex_code.uniform_total_size != ubo_size || vertex_code.uniform_offsets != ubo_offsets || vertex_code.texture_uniforms.size() != texture_uniforms.size()) {
 						virtual_geometry_error = "Virtual geometry programmable vertex layout failed: " + path;
 					} else {
 						ShaderRD *templates[3] = { &owner->virtual_geometry_raster_bin, &owner->virtual_geometry_raster_sw, &owner->virtual_geometry_raster_hw };
 						for (uint32_t mode = 0; mode < 3; ++mode) {
+							const ShaderCompiler::GeneratedCode &raster_code = masked && mode == 1 ? generated : masked && mode == 2 ? fragment_code
+																																	 : vertex_code;
+							Vector<String> raster_defines = raster_code.defines;
+							if (masked && mode != 0) {
+								raster_defines.push_back("#define VG_MASKED\n");
+							}
 							RID &raster_version = virtual_geometry_raster_versions[mode];
 							raster_version = templates[mode]->version_create(false);
 							if (mode < 2) {
-								templates[mode]->version_set_compute_code(raster_version, vertex_code.code, vertex_code.uniforms, vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], vertex_code.defines);
+								templates[mode]->version_set_compute_code(raster_version, raster_code.code, raster_code.uniforms, raster_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], raster_defines);
 							} else {
-								templates[mode]->version_set_code(raster_version, vertex_code.code, vertex_code.uniforms, vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], "", vertex_code.defines);
+								templates[mode]->version_set_code(raster_version, raster_code.code, raster_code.uniforms,
+										vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], masked ? fragment_code.stage_globals[ShaderCompiler::STAGE_COMPUTE] : String(), raster_defines);
 							}
 							RID raster_program = templates[mode]->version_get_shader(raster_version, 0);
 							if (raster_program.is_null()) {
@@ -703,20 +723,20 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_raster_pipelin
 	return p_mode < 2 ? virtual_geometry_raster_compute[p_mode].get_rid() : virtual_geometry_raster_hardware.get_render_pipeline(RD::INVALID_ID, p_format);
 }
 
-RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_shader(bool p_separate_specular) const {
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_shader(bool p_separate_specular, bool p_multiview) const {
 	if (virtual_geometry_composite_version.is_null()) {
 		return RID();
 	}
-	const uint16_t variant = ShaderVersion::SHADER_VERSION_COLOR_PASS * 2 + (p_separate_specular ? SHADER_COLOR_PASS_FLAG_SEPARATE_SPECULAR : 0);
+	const uint16_t variant = ShaderVersion::SHADER_VERSION_COLOR_PASS * 2 + (p_separate_specular ? SHADER_COLOR_PASS_FLAG_SEPARATE_SPECULAR : 0) + (p_multiview ? SHADER_COLOR_PASS_FLAG_MULTIVIEW : 0);
 	return SceneShaderForwardClustered::singleton->shader.version_get_shader(virtual_geometry_composite_version, variant);
 }
 
-RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_pipeline(RD::FramebufferFormatID p_format, bool p_separate_specular, const ShaderSpecialization &p_specialization) {
-	const uint32_t color_variant = p_separate_specular ? 1 : 0;
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_pipeline(RD::FramebufferFormatID p_format, bool p_separate_specular, const ShaderSpecialization &p_specialization, bool p_multiview, bool p_reflection) {
+	const uint32_t color_variant = uint32_t(p_separate_specular) | (uint32_t(p_multiview) << 1) | (uint32_t(p_reflection) << 2);
 	auto &pipeline = virtual_geometry_composite_pipelines[color_variant];
 	const auto &old = virtual_geometry_composite_specialization[color_variant];
 	if (!virtual_geometry_composite_initialized[color_variant] || old.packed_0 != p_specialization.packed_0 || old.packed_1 != p_specialization.packed_1) {
-		RID program = get_virtual_geometry_composite_shader(p_separate_specular);
+		RID program = get_virtual_geometry_composite_shader(p_separate_specular, p_multiview);
 		ERR_FAIL_COND_V(program.is_null(), RID());
 		Vector<RD::PipelineSpecializationConstant> constants;
 		RD::PipelineSpecializationConstant value;
@@ -732,13 +752,14 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_pipe
 		RD::PipelineDepthStencilState depth;
 		depth.enable_depth_test = true;
 		depth.depth_compare_operator = RD::COMPARE_OP_GREATER_OR_EQUAL;
-		RD::PipelineColorBlendState blend = RD::PipelineColorBlendState::create_disabled(3);
-		// The scene framebuffer keeps three attachment slots. Temporal output
-		// has its own pending implementation and must preserve the motion pass.
-		blend.attachments.write[2].write_r = false;
-		blend.attachments.write[2].write_g = false;
-		blend.attachments.write[2].write_b = false;
-		blend.attachments.write[2].write_a = false;
+		RD::PipelineColorBlendState blend = RD::PipelineColorBlendState::create_disabled(p_reflection ? 1 : 3);
+		// A separate depth-tested pass resolves virtual geometry velocity.
+		if (!p_reflection) {
+			blend.attachments.write[2].write_r = false;
+			blend.attachments.write[2].write_g = false;
+			blend.attachments.write[2].write_b = false;
+			blend.attachments.write[2].write_a = false;
+		}
 		pipeline.setup(program, RD::RENDER_PRIMITIVE_TRIANGLES, raster, RD::PipelineMultisampleState(), depth, blend, 0, constants);
 		virtual_geometry_composite_specialization[color_variant] = p_specialization;
 		virtual_geometry_composite_initialized[color_variant] = true;
@@ -1115,24 +1136,24 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.renames["INSTANCE_ID"] = "int(scene.data[vg_source_word(vg_source) + 44u])";
 		actions.renames["FRAGCOORD"] = "vg_fragcoord";
 		actions.renames["FRONT_FACING"] = "vg_front_facing";
-		actions.renames["TIME"] = "vg_view.state.x";
+		actions.renames["TIME"] = "vg_time";
 		actions.renames["EXPOSURE"] = "vg_view.state.y";
-		actions.renames["VIEW_MATRIX"] = "vg_view.view";
-		actions.renames["INV_VIEW_MATRIX"] = "vg_view.inverse_view";
-		actions.renames["INV_PROJECTION_MATRIX"] = "vg_view.inverse_projection";
-		actions.renames["MAIN_CAM_INV_VIEW_MATRIX"] = "vg_view.inverse_view";
+		actions.renames["VIEW_MATRIX"] = "vg_world_to_view";
+		actions.renames["INV_VIEW_MATRIX"] = "vg_camera";
+		actions.renames["INV_PROJECTION_MATRIX"] = "inverse_projection_matrix";
+		actions.renames["MAIN_CAM_INV_VIEW_MATRIX"] = "(vg_previous_evaluation ? vg_history_view.previous_inverse_view : vg_history_view.main_camera)";
 		actions.renames["VIEWPORT_SIZE"] = "vg_view.dimensions.xy";
 		actions.renames["SCREEN_UV"] = "(vg_fragcoord.xy / vg_view.dimensions.xy)";
-		actions.renames["IN_SHADOW_PASS"] = "false";
+		actions.renames["IN_SHADOW_PASS"] = "((vg_view.flags.y & 1u) != 0u)";
 		actions.renames["OUTPUT_IS_SRGB"] = "false";
 		actions.renames["CLIP_SPACE_FAR"] = "0.0";
 		actions.renames["NODE_POSITION_VIEW"] = "modelview[3].xyz";
-		actions.renames["CAMERA_POSITION_WORLD"] = "vg_view.inverse_view[3].xyz";
-		actions.renames["CAMERA_DIRECTION_WORLD"] = "vg_view.inverse_view[2].xyz";
+		actions.renames["CAMERA_POSITION_WORLD"] = "vg_camera[3].xyz";
+		actions.renames["CAMERA_DIRECTION_WORLD"] = "vg_camera[2].xyz";
 		actions.renames["CAMERA_VISIBLE_LAYERS"] = "vg_view.flags.x";
 		actions.renames["IS_MULTIVIEW"] = "false";
-		actions.renames["VIEW_INDEX"] = "0";
-		actions.renames["EYE_OFFSET"] = "vec3(0.0)";
+		actions.renames["VIEW_INDEX"] = "int(vg_view.eye_offset.w)";
+		actions.renames["EYE_OFFSET"] = "vg_view.eye_offset.xyz";
 		virtual_geometry_raster_compiler.initialize(actions);
 		for (const char *name : { "dFdx", "dFdy", "dFdxFine", "dFdyFine", "dFdxCoarse", "dFdyCoarse", "fwidth", "fwidthFine", "fwidthCoarse", "texture", "textureProj" }) {
 			String replacement = name;
@@ -1147,7 +1168,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		Vector<String> modes;
 		modes.push_back("");
 		virtual_geometry_shader.initialize(modes);
-		modes.write[0] = "#define VG_RASTER_MATERIALS\n#define VG_PROGRAMMABLE\n";
+		modes.write[0] = "#define VG_RASTER_MATERIALS\n#define VG_PROGRAMMABLE\n#define VG_GLOBAL_RASTER\n";
 		virtual_geometry_raster_bin.initialize(modes);
 		virtual_geometry_raster_sw.initialize(modes);
 		virtual_geometry_raster_hw.initialize(modes);

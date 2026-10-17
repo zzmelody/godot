@@ -1,6 +1,7 @@
 #include "virtual_geometry_storage.h"
 
 #include "core/io/marshalls.h"
+#include "core/object/callable_mp.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 
 #include <cmath>
@@ -23,6 +24,15 @@ uint64_t root_memory(const VirtualGeometry::GeometryModelRoot &p_root) {
 } // namespace
 
 VirtualGeometryStorage::~VirtualGeometryStorage() {
+	for (RequestSlot &slot : request_slots) {
+		if (slot.buffer.is_valid()) {
+			RD::get_singleton()->free_rid(slot.buffer);
+		}
+	}
+	request_pipeline.free();
+	if (request_version.is_valid()) {
+		request_shader.version_free(request_version);
+	}
 	for (const KeyValue<RID, Asset *> &entry : assets) {
 		detached.insert(entry.value);
 	}
@@ -59,6 +69,15 @@ RendererMeshStorage::VirtualGeometryMaterials VirtualGeometryStorage::get_materi
 	}
 	const Asset &asset = **found;
 	return { Span<RID>(asset.materials.ptr(), asset.materials.size()), Span<uint32_t>(asset.root.materials.data(), asset.root.materials.size()) };
+}
+
+Error VirtualGeometryStorage::set_material(RID p_mesh, uint32_t p_slot, RID p_material) {
+	Asset **found = assets.getptr(p_mesh);
+	if (found == nullptr || p_slot >= uint32_t((*found)->materials.size())) {
+		return ERR_INVALID_PARAMETER;
+	}
+	(*found)->materials.write[p_slot] = p_material;
+	return OK;
 }
 
 void VirtualGeometryStorage::_prune_outcomes() {
@@ -101,6 +120,197 @@ void VirtualGeometryStorage::_publish_feedback() {
 	SWAP(snapshot, feedback_spare);
 }
 
+void VirtualGeometryStorage::_consume_requests() {
+	for (RequestSlot &slot : request_slots) {
+		if (slot.readback.is_null() || !slot.readback->ready) {
+			continue;
+		}
+		const Vector<uint8_t> bytes = slot.readback->bytes;
+		slot.readback.unref();
+		Asset *const *found = assets.getptr(slot.mesh);
+		if (found == nullptr || (*found)->generation != slot.generation) {
+			continue;
+		}
+		if (bytes.size() != REQUEST_BUFFER_BYTES) {
+			++request_invalid;
+			continue;
+		}
+		const uint8_t *data = bytes.ptr();
+		const uint32_t count = decode_uint32(data);
+		request_overflow += decode_uint32(data + 4) != 0u ? 1u : 0u;
+		if (count > REQUEST_CAPACITY || (decode_uint32(data + 8) & 16u) != 0u) {
+			++request_invalid;
+			continue;
+		}
+		for (uint32_t index = 0; index < count; ++index) {
+			const uint32_t page = decode_uint32(data + 16 + index * 8);
+			const uint32_t priority = decode_uint32(data + 20 + index * 8);
+			float value;
+			memcpy(&value, &priority, sizeof(value));
+			if (page >= (*found)->root.directory.pages.size() || !Math::is_finite(value) || (value < 0.0f && value != -1.0f)) {
+				++request_invalid;
+				continue;
+			}
+			// A read/upload already owns this demand, or the page became resident
+			// while this view's asynchronous copy was in flight.
+			if ((value != -1.0f && (*found)->pages.has(page)) || (value == -1.0f && !(*found)->pages.has(page))) {
+				continue;
+			}
+			if (requests.size() == MAX_REQUESTS) {
+				++request_overflow;
+				continue;
+			}
+			requests.push_back({ ++request_sequence, slot.mesh.get_id(), slot.generation, page, priority });
+		}
+	}
+	if (assets.is_empty()) {
+		for (RequestSlot &slot : request_slots) {
+			if (slot.readback.is_null() && slot.buffer.is_valid()) {
+				RD::get_singleton()->free_rid(slot.buffer);
+				freed_buffers.push_back({ RD::get_singleton()->get_recording_submission_serial(), slot.charge, false, false });
+				slot.buffer = RID();
+				slot.charge = 0;
+			}
+		}
+	}
+}
+
+void VirtualGeometryStorage::_publish_requests() {
+	const uint64_t consumed = requests_acknowledged.load(std::memory_order_acquire);
+	uint32_t first = 0;
+	while (first < requests.size() && requests[first].sequence <= consumed) {
+		++first;
+	}
+	for (uint32_t index = first; index < requests.size(); ++index) {
+		requests[index - first] = requests[index];
+	}
+	requests.resize(requests.size() - first);
+	request_spare.resize(REQUEST_HEADER_BYTES + requests.size() * REQUEST_RECORD_BYTES);
+	uint8_t *bytes = request_spare.ptrw();
+	encode_uint64(request_sequence, bytes);
+	encode_uint64(request_overflow, bytes + 8);
+	encode_uint64(request_invalid, bytes + 16);
+	encode_uint32(requests.size(), bytes + 24);
+	encode_uint32(REQUEST_RECORD_BYTES, bytes + 28);
+	for (uint32_t index = 0; index < requests.size(); ++index) {
+		const RequestRecord &request = requests[index];
+		uint8_t *record = bytes + REQUEST_HEADER_BYTES + index * REQUEST_RECORD_BYTES;
+		encode_uint64(request.sequence, record);
+		encode_uint64(request.mesh, record + 8);
+		encode_uint64(request.generation, record + 16);
+		encode_uint32(request.page, record + 24);
+		encode_uint32(request.priority, record + 28);
+	}
+	MutexLock lock(feedback_mutex);
+	SWAP(request_snapshot, request_spare);
+}
+
+Vector<uint8_t> VirtualGeometryStorage::get_requests(uint64_t p_after_sequence) const {
+	Vector<uint8_t> value;
+	{
+		MutexLock lock(feedback_mutex);
+		value = request_snapshot;
+	}
+	if (value.is_empty() || p_after_sequence > decode_uint64(value.ptr())) {
+		return {};
+	}
+	uint64_t previous = requests_acknowledged.load(std::memory_order_relaxed);
+	while (previous < p_after_sequence && !requests_acknowledged.compare_exchange_weak(previous, p_after_sequence, std::memory_order_release, std::memory_order_relaxed)) {
+	}
+	uint32_t first = 0;
+	const uint32_t count = decode_uint32(value.ptr() + 24);
+	while (first < count && decode_uint64(value.ptr() + REQUEST_HEADER_BYTES + first * REQUEST_RECORD_BYTES) <= p_after_sequence) {
+		++first;
+	}
+	if (first != 0) {
+		uint8_t *bytes = value.ptrw();
+		memmove(bytes + REQUEST_HEADER_BYTES, bytes + REQUEST_HEADER_BYTES + first * REQUEST_RECORD_BYTES, (count - first) * REQUEST_RECORD_BYTES);
+		encode_uint32(count - first, bytes + 24);
+		value.resize(REQUEST_HEADER_BYTES + (count - first) * REQUEST_RECORD_BYTES);
+	}
+	return value;
+}
+
+Error VirtualGeometryStorage::record_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity) {
+	Asset *const *found = assets.getptr(p_mesh);
+	ERR_FAIL_COND_V(found == nullptr || (*found)->generation != p_generation || p_capacity == 0, ERR_INVALID_PARAMETER);
+	if (requests.size() == MAX_REQUESTS) {
+		(*found)->request_waiter.remove_from_list();
+		return OK;
+	}
+	RequestSlot *available = nullptr;
+	for (RequestSlot &slot : request_slots) {
+		if (slot.readback.is_valid()) {
+			if (slot.mesh == p_mesh && slot.generation == p_generation) {
+				return OK; // One pending view per shared asset is sufficient.
+			}
+		} else if (available == nullptr) {
+			available = &slot;
+		}
+	}
+	Asset *asset = *found;
+	asset->request_seen_epoch = request_epoch;
+	if (!asset->request_waiter.in_list()) {
+		request_waiters.add_last(&asset->request_waiter);
+	}
+	while (request_waiters.first() && request_waiters.first()->self()->request_seen_epoch + 1 < request_epoch) {
+		request_waiters.first()->remove_from_list();
+	}
+	if (request_waiters.first() != &asset->request_waiter) {
+		return ERR_BUSY;
+	}
+	if (available == nullptr) {
+		return ERR_BUSY;
+	}
+	RD *rd = RD::get_singleton();
+	if (request_version.is_null()) {
+		Vector<String> modes = { "" };
+		request_shader.initialize(modes);
+		request_version = request_shader.version_create();
+		RID program = request_shader.version_get_shader(request_version, 0);
+		ERR_FAIL_COND_V(program.is_null(), ERR_CANT_CREATE);
+		request_pipeline.create_compute_pipeline(program);
+	}
+	ERR_FAIL_COND_V(request_pipeline.get_rid().is_null(), ERR_CANT_CREATE);
+	if (available->buffer.is_null()) {
+		// Reserve output, returned bytes and aligned download payload together.
+		// Backend allocator granularity is separate from these byte capacities.
+		const uint64_t charge = ((REQUEST_BUFFER_BYTES + 31u) & ~31u) * 3u + sizeof(RequestReadback);
+		if (charge > work_budget - work_reserved) {
+			++request_overflow;
+			return ERR_BUSY;
+		}
+		available->buffer = rd->storage_buffer_create(REQUEST_BUFFER_BYTES);
+		ERR_FAIL_COND_V(available->buffer.is_null(), ERR_CANT_CREATE);
+		work_reserved += charge;
+		available->charge = charge;
+	}
+	RID program = request_shader.version_get_shader(request_version, 0);
+	RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { p_work }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { available->buffer }));
+	ERR_FAIL_COND_V(uniforms.is_null(), ERR_CANT_CREATE);
+	const uint32_t push[3] = { p_word, p_capacity, REQUEST_CAPACITY };
+	const RD::ComputeListID list = rd->compute_list_begin();
+	rd->compute_list_bind_compute_pipeline(list, request_pipeline.get_rid());
+	rd->compute_list_bind_uniform_set(list, uniforms, 0);
+	rd->compute_list_set_push_constant(list, push, sizeof(push));
+	rd->compute_list_dispatch(list, (REQUEST_CAPACITY + 63) / 64, 1, 1);
+	rd->compute_list_end();
+	available->mesh = p_mesh;
+	available->generation = p_generation;
+	asset->request_waiter.remove_from_list();
+	available->readback.instantiate();
+	Ref<RefCounted> keep_alive = available->readback;
+	const Error error = rd->buffer_get_data_async(available->buffer,
+			callable_mp(available->readback.ptr(), &RequestReadback::complete).bind(keep_alive), 0, REQUEST_BUFFER_BYTES);
+	if (error != OK) {
+		available->readback.unref();
+		++request_invalid;
+	}
+	return error;
+}
+
 Vector<uint8_t> VirtualGeometryStorage::get_feedback(uint64_t p_after_sequence) const {
 	Vector<uint8_t> value;
 	{
@@ -133,7 +343,9 @@ Error VirtualGeometryStorage::set_budget(uint64_t p_pool_bytes, uint64_t p_metad
 	}
 	// Reserve the bounded result queue, both owned snapshots and slot bytes.
 	// Copies retained by a feedback reader belong to that reader's allocation.
-	const uint64_t bookkeeping = pool.is_null() ? 2 * SNAPSHOT_BYTES + uint64_t(MAX_OUTCOMES) * (sizeof(Outcome) + 2 * OUTCOME_BYTES) + p_pool_bytes / UNIT_BYTES : 0;
+	const uint64_t bookkeeping = pool.is_null() ? 2 * SNAPSHOT_BYTES + uint64_t(MAX_OUTCOMES) * (sizeof(Outcome) + 2 * OUTCOME_BYTES) + p_pool_bytes / UNIT_BYTES +
+					2 * REQUEST_HEADER_BYTES + uint64_t(MAX_REQUESTS) * (sizeof(RequestRecord) + 2 * REQUEST_RECORD_BYTES)
+												: 0;
 	if (bookkeeping > p_metadata_bytes - metadata_reserved) {
 		return ERR_OUT_OF_MEMORY;
 	}
@@ -166,6 +378,20 @@ Error VirtualGeometryStorage::set_budget(uint64_t p_pool_bytes, uint64_t p_metad
 	metadata_reserved += bookkeeping;
 	_publish_feedback();
 	return OK;
+}
+
+bool VirtualGeometryStorage::reserve_view_work(uint64_t p_bytes) {
+	if (p_bytes == 0 || p_bytes > work_budget - work_reserved) {
+		return false;
+	}
+	work_reserved += p_bytes;
+	return true;
+}
+
+void VirtualGeometryStorage::retire_view_work(uint64_t p_bytes) {
+	if (p_bytes != 0) {
+		freed_buffers.push_back({ RD::get_singleton()->get_recording_submission_serial(), p_bytes, false, false });
+	}
 }
 
 Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials, AABB &r_bounds) {
@@ -384,6 +610,7 @@ void VirtualGeometryStorage::release_mesh(RID p_mesh) {
 	}
 	Asset *asset = *found;
 	assets.erase(p_mesh);
+	asset->request_waiter.remove_from_list();
 	asset->destroyed = true;
 	_free_metadata(asset);
 	if (asset->pages.is_empty()) {
@@ -541,8 +768,26 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 			refusal = ERR_OUT_OF_MEMORY;
 		}
 	}
+	if (refusal == OK) {
+		// Admission owns physical slots before accepting caller payloads. This
+		// makes queued uploads part of the same capacity ledger as resident and
+		// retiring pages, even before the next render submission is recorded.
+		for (Page *page : prepared) {
+			page->slot = _allocate(page->units);
+			if (page->slot == UINT32_MAX) {
+				refusal = ERR_OUT_OF_MEMORY;
+				break;
+			}
+		}
+	}
 	if (refusal != OK) {
 		for (Page *page : prepared) {
+			if (page->slot != UINT32_MAX) {
+				for (uint32_t unit = 0; unit < page->units; ++unit) {
+					slots[page->slot + unit] = 0;
+				}
+				occupied_bytes -= uint64_t(page->units) * UNIT_BYTES;
+			}
 			memdelete(page);
 		}
 		return refusal;
@@ -553,6 +798,7 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 	for (Page *page : prepared) {
 		Asset *asset = page->asset;
 		asset->pages.insert(page->index, page);
+		asset->physical_slots[page->index] = page->slot;
 		page->dependencies_held = true;
 		for (uint32_t dependency : _dependencies(page)) {
 			++asset->dependency_users[dependency];
@@ -781,6 +1027,9 @@ void VirtualGeometryStorage::update() {
 		return;
 	}
 	updated_serial = recording;
+	++request_epoch;
+	_consume_requests();
+	_publish_requests();
 	const uint64_t completed = RD::get_singleton()->get_completed_submission_serial();
 	const uint64_t disposed = RD::get_singleton()->get_retired_resource_serial();
 	for (uint32_t index = 0; index < freed_buffers.size();) {
@@ -789,7 +1038,9 @@ void VirtualGeometryStorage::update() {
 				gpu_metadata_bytes -= freed_buffers[index].bytes;
 				metadata_reserved -= freed_buffers[index].bytes;
 			} else {
-				staging_bytes -= freed_buffers[index].bytes;
+				if (freed_buffers[index].staging) {
+					staging_bytes -= freed_buffers[index].bytes;
+				}
 				work_reserved -= freed_buffers[index].bytes;
 			}
 			freed_buffers.remove_at_unordered(index);
@@ -862,9 +1113,7 @@ void VirtualGeometryStorage::update() {
 			_delete_page(page);
 			continue;
 		}
-		page->slot = _allocate(page->units);
-		page->asset->physical_slots[page->index] = page->slot;
-		Error error = page->slot == UINT32_MAX ? ERR_OUT_OF_MEMORY : OK;
+		Error error = OK;
 		if (error == OK) {
 			page->source = RD::get_singleton()->storage_buffer_create(page->bytes.size(), page->bytes);
 			if (page->source.is_null()) {

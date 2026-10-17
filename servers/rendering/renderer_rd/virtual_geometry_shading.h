@@ -23,13 +23,30 @@ public:
 		float time = 0.0f;
 		float exposure = 1.0f;
 		uint32_t layers = 1;
+		uint32_t shadow_flags = 0;
+		float shadow_far = 0;
+		bool reverse_cull = false;
+		Transform3D main_camera;
+		Transform3D previous_camera;
+		Projection previous_projection;
+		float previous_time = 0;
+		bool motion = false;
+		bool history_valid = false;
+		Vector2 previous_jitter;
+		uint32_t view_index = 0;
+		Vector3 eye_offset;
+		bool prediction = false;
+		RID occlusion;
+		Projection occlusion_projection;
 	};
-	Error prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry);
+	Error prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only = false);
 	Error prepare_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const ViewParameters &p_view, RD::FramebufferFormatID p_raster_format);
 	void record_sources(Span<VirtualGeometrySelection::Result> p_sources);
 	void record_bins();
 	void record_materials();
 	RID get_surface(uint32_t p_index) const { return surfaces[p_index]; }
+	RID get_motion() const { return motion_surface; }
+	RID get_reactivity() const { return reactive_surface; }
 	bool are_materials_ready() const { return materials_ready; }
 	RID get_scene() const { return scene_buffer; }
 	RID get_bins() const { return bins_buffer; }
@@ -43,18 +60,23 @@ public:
 	};
 	Span<RasterMaterialWork> get_raster_work() const { return Span<RasterMaterialWork>(raster_work.ptr(), raster_work.size()); }
 	RID get_material_view() const { return material_view; }
+	RID get_frame_history() const { return frame_history; }
 	RID get_status() const { return view_status; }
 	RID get_raster_materials() const { return raster_material_buffer; }
 	uint32_t get_entries_word() const { return entries_word; }
 	uint32_t get_source_base(uint32_t p_batch) const { return sources[p_batch].first; }
 	Span<RID> get_materials() const { return Span<RID>(materials.ptr(), materials.size()); }
 	uint64_t get_buffer_bytes() const;
+	uint64_t get_raster_candidate_capacity(Span<VirtualGeometrySelection::Result> p_sources);
 	~VirtualGeometryShading();
 
 private:
+	VirtualGeometryWorkMemory memory;
 	struct Source {
 		uint32_t first = 0;
 		uint32_t map = 0;
+		uint32_t visible_base = 0;
+		uint32_t material_slots = 0;
 		RID uniforms;
 	};
 	struct ScanLevel {
@@ -73,13 +95,25 @@ private:
 	RID draw_arguments;
 	uint32_t draw_argument_words = 0;
 	RID material_view;
+	RID frame_history;
+	RID previous_sources;
+	uint32_t previous_source_words = 0;
+	LocalVector<RID> previous_parameters;
 	RID view_status;
 	LocalVector<RasterMaterialWork> raster_work;
 	RID raster_material_buffer;
 	uint32_t raster_material_words = 0;
 	LocalVector<uint32_t> raster_material_data;
-	RID surfaces[9];
+	RID surfaces[10];
+	RID motion_surface;
+	RID reactive_surface;
+	RID temporal_keys[2];
+	uint32_t temporal_key_words[2] = {};
+	Size2i motion_size;
+	StringName surface_context;
+	StringName motion_context;
 	bool materials_ready = false;
+	bool depth_only = false;
 	Size2i surface_size;
 	struct MaterialWork {
 		RID pipeline;
@@ -94,8 +128,11 @@ private:
 	LocalVector<Source> sources;
 	LocalVector<ScanLevel> levels;
 	LocalVector<RID> materials;
-	AHashMap<RID, uint32_t> material_ids;
+	AHashMap<RID, uint32_t> material_ids[2];
+	LocalVector<uint8_t> material_two_sided;
 	LocalVector<uint32_t> material_map;
+	LocalVector<uint32_t> raster_bucket_marks;
+	uint32_t raster_bucket_epoch = 0;
 };
 
 } // namespace RendererRD

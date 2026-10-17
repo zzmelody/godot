@@ -18,7 +18,7 @@ bool finite_sphere(const GeometrySphere &p_sphere) {
 bool validate_dag(const GeometryDag &p_dag) {
 	if (p_dag.clusters.empty() || p_dag.clusters.size() > UINT32_MAX / 2 || p_dag.groups.size() > UINT32_MAX ||
 			p_dag.leaf_count == 0 || p_dag.leaf_count > p_dag.clusters.size() ||
-			p_dag.root_cluster >= p_dag.clusters.size() || p_dag.root_group >= p_dag.groups.size()) {
+			p_dag.root_clusters.empty() || p_dag.root_group >= p_dag.groups.size()) {
 		return false;
 	}
 	std::vector<uint8_t> child_owners(p_dag.clusters.size(), 0);
@@ -43,13 +43,13 @@ bool validate_dag(const GeometryDag &p_dag) {
 	}
 	for (uint32_t id = 0; id < p_dag.groups.size(); ++id) {
 		const auto &group = p_dag.groups[id];
-		if (group.children.empty() || group.children.size() > 32 || !finite_sphere(group.bounds) ||
+		if (group.children.empty() || (!group.root && group.children.size() > 32) || !finite_sphere(group.bounds) ||
 				!finite_sphere(group.lod_bounds) || !std::isfinite(group.min_child_error) ||
 				!std::isfinite(group.max_parent_error) || group.max_parent_error < 0 || group.min_child_error > group.max_parent_error ||
 				group.root != (id == p_dag.root_group) || (!group.root && group.parents.empty())) {
 			return false;
 		}
-		if (group.root && (group.children != std::vector<uint32_t>{ p_dag.root_cluster } || !group.parents.empty())) {
+		if (group.root && (group.children != p_dag.root_clusters || !group.parents.empty())) {
 			return false;
 		}
 		for (uint32_t child : group.children) {
@@ -298,7 +298,8 @@ void inflate(double p_error, GeometrySphere &r_sphere) {
 
 ClusterEncodingResult quantize(const ClusterEncodingSettings &p_settings, EncodableGeometry &r_geometry) {
 	int32_t precision = p_settings.position_precision;
-	if (precision == INT32_MIN) {
+	const bool automatic_precision = precision == INT32_MIN;
+	if (automatic_precision) {
 		double total_log_size = 0;
 		uint32_t count = 0;
 		for (uint32_t id = 0; id < r_geometry.leaf_count; ++id) {
@@ -321,11 +322,19 @@ ClusterEncodingResult quantize(const ClusterEncodingSettings &p_settings, Encoda
 		// finer power-of-two floor is 1/2048 m. Density still selects finer grids.
 		precision = std::clamp(7 - static_cast<int32_t>(std::floor(total_log_size / std::max(1u, count) + 0.5)), 11, MAX_POSITION_PRECISION);
 	}
+	uint32_t collapsed_cluster = UINT32_MAX;
+	bool retain_quantized_degenerates = false;
 	for (;;) {
 		bool fits = true;
 		for (auto &cluster : r_geometry.clusters) {
 			const auto result = quantize_cluster_positions(cluster.geometry.mesh.positions, precision, cluster.positions);
 			if (result != PositionCodecError::OK) {
+				if (result == PositionCodecError::COORDINATE_RANGE && collapsed_cluster != UINT32_MAX) {
+					// UE retains topology when the common quantization grid makes
+					// a triangle degenerate. Keep the finest valid grid and record
+					// those triangles, rather than deleting their source identities.
+					retain_quantized_degenerates = true;
+				}
 				if (result == PositionCodecError::COORDINATE_RANGE && precision > MIN_POSITION_PRECISION) {
 					fits = false;
 					break;
@@ -333,10 +342,44 @@ ClusterEncodingResult quantize(const ClusterEncodingSettings &p_settings, Encoda
 				return { ClusterEncodingError::POSITIONS, cluster.source_cluster, MaterialCodecError::OK, result };
 			}
 		}
-		if (fits) {
+		if (!fits) {
+			--precision;
+			continue;
+		}
+		if (retain_quantized_degenerates) {
 			break;
 		}
-		--precision;
+		collapsed_cluster = UINT32_MAX;
+		for (const auto &cluster : r_geometry.clusters) {
+			const auto &indices = cluster.geometry.mesh.indices;
+			const auto &positions = cluster.positions.values;
+			for (size_t triangle = 0; triangle < indices.size(); triangle += 3) {
+				const auto &a = positions[indices[triangle]];
+				const auto &b = positions[indices[triangle + 1]];
+				const auto &c = positions[indices[triangle + 2]];
+				if (a == b || a == c || b == c) {
+					collapsed_cluster = cluster.source_cluster;
+					break;
+				}
+			}
+			if (collapsed_cluster != UINT32_MAX) {
+				break;
+			}
+		}
+		if (collapsed_cluster == UINT32_MAX) {
+			break;
+		}
+		if (!automatic_precision) {
+			return { ClusterEncodingError::QUANTIZATION_COLLAPSE, collapsed_cluster };
+		}
+		if (precision == MAX_POSITION_PRECISION) {
+			retain_quantized_degenerates = true;
+			break;
+		}
+		// Thin foliage can need more precision than its cluster extent suggests.
+		// Retry the common grid before changing any source positions. A range
+		// failure on refinement restores the finest representable common grid.
+		++precision;
 	}
 	r_geometry.position_precision = precision;
 	r_geometry.lower.fill(INFINITY);
@@ -354,8 +397,16 @@ ClusterEncodingResult quantize(const ClusterEncodingSettings &p_settings, Encoda
 			r_geometry.max_position_error = std::max(r_geometry.max_position_error, error);
 		}
 		cluster.geometry.mesh.positions = std::move(restored);
-		if (validate_triangle_mesh(cluster.geometry.mesh, TriangleValidation::BUILD_INTERMEDIATE) != TopologyError::OK) {
+		if (!retain_quantized_degenerates && validate_triangle_mesh(cluster.geometry.mesh, TriangleValidation::BUILD_INTERMEDIATE) != TopologyError::OK) {
 			return { ClusterEncodingError::QUANTIZATION_COLLAPSE, cluster.source_cluster };
+		}
+		const auto &indices = cluster.geometry.mesh.indices;
+		const auto &positions = cluster.geometry.mesh.positions;
+		for (size_t triangle = 0; triangle < indices.size(); triangle += 3) {
+			const auto &a = positions[indices[triangle]];
+			const auto &b = positions[indices[triangle + 1]];
+			const auto &c = positions[indices[triangle + 2]];
+			r_geometry.quantized_degenerate_triangles += a == b || a == c || b == c ? 1 : 0;
 		}
 		const auto packed = pack_cluster_positions(cluster.positions, cluster.position_bytes);
 		if (packed != PositionCodecError::OK) {

@@ -28,6 +28,7 @@ layout(set = 2, binding = 21) uniform texture2D vg_anisotropy;
 layout(set = 2, binding = 22) uniform utexture2D vg_flags;
 layout(set = 2, binding = 23) uniform texture2D vg_tangent;
 layout(set = 2, binding = 24) uniform texture2D vg_geometric_normal;
+layout(set = 2, binding = 29) uniform texture2D vg_lightmap_uv;
 
 InstanceData vg_instance(uint source) {
 	InstanceData value;
@@ -36,14 +37,12 @@ InstanceData vg_instance(uint source) {
 	value.compressed_aabb_size_pad = vec3(0.0);
 	value.material_feedback_index = 0xffffffffu;
 	value.uv_scale = vec4(1.0);
-	// Baked/instance GI projection and temporal state are separate source fields
-	// still to be connected. They must not read an unrelated ordinary instance.
-	value.flags = 255u << INSTANCE_FLAGS_FADE_SHIFT;
+	value.flags = scene.data[vg_source_word(source) + 53u];
 	value.instance_uniforms_ofs = scene.data[vg_source_word(source) + 45u];
-	value.gi_offset = 0u;
+	value.gi_offset = scene.data[vg_source_word(source) + 54u];
 	value.layer_mask = scene.data[vg_source_word(source) + 46u];
 	value.prev_transform = value.transform;
-	value.lightmap_uv_scale = vec4(0.0);
+	value.lightmap_uv_scale = vg_source_vector(source, 56u);
 #ifdef USE_DOUBLE_PRECISION
 	value.model_precision = vec4(0.0);
 	value.prev_model_precision = vec4(0.0);

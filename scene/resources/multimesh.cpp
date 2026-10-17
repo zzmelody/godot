@@ -30,6 +30,10 @@
 
 #include "multimesh.h"
 
+#include "core/object/callable_mp.h"
+#include "core/os/thread.h"
+#include "scene/resources/3d/virtual_geometry_mesh.h"
+
 #include "core/object/class_db.h"
 #include "servers/rendering/rendering_server.h"
 
@@ -217,11 +221,34 @@ void MultiMesh::set_buffer_interpolated(const Vector<float> &p_buffer_curr, cons
 }
 
 void MultiMesh::set_mesh(const Ref<Mesh> &p_mesh) {
+	if (Ref<VirtualGeometryMesh>(mesh).is_valid()) {
+		mesh->disconnect_changed(callable_mp(this, &MultiMesh::_virtual_geometry_mesh_changed));
+	}
 	mesh = p_mesh;
+	if (Ref<VirtualGeometryMesh>(mesh).is_valid()) {
+		mesh->connect_changed(callable_mp(this, &MultiMesh::_virtual_geometry_mesh_changed));
+		_virtual_geometry_mesh_changed();
+		return;
+	}
 	if (mesh.is_valid()) {
 		RenderingServer::get_singleton()->multimesh_set_mesh(multimesh, mesh->get_rid());
 	} else {
 		RenderingServer::get_singleton()->multimesh_set_mesh(multimesh, RID());
+	}
+}
+
+void MultiMesh::_virtual_geometry_mesh_changed() {
+	if (!Thread::is_main_thread()) {
+		// Threaded resource decoding may assign this Mesh before main-thread
+		// capacity admission. Resolve only the current resource at the boundary.
+		callable_mp(this, &MultiMesh::_virtual_geometry_mesh_changed).call_deferred();
+		return;
+	}
+	if (mesh.is_valid()) {
+		const RID rid = mesh->get_rid();
+		if (rid.is_valid()) {
+			RenderingServer::get_singleton()->multimesh_set_mesh(multimesh, rid);
+		}
 	}
 }
 
@@ -362,7 +389,13 @@ MultiMesh::TransformFormat MultiMesh::get_transform_format() const {
 	return transform_format;
 }
 
+Error MultiMesh::prepare_virtual_geometry() const {
+	const Ref<VirtualGeometryMesh> geometry = mesh;
+	return geometry.is_valid() ? geometry->prepare_virtual_geometry() : OK;
+}
+
 void MultiMesh::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry"), &MultiMesh::prepare_virtual_geometry);
 	ClassDB::bind_method(D_METHOD("set_mesh", "mesh"), &MultiMesh::set_mesh);
 	ClassDB::bind_method(D_METHOD("get_mesh"), &MultiMesh::get_mesh);
 	ClassDB::bind_method(D_METHOD("set_use_colors", "enable"), &MultiMesh::set_use_colors);
@@ -438,6 +471,9 @@ MultiMesh::MultiMesh() {
 }
 
 MultiMesh::~MultiMesh() {
+	if (Ref<VirtualGeometryMesh>(mesh).is_valid()) {
+		mesh->disconnect_changed(callable_mp(this, &MultiMesh::_virtual_geometry_mesh_changed));
+	}
 	ERR_FAIL_NULL(RenderingServer::get_singleton());
 	RenderingServer::get_singleton()->free_rid(multimesh);
 }

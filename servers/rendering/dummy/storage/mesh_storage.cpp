@@ -30,6 +30,12 @@
 
 #include "mesh_storage.h"
 
+#include "core/io/marshalls.h"
+#include "core/io/virtual_geometry/model_codec.h"
+
+#include <cmath>
+#include <limits>
+
 using namespace RendererDummy;
 
 MeshStorage *MeshStorage::singleton = nullptr;
@@ -57,6 +63,48 @@ void MeshStorage::mesh_free(RID p_rid) {
 	mesh_owner.free(p_rid);
 }
 
+Error MeshStorage::mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials) {
+	DummyMesh *mesh = mesh_owner.get_or_null(p_mesh);
+	if (mesh == nullptr || mesh->virtual_geometry || !mesh->surfaces.is_empty() || p_generation == 0 || p_root.size() < VirtualGeometry::MODEL_ROOT_HEADER_BYTES) {
+		return ERR_INVALID_PARAMETER;
+	}
+	VirtualGeometry::GeometryModelRoot root;
+	if (VirtualGeometry::decode_geometry_model_root(p_root.ptr(), p_root.size(), decode_uint64(p_root.ptr() + 184), 256ull * 1024 * 1024, root).error != VirtualGeometry::ModelCodecError::OK ||
+			root.materials.size() != uint64_t(p_materials.size())) {
+		return ERR_INVALID_DATA;
+	}
+	AABB bounds;
+	for (uint32_t axis = 0; axis < 3; ++axis) {
+		bounds.position[axis] = root.lower[axis];
+		const double extent = double(root.upper[axis]) - double(root.lower[axis]);
+		bounds.size[axis] = real_t(extent);
+		if (double(bounds.size[axis]) < extent) {
+			bounds.size[axis] = std::nextafter(bounds.size[axis], std::numeric_limits<real_t>::infinity());
+		}
+		if (!std::isfinite(bounds.size[axis])) {
+			return ERR_INVALID_DATA;
+		}
+	}
+	mesh->virtual_bounds = bounds;
+	mesh->virtual_materials.resize(p_materials.size());
+	mesh->virtual_identities.resize(root.materials.size());
+	for (int index = 0; index < p_materials.size(); ++index) {
+		mesh->virtual_materials.write[index] = p_materials[index];
+		mesh->virtual_identities.write[index] = root.materials[index];
+	}
+	mesh->virtual_geometry = true;
+	mesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MESH);
+	return OK;
+}
+
+RendererMeshStorage::VirtualGeometryMaterials MeshStorage::mesh_get_virtual_geometry_materials(RID p_mesh) const {
+	const DummyMesh *mesh = mesh_owner.get_or_null(p_mesh);
+	if (mesh == nullptr || !mesh->virtual_geometry) {
+		return {};
+	}
+	return { Span<RID>(mesh->virtual_materials.ptr(), mesh->virtual_materials.size()), Span<uint32_t>(mesh->virtual_identities.ptr(), mesh->virtual_identities.size()) };
+}
+
 void MeshStorage::mesh_surface_remove(RID p_mesh, int p_surface) {
 	DummyMesh *m = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL(m);
@@ -69,6 +117,9 @@ void MeshStorage::mesh_clear(RID p_mesh) {
 	ERR_FAIL_NULL(m);
 
 	m->surfaces.clear();
+	m->virtual_geometry = false;
+	m->virtual_materials.clear();
+	m->virtual_identities.clear();
 }
 
 RID MeshStorage::_multimesh_allocate() {

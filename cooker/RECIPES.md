@@ -1,4 +1,17 @@
-# Cooker Luau recipe API v9
+# Cooker Luau recipe API v11
+
+`virtual_geometry(asset, options)` accepts an ordinary static triangle Mesh or
+a PackedScene. Mesh input returns VirtualGeometryMesh; scene input returns a
+PackedScene with each unique static source Mesh converted once. Scene transforms,
+material overrides and MultiMesh placements remain intact. Explicit scene builds
+do not use the automatic import triangle threshold. Skinned, blend-shape,
+non-triangle and overlay geometry refuse the complete output. Options are
+`preserve_area=false`, `max_edge_length_factor=0`, automatic `position_precision`,
+`normal_bits=8`, `tangent_bits=7` and `interpolate_uvs=true`. Source vertices count
+once against the recipe's vertex limit; all encoded roots and containers share
+its output byte limit. The cache belongs to one recipe and keys source identity
+and settings. Publication writes content-addressed `.vgp` containers alongside
+the `.res` mesh or `.scn` scene. Collision uses an independent ordinary source.
 
 `run-recipe` accepts `external_render_resources=true` for static fragments.
 The host saves Shader, Material and Mesh resources under the output's

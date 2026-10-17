@@ -233,9 +233,9 @@ public:
 		RID get_virtual_geometry_raster_pipeline(uint32_t p_mode, RD::FramebufferFormatID p_format);
 		RID virtual_geometry_version;
 		RID virtual_geometry_composite_version;
-		PipelineCacheRD virtual_geometry_composite_pipelines[2];
-		bool virtual_geometry_composite_initialized[2] = {};
-		ShaderSpecialization virtual_geometry_composite_specialization[2] = {};
+		PipelineCacheRD virtual_geometry_composite_pipelines[8];
+		bool virtual_geometry_composite_initialized[8] = {};
+		ShaderSpecialization virtual_geometry_composite_specialization[8] = {};
 		PipelineDeferredRD virtual_geometry_pipeline;
 		bool virtual_geometry_attempted = false;
 		String virtual_geometry_error;
@@ -336,8 +336,8 @@ public:
 		bool is_valid() const;
 		RID get_virtual_geometry_shader(String &r_error);
 		RID get_virtual_geometry_pipeline() { return virtual_geometry_pipeline.get_rid(); }
-		RID get_virtual_geometry_composite_shader(bool p_separate_specular) const;
-		RID get_virtual_geometry_composite_pipeline(RD::FramebufferFormatID p_format, bool p_separate_specular, const ShaderSpecialization &p_specialization);
+		RID get_virtual_geometry_composite_shader(bool p_separate_specular, bool p_multiview = false) const;
+		RID get_virtual_geometry_composite_pipeline(RD::FramebufferFormatID p_format, bool p_separate_specular, const ShaderSpecialization &p_specialization, bool p_multiview = false, bool p_reflection = false);
 
 		SelfList<ShaderData> shader_list_element;
 		ShaderData();

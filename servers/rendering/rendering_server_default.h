@@ -369,6 +369,23 @@ public:
 	PackedByteArray virtual_geometry_get_feedback(uint64_t p_after_sequence) const override {
 		return RSG::mesh_storage->virtual_geometry_get_feedback(p_after_sequence);
 	}
+	PackedByteArray virtual_geometry_get_requests(uint64_t p_after_sequence) const override {
+		return RSG::mesh_storage->virtual_geometry_get_requests(p_after_sequence);
+	}
+	Error virtual_geometry_set_streaming_admission(const Callable &p_acquire, const Callable &p_received, const Callable &p_release) override;
+	Dictionary virtual_geometry_get_streaming_statistics() const override;
+	void virtual_geometry_shutdown_streaming() override;
+	Error virtual_geometry_initialize_streaming() override;
+
+#undef ServerName
+#undef server_name
+#define ServerName RenderingMethod
+#define server_name RSG::scene
+	FUNC1R(Error, virtual_geometry_prepare_materials, const TypedArray<RID> &)
+#undef ServerName
+#undef server_name
+#define ServerName RendererMeshStorage
+#define server_name RSG::mesh_storage
 
 	virtual RID mesh_create_from_surfaces(const Vector<RenderingServerTypes::SurfaceData> &p_surfaces, int p_blend_shape_count = 0) override {
 		RID mesh = RSG::mesh_storage->mesh_allocate();

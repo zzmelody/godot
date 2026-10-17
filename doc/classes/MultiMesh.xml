@@ -17,6 +17,10 @@
 		<link title="Animating thousands of fish with MultiMeshInstance">$DOCS_URL/tutorials/performance/vertex_animation/animating_thousands_of_fish.html</link>
 	</tutorials>
 	<methods>
+		<method name="prepare_virtual_geometry" qualifiers="const">
+			<return type="int" enum="Error" />
+			<description>Prepares a contained VirtualGeometryMesh on the main thread. Returns ERR_BUSY while mandatory pages are pending. Ordinary meshes return OK.</description>
+		</method>
 		<method name="get_aabb" qualifiers="const">
 			<return type="AABB" />
 			<description>

@@ -95,6 +95,8 @@ public:
 
 struct MFXTemporalContext {
 	MTLFX::TemporalScalerBase *scaler = nullptr;
+	bool reactive_requested = false;
+	bool reactive_enabled = false;
 	MFXTemporalContext() = default;
 	~MFXTemporalContext();
 };
@@ -107,6 +109,7 @@ class MFXTemporalEffect {
 		RDD::TextureID depth;
 		RDD::TextureID motion;
 		RDD::TextureID exposure;
+		RDD::TextureID reactive;
 		Vector2 jitter_offset;
 		RDD::TextureID dst;
 		bool reset = false;
@@ -117,24 +120,13 @@ class MFXTemporalEffect {
 				RDD::TextureID p_depth,
 				RDD::TextureID p_motion,
 				RDD::TextureID p_exposure,
+				RDD::TextureID p_reactive,
 				Vector2 p_jitter_offset,
 				RDD::TextureID p_dst,
 				const MFXTemporalContext &p_ctx,
-				bool p_reset) :
-				owner(p_owner),
-				scaler(p_ctx.scaler),
-				src(p_src),
-				depth(p_depth),
-				motion(p_motion),
-				exposure(p_exposure),
-				jitter_offset(p_jitter_offset),
-				dst(p_dst),
-				reset(p_reset) {}
+				bool p_reset);
 
-		static void free(CallbackArgs **p_args) {
-			(*p_args)->owner->args_allocator.free(*p_args);
-			*p_args = nullptr;
-		}
+		static void free(CallbackArgs **p_args);
 	};
 
 	PagedAllocator<CallbackArgs, true, 16> args_allocator;
@@ -151,7 +143,7 @@ public:
 		RDD::DataFormat input_format;
 		RDD::DataFormat depth_format;
 		RDD::DataFormat motion_format;
-		RDD::DataFormat reactive_format;
+		RDD::DataFormat reactive_format = RDD::DATA_FORMAT_MAX;
 		RDD::DataFormat output_format;
 		Vector2 motion_vector_scale;
 	};
@@ -163,6 +155,7 @@ public:
 		RID depth;
 		RID motion;
 		RID exposure;
+		RID reactive;
 		RID dst;
 		Vector2 jitter_offset;
 		bool reset = false;

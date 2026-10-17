@@ -2835,7 +2835,7 @@
 			Support for 32-bit image atomic operations.
 		</constant>
 		<constant name="SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX" value="16" enum="Features">
-			Support for unsigned 64-bit atomic minimum and maximum on storage buffers in both compute and fragment shaders. The integer and atomic device features are enabled when this feature is reported. This does not imply support for 64-bit image atomics or threadgroup atomics.
+			Support for unsigned 64-bit atomic minimum and maximum on storage buffers in both compute and fragment shaders. The integer and atomic device features are enabled when this feature is reported. Portable shaders must discard the operation's return value and use device scope with relaxed memory order. Metal requires MSL 2.4 and an Apple8 macOS GPU or Apple9 or newer GPU. This does not imply support for 64-bit image atomics or threadgroup atomics.
 		</constant>
 		<constant name="SUPPORTS_RAY_QUERY" value="11" enum="Features">
 			Support for ray query extension.

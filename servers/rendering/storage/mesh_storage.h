@@ -53,6 +53,7 @@ public:
 	virtual Error mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials) { return ERR_UNAVAILABLE; }
 	virtual Error virtual_geometry_submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads) { return ERR_UNAVAILABLE; }
 	virtual Vector<uint8_t> virtual_geometry_get_feedback(uint64_t p_after_sequence) const { return {}; }
+	virtual Vector<uint8_t> virtual_geometry_get_requests(uint64_t p_after_sequence) const { return {}; }
 	struct VirtualGeometryMaterials {
 		// Render-thread borrow. Asset replacement or destruction invalidates it.
 		Span<RID> rids;
@@ -63,9 +64,10 @@ public:
 			if (p_override.is_valid()) {
 				return p_override;
 			}
-			const uint32_t identity = identities[p_slot];
-			if (identity < uint32_t(p_overrides.size()) && p_overrides[identity].is_valid()) {
-				return p_overrides[identity];
+			// Mesh exposes compact resource surfaces. Original source identities
+			// remain model metadata, never indices for runtime override arrays.
+			if (p_slot < uint32_t(p_overrides.size()) && p_overrides[p_slot].is_valid()) {
+				return p_overrides[p_slot];
 			}
 			return rids[p_slot].is_valid() ? rids[p_slot] : p_default;
 		}

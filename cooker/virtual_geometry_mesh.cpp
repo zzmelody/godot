@@ -1,5 +1,10 @@
 #include "virtual_geometry_mesh.h"
 
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/multimesh_instance_3d.h"
+#include "scene/resources/multimesh.h"
+#include "scene/resources/packed_scene.h"
+
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "virtual_geometry/model_builder.h"
@@ -384,6 +389,7 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 		candidate.report["leaf_clusters"] = dag.leaf_count;
 		candidate.report["clusters"] = int64_t(geometry.clusters.size());
 		candidate.report["groups"] = int64_t(geometry.groups.size());
+		candidate.report["retained_boundary_groups"] = dag.retained_boundary_groups;
 		candidate.report["pages"] = int64_t(pages.directory.pages.size());
 		candidate.report["root_pages"] = hierarchy.root_pages;
 		candidate.report["verified_pages"] = int64_t(metadata.directory.pages.size());
@@ -397,6 +403,7 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 		candidate.report["builder_revision"] = GODOT_VERSION_HASH;
 		candidate.report["position_precision"] = geometry.position_precision;
 		candidate.report["max_position_error"] = geometry.max_position_error;
+		candidate.report["quantized_degenerate_triangles"] = int64_t(geometry.quantized_degenerate_triangles);
 		candidate.report["uv_sets"] = input.layout.uv_sets;
 		candidate.report["has_tangents"] = input.layout.has_tangents;
 		candidate.report["has_colors"] = input.layout.has_colors;
@@ -420,7 +427,11 @@ Error publish_container(const BuildOutput &p_output, const String &p_resource_pa
 	if (error != OK || DirAccess::dir_exists_absolute(path)) {
 		return error == OK ? ERR_ALREADY_EXISTS : error;
 	}
-	const String expected_hash = p_output.mesh->get_container_file().trim_prefix("geometry--").trim_suffix(".vgp");
+	unsigned char hash[32];
+	if (CryptoCore::sha256(p_output.container.data(), p_output.container.size(), hash) != OK) {
+		return ERR_CANT_CREATE;
+	}
+	const String expected_hash = String::hex_encode_buffer(hash, sizeof(hash));
 	if (CookerAtomicSave::occupied(path)) {
 		if (FileAccess::get_sha256(path) != expected_hash) {
 			return ERR_ALREADY_EXISTS;
@@ -451,6 +462,255 @@ Error publish_container(const BuildOutput &p_output, const String &p_resource_pa
 	entry["sha256"] = expected_hash;
 	r_files.push_back(entry);
 	return OK;
+}
+
+Error publish_resource_containers(const Ref<Resource> &p_resource, const std::map<ObjectID, BuildOutput> &p_builds,
+		const String &p_resource_path, uint64_t p_max_output_bytes, Array &r_files) {
+	Vector<Ref<VirtualGeometryMesh>> meshes;
+	HashSet<ObjectID> visited;
+	auto add_mesh = [&](const Ref<Mesh> &p_mesh) {
+		const Ref<VirtualGeometryMesh> mesh = p_mesh;
+		if (mesh.is_valid() && !visited.has(mesh->get_instance_id())) {
+			visited.insert(mesh->get_instance_id());
+			meshes.push_back(mesh);
+		}
+	};
+	add_mesh(p_resource);
+	const Ref<MultiMesh> multi = p_resource;
+	if (multi.is_valid()) {
+		add_mesh(multi->get_mesh());
+	}
+	const Ref<PackedScene> scene = p_resource;
+	if (scene.is_valid()) {
+		Node *root = scene->instantiate();
+		if (root == nullptr) {
+			return ERR_INVALID_DATA;
+		}
+		Vector<Node *> pending;
+		pending.push_back(root);
+		while (!pending.is_empty()) {
+			Node *node = pending[pending.size() - 1];
+			pending.resize(pending.size() - 1);
+			for (int child = 0; child < node->get_child_count(); ++child) {
+				pending.push_back(node->get_child(child));
+			}
+			if (const auto *instance = Object::cast_to<MeshInstance3D>(node)) {
+				add_mesh(instance->get_mesh());
+			}
+			if (const auto *instance = Object::cast_to<MultiMeshInstance3D>(node); instance != nullptr && instance->get_multimesh().is_valid()) {
+				add_mesh(instance->get_multimesh()->get_mesh());
+			}
+		}
+		memdelete(root);
+	}
+	HashSet<String> published;
+	uint64_t total = 0;
+	for (const Ref<VirtualGeometryMesh> &mesh : meshes) {
+		const String destination = p_resource_path.get_base_dir().path_join(mesh->get_container_file());
+		if (published.has(destination)) {
+			continue;
+		}
+		published.insert(destination);
+		if (mesh->get_container_bytes() > p_max_output_bytes - total) {
+			return ERR_OUT_OF_MEMORY;
+		}
+		total += mesh->get_container_bytes();
+		const auto found = p_builds.find(mesh->get_instance_id());
+		if (found != p_builds.end()) {
+			const Error error = publish_container(found->second, p_resource_path, 0, p_max_output_bytes, r_files);
+			if (error != OK) {
+				return error;
+			}
+			continue;
+		}
+		const String owner = mesh->get_path().get_slice("::", 0);
+		if (owner.is_empty()) {
+			return ERR_FILE_BAD_PATH;
+		}
+		const String source = owner.get_base_dir().path_join(mesh->get_container_file());
+		Error error = OK;
+		Ref<FileAccess> file = FileAccess::open(source, FileAccess::READ, &error);
+		if (file.is_null() || error != OK || file->get_length() != mesh->get_container_bytes()) {
+			return error != OK ? error : ERR_FILE_CORRUPT;
+		}
+		BuildOutput copy;
+		copy.mesh = mesh;
+		try {
+			copy.container.resize(mesh->get_container_bytes());
+		} catch (const std::bad_alloc &) {
+			return ERR_OUT_OF_MEMORY;
+		}
+		if (file->get_buffer(copy.container.data(), copy.container.size()) != copy.container.size()) {
+			return ERR_FILE_CANT_READ;
+		}
+		error = publish_container(copy, p_resource_path, 0, p_max_output_bytes, r_files);
+		if (error != OK) {
+			return error;
+		}
+	}
+	return OK;
+}
+
+namespace {
+bool automatic_material(const Ref<Material> &p_material) {
+	if (p_material.is_null()) {
+		return true;
+	}
+	const Ref<BaseMaterial3D> material = p_material;
+	if (material.is_null()) {
+		return false; // Authored shaders use the explicit material/bound contract.
+	}
+	const auto transparency = material->get_transparency();
+	return material->get_next_pass().is_null() &&
+			(transparency == BaseMaterial3D::TRANSPARENCY_DISABLED || transparency == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR || transparency == BaseMaterial3D::TRANSPARENCY_ALPHA_HASH) &&
+			material->get_alpha_antialiasing() == BaseMaterial3D::ALPHA_ANTIALIASING_OFF &&
+			material->get_shading_mode() != BaseMaterial3D::SHADING_MODE_PER_VERTEX && material->get_blend_mode() == BaseMaterial3D::BLEND_MODE_MIX &&
+			material->get_depth_draw_mode() != BaseMaterial3D::DEPTH_DRAW_DISABLED && material->get_depth_test() == BaseMaterial3D::DEPTH_TEST_DEFAULT &&
+			material->get_distance_fade() == BaseMaterial3D::DISTANCE_FADE_DISABLED && !material->is_proximity_fade_enabled() &&
+			material->get_billboard_mode() == BaseMaterial3D::BILLBOARD_DISABLED && !material->is_grow_enabled() &&
+			material->get_stencil_mode() == BaseMaterial3D::STENCIL_MODE_DISABLED &&
+			!material->get_feature(BaseMaterial3D::FEATURE_SUBSURFACE_SCATTERING) && !material->get_feature(BaseMaterial3D::FEATURE_SUBSURFACE_TRANSMITTANCE) &&
+			!material->get_feature(BaseMaterial3D::FEATURE_BENT_NORMAL_MAPPING) && !material->get_feature(BaseMaterial3D::FEATURE_REFRACTION) &&
+			!material->get_flag(BaseMaterial3D::FLAG_USE_POINT_SIZE) && !material->get_flag(BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST) &&
+			!material->get_flag(BaseMaterial3D::FLAG_FIXED_SIZE) && !material->get_flag(BaseMaterial3D::FLAG_PARTICLE_TRAILS_MODE) &&
+			!material->get_flag(BaseMaterial3D::FLAG_USE_Z_CLIP_SCALE) && !material->get_flag(BaseMaterial3D::FLAG_USE_FOV_OVERRIDE);
+}
+} // namespace
+
+Error convert_imported_scene(const Ref<Resource> &p_source, Ref<Resource> &r_resource,
+		std::map<ObjectID, BuildOutput> &r_builds, Dictionary &r_report, String &r_message,
+		const Settings *p_explicit_settings) {
+	r_resource = p_source;
+	const Ref<PackedScene> scene = p_source;
+	if (scene.is_null()) {
+		return OK; // Explicit source ArrayMesh/animation imports stay source data.
+	}
+	Node *root = scene->instantiate();
+	if (root == nullptr) {
+		return refuse(r_message, "virtual geometry import scene could not instantiate");
+	}
+	std::map<std::pair<ObjectID, bool>, Ref<Mesh>> converted;
+	Vector<Node *> pending;
+	pending.push_back(root);
+	Array policy;
+	uint64_t output_bytes = 0;
+	const uint64_t output_limit = p_explicit_settings != nullptr ? p_explicit_settings->max_output_bytes : 256ull * 1024 * 1024;
+	Error error = OK;
+	while (!pending.is_empty() && error == OK) {
+		Node *node = pending[pending.size() - 1];
+		pending.resize(pending.size() - 1);
+		for (int child = 0; child < node->get_child_count(); ++child) {
+			pending.push_back(node->get_child(child));
+		}
+		auto *instance = Object::cast_to<MeshInstance3D>(node);
+		auto *batch = Object::cast_to<MultiMeshInstance3D>(node);
+		Ref<Mesh> source;
+		if (instance != nullptr) {
+			source = instance->get_mesh();
+		} else if (batch != nullptr && batch->get_multimesh().is_valid()) {
+			source = batch->get_multimesh()->get_mesh();
+		}
+		if (source.is_null() || Ref<VirtualGeometryMesh>(source).is_valid()) {
+			continue;
+		}
+		String reason;
+		bool preserve_area = false;
+		uint64_t triangles = 0;
+		if (source->get_blend_shape_count() != 0 || (instance != nullptr && instance->get_skin().is_valid())) {
+			reason = "deforming_mesh";
+		}
+		for (int surface = 0; surface < source->get_surface_count(); ++surface) {
+			const uint64_t format = source->surface_get_format(surface);
+			if (source->surface_get_primitive_type(surface) != Mesh::PRIMITIVE_TRIANGLES || (format & (Mesh::ARRAY_FORMAT_BONES | Mesh::ARRAY_FORMAT_WEIGHTS)) != 0) {
+				reason = "non_static_triangles";
+			}
+			const uint32_t indices = source->surface_get_array_index_len(surface);
+			triangles += (indices != 0 ? indices : source->surface_get_array_len(surface)) / 3;
+			if (p_explicit_settings == nullptr && (!automatic_material(source->surface_get_material(surface)) || (instance != nullptr && !automatic_material(instance->get_surface_override_material(surface))))) {
+				reason = "material_requires_explicit_policy";
+			}
+			for (const Ref<Material> &candidate : { source->surface_get_material(surface), instance != nullptr ? instance->get_surface_override_material(surface) : Ref<Material>() }) {
+				const Ref<BaseMaterial3D> material = candidate;
+				preserve_area |= material.is_valid() && material->get_transparency() != BaseMaterial3D::TRANSPARENCY_DISABLED;
+			}
+		}
+		auto *geometry = Object::cast_to<GeometryInstance3D>(node);
+		if ((p_explicit_settings == nullptr && !automatic_material(geometry->get_material_override())) || geometry->get_material_overlay().is_valid()) {
+			reason = "instance_material_requires_explicit_policy";
+		}
+		const Ref<BaseMaterial3D> override_material = geometry->get_material_override();
+		preserve_area |= override_material.is_valid() && override_material->get_transparency() != BaseMaterial3D::TRANSPARENCY_DISABLED;
+		if (p_explicit_settings != nullptr && !reason.is_empty()) {
+			error = refuse(r_message, "explicit scene virtual geometry refused: " + reason);
+			break;
+		}
+		if (p_explicit_settings != nullptr) {
+			preserve_area = p_explicit_settings->dag.preserve_area;
+		}
+		if (p_explicit_settings == nullptr && triangles < 8192 && reason.is_empty()) {
+			reason = "below_triangle_threshold";
+		}
+		Dictionary record;
+		record["node"] = String(root->get_path_to(node));
+		record["source_triangles"] = int64_t(triangles);
+		if (reason.is_empty()) {
+			const auto key = std::make_pair(source->get_instance_id(), preserve_area);
+			const auto previous = converted.find(key);
+			Ref<Mesh> replacement;
+			if (previous != converted.end()) {
+				replacement = previous->second;
+			} else {
+				Settings settings = p_explicit_settings != nullptr ? *p_explicit_settings : Settings();
+				settings.dag.preserve_area = preserve_area;
+				if (p_explicit_settings == nullptr) {
+					settings.max_source_vertices = 2000000;
+				}
+				settings.max_output_bytes = output_limit - output_bytes;
+				BuildOutput built;
+				error = build(source, settings, built, r_message);
+				if (error != OK) {
+					break;
+				}
+				output_bytes += built.container.size() + uint64_t(int64_t(built.report["root_bytes"]));
+				if (output_bytes > output_limit) {
+					error = refuse(r_message, "scene virtual geometry exceeds its complete output budget", ERR_OUT_OF_MEMORY);
+					break;
+				}
+				replacement = built.mesh;
+				r_builds.emplace(built.mesh->get_instance_id(), std::move(built));
+				converted.emplace(key, replacement);
+			}
+			if (instance != nullptr) {
+				instance->set_mesh(replacement);
+			} else {
+				// Duplicate only the MultiMesh container. Its source instance data
+				// remains unchanged and the replacement Mesh is shared per model.
+				Ref<MultiMesh> multi = batch->get_multimesh()->duplicate();
+				multi->set_mesh(replacement);
+				batch->set_multimesh(multi);
+			}
+			record["representation"] = "virtual_geometry";
+		} else {
+			record["representation"] = "ordinary";
+			record["reason"] = reason;
+		}
+		policy.push_back(record);
+	}
+	if (error == OK && !converted.empty()) {
+		Ref<PackedScene> output;
+		output.instantiate();
+		error = output->pack(root);
+		if (error == OK) {
+			r_resource = output;
+		}
+	}
+	memdelete(root);
+	r_report["policy"] = p_explicit_settings != nullptr ? "explicit_static_scene_v1" : "dense_static_surface_v1";
+	r_report["triangle_threshold"] = p_explicit_settings != nullptr ? 0 : 8192;
+	r_report["converted_meshes"] = int64_t(converted.size());
+	r_report["encoded_bytes"] = int64_t(output_bytes);
+	r_report["nodes"] = policy;
+	return error;
 }
 
 } // namespace CookerVirtualGeometry

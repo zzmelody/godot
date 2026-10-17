@@ -7,6 +7,7 @@
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select_dispatch.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/virtual_geometry_storage.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_work_memory.h"
 
 class RenderGeometryInstance;
 
@@ -25,16 +26,22 @@ public:
 		RenderGeometryInstance *source_instance = nullptr;
 		RID transforms;
 		Transform3D model;
+		Transform3D previous_model;
 		uint32_t count = 1;
 		uint32_t stride = 0;
 		uint32_t transform_offset = 0;
+		uint32_t previous_transform_offset = 0;
 		RID material_override;
 		Vector<RID> surface_materials;
 		uint32_t layer_mask = 1;
+		uint32_t render_flags = 0;
+		uint32_t gi_offset = UINT32_MAX;
+		Rect2 lightmap_uv_scale;
 		float max_vertex_displacement = 0.0f;
 		int32_t shader_uniforms_offset = -1;
 		bool has_color = false;
 		bool has_custom = false;
+		bool shadow_double_sided = false;
 	};
 	struct Result {
 		Batch batch;
@@ -43,15 +50,18 @@ public:
 		RID dispatch;
 		uint32_t words = 0;
 		uint32_t selected_capacity = 0;
+		uint32_t root_capacity = 0;
 	};
 
-	void begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size);
+	void begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size, uint32_t p_shadow_flags = 0, float p_shadow_far = 0);
 	Error record(const Batch &p_batch);
+	void use_root_coverage();
 	Span<Result> get_results() const { return Span<Result>(results.ptr(), used); }
 	uint64_t get_buffer_bytes() const;
 	~VirtualGeometrySelection();
 
 private:
+	VirtualGeometryWorkMemory memory;
 	static constexpr uint32_t MAX_WORK_ITEMS = 1048576;
 	VirtualGeometrySelectShaderRD shader;
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
@@ -68,6 +78,7 @@ private:
 	float lod_scale = 0;
 	float frustum_margin = 0;
 	bool orthographic = false;
+	uint32_t shadow_flags = 0;
 };
 
 } // namespace RendererRD

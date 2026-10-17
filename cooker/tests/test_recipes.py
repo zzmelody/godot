@@ -83,7 +83,7 @@ class RecipeTests(unittest.TestCase):
         report = json.loads(next(line for line in run.stdout.splitlines() if line.startswith('{')))
         self.assertEqual(report["script_languages"], 0)
         self.assertEqual(report["recipe_runtime"]["version"], "0.738")
-        self.assertEqual(report["recipe_runtime"]["api_version"], 10)
+        self.assertEqual(report["recipe_runtime"]["api_version"], 11)
         for name in ("field", "sample", "field_info", "points", "child_names", "children", "parts"):
             self.assertIn(name, report["recipe_runtime"]["apis"])
         self.assertIn("scene", report["recipe_runtime"]["apis"])

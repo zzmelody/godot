@@ -30,6 +30,11 @@
 
 #include "packed_scene.h"
 
+#include "servers/rendering/rendering_server.h"
+#ifndef _3D_DISABLED
+#include "scene/resources/material.h"
+#endif
+
 #include "core/config/engine.h"
 #include "core/io/file_access.h"
 #include "core/io/missing_resource.h"
@@ -48,7 +53,11 @@
 
 #ifndef _3D_DISABLED
 #include "scene/3d/node_3d.h"
+#include "scene/resources/3d/virtual_geometry_mesh.h"
+#include "scene/resources/multimesh.h"
 #endif // _3D_DISABLED
+
+#include <functional>
 
 #define PACKED_SCENE_VERSION 3
 
@@ -1456,7 +1465,168 @@ String SceneState::get_path() const {
 	return path;
 }
 
+Error SceneState::prepare_virtual_geometry() {
+#ifndef _3D_DISABLED
+	if (!virtual_geometry_collected) {
+		virtual_geometry_meshes.clear();
+		virtual_geometry_materials.clear();
+		virtual_geometry_overlay = false;
+		Vector<Ref<SceneState>> pending;
+		HashSet<ObjectID> visited;
+		HashSet<ObjectID> meshes;
+		HashMap<ObjectID, HashMap<String, int>> indexes;
+		bool invalid_inheritance = false;
+		std::function<Ref<Mesh>(const Ref<SceneState> &, const String &, uint32_t, bool &)> resolve_mesh;
+		resolve_mesh = [&](const Ref<SceneState> &state, const String &node_path, uint32_t depth, bool &found) -> Ref<Mesh> {
+			found = false;
+			if (state.is_null()) {
+				return Ref<Mesh>();
+			}
+			if (depth > 64) {
+				invalid_inheritance = true;
+				return Ref<Mesh>();
+			}
+			auto &index = indexes[state->get_instance_id()];
+			if (index.is_empty()) {
+				for (int node_index = 0; node_index < state->nodes.size(); ++node_index) {
+					String lookup_path = String(state->get_node_path(node_index));
+					if (lookup_path != "." && !lookup_path.begins_with("./")) {
+						lookup_path = "./" + lookup_path;
+					}
+					index.insert(lookup_path, node_index);
+				}
+			}
+			const int *local = index.getptr(node_path);
+			if (local) {
+				for (const NodeData::Property &property : state->nodes[*local].properties) {
+					const StringName name = state->names[property.name & FLAG_PROP_NAME_MASK];
+					if (name != SNAME("mesh") && name != SNAME("multimesh")) {
+						continue;
+					}
+					found = true; // Explicit null/ordinary overrides also stop inheritance.
+					const Ref<Mesh> mesh = state->variants[property.value];
+					const Ref<MultiMesh> multi = state->variants[property.value];
+					return multi.is_valid() ? multi->get_mesh() : mesh;
+				}
+			}
+			String ancestor = node_path;
+			while (true) {
+				// Recursion can grow indexes. Do not retain a map pointer across it.
+				const int *ancestor_index = indexes[state->get_instance_id()].getptr(ancestor);
+				if (ancestor_index) {
+					const NodeData &node = state->nodes[*ancestor_index];
+					if (node.instance >= 0 && (node.instance & FLAG_INSTANCE_IS_PLACEHOLDER) == 0) {
+						const Ref<PackedScene> nested = state->variants[node.instance & FLAG_MASK];
+						if (nested.is_valid()) {
+							const String relative = ancestor == node_path ? "." : "." + node_path.substr(ancestor.length());
+							const Ref<Mesh> mesh = resolve_mesh(nested->get_state(), relative, depth + 1, found);
+							if (found) {
+								return mesh;
+							}
+						}
+					}
+				}
+				if (ancestor == ".") {
+					break;
+				}
+				ancestor = ancestor.get_base_dir();
+				if (ancestor.is_empty()) {
+					ancestor = ".";
+				}
+			}
+			return resolve_mesh(state->get_base_scene_state(), node_path, depth + 1, found);
+		};
+		pending.push_back(Ref<SceneState>(this));
+		while (!pending.is_empty()) {
+			const Ref<SceneState> current = pending[pending.size() - 1];
+			pending.resize(pending.size() - 1);
+			if (visited.has(current->get_instance_id())) {
+				continue;
+			}
+			visited.insert(current->get_instance_id());
+			for (int node_index = 0; node_index < current->nodes.size(); ++node_index) {
+				const NodeData &node = current->nodes[node_index];
+				String lookup_path = String(current->get_node_path(node_index));
+				if (lookup_path != "." && !lookup_path.begins_with("./")) {
+					lookup_path = "./" + lookup_path;
+				}
+				bool found = false;
+				const Ref<VirtualGeometryMesh> mesh = resolve_mesh(current, lookup_path, 0, found);
+				if (mesh.is_null()) {
+					continue;
+				}
+				if (!meshes.has(mesh->get_instance_id())) {
+					meshes.insert(mesh->get_instance_id());
+					virtual_geometry_meshes.push_back(mesh);
+				}
+				for (const NodeData::Property &property : node.properties) {
+					const String name = current->names[property.name & FLAG_PROP_NAME_MASK];
+					if (name != "material_override" && name != "material_overlay" && !name.begins_with("surface_material_override/")) {
+						continue;
+					}
+					const Ref<Material> material = current->variants[property.value];
+					if (material.is_null()) {
+						continue;
+					}
+					virtual_geometry_overlay |= name == "material_overlay";
+					virtual_geometry_materials.push_back(material);
+				}
+			}
+			for (const Variant &value : current->variants) {
+				if (value.get_type() != Variant::OBJECT) {
+					continue;
+				}
+				Ref<VirtualGeometryMesh> mesh = value;
+				const Ref<MultiMesh> multi = value;
+				if (multi.is_valid()) {
+					mesh = multi->get_mesh();
+				}
+				if (mesh.is_valid() && !meshes.has(mesh->get_instance_id())) {
+					meshes.insert(mesh->get_instance_id());
+					virtual_geometry_meshes.push_back(mesh);
+				}
+				const Ref<PackedScene> nested = value;
+				if (nested.is_valid()) {
+					pending.push_back(nested->get_state());
+				}
+			}
+		}
+		ERR_FAIL_COND_V_MSG(invalid_inheritance, ERR_CYCLIC_LINK, "Virtual geometry scene inheritance exceeds the bounded preparation depth.");
+		virtual_geometry_collected = true;
+	}
+	ERR_FAIL_COND_V_MSG(virtual_geometry_overlay, ERR_UNAVAILABLE, "Virtual geometry does not support a material overlay.");
+	if (!virtual_geometry_materials.is_empty() && RS::get_singleton()->get_rendering_device() != nullptr) {
+		TypedArray<RID> materials;
+		for (const Ref<Material> &material : virtual_geometry_materials) {
+			materials.push_back(material->get_rid());
+		}
+		const Error error = RS::get_singleton()->virtual_geometry_prepare_materials(materials);
+		if (error != OK) {
+			return error;
+		}
+	}
+	bool waiting = false;
+	for (const Ref<VirtualGeometryMesh> &mesh : virtual_geometry_meshes) {
+		const Error error = mesh->prepare_virtual_geometry();
+		if (error == ERR_BUSY) {
+			waiting = true;
+		} else if (error != OK) {
+			return error;
+		}
+	}
+	return waiting ? ERR_BUSY : OK;
+#else
+	return OK;
+#endif
+}
+
 void SceneState::clear() {
+#ifndef _3D_DISABLED
+	virtual_geometry_meshes.clear();
+	virtual_geometry_materials.clear();
+	virtual_geometry_overlay = false;
+	virtual_geometry_collected = false;
+#endif
 	names.clear();
 	variants.clear();
 	nodes.clear();
@@ -1676,6 +1846,12 @@ bool SceneState::is_connection(int p_node, const StringName &p_signal, int p_to_
 }
 
 void SceneState::set_bundled_scene(const Dictionary &p_dictionary) {
+#ifndef _3D_DISABLED
+	virtual_geometry_meshes.clear();
+	virtual_geometry_materials.clear();
+	virtual_geometry_overlay = false;
+	virtual_geometry_collected = false;
+#endif
 	ERR_FAIL_COND(!p_dictionary.has("names"));
 	ERR_FAIL_COND(!p_dictionary.has("variants"));
 	ERR_FAIL_COND(!p_dictionary.has("node_count"));
@@ -2324,6 +2500,12 @@ int SceneState::add_name(const StringName &p_name) {
 }
 
 int SceneState::add_value(const Variant &p_value) {
+#ifndef _3D_DISABLED
+	virtual_geometry_meshes.clear();
+	virtual_geometry_materials.clear();
+	virtual_geometry_overlay = false;
+	virtual_geometry_collected = false;
+#endif
 	variants.push_back(p_value);
 	return variants.size() - 1;
 }
@@ -2496,6 +2678,10 @@ Error PackedScene::pack(Node *p_scene) {
 	return state->pack(p_scene);
 }
 
+Error PackedScene::prepare_virtual_geometry() {
+	return state->prepare_virtual_geometry();
+}
+
 void PackedScene::clear() {
 	state->clear();
 }
@@ -2634,6 +2820,7 @@ void PackedScene::reset_state() {
 }
 void PackedScene::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("pack", "path"), &PackedScene::pack);
+	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry"), &PackedScene::prepare_virtual_geometry);
 	ClassDB::bind_method(D_METHOD("instantiate", "edit_state"), &PackedScene::instantiate, DEFVAL(GEN_EDIT_STATE_DISABLED));
 	ClassDB::bind_method(D_METHOD("can_instantiate"), &PackedScene::can_instantiate);
 	ClassDB::bind_method(D_METHOD("_set_bundled_scene", "scene"), &PackedScene::_set_bundled_scene);

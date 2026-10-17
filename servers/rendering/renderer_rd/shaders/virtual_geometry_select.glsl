@@ -90,6 +90,11 @@ void initialize_instance(uint id) {
 }
 
 bool in_frustum(vec3 lower, vec3 upper, mat4 transform) {
+	if ((uint(params.lod.z) & 4u) != 0u) {
+		// The existing scene culler owns the hemisphere caster set. Linear clip
+		// intervals cannot reject a nonlinear paraboloid projection safely.
+		return true;
+	}
 	// Expand each clip-plane interval by a world-axis displacement cube. This
 	// preserves all instance columns and needs no inverse for sheared instances.
 	vec4 displacement = vec4(0.0);
@@ -106,7 +111,7 @@ bool in_frustum(vec3 lower, vec3 upper, mat4 transform) {
 		float extent = (1.0 + params.lod.w) * clip.w;
 		uint mask = (clip.x < -extent - side_padding.x ? 1u : 0u) | (clip.x > extent + side_padding.x ? 2u : 0u) |
 				(clip.y < -extent - side_padding.y ? 4u : 0u) | (clip.y > extent + side_padding.y ? 8u : 0u) |
-				(clip.z < -displacement.z ? 16u : 0u) | (clip.z > clip.w + displacement.z + displacement.w ? 32u : 0u);
+				(clip.z < -displacement.z ? 16u : 0u) | ((uint(params.lod.z) & 2u) == 0u && clip.z > clip.w + displacement.z + displacement.w ? 32u : 0u);
 		outside &= mask;
 	}
 	return outside == 0u;
@@ -162,6 +167,19 @@ void visit_node(uint id) {
 			continue;
 		}
 		uint count = metadata.data[part_word + 3u];
+		// Bounded selected-page use feedback drives host eviction order. Missing
+		// requests retain a separate queue and cannot be displaced by these hits.
+		uint group_word = params.offsets.z + metadata.data[part_word] * 2u;
+		uint page_first = metadata.data[group_word];
+		uint page_count = metadata.data[group_word + 1u];
+		for (uint page = page_first; page < page_first + page_count; ++page) {
+			uint hit = atomicAdd(work.data[12], 1u);
+			if (hit < 128u) {
+				uint used_word = request_base() + params.limits.w * 2u + hit * 2u;
+				work.data[used_word] = page;
+				work.data[used_word + 1u] = floatBitsToUint(-1.0);
+			}
+		}
 		uint first = atomicAdd(work.data[2], count);
 		if (first > params.limits.y || count > params.limits.y - first) {
 			atomicOr(work.data[4], 2u);
@@ -215,6 +233,10 @@ void main() {
 		for (uint cluster = 0u; cluster < count; ++cluster) {
 			select_cluster(id / params.source.w, (slot << 8u) | cluster, true);
 		}
+	} else if (phase.mode == 7u && id == 0u) {
+		atomicOr(work.data[4], 1u);
+		work.data[7] = (work.data[4] & 24u) != 0u ? 0u : work.data[6];
+		work.data[11] = root_base();
 	} else if (phase.mode == 6u && id == 0u) {
 		// A remaining frontier means the validated depth contract was exceeded.
 		if (work.data[1u - (phase.round & 1u)] != 0u) { atomicOr(work.data[4], 1u); }

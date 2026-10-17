@@ -63,6 +63,7 @@ public:
 	/* PIPELINES */
 
 	virtual void mesh_generate_pipelines(RID p_mesh, bool p_background_compilation) = 0;
+	virtual Error virtual_geometry_prepare_materials(const TypedArray<RID> &p_materials) { return ERR_UNAVAILABLE; }
 	virtual uint32_t get_pipeline_compilations(RSE::PipelineSource p_source) = 0;
 
 	/* SDFGI UPDATE */

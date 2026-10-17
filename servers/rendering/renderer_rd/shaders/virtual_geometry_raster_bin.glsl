@@ -20,7 +20,14 @@ shared uint active_triangles;
 
 void main() {
 	uint index = gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u;
+#ifdef VG_GLOBAL_RASTER
+	if (index >= vg_raster_bucket_count() || work.data[1] != 0u || atomicOr(vg_status.data[0], 0u) != 0u) {
+		return;
+	}
+	index = vg_raster_input(index);
+#else
 	if (index >= work.data[7]) { return; }
+#endif
 	uint lane = gl_LocalInvocationIndex;
 	uvec2 selected = vg_selected(index);
 	uint record = vg_record(selected.y);
@@ -59,23 +66,40 @@ void main() {
 	}
 	barrier();
 	if (lane == 0u) {
+#ifndef VG_GLOBAL_RASTER
 		uint visible_word = scene.data[1] + (raster_info.raster.z + index) * 2u;
 		scene.data[visible_word] = raster_info.source_base + selected.x;
 		scene.data[visible_word + 1u] = selected.y;
+#endif
 		if (active_triangles == 0u) {
 			return;
 		}
 		vec4 sphere = uintBitsToFloat(uvec4(geometry.data[record + 12u], geometry.data[record + 13u], geometry.data[record + 14u], geometry.data[record + 15u]));
+#ifdef VG_GLOBAL_RASTER
+		float scale = uintBitsToFloat(scene.data[vg_source_word(selected.x) + 50u]);
+#else
 		float scale = uintBitsToFloat(work.data[instance_base() + selected.x * 16u + 13u]);
+#endif
 		// UE SmallEnoughToDraw hardware threshold, default MinPixelsPerEdgeHW=32.
 		// Prototype derives maximum edge from decoded geometry on the GPU;
 		// it is not a per-cluster CPU draw or a stored UE half-float field.
 		bool hardware = needs_hardware != 0u || projected_edge(selected.x, sphere, instance_transform(selected.x)) <
 				scale * uintBitsToFloat(maximum_edge) * params.lod.y / 32.0;
 		uint count_word = hardware ? 0u : 1u;
+#ifdef VG_GLOBAL_RASTER
+		count_word += vg_raster_bin_header();
+		uint position = atomicAdd(bins.data[count_word], 1u);
+		if (position < vg_raster_bucket_count()) {
+			bins.data[vg_raster_bin_base() + (hardware ? 0u : vg_raster_bucket_count()) + position] = index;
+		} else {
+			atomicOr(bins.data[vg_raster_bin_header() + 2u], 1u);
+			atomicOr(vg_status.data[0], 4u);
+		}
+#else
 		uint position = atomicAdd(bins.data[count_word], 1u);
 		if (position < raster_info.raster.w) {
 			bins.data[4u + (hardware ? 0u : raster_info.raster.w) + position] = index;
 		} else { atomicOr(bins.data[2], 1u); }
+#endif
 	}
 }

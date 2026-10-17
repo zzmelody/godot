@@ -384,7 +384,13 @@ public:
 	Error mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials) override;
 	Error virtual_geometry_submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads) override;
 	Vector<uint8_t> virtual_geometry_get_feedback(uint64_t p_after_sequence) const override;
+	Vector<uint8_t> virtual_geometry_get_requests(uint64_t p_after_sequence) const override;
+	Error record_virtual_geometry_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity) {
+		return virtual_geometry.record_requests(p_mesh, p_generation, p_work, p_word, p_capacity);
+	}
 	void update_virtual_geometry();
+	bool reserve_virtual_geometry_work(uint64_t p_bytes) { return virtual_geometry.reserve_view_work(p_bytes); }
+	void retire_virtual_geometry_work(uint64_t p_bytes) { virtual_geometry.retire_view_work(p_bytes); }
 	const VirtualGeometryStorage::Bindings *mesh_get_virtual_geometry(RID p_mesh) const { return virtual_geometry.get_bindings(p_mesh); }
 	VirtualGeometryMaterials mesh_get_virtual_geometry_materials(RID p_mesh) const override { return virtual_geometry.get_materials(p_mesh); }
 

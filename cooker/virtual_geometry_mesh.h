@@ -7,6 +7,7 @@
 #include "scene/resources/3d/virtual_geometry_mesh.h"
 
 #include <vector>
+#include <map>
 
 namespace CookerVirtualGeometry {
 
@@ -36,6 +37,21 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 // because another output can already reference it. No manifest is published.
 Error publish_container(const BuildOutput &p_output, const String &p_resource_path,
 		uint64_t p_serialized_resource_bytes, uint64_t p_max_output_bytes, Array &r_files);
+
+// Publish sidecars for meshes directly owned by a Mesh/MultiMesh/PackedScene.
+// Existing input roots copy their admitted immutable container to the new
+// owner directory. No source resource path or acquired file is changed.
+Error publish_resource_containers(const Ref<Resource> &p_resource, const std::map<ObjectID, BuildOutput> &p_builds,
+		const String &p_resource_path, uint64_t p_max_output_bytes, Array &r_files);
+
+// Default PackedScene import policy. Dense static opaque/masked meshes use the same
+// builder as the explicit recipe. Unsupported/deforming/skinned inputs retain
+// their ordinary representation and receive an explicit policy report. Explicit
+// recipe settings convert all static triangle meshes and preserve shared
+// MultiMesh placements; invalid geometry refuses the complete output.
+Error convert_imported_scene(const Ref<Resource> &p_source, Ref<Resource> &r_resource,
+		std::map<ObjectID, BuildOutput> &r_builds, Dictionary &r_report, String &r_message,
+		const Settings *p_explicit_settings = nullptr);
 
 } // namespace CookerVirtualGeometry
 

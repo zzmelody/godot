@@ -297,70 +297,76 @@ DagBuildResult reduce_group(const DagBuildSettings &p_settings, const std::vecto
 	GeometryGroup group;
 	group.children = p_children;
 	const SimplificationInput merged = merge_children(r_dag, p_children, group.clamped_external_edges);
-	const uint32_t wanted = static_cast<uint32_t>((merged.mesh.materials.size() + 255) / 256);
-	group.target_parents = wanted;
+	const uint32_t initial_parents = static_cast<uint32_t>((merged.mesh.materials.size() + 255) / 256);
+	const uint32_t max_parents = std::max(initial_parents, static_cast<uint32_t>(p_children.size() - 1));
 	std::vector<GeometryCluster> parents;
-	for (uint32_t target_size = 126; target_size > 64; target_size -= 2) {
-		++group.attempts;
-		SimplifiedMesh simplified;
-		if (static_cast<uint64_t>(wanted) * target_size >= merged.mesh.materials.size()) {
-			simplified.mesh = merged.mesh;
-			simplified.attributes = merged.attributes;
-			simplified.external_edges = merged.external_edges;
-			simplified.report.reached_target = true;
-		} else {
-			SimplificationSettings settings;
-			settings.target_triangles = wanted * target_size;
-			settings.max_edge_length_factor = p_settings.max_edge_length_factor;
-			settings.preserve_area = p_settings.preserve_area;
-			const SimplificationResult result = simplify_mesh(merged, settings, simplified);
-			if (result.error != SimplificationError::OK) {
-				DagBuildResult error;
-				error.error = DagBuildError::SIMPLIFICATION;
-				error.group = group_id;
-				error.simplification_result = result;
-				return error;
+	DagBuildResult refusal;
+	refusal.error = DagBuildError::RETRY_EXHAUSTED;
+	refusal.group = group_id;
+	for (uint32_t wanted = initial_parents; wanted <= max_parents; ++wanted) {
+		group.target_parents = wanted;
+		for (uint32_t target_size = 126; target_size > 64; target_size -= 2) {
+			++group.attempts;
+			SimplifiedMesh simplified;
+			if (static_cast<uint64_t>(wanted) * target_size >= merged.mesh.materials.size()) {
+				simplified.mesh = merged.mesh;
+				simplified.attributes = merged.attributes;
+				simplified.external_edges = merged.external_edges;
+				simplified.report.reached_target = true;
+			} else {
+				SimplificationSettings settings;
+				settings.target_triangles = wanted * target_size;
+				settings.max_edge_length_factor = p_settings.max_edge_length_factor;
+				settings.preserve_area = p_settings.preserve_area;
+				const SimplificationResult result = simplify_mesh(merged, settings, simplified);
+				if (result.error != SimplificationError::OK) {
+					DagBuildResult error;
+					error.error = DagBuildError::SIMPLIFICATION;
+					error.group = group_id;
+					error.simplification_result = result;
+					return error;
+				}
 			}
+			if (simplified.report.locked_position_moves != 0 || simplified.report.fallback_removed_triangles != 0) {
+				// A lower triangle target cannot restore a boundary already removed.
+				// Retry from the original merge with less aggressive reduction.
+				refusal.error = simplified.report.locked_position_moves != 0 ? DagBuildError::BOUNDARY_CHANGE : DagBuildError::FALLBACK_REMOVAL;
+				refusal.simplification_report = simplified.report;
+				break;
+			}
+			if (wanted == 1) {
+				GeometryCluster parent;
+				parent.mesh = std::move(simplified.mesh);
+				parent.attributes = std::move(simplified.attributes);
+				parent.external_edges = std::move(simplified.external_edges);
+				bound_cluster(parent);
+				parents.push_back(std::move(parent));
+			} else {
+				MeshLeafClusters split;
+				const LeafResult result = build_leaf_clusters(simplified.mesh, split, TriangleValidation::BUILD_INTERMEDIATE, simplified.external_edges);
+				if (result.error != LeafError::OK) {
+					DagBuildResult error;
+					error.error = DagBuildError::LEAF_BUILD;
+					error.group = group_id;
+					error.leaf_result = result;
+					return error;
+				}
+				if (split.clusters.size() > wanted) {
+					continue;
+				}
+				for (const auto &leaf : split.clusters) {
+					parents.push_back(materialize_cluster(simplified.mesh, simplified.attributes, r_dag.layout.scalar_count(), leaf));
+				}
+			}
+			group.simplification = simplified.report;
+			break;
 		}
-		if (simplified.report.locked_position_moves != 0 || simplified.report.fallback_removed_triangles != 0) {
-			DagBuildResult error;
-			error.error = simplified.report.locked_position_moves != 0 ? DagBuildError::BOUNDARY_CHANGE : DagBuildError::FALLBACK_REMOVAL;
-			error.group = group_id;
-			error.simplification_report = simplified.report;
-			return error;
+		if (!parents.empty()) {
+			break;
 		}
-		if (wanted == 1) {
-			GeometryCluster parent;
-			parent.mesh = std::move(simplified.mesh);
-			parent.attributes = std::move(simplified.attributes);
-			parent.external_edges = std::move(simplified.external_edges);
-			bound_cluster(parent);
-			parents.push_back(std::move(parent));
-		} else {
-			MeshLeafClusters split;
-			const LeafResult result = build_leaf_clusters(simplified.mesh, split, TriangleValidation::BUILD_INTERMEDIATE, simplified.external_edges);
-			if (result.error != LeafError::OK) {
-				DagBuildResult error;
-				error.error = DagBuildError::LEAF_BUILD;
-				error.group = group_id;
-				error.leaf_result = result;
-				return error;
-			}
-			if (split.clusters.size() > wanted) {
-				continue;
-			}
-			for (const auto &leaf : split.clusters) {
-				parents.push_back(materialize_cluster(simplified.mesh, simplified.attributes, r_dag.layout.scalar_count(), leaf));
-			}
-		}
-		group.simplification = simplified.report;
-		break;
 	}
 	if (parents.empty()) {
-		DagBuildResult error;
-		error.error = DagBuildError::RETRY_EXHAUSTED;
-		error.group = group_id;
-		return error;
+		return refusal;
 	}
 	std::vector<GeometrySphere> draw_spheres;
 	std::vector<GeometrySphere> lod_spheres;
@@ -443,24 +449,45 @@ DagBuildResult build(const GeometryBuildInput &p_input, const DagBuildSettings &
 		for (const auto &children : groups) {
 			const DagBuildResult reduced = reduce_group(p_settings, children, candidate, next);
 			if (reduced.error != DagBuildError::OK) {
+				if (reduced.error == DagBuildError::BOUNDARY_CHANGE || reduced.error == DagBuildError::FALLBACK_REMOVAL || reduced.error == DagBuildError::RETRY_EXHAUSTED) {
+					// Keep this complete cut while other groups continue reducing.
+					// Root page capacity/admission still applies to the larger set.
+					candidate.root_clusters.insert(candidate.root_clusters.end(), children.begin(), children.end());
+					++candidate.retained_boundary_groups;
+					continue;
+				}
 				return reduced;
 			}
 		}
-		if (next.empty() || next.size() >= level.size()) {
-			return { DagBuildError::NO_PROGRESS };
+		if (next.empty()) {
+			level.clear();
+			break;
+		}
+		if (next.size() >= level.size()) {
+			level = std::move(next);
+			break;
 		}
 		level = std::move(next);
 	}
-	candidate.root_cluster = level.front();
+	candidate.root_clusters.insert(candidate.root_clusters.end(), level.begin(), level.end());
+	std::sort(candidate.root_clusters.begin(), candidate.root_clusters.end());
 	candidate.root_group = static_cast<uint32_t>(candidate.groups.size());
-	auto &root = candidate.clusters[candidate.root_cluster];
-	root.group = candidate.root_group;
 	GeometryGroup root_group;
 	root_group.root = true;
-	root_group.children.push_back(candidate.root_cluster);
-	root_group.bounds = root.bounds;
-	root_group.max_parent_error = std::max(1e10, root.lod_error);
-	root_group.level = root.level + 1;
+	root_group.children = candidate.root_clusters;
+	root_group.max_parent_error = 1e10;
+	std::vector<GeometrySphere> root_bounds;
+	std::vector<GeometrySphere> root_lod_bounds;
+	for (uint32_t id : candidate.root_clusters) {
+		auto &root = candidate.clusters[id];
+		root.group = candidate.root_group;
+		root_bounds.push_back(root.bounds);
+		root_lod_bounds.push_back(root.lod_bounds);
+		root_group.max_parent_error = std::max(root_group.max_parent_error, root.lod_error);
+		root_group.level = std::max(root_group.level, root.level + 1);
+	}
+	root_group.bounds = sphere_union(root_bounds);
+	root_group.lod_bounds = sphere_union(root_lod_bounds);
 	candidate.groups.push_back(std::move(root_group));
 	r_dag = std::move(candidate);
 	return {};

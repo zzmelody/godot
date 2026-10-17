@@ -103,8 +103,13 @@ geometry. It writes `ArrayMesh` or `PackedScene`; USD animation export, payloads
 arbitrary polygon tessellation and USD texture networks are not supported.
 Supply `material_overrides={bark=...,leaves=...}` with Cooker material resources.
 Luau `options` declares `prototype_triangles`, `bark_triangles`, `leaf_triangles`
-(integers 32..500000). Branches are compacted before expansion; the whole mesh
-is compacted again and receives native screen-space index LODs. All local USD
+  (0 or integers 32..500000) for explicit `ArrayMesh` source transport. `PackedScene`
+  uses complete shared prototypes and MultiMesh placements, including the prototype
+  root transform and `invisibleIds`; nonzero reduction budgets refuse. Dense eligible
+  static meshes automatically use virtual geometry. Small or unsupported materials
+  retain their ordinary representation with a policy reason. ArrayMesh branches are
+  compacted before expansion; the whole mesh is compacted again and receives native
+  screen-space index LODs. All local USD
 layer bytes participate in verified cache fingerprints. USD support is linked
 only into Cooker, on Windows and macOS, without external PXR/Python executables.
 `import-texture` optionally accepts `max_texture_dimension`, a power of two from

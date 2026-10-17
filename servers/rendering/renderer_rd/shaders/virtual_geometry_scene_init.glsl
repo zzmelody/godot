@@ -18,6 +18,15 @@ layout(set = 0, binding = 3, std140) uniform Parameters {
 layout(set = 0, binding = 4, std430) readonly buffer Work { uint data[]; } work;
 #define VG_SCENE_WRITE
 #include "virtual_geometry_scene_inc.glsl"
+layout(set = 0, binding = 26, std430) buffer PreviousSources {
+	uint data[];
+}
+previous_sources;
+layout(set = 0, binding = 27, std140) uniform PreviousBatch {
+	mat4 model;
+	uvec4 info;
+}
+previous_batch;
 layout(push_constant, std430) uniform SourceParameters {
 	uint first;
 	uint material_map;
@@ -25,19 +34,37 @@ layout(push_constant, std430) uniform SourceParameters {
 	uint has_custom;
 	uint shader_uniforms;
 	uint layers;
+	uint visible_base;
+	uint visible_capacity;
+	uint material_slots;
+	uint render_flags;
+	uint gi_offset;
+	uint reserved;
+	vec4 lightmap_uv_scale;
+	uvec4 identity;
 } source_info;
 
-void main() {
-	uint instance = (gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u) * 64u + gl_LocalInvocationIndex;
+void vg_initialize_source(uint instance) {
 	if (instance >= params.source.x || (work.data[4] & 16u) != 0u) { return; }
 	mat4 local = mat4(1.0);
 	vec4 color = vec4(1.0);
 	vec4 custom = vec4(0.0);
+	mat4 previous_local = mat4(1.0);
+	vec4 previous_color = vec4(1.0);
+	vec4 previous_custom = vec4(0.0);
 	if (params.source.y != 0u) {
 		uint word = (instance + params.source.z) * params.source.y;
 		local = transpose(mat4(transforms.data[word], transforms.data[word + 1u], transforms.data[word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
 		if (source_info.has_color != 0u) { color = transforms.data[word + 3u]; }
 		if (source_info.has_custom != 0u) { custom = transforms.data[word + 3u + source_info.has_color]; }
+		uint previous_word = (instance + previous_batch.info.x) * params.source.y;
+		previous_local = transpose(mat4(transforms.data[previous_word], transforms.data[previous_word + 1u], transforms.data[previous_word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
+		if (source_info.has_color != 0u) {
+			previous_color = transforms.data[previous_word + 3u];
+		}
+		if (source_info.has_custom != 0u) {
+			previous_custom = transforms.data[previous_word + 3u + source_info.has_color];
+		}
 	}
 	mat4 world = params.model * local;
 	mat4 world_rows = transpose(world);
@@ -60,4 +87,46 @@ void main() {
 	scene.data[output_word + 45u] = source_info.shader_uniforms;
 	scene.data[output_word + 46u] = source_info.layers;
 	scene.data[output_word + 47u] = source_info.material_map;
+	scene.data[output_word + 48u] = params.offsets.w;
+	scene.data[output_word + 49u] = work.data[16u + instance * 16u + 12u];
+	scene.data[output_word + 50u] = work.data[16u + instance * 16u + 13u];
+	scene.data[output_word + 51u] = 0u;
+	scene.data[output_word + 52u] = source_info.material_slots;
+	scene.data[output_word + 53u] = source_info.render_flags;
+	scene.data[output_word + 54u] = source_info.gi_offset;
+	scene.data[output_word + 55u] = 0u;
+	for (uint channel = 0u; channel < 4u; ++channel) {
+		scene.data[output_word + 56u + channel] = floatBitsToUint(source_info.lightmap_uv_scale[channel]);
+	}
+	for (uint reserved = 60u; reserved < 64u; ++reserved) {
+		scene.data[output_word + reserved] = source_info.identity[reserved - 60u];
+	}
+	mat4 previous_rows = transpose(previous_batch.model * previous_local);
+	uint history_word = (source_info.first + instance) * 24u;
+	for (uint row = 0u; row < 3u; ++row) {
+		for (uint column = 0u; column < 4u; ++column) {
+			previous_sources.data[history_word + row * 4u + column] = floatBitsToUint(previous_rows[row][column]);
+		}
+	}
+	for (uint channel = 0u; channel < 4u; ++channel) {
+		previous_sources.data[history_word + 12u + channel] = floatBitsToUint(previous_color[channel]);
+		previous_sources.data[history_word + 16u + channel] = floatBitsToUint(previous_custom[channel]);
+		previous_sources.data[history_word + 20u + channel] = 0u;
+	}
+}
+
+void main() {
+	uint index = (gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u) * 64u + gl_LocalInvocationIndex;
+	vg_initialize_source(index);
+	if (index < source_info.visible_capacity) {
+		uint word = scene.data[1] + (source_info.visible_base + index) * 2u;
+		if ((work.data[4] & 16u) == 0u && index < min(work.data[7], source_info.visible_capacity)) {
+			uint selected = work.data[11] + index * 2u;
+			scene.data[word] = source_info.first + work.data[selected];
+			scene.data[word + 1u] = work.data[selected + 1u];
+		} else {
+			scene.data[word] = 0xffffffffu;
+			scene.data[word + 1u] = 0xffffffffu;
+		}
+	}
 }

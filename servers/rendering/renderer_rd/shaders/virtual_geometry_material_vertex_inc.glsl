@@ -11,14 +11,20 @@ layout(set = 0, binding = 12, std140) uniform View {
 	vec4 dimensions;
 	vec4 state;
 	uvec4 flags;
+	vec4 eye_offset;
 }
 vg_view;
+layout(set = 0, binding = 28, std140) uniform FrameHistory {
+	mat4 previous_projection;
+	mat4 previous_view;
+	mat4 previous_inverse_view;
+	mat4 main_camera;
+	vec4 state;
+}
+vg_history_view;
 #define SAMPLERS_BINDING_FIRST_INDEX 32
 #include "samplers_inc.glsl"
-layout(set = 0, binding = 15, std430) buffer ViewStatus {
-	uint data[];
-}
-vg_status;
+#include "virtual_geometry_status_inc.glsl"
 #ifndef VG_RASTER_MATERIALS
 layout(set = 0, binding = 13, std430) readonly buffer RasterMaterials {
 	uint data[];
@@ -38,13 +44,19 @@ bool vg_killed;
 bool vg_front_facing;
 vec4 vg_fragcoord;
 mat4 read_model_matrix, modelview, projection_matrix;
+mat4 inverse_projection_matrix, vg_world_to_view, vg_camera;
 mat3 model_normal_matrix, modelview_normal;
 vec3 vertex, normal_highp, tangent, binormal, view_highp;
 vec2 uv_interp, uv2_interp;
 vec4 color_interp, instance_custom;
+vec4 vg_instance_color;
+float vg_time;
+bool vg_previous_evaluation = false;
+bool vg_previous_invalid = false;
 vec3 albedo_highp, emission, backlight, normal_map;
 float alpha_highp, metallic_highp, roughness_highp, specular, normal_map_depth;
 float ao, ao_light_affect, rim, rim_tint, clearcoat, clearcoat_roughness, anisotropy;
+float alpha_scissor_threshold, alpha_hash_scale;
 vec2 anisotropy_flow;
 
 void vg_discard() {
@@ -64,11 +76,16 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 	binormal = cross(normal_highp, tangent) * value.tangent.w;
 	uv_interp = value.uv[0];
 	uv2_interp = value.uv[1];
-	color_interp = value.color * vg_source_vector(source, 36u);
+	color_interp = value.color * vg_instance_color;
+	roughness_highp = value.roughness;
 	vg_user_vertex();
 	vec3 offset = mat3(read_model_matrix) * (vertex - value.position);
 	if (any(isnan(offset)) || any(isinf(offset))) {
-		atomicOr(vg_status.data[0], 1u);
+		if (vg_previous_evaluation) {
+			vg_previous_invalid = true;
+		} else {
+			atomicOr(vg_status.data[0], 1u);
+		}
 	} else {
 		float maximum = uintBitsToFloat(raster_materials.data[VG_MATERIAL_INDEX * 4u + 1u]);
 		if (maximum > 0.0) {
@@ -81,6 +98,7 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 	value.uv[0] = uv_interp;
 	value.uv[1] = uv2_interp;
 	value.color = color_interp;
+	value.roughness = roughness_highp;
 	vg_corners[corner] = vg_varyings;
 }
 void vg_setup_vertex(uint source) {
@@ -90,6 +108,13 @@ void vg_setup_vertex(uint source) {
 	model_normal_matrix = mat3(vg_source_matrix(source, 24u));
 	modelview_normal = mat3(vg_view.view) * model_normal_matrix;
 	projection_matrix = vg_view.projection;
+	inverse_projection_matrix = vg_view.inverse_projection;
+	vg_world_to_view = vg_view.view;
+	vg_camera = vg_view.inverse_view;
 	instance_custom = vg_source_vector(source, 40u);
+	vg_instance_color = vg_source_vector(source, 36u);
+	vg_time = vg_view.state.x;
+	vg_previous_evaluation = false;
+	vg_previous_invalid = false;
 	roughness_highp = 1.0;
 }

@@ -38,6 +38,7 @@
 #include "servers/rendering/renderer_scene_cull.h"
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server_globals.h"
+#include "servers/rendering/virtual_geometry_streaming.h"
 
 #ifndef XR_DISABLED
 #include "servers/xr/xr_server.h"
@@ -290,9 +291,12 @@ void RenderingServerDefault::init() {
 		server_thread = Thread::MAIN_ID;
 		_init();
 	}
+	memnew(VirtualGeometryStreaming);
 }
 
 void RenderingServerDefault::finish() {
+	VirtualGeometryStreaming *streaming = VirtualGeometryStreaming::get_singleton();
+	streaming->stop();
 	if (create_thread) {
 		command_queue.push(this, &RenderingServerDefault::_finish);
 		command_queue.push(this, &RenderingServerDefault::_thread_exit);
@@ -304,6 +308,7 @@ void RenderingServerDefault::finish() {
 	} else {
 		_finish();
 	}
+	memdelete(streaming);
 }
 
 /* STATUS INFORMATION */
@@ -454,6 +459,7 @@ void RenderingServerDefault::sync() {
 
 void RenderingServerDefault::draw(bool p_present, double frame_step) {
 	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "Manually triggering the draw function from the RenderingServer can only be done on the main thread. Call this function from the main thread or use call_deferred().");
+	VirtualGeometryStreaming::get_singleton()->update();
 	// Needs to be done before changes is reset to 0, to not force the editor to redraw.
 	RS::get_singleton()->emit_signal(SNAME("frame_pre_draw"));
 	changes = 0;
@@ -484,4 +490,23 @@ RenderingServerDefault::RenderingServerDefault(bool p_create_thread) {
 }
 
 RenderingServerDefault::~RenderingServerDefault() {
+}
+
+Error RenderingServerDefault::virtual_geometry_set_streaming_admission(const Callable &p_acquire, const Callable &p_received, const Callable &p_release) {
+	return VirtualGeometryStreaming::get_singleton()->set_admission(p_acquire, p_received, p_release);
+}
+
+Dictionary RenderingServerDefault::virtual_geometry_get_streaming_statistics() const {
+	ERR_FAIL_COND_V(!Thread::is_main_thread(), Dictionary());
+	return VirtualGeometryStreaming::get_singleton()->get_statistics();
+}
+
+void RenderingServerDefault::virtual_geometry_shutdown_streaming() {
+	ERR_FAIL_COND(!Thread::is_main_thread());
+	VirtualGeometryStreaming::get_singleton()->stop();
+}
+
+Error RenderingServerDefault::virtual_geometry_initialize_streaming() {
+	ERR_FAIL_COND_V(!Thread::is_main_thread(), ERR_UNAUTHORIZED);
+	return get_rendering_device() == nullptr ? OK : VirtualGeometryStreaming::get_singleton()->initialize();
 }

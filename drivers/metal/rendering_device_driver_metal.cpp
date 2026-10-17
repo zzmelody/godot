@@ -2803,6 +2803,8 @@ bool RenderingDeviceDriverMetal::has_feature(Features p_feature) {
 			return true;
 		case SUPPORTS_IMAGE_ATOMIC_32_BIT:
 			return device_properties->features.supports_native_image_atomics;
+		case SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX:
+			return device_properties->features.supports_buffer_atomic_uint64_min_max;
 		case SUPPORTS_VULKAN_MEMORY_MODEL:
 			return true;
 		case SUPPORTS_POINT_SIZE:

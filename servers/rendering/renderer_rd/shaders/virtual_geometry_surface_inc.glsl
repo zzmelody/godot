@@ -1,6 +1,7 @@
 // Static surface input reconstruction. The caller provides geometry and scene.
 // Material evaluation, deformation, previous positions and output are separate.
 #include "virtual_geometry_attributes_inc.glsl"
+#include "virtual_geometry_projection_inc.glsl"
 
 struct VGBarycentrics {
 	vec3 value;
@@ -62,6 +63,7 @@ struct VGSurface {
 	vec3 tangent;
 	vec3 binormal;
 	vec4 color;
+	float roughness;
 	vec2 uv[4];
 	vec2 uv_dx[4];
 	vec2 uv_dy[4];
@@ -90,7 +92,11 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 #ifdef VG_EVALUATE_VERTEX
 		VG_EVALUATE_VERTEX(v[corner], visible.x, corner);
 #endif
+#ifdef VG_EVALUATE_VERTEX
+		vec4 clip = vg_view_clip((model_view * vec4(v[corner].position, 1.0)).xyz, projection, vg_view.flags.y, vg_view.state.z);
+#else
 		vec4 clip = projection * model_view * vec4(v[corner].position, 1.0);
+#endif
 		clip.xy += jitter * clip.w;
 		clips[corner] = vg_snap_clip(clip, size);
 	}
@@ -143,6 +149,7 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 	candidate.world_dx = mat3(model) * (v[0].position * bx.x + v[1].position * bx.y + v[2].position * bx.z);
 	candidate.world_dy = mat3(model) * (v[0].position * by.x + v[1].position * by.y + v[2].position * by.z);
 	candidate.color = v[0].color * b.x + v[1].color * b.y + v[2].color * b.z;
+	candidate.roughness = v[0].roughness * b.x + v[1].roughness * b.y + v[2].roughness * b.z;
 #ifndef VG_EVALUATE_VERTEX
 	candidate.color *= vg_source_vector(visible.x, 36u);
 #endif

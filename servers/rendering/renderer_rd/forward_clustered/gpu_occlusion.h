@@ -48,6 +48,8 @@ public:
 	uint64_t get_buffer_bytes() const { return uint64_t(capacity) * 16 + uint64_t(command_capacity) * 60; }
 	uint64_t get_hierarchy_bytes() const;
 	bool has_history() const { return history_valid; }
+	RID get_hierarchy(bool p_previous) const { return hierarchy[p_previous ? 1 - write_index : write_index]; }
+	const Projection &get_projection(bool p_previous) const { return p_previous ? previous_projection : projection; }
 	static constexpr uint32_t MAX_CANDIDATES = 1048576;
 
 private:

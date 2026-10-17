@@ -4326,10 +4326,9 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 				if (!metadata_materials.rids.is_empty()) {
 					bool cast_shadows = false;
 					for (uint32_t index = 0; index < metadata_materials.rids.size(); ++index) {
-						const uint32_t identity = metadata_materials.identities[index];
 						RID mat = metadata_materials.rids[index];
-						if (p_instance->base_type == RSE::INSTANCE_MESH && identity < uint32_t(p_instance->materials.size()) && p_instance->materials[identity].is_valid()) {
-							mat = p_instance->materials[identity];
+						if (p_instance->base_type == RSE::INSTANCE_MESH && index < uint32_t(p_instance->materials.size()) && p_instance->materials[index].is_valid()) {
+							mat = p_instance->materials[index];
 						}
 						if (mat.is_null()) {
 							cast_shadows = true;

@@ -8,6 +8,7 @@ struct VGVertex {
 	vec3 normal;
 	vec4 tangent;
 	vec4 color;
+	float roughness;
 	vec2 uv[4];
 };
 
@@ -72,6 +73,7 @@ VGVertex vg_vertex(uint reference, uint vertex) {
 		result.tangent = vec4(vg_decode_tangent(code & ((1u << tangent_bits) - 1u), result.normal, tangent_bits), (code & (1u << tangent_bits)) != 0u ? -1.0 : 1.0);
 	}
 	result.color = vec4(1.0);
+	result.roughness = 1.0;
 	for (uint channel = 0u; channel < 4u; ++channel) {
 		uint origin = (geometry.data[record + 39u] >> (channel * 8u)) & 255u;
 		uint count = (color_widths >> (channel * 4u)) & 15u;

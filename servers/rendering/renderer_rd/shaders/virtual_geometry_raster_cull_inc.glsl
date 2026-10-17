@@ -25,7 +25,14 @@ bool vg_cull_material(uint payload, bool front_facing) {
 
 bool vg_raster_material_active(uvec2 selected, uint triangle) {
 #ifdef VG_RASTER_MATERIALS
-	uint material = vg_material_reference(uvec2(raster_info.source_base + selected.x, selected.y), triangle);
+	uint material = vg_material_reference(uvec2(
+#ifdef VG_GLOBAL_RASTER
+												  selected.x,
+#else
+												  raster_info.source_base + selected.x,
+#endif
+												  selected.y),
+			triangle);
 	if (raster_info.material != 0xffffffffu) {
 		return material == raster_info.material;
 	}

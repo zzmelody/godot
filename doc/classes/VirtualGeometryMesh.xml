@@ -5,11 +5,23 @@
 	</brief_description>
 	<description>
 		Stores validated VGMR root metadata and a relative page-container filename. Detailed pages are not loaded or expanded by this resource. The standard Mesh array API cannot expand its geometry; collision and navigation use separately prepared resources.
-		This build implements metadata storage and serialization only. GPU installation and rendering are not connected. Requesting a rendering RID reports an error and returns an invalid RID.
+		On Forward+, requesting a rendering RID registers the typed root and queues its mandatory pages. Detailed pages follow bounded GPU demand. [method prepare_virtual_geometry] can delay scene publication until the complete root set has reached the GPU. Unsupported renderer capabilities fail explicitly. The Cooker/headless Dummy stores typed metadata without GPU readiness.
 	</description>
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="get_streaming_error" qualifiers="const">
+			<return type="int" enum="Error" />
+			<description>Returns the root preparation error, or [constant OK] while its owner remains valid. Query [method is_render_ready] separately for completion.</description>
+		</method>
+		<method name="is_render_ready" qualifiers="const">
+			<return type="bool" />
+			<description>Returns whether all mandatory root pages have completed GPU publication. Dummy metadata preparation does not return GPU readiness.</description>
+		</method>
+		<method name="prepare_virtual_geometry" qualifiers="const">
+			<return type="int" enum="Error" />
+			<description>Starts typed installation on the main thread. Returns [constant ERR_BUSY] while admission or root publication is pending, [constant OK] when prepared, and another error on failure. Dummy preparation is data-only.</description>
+		</method>
 		<method name="get_geometry_data" qualifiers="const">
 			<return type="Dictionary" />
 			<description>
@@ -26,7 +38,7 @@
 			<return type="int" enum="Error" />
 			<param index="0" name="data" type="Dictionary" />
 			<description>
-				Accepts exactly four fields: [code]root[/code] (VGMR PackedByteArray), [code]container[/code] (a local lowercase filename ending in [code].vgp[/code]), [code]container_bytes[/code] (positive integer), and [code]materials[/code] (one Material or null per dense root slot). Root bytes are limited to 64 MiB and decoded metadata to 256 MiB. Configuration checks metadata without reading the container or hashing files. Failure preserves the entire previous configuration. Call on the main thread.
+				Accepts exactly four fields: [code]root[/code] (VGMR PackedByteArray), [code]container[/code] (a local lowercase filename ending in [code].vgp[/code]), [code]container_bytes[/code] (positive integer), and [code]materials[/code] (one Material or null per dense root slot). Root bytes are limited to 64 MiB and decoded metadata to 256 MiB. Configuration checks metadata without reading the container or hashing files. Failure preserves the entire previous configuration. A root with a rendering identity is immutable; prepare a new resource for transactional replacement. Call on the main thread.
 			</description>
 		</method>
 	</methods>
