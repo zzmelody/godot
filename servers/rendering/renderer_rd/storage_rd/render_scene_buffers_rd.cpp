@@ -219,8 +219,6 @@ void RenderSceneBuffersRD::configure(const RenderSceneBuffersConfiguration *p_co
 
 	vrs_mode = texture_storage->render_target_get_vrs_mode(render_target);
 
-	update_samplers();
-
 	// cleanout any old buffers we had.
 	cleanup();
 
@@ -229,11 +227,12 @@ void RenderSceneBuffersRD::configure(const RenderSceneBuffersConfiguration *p_co
 			external_temporal = ExternalTemporalUpscaler::create(internal_size, target_size);
 		}
 		if (!external_temporal) {
-			ERR_PRINT("External temporal configuration rejected before camera jitter; using bilinear for this configuration.");
+			WARN_PRINT("External temporal configuration rejected before camera jitter; using bilinear for this configuration.");
 			scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
 			use_taa = false;
 		}
 	}
+	update_samplers();
 
 	// Create our color buffer.
 	const bool resolve_target = msaa_3d != RSE::VIEWPORT_MSAA_DISABLED;

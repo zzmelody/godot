@@ -54,7 +54,9 @@ ExternalTemporalUpscaler *ExternalTemporalUpscaler::create(const Size2i &p_inter
 	config.device = rd->get_driver_resource(RD::DRIVER_RESOURCE_LOGICAL_DEVICE);
 	config.physical_device = rd->get_driver_resource(RD::DRIVER_RESOURCE_PHYSICAL_DEVICE);
 	void *candidate = provider.create(&config);
-	ERR_FAIL_NULL_V_MSG(candidate, nullptr, "External temporal upscaler context creation failed.");
+	if (!candidate) {
+		return nullptr;
+	}
 	ExternalTemporalUpscaler *result = memnew(ExternalTemporalUpscaler);
 	result->context = candidate;
 	result->element = contexts.push_back(result);

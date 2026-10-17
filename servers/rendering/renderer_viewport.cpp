@@ -154,7 +154,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 						p_viewport->msaa_3d == RSE::VIEWPORT_MSAA_DISABLED && !p_viewport->transparent_bg;
 #endif
 				if (!supported) {
-					ERR_PRINT("External temporal upscaling requires its provider, Vulkan Forward+, one view, no MSAA and an opaque viewport.");
+					WARN_PRINT("External temporal upscaling requires its provider, Vulkan Forward+, one view, no MSAA and an opaque viewport.");
 					scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
 					scaling_type = RSE::VIEWPORT_SCALING_3D_TYPE_SPATIAL;
 				}
@@ -215,7 +215,9 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			}
 
 			bool scaling_3d_is_not_bilinear = scaling_3d_mode != RSE::VIEWPORT_SCALING_3D_MODE_OFF && scaling_3d_mode != RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
-			bool use_taa = p_viewport->use_taa;
+			// External SR owns jitter, including configurations that fall back
+			// before a context can be created. Do not leave unjittered TAA active.
+			bool use_taa = p_viewport->use_taa && p_viewport->scaling_3d_mode != RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL;
 
 			if (scaling_3d_is_not_bilinear && scaling_3d_scale >= (1.0 + EPSILON)) {
 				// FSR, MetalFX, and nearest-neighbor scaling are not designed for downsampling.
@@ -1428,6 +1430,9 @@ void RendererViewport::viewport_set_transparent_background(RID p_viewport, bool 
 
 	RSG::texture_storage->render_target_set_transparent(viewport->render_target, p_enabled);
 	viewport->transparent_bg = p_enabled;
+	if (viewport->scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL) {
+		_configure_3d_render_buffers(viewport);
+	}
 }
 
 void RendererViewport::viewport_set_global_canvas_transform(RID p_viewport, const Transform2D &p_transform) {
