@@ -52,6 +52,15 @@ const VirtualGeometryStorage::Bindings *VirtualGeometryStorage::get_bindings(RID
 	return found != nullptr && (*found)->roots_published == (*found)->root.hierarchy.root_pages ? &(*found)->bindings : nullptr;
 }
 
+VirtualGeometryStorage::Materials VirtualGeometryStorage::get_materials(RID p_mesh) const {
+	Asset *const *found = assets.getptr(p_mesh);
+	if (found == nullptr) {
+		return {};
+	}
+	const Asset &asset = **found;
+	return { Span<RID>(asset.materials.ptr(), asset.materials.size()), Span<uint32_t>(asset.root.materials.data(), asset.root.materials.size()) };
+}
+
 void VirtualGeometryStorage::_prune_outcomes() {
 	const uint64_t consumed = acknowledged.load(std::memory_order_acquire);
 	uint32_t first = 0;
@@ -188,7 +197,7 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	}
 	const uint32_t table_byte = (uint32_t(p_root.size()) + 15) & ~15u;
 	const uint64_t gpu_bytes = table_byte + uint64_t(root.hierarchy.pages.size()) * 4;
-	const uint64_t charge = sizeof(Asset) + root_memory(root) + uint64_t(p_materials.size()) * sizeof(Variant) + uint64_t(root.hierarchy.pages.size()) * 9;
+	const uint64_t charge = sizeof(Asset) + root_memory(root) + uint64_t(p_materials.size()) * sizeof(RID) + uint64_t(root.hierarchy.pages.size()) * 9;
 	if (charge + gpu_bytes > metadata_budget - metadata_reserved || gpu_bytes > UINT32_MAX || pool.is_null() || uint64_t(root.hierarchy.root_pages) * UNIT_BYTES > pool_bytes) {
 		return ERR_OUT_OF_MEMORY;
 	}
@@ -215,7 +224,10 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	asset->mesh = p_mesh;
 	asset->generation = p_generation;
 	asset->root = std::move(root);
-	asset->materials = p_materials.duplicate();
+	asset->materials.resize(p_materials.size());
+	for (int index = 0; index < p_materials.size(); ++index) {
+		asset->materials.write[index] = p_materials[index];
+	}
 	asset->metadata = charge;
 	asset->gpu_bytes = gpu_bytes;
 	asset->bindings = { metadata, pool, table_byte / 4, p_generation };

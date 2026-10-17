@@ -6,6 +6,7 @@
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_dispatch.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_sw.glsl.gen.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_selection.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_shading.h"
 
 namespace RendererRD {
 
@@ -14,9 +15,10 @@ namespace RendererRD {
 // This stage does not evaluate materials or merge ordinary scene depth yet.
 class VirtualGeometryRasterizer {
 public:
-	Error record(const Size2i &p_size, const Vector2 &p_jitter, Span<VirtualGeometrySelection::Result> p_sources);
+	Error record(const Size2i &p_size, const Vector2 &p_jitter, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material);
 	RID get_visibility() const { return ready ? visibility : RID(); }
 	uint64_t get_buffer_bytes() const;
+	const VirtualGeometryShading &get_shading() const { return shading; }
 	~VirtualGeometryRasterizer();
 
 private:
@@ -41,8 +43,9 @@ private:
 	LocalVector<Slot> slots;
 	Size2i size;
 	bool ready = false;
+	VirtualGeometryShading shading;
 
-	Error _prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources);
+	Error _prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material);
 };
 
 } // namespace RendererRD

@@ -28,6 +28,12 @@ public:
 		uint32_t count = 1;
 		uint32_t stride = 0;
 		uint32_t transform_offset = 0;
+		RID material_override;
+		Vector<RID> surface_materials;
+		uint32_t layer_mask = 1;
+		int32_t shader_uniforms_offset = -1;
+		bool has_color = false;
+		bool has_custom = false;
 	};
 	struct Result {
 		Batch batch;

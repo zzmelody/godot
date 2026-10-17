@@ -30,6 +30,8 @@
 
 #include "mesh_storage.h"
 
+#include "material_storage.h"
+
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
@@ -228,6 +230,12 @@ Error MeshStorage::mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, 
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	if (mesh == nullptr || mesh->surface_count != 0 || mesh->blend_shape_count != 0) {
 		return ERR_INVALID_PARAMETER;
+	}
+	for (int index = 0; index < p_materials.size(); ++index) {
+		const RID material = p_materials[index];
+		if (material.is_valid() && !MaterialStorage::get_singleton()->owns_material(material)) {
+			return ERR_INVALID_PARAMETER;
+		}
 	}
 	AABB bounds;
 	const Error error = virtual_geometry.register_mesh(p_mesh, p_generation, p_root, p_materials, bounds);

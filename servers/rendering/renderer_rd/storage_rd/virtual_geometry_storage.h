@@ -32,6 +32,11 @@ public:
 		uint32_t root_clusters = 0;
 		uint32_t pages = 0;
 	};
+	struct Materials {
+		// Render-thread borrow. Asset replacement or destruction invalidates it.
+		Span<RID> rids;
+		Span<uint32_t> identities;
+	};
 
 private:
 	struct Asset;
@@ -75,7 +80,7 @@ private:
 		bool destroyed = false;
 		Bindings bindings;
 		VirtualGeometry::GeometryModelRoot root;
-		TypedArray<RID> materials;
+		Vector<RID> materials;
 		HashMap<uint32_t, Page *> pages;
 		std::vector<uint8_t> committed;
 		std::vector<uint32_t> physical_slots;
@@ -174,6 +179,7 @@ public:
 	// Render-thread borrow, valid only while the Mesh RID remains owned. A null
 	// result means the complete root set has not finished GPU publication.
 	const Bindings *get_bindings(RID p_mesh) const;
+	Materials get_materials(RID p_mesh) const;
 	Error set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes);
 	Error register_mesh(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials, AABB &r_bounds);
 	void release_mesh(RID p_mesh);

@@ -39,7 +39,7 @@ VirtualGeometryRasterizer::~VirtualGeometryRasterizer() {
 	}
 }
 
-Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources) {
+Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material) {
 	RD *rd = RD::get_singleton();
 	ERR_FAIL_COND_V(!rd->has_feature(RD::SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX), ERR_UNAVAILABLE);
 	ERR_FAIL_COND_V(p_size.x <= 0 || p_size.y <= 0 || uint64_t(p_size.x) * p_size.y > UINT32_MAX / 8, ERR_INVALID_PARAMETER);
@@ -61,6 +61,10 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 		framebuffer = rd->framebuffer_create_empty(size);
 	}
 	ERR_FAIL_COND_V(visibility.is_null() || framebuffer.is_null(), ERR_CANT_CREATE);
+	const Error shade_error = shading.prepare(p_size, p_sources, p_default_material, visibility, p_sources.is_empty() ? RID() : p_sources[0].batch.geometry.geometry);
+	if (shade_error != OK) {
+		return shade_error;
+	}
 	if (bin_version.is_null()) {
 		Vector<String> modes;
 		modes.push_back("");
@@ -107,7 +111,8 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 		const RD::Uniform bins(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { slot.bins });
 		const RD::Uniform pixels(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { visibility });
 		const RD::Uniform arguments(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { slot.arguments });
-		slot.build_uniforms = cache->get_cache(bin_shader.version_get_shader(bin_version, 0), 0, geometry, parameters, work, bins);
+		const RD::Uniform scene(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() });
+		slot.build_uniforms = cache->get_cache(bin_shader.version_get_shader(bin_version, 0), 0, geometry, parameters, work, bins, scene);
 		slot.dispatch_uniforms = cache->get_cache(dispatch_shader.version_get_shader(dispatch_version, 0), 0, work, bins, arguments);
 		slot.software_uniforms = cache->get_cache(software_shader.version_get_shader(software_version, 0), 0, geometry, parameters, work, bins, pixels);
 		slot.hardware_uniforms = cache->get_cache(hardware_shader.version_get_shader(hardware_version, 0), 0, geometry, parameters, work, bins, pixels);
@@ -116,14 +121,15 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 	return OK;
 }
 
-Error VirtualGeometryRasterizer::record(const Size2i &p_size, const Vector2 &p_jitter, Span<VirtualGeometrySelection::Result> p_sources) {
+Error VirtualGeometryRasterizer::record(const Size2i &p_size, const Vector2 &p_jitter, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material) {
 	ready = false;
-	const Error error = _prepare(p_size, p_sources);
+	const Error error = _prepare(p_size, p_sources, p_default_material);
 	if (error != OK) {
 		return error;
 	}
 	RD *rd = RD::get_singleton();
 	rd->buffer_clear(visibility, 0, uint64_t(size.x) * size.y * 8);
+	shading.record_sources(p_sources);
 	uint32_t base = 0;
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const Slot &slot = slots[index];
@@ -132,8 +138,9 @@ Error VirtualGeometryRasterizer::record(const Size2i &p_size, const Vector2 &p_j
 		struct RasterParameters {
 			uint32_t raster[4];
 			float jitter[2];
-		} raster = { { uint32_t(size.x), uint32_t(size.y), base, source.selected_capacity }, { float(p_jitter.x), float(p_jitter.y) } };
-		static_assert(sizeof(RasterParameters) == 24);
+			uint32_t source_base;
+		} raster = { { uint32_t(size.x), uint32_t(size.y), base, source.selected_capacity }, { float(p_jitter.x), float(p_jitter.y) }, shading.get_source_base(index) };
+		static_assert(sizeof(RasterParameters) == 28);
 		rd->draw_command_begin_label("Virtual Geometry Mixed Raster");
 		RENDER_TIMESTAMP("Virtual Geometry Raster Bins Begin");
 		RD::ComputeListID list = rd->compute_list_begin();
@@ -172,6 +179,7 @@ Error VirtualGeometryRasterizer::record(const Size2i &p_size, const Vector2 &p_j
 		rd->draw_command_end_label();
 		base += source.selected_capacity;
 	}
+	shading.record_bins();
 	ready = true;
 	return OK;
 }
@@ -181,7 +189,7 @@ uint64_t VirtualGeometryRasterizer::get_buffer_bytes() const {
 	for (const Slot &slot : slots) {
 		bytes += uint64_t(4 + slot.capacity * 2) * 4 + 48;
 	}
-	return bytes;
+	return bytes + shading.get_buffer_bytes();
 }
 
 } // namespace RendererRD

@@ -18,6 +18,7 @@ layout(set = 0, binding = 5, std430) readonly buffer Bins { uint data[]; } bins;
 layout(push_constant, std430) uniform RasterParameters {
 	uvec4 raster; // width, height, global visible-cluster base, bin capacity
 	vec2 jitter;
+	uint source_base;
 } raster_info;
 
 uint instance_base() { return 16u; }

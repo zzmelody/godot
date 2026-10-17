@@ -1774,6 +1774,12 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		batch.source = owner->data->base;
 		batch.source_instance = owner;
 		batch.model = owner->transform;
+		batch.material_override = owner->data->material_override;
+		batch.surface_materials = owner->data->surface_materials;
+		batch.layer_mask = owner->layer_mask;
+		batch.shader_uniforms_offset = owner->shader_uniforms_offset;
+		batch.has_color = bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR);
+		batch.has_custom = bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA);
 		if (multimesh) {
 			batch.count = storage->multimesh_get_instances_to_draw(owner->data->base);
 			batch.transforms = storage->_multimesh_get_buffer_rd_rid(owner->data->base);
@@ -1788,7 +1794,7 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		if (!data->virtual_geometry_raster) {
 			data->virtual_geometry_raster = memnew(RendererRD::VirtualGeometryRasterizer);
 		}
-		const Error error = data->virtual_geometry_raster->record(buffers->get_internal_size(), p_render_data->scene_data->taa_jitter, data->virtual_geometry->get_results());
+		const Error error = data->virtual_geometry_raster->record(buffers->get_internal_size(), p_render_data->scene_data->taa_jitter, data->virtual_geometry->get_results(), scene_shader.default_material);
 		ERR_FAIL_COND_MSG(error != OK, "Virtual geometry mixed raster refused this view: " + itos(error));
 	}
 }

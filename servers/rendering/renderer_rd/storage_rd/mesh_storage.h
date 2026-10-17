@@ -386,6 +386,7 @@ public:
 	Vector<uint8_t> virtual_geometry_get_feedback(uint64_t p_after_sequence) const override;
 	void update_virtual_geometry();
 	const VirtualGeometryStorage::Bindings *mesh_get_virtual_geometry(RID p_mesh) const { return virtual_geometry.get_bindings(p_mesh); }
+	VirtualGeometryStorage::Materials mesh_get_virtual_geometry_materials(RID p_mesh) const { return virtual_geometry.get_materials(p_mesh); }
 
 	virtual int mesh_get_blend_shape_count(RID p_mesh) const override;
 

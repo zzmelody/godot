@@ -6,6 +6,8 @@
 
 #define VG_BIN_BUILD
 #include "virtual_geometry_raster_inc.glsl"
+#define VG_SCENE_WRITE
+#include "virtual_geometry_scene_inc.glsl"
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 shared uint maximum_edge;
@@ -44,6 +46,9 @@ void main() {
 	}
 	barrier();
 	if (lane == 0u) {
+		uint visible_word = scene.data[1] + (raster_info.raster.z + index) * 2u;
+		scene.data[visible_word] = raster_info.source_base + selected.x;
+		scene.data[visible_word + 1u] = selected.y;
 		vec4 sphere = uintBitsToFloat(uvec4(geometry.data[record + 12u], geometry.data[record + 13u], geometry.data[record + 14u], geometry.data[record + 15u]));
 		float scale = uintBitsToFloat(work.data[instance_base() + selected.x * 16u + 13u]);
 		// UE SmallEnoughToDraw hardware threshold, default MinPixelsPerEdgeHW=32.

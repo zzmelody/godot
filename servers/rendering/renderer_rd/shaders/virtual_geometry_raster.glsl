@@ -33,7 +33,7 @@ void main() {
 
 #VERSION_DEFINES
 
-layout(push_constant, std430) uniform RasterParameters { uvec4 raster; vec2 jitter; } raster_info;
+layout(push_constant, std430) uniform RasterParameters { uvec4 raster; vec2 jitter; uint source_base; } raster_info;
 layout(location = 0) flat in uint pixel_value;
 
 #include "virtual_geometry_write_inc.glsl"
