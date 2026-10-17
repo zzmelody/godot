@@ -82,7 +82,7 @@ inline Error validate_manifest_files(const String &path) {
 		const String relative=record["path"],digest=record["md5"];
 		ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.contains(":") || relative.contains("\\") || seen.has(relative),ERR_INVALID_DATA);
 		const String resource=base.path_join(relative),extension=relative.get_extension().to_lower();
-		ERR_FAIL_COND_V(extension!="scn" && extension!="res" && !CookerSource::is_payload(resource),ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(extension != "scn" && extension != "res" && extension != "vgp" && !CookerSource::is_payload(resource), ERR_INVALID_DATA);
 		error=CookerFiles::check_path(resource);ERR_FAIL_COND_V(error!=OK || !resource.begins_with(base+"/"),ERR_INVALID_DATA);
 		const Ref<FileAccess> file=FileAccess::open(resource,FileAccess::READ);
 		ERR_FAIL_COND_V_MSG(file.is_null() || int64_t(record.get("bytes",-1))!=int64_t(file->get_length()) || digest.length()!=32 || digest != digest.to_lower() || !digest.is_valid_hex_number(false) || digest!=FileAccess::get_md5(resource),ERR_INVALID_DATA,"Cached manifest resource changed; choose a new immutable revision: "+resource);
@@ -178,6 +178,16 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	// do not appear in the generic res:// dependency walk. Preserve existing
 	// receipts and validate their recorded bytes/hashes before accepting a hit.
 	if(String(job.get("operation",""))=="asset-manifest") {error=validate_manifest_files(output);ERR_FAIL_COND_V(error!=OK,error);}
+	if (output.ends_with(".res") || output.ends_with(".scn")) {
+		HashSet<StringName> classes;
+		ResourceLoader::get_classes_used(output, &classes);
+		if (classes.has(StringName("VirtualGeometryMesh"))) {
+			// The immutable root hash cannot prove its separately stored pages.
+			HashSet<String> closure;
+			error = CookerFiles::collect(output, closure);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
+	}
 	hit=true;return OK;
 }
 inline Error commit(const Receipt &receipt) {

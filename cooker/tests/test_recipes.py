@@ -239,8 +239,10 @@ return second
         if REFERENCE is None:
             self.skipTest("packed range reads need the matching private editor")
         root_path = "res://assets/runtime/model/vg/model.res"
-        built = self.recipe('return cooker.virtual_geometry(cooker.primitive("box", {size={2,3,4}}), {})',
-                            output=root_path)
+        (self.project / "build-vg.luau").write_text('return cooker.virtual_geometry(cooker.primitive("box", {size={2,3,4}}), {})')
+        build_pipeline = 'return {{operation="run-recipe",source="res://build-vg.luau",output=' + json.dumps(root_path) + '}}'
+        built = self.pipeline(build_pipeline)["steps"][0]
+        self.assertTrue(self.pipeline(build_pipeline)["steps"][0]["skipped"])
         container_path = built["geometry_outputs"][0]["path"]
         container = self.project / container_path.removeprefix("res://")
         original = container.read_bytes()
@@ -254,33 +256,37 @@ return second
             return self.pipeline('return {{operation="asset-manifest",output=' + json.dumps(output) +
                                  ',asset_id="vg",revision=1,kind="model",entry="model.res",files={"model.res"}}}', success)
         publish_manifest()
+        self.assertTrue(publish_manifest()["steps"][0]["skipped"])
         manifest = json.loads((container.parent / "asset.manifest.json").read_text())
         self.assertEqual({row["path"] for row in manifest["files"]}, {"model.res", container.name})
         record = next(row["streaming"] for row in manifest["files"] if row["path"] == "model.res")
         self.assertEqual(record["resource_type"], "VirtualGeometryMesh")
         deferred = [row for row in record["dependencies"] if row.get("deferred")]
         self.assertEqual(len(deferred), 1)
-        self.assertEqual(deferred[0]["path"], container.name)
+        self.assertEqual(Path(deferred[0]["path"]).as_posix(), container.name)
         self.assertEqual(deferred[0]["md5"], hashlib.md5(original).hexdigest())
         self.assertEqual(deferred[0]["bytes"], len(original))
-        graph = {row["path"]: row["dependencies"] for row in record["dependency_graph"]}
+        graph = {Path(row["path"]).as_posix(): [Path(path).as_posix() for path in row["dependencies"]]
+                 for row in record["dependency_graph"]}
         self.assertIn(container.name, graph["model.res"])
         self.assertEqual(graph[container.name], [])
         self.assertGreater(record["geometry_bytes"], 32768 * built["virtual_geometry"]["root_pages"])
         self.assertLess(record["geometry_bytes"], 100000)
         self.assertEqual(sum(row["geometry_bytes"] for row in record["costs"]), record["geometry_bytes"])
         pack_path = "res://content/releases/vg.pck"
-        packed = self.job({"operation": "pack", "output": pack_path, "roots": [root_path]})
+        packed = self.job({"operation": "pack", "output": pack_path, "files": [root_path]})
         self.assertEqual(set(packed["files"]), {root_path, container_path})
         # Each refusal precedes publication; no broken manifest/pack is left.
         for payload in (original[:-1], bytes([original[0] ^ 1]) + original[1:]):
             container.write_bytes(payload)
+            self.pipeline(build_pipeline, success=False)
             self.job({"operation": "validate-resource", "source": root_path}, success=False)
             publish_manifest("res://assets/runtime/model/vg/bad.json", success=False)
             self.assertFalse((container.parent / "bad.json").exists())
-            self.job({"operation": "pack", "output": "res://content/releases/bad.pck", "roots": [root_path]}, success=False)
+            self.job({"operation": "pack", "output": "res://content/releases/bad.pck", "files": [root_path]}, success=False)
             self.assertFalse((self.project / "content/releases/bad.pck").exists())
         container.unlink()
+        self.pipeline(build_pipeline, success=False)
         missing = self.job({"operation": "validate-resource", "source": root_path}, success=False)
         self.assertEqual(missing["error"], 7)
         # Remove loose geometry. A fresh editor must obtain both files from PCK.
