@@ -97,7 +97,12 @@ Error ExternalTemporalUpscaler::process(VeyaTemporalFrame p_frame) {
 	}
 	ERR_FAIL_NULL_V_MSG(slot, ERR_BUSY, "External upscaler has too many unrecorded frames.");
 	p_frame.struct_size = sizeof(p_frame);
-	p_frame.reset = reset;
+	const uint64_t now = OS::get_singleton()->get_ticks_usec();
+	const bool resumed = last_recording_usec && now - last_recording_usec > 500000;
+	p_frame.reset = reset || resumed;
+	// A hidden, suspended or minimized viewport has no intervening history.
+	// Keep the pause out of the SDK's temporal and exposure time integration.
+	p_frame.delta_seconds = MIN(p_frame.delta_seconds, 0.1f);
 	p_frame.sequence = sequence;
 	ERR_FAIL_COND_V(provider.prepare(context, &p_frame) != 0, FAILED);
 	RD *rd = RD::get_singleton();
@@ -124,6 +129,7 @@ Error ExternalTemporalUpscaler::process(VeyaTemporalFrame p_frame) {
 	}
 	sequence++;
 	reset = false;
+	last_recording_usec = now;
 	return OK;
 }
 

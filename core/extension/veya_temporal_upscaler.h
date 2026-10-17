@@ -2,7 +2,8 @@
 
 #include <stdint.h>
 
-// Veya's external temporal-upscaler ABI. All calls run on the render thread.
+// Veya's external temporal-upscaler ABI. Provider callbacks run on the render
+// thread. Registration completes during extension initialization, before frames.
 // Handles are borrowed. record() may only append commands to command_buffer.
 // It must restore input layouts and leave output in GENERAL. A nonzero return
 // aborts submission. destroy() runs only after the last GPU use has completed.

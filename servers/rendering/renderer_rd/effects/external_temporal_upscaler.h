@@ -10,6 +10,7 @@ class ExternalTemporalUpscaler {
 	List<ExternalTemporalUpscaler *>::Element *element = nullptr;
 	void *context = nullptr;
 	uint64_t sequence = 0;
+	uint64_t last_recording_usec = 0;
 	bool reset = true;
 	bool retiring = false;
 	struct FrameSlot {

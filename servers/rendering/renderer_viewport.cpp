@@ -1120,6 +1120,10 @@ void RendererViewport::viewport_set_fsr_sharpness(RID p_viewport, float p_sharpn
 	ERR_FAIL_NULL(viewport);
 
 	viewport->fsr_sharpness = p_sharpness;
+	if (viewport->scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL && viewport->render_buffers.is_valid()) {
+		viewport->render_buffers->set_fsr_sharpness(p_sharpness);
+		return;
+	}
 	_configure_3d_render_buffers(viewport);
 }
 

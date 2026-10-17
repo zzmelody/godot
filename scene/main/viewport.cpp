@@ -6044,6 +6044,12 @@ void SubViewport::_validate_property(PropertyInfo &p_property) const {
 /*>>----- VEYA_COOKER */
 
 SubViewport::SubViewport() {
+	// Project-wide external SR selects the main window. Offscreen worlds must
+	// opt in explicitly, so preparation and UI views do not allocate histories.
+	if (get_scaling_3d_mode() == SCALING_3D_MODE_EXTERNAL_TEMPORAL) {
+		set_scaling_3d_mode(SCALING_3D_MODE_BILINEAR);
+		set_scaling_3d_scale(1.0f);
+	}
 	RS::get_singleton()->viewport_set_size(get_viewport_rid(), get_size().width, get_size().height, get_view_count());
 }
 
