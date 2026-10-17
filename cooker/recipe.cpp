@@ -951,137 +951,139 @@ struct Recipe {
 		s.require(shape.is_valid(), "collision shape construction failed");
 		return s.push_resource(shape);
 	}
-  static int minimum_visual(lua_State* p_state) {
-    auto& s = self(p_state);
-    s.arity(2);
-    Ref<Resource> resource;
-    if (lua_type(p_state, 1) == LUA_TSTRING) {
-      const String name = s.string(1);
-      s.require(s.inputs.has(name), "minimum_visual input is not declared");
-      resource = s.inputs[name];
-    } else {
-      resource = s.handle(1);
-    }
-    s.fields(
-        2,
-        {"triangle_ratio", "max_texture_size", "minimum_height", "lock_border",
-         "max_error", "preserve_heightfields", "compress_color_textures",
-         "lod_triangle_ratios", "lod_screen_errors", "lod_minimum_coverage",
-         "lod_coverage_scale", "preserve_materials", "lod_root_surfaces"});
-    CookerMinimum::Options options;
-    s.field(2, "lod_triangle_ratios");
-    if (!lua_isnil(p_state, -1)) {
-      const int count = s.array(-1, 8);
-      s.require(count > 0, "lod_triangle_ratios requires 1..8 levels");
-      double previous_ratio = 1;
-      for (int level = 0; level < count; ++level) {
-        lua_rawgeti(p_state, -1, level + 1);
-        const double ratio = s.number(-1);
-        s.require(ratio > 0 && ratio < previous_ratio,
-                  "lod_triangle_ratios must decrease strictly within (0,1)");
-        options.lod_triangle_ratios.push_back(ratio);
-        previous_ratio = ratio;
-        lua_pop(p_state, 1);
-      }
-    }
-    lua_pop(p_state, 1);
-    s.field(2, "lod_screen_errors");
-    if (!lua_isnil(p_state, -1)) {
-      const int count = s.array(-1, 8);
-      s.require(
-          count > 0 && size_t(count) == options.lod_triangle_ratios.size(),
-          "lod_screen_errors must match lod_triangle_ratios");
-      double previous_error = 0;
-      for (int level = 0; level < count; ++level) {
-        lua_rawgeti(p_state, -1, level + 1);
-        const double error = s.number(-1);
-        s.require(error > previous_error && error <= 100000,
-                  "lod_screen_errors must be positive and increase strictly");
-        options.lod_screen_errors.push_back(error);
-        previous_error = error;
-        lua_pop(p_state, 1);
-      }
-    }
-    lua_pop(p_state, 1);
-    s.field(2, "lod_minimum_coverage");
-    if (!lua_isnil(p_state, -1)) {
-      options.lod_minimum_coverage = s.number(-1);
-      s.require(options.lod_minimum_coverage >= 0.5 &&
-                    options.lod_minimum_coverage <= 1,
-                "lod_minimum_coverage must be within [0.5,1]");
-    }
-    lua_pop(p_state, 1);
-    s.require(
-        options.lod_screen_errors.empty() ==
-            (options.lod_minimum_coverage == 0),
-        "covered LODs require screen errors and minimum coverage together");
-    s.field(2, "lod_root_surfaces");
-    if (!lua_isnil(p_state, -1)) {
-      s.require(options.lod_minimum_coverage > 0,
-                "lod_root_surfaces requires covered LODs");
-      const int count = s.array(-1, 64);
-      s.require(count > 0, "lod_root_surfaces requires 1..64 surface indices");
-      int previous = 0;
-      for (int index = 0; index < count; ++index) {
-        lua_rawgeti(p_state, -1, index + 1);
-        const double surface = s.number(-1);
-        s.require(surface >= 1 && surface <= 64 && surface == int(surface) &&
-                      surface > previous,
-                  "lod_root_surfaces must contain increasing 1-based indices");
-        previous = int(surface);
-        options.lod_root_surfaces.push_back(previous - 1);
-        lua_pop(p_state, 1);
-      }
-    }
-    lua_pop(p_state, 1);
-    options.lod_coverage_scale =
-        s.number_field(2, "lod_coverage_scale", 1, 0.0001, 10000);
-    options.preserve_materials =
-        s.boolean_field(2, "preserve_materials", false);
-    options.compress_color_textures =
-        s.boolean_field(2, "compress_color_textures", false);
-    options.preserve_heightfields =
-        s.boolean_field(2, "preserve_heightfields", false);
-    s.field(2, "max_error");
-    if (!lua_isnil(p_state, -1)) {
-      options.max_error = s.number(-1);
-      s.require(options.max_error > 0 && options.max_error <= 100000,
-                "max_error must be positive mesh units, at most 100000");
-    }
-    lua_pop(p_state, 1);
-    s.field(2, "triangle_ratio");
-    if (!lua_isnil(p_state, -1))
-      options.triangle_ratio = s.number(-1);
-    lua_pop(p_state, 1);
-    s.field(2, "max_texture_size");
-    if (!lua_isnil(p_state, -1)) {
-      const double size = s.number(-1);
-      s.require(size >= 16 && size <= 1024 && size == int(size),
-                "max_texture_size must be an integer from 16 to 1024");
-      options.texture_size = int(size);
-    }
-    lua_pop(p_state, 1);
-    s.field(2, "minimum_height");
-    if (!lua_isnil(p_state, -1))
-      options.minimum_height = s.number(-1);
-    lua_pop(p_state, 1);
-    s.field(2, "lock_border");
-    if (!lua_isnil(p_state, -1)) {
-      s.require(lua_isboolean(p_state, -1), "lock_border must be boolean");
-      options.lock_border = lua_toboolean(p_state, -1);
-    }
-    lua_pop(p_state, 1);
-    s.require(options.triangle_ratio > 0 && options.triangle_ratio <= 1 &&
-                  options.texture_size >= 16 && options.texture_size <= 1024 &&
-                  options.minimum_height >= 0 && options.minimum_height <= 100,
-              "minimum_visual options are outside the supported range");
-	s.require(Ref<VirtualGeometryMesh>(resource).is_null(), "minimum_visual requires the original ordinary resource");
-	CookerMinimum::Builder builder(options);
-	Ref<Resource> output = builder.Build(resource);
-    s.require(output.is_valid(),
-              "minimum_visual requires valid static geometry or material");
-    return s.push_resource(output);
-  }
+	static int minimum_visual(lua_State *p_state) {
+		auto &s = self(p_state);
+		s.arity(2);
+		Ref<Resource> resource;
+		if (lua_type(p_state, 1) == LUA_TSTRING) {
+			const String name = s.string(1);
+			s.require(s.inputs.has(name), "minimum_visual input is not declared");
+			resource = s.inputs[name];
+		} else {
+			resource = s.handle(1);
+		}
+		s.fields(
+				2,
+				{ "triangle_ratio", "max_texture_size", "minimum_height", "lock_border",
+						"max_error", "preserve_heightfields", "compress_color_textures",
+						"lod_triangle_ratios", "lod_screen_errors", "lod_minimum_coverage",
+						"lod_coverage_scale", "preserve_materials", "lod_root_surfaces" });
+		CookerMinimum::Options options;
+		s.field(2, "lod_triangle_ratios");
+		if (!lua_isnil(p_state, -1)) {
+			const int count = s.array(-1, 8);
+			s.require(count > 0, "lod_triangle_ratios requires 1..8 levels");
+			double previous_ratio = 1;
+			for (int level = 0; level < count; ++level) {
+				lua_rawgeti(p_state, -1, level + 1);
+				const double ratio = s.number(-1);
+				s.require(ratio > 0 && ratio < previous_ratio,
+						"lod_triangle_ratios must decrease strictly within (0,1)");
+				options.lod_triangle_ratios.push_back(ratio);
+				previous_ratio = ratio;
+				lua_pop(p_state, 1);
+			}
+		}
+		lua_pop(p_state, 1);
+		s.field(2, "lod_screen_errors");
+		if (!lua_isnil(p_state, -1)) {
+			const int count = s.array(-1, 8);
+			s.require(
+					count > 0 && size_t(count) == options.lod_triangle_ratios.size(),
+					"lod_screen_errors must match lod_triangle_ratios");
+			double previous_error = 0;
+			for (int level = 0; level < count; ++level) {
+				lua_rawgeti(p_state, -1, level + 1);
+				const double error = s.number(-1);
+				s.require(error > previous_error && error <= 100000,
+						"lod_screen_errors must be positive and increase strictly");
+				options.lod_screen_errors.push_back(error);
+				previous_error = error;
+				lua_pop(p_state, 1);
+			}
+		}
+		lua_pop(p_state, 1);
+		s.field(2, "lod_minimum_coverage");
+		if (!lua_isnil(p_state, -1)) {
+			options.lod_minimum_coverage = s.number(-1);
+			s.require(options.lod_minimum_coverage >= 0.5 &&
+							options.lod_minimum_coverage <= 1,
+					"lod_minimum_coverage must be within [0.5,1]");
+		}
+		lua_pop(p_state, 1);
+		s.require(
+				options.lod_screen_errors.empty() ==
+						(options.lod_minimum_coverage == 0),
+				"covered LODs require screen errors and minimum coverage together");
+		s.field(2, "lod_root_surfaces");
+		if (!lua_isnil(p_state, -1)) {
+			s.require(options.lod_minimum_coverage > 0,
+					"lod_root_surfaces requires covered LODs");
+			const int count = s.array(-1, 64);
+			s.require(count > 0, "lod_root_surfaces requires 1..64 surface indices");
+			int previous = 0;
+			for (int index = 0; index < count; ++index) {
+				lua_rawgeti(p_state, -1, index + 1);
+				const double surface = s.number(-1);
+				s.require(surface >= 1 && surface <= 64 && surface == int(surface) &&
+								surface > previous,
+						"lod_root_surfaces must contain increasing 1-based indices");
+				previous = int(surface);
+				options.lod_root_surfaces.push_back(previous - 1);
+				lua_pop(p_state, 1);
+			}
+		}
+		lua_pop(p_state, 1);
+		options.lod_coverage_scale =
+				s.number_field(2, "lod_coverage_scale", 1, 0.0001, 10000);
+		options.preserve_materials =
+				s.boolean_field(2, "preserve_materials", false);
+		options.compress_color_textures =
+				s.boolean_field(2, "compress_color_textures", false);
+		options.preserve_heightfields =
+				s.boolean_field(2, "preserve_heightfields", false);
+		s.field(2, "max_error");
+		if (!lua_isnil(p_state, -1)) {
+			options.max_error = s.number(-1);
+			s.require(options.max_error > 0 && options.max_error <= 100000,
+					"max_error must be positive mesh units, at most 100000");
+		}
+		lua_pop(p_state, 1);
+		s.field(2, "triangle_ratio");
+		if (!lua_isnil(p_state, -1)) {
+			options.triangle_ratio = s.number(-1);
+		}
+		lua_pop(p_state, 1);
+		s.field(2, "max_texture_size");
+		if (!lua_isnil(p_state, -1)) {
+			const double size = s.number(-1);
+			s.require(size >= 16 && size <= 1024 && size == int(size),
+					"max_texture_size must be an integer from 16 to 1024");
+			options.texture_size = int(size);
+		}
+		lua_pop(p_state, 1);
+		s.field(2, "minimum_height");
+		if (!lua_isnil(p_state, -1)) {
+			options.minimum_height = s.number(-1);
+		}
+		lua_pop(p_state, 1);
+		s.field(2, "lock_border");
+		if (!lua_isnil(p_state, -1)) {
+			s.require(lua_isboolean(p_state, -1), "lock_border must be boolean");
+			options.lock_border = lua_toboolean(p_state, -1);
+		}
+		lua_pop(p_state, 1);
+		s.require(options.triangle_ratio > 0 && options.triangle_ratio <= 1 &&
+						options.texture_size >= 16 && options.texture_size <= 1024 &&
+						options.minimum_height >= 0 && options.minimum_height <= 100,
+				"minimum_visual options are outside the supported range");
+		s.require(Ref<VirtualGeometryMesh>(resource).is_null(), "minimum_visual requires the original ordinary resource");
+		CookerMinimum::Builder builder(options);
+		Ref<Resource> output = builder.Build(resource);
+		s.require(output.is_valid(),
+				"minimum_visual requires valid static geometry or material");
+		return s.push_resource(output);
+	}
   static int virtual_geometry(lua_State *p_state) {
 	  auto &s = self(p_state);
 	  s.arity(2);
