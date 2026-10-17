@@ -301,6 +301,7 @@ private:
 		bool texture_dirty = false;
 		HashMap<StringName, Variant> params;
 		int32_t priority = 0;
+		float max_vertex_displacement = 0.0f;
 		RID next_pass;
 		SelfList<Material> update_element;
 
@@ -502,6 +503,8 @@ public:
 
 	virtual void material_set_next_pass(RID p_material, RID p_next_material) override;
 	virtual void material_set_render_priority(RID p_material, int priority) override;
+	void material_set_max_vertex_displacement(RID p_material, float p_maximum) override;
+	float material_get_max_vertex_displacement(RID p_material) const override;
 
 	virtual bool material_is_animated(RID p_material) override;
 	virtual bool material_casts_shadows(RID p_material) override;

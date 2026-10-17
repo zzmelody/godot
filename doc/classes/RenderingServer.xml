@@ -2396,6 +2396,14 @@
 				Sets a material's parameter.
 			</description>
 		</method>
+		<method name="material_set_max_vertex_displacement">
+			<return type="void" />
+			<param index="0" name="material" type="RID" />
+			<param index="1" name="maximum" type="float" />
+			<description>
+				Sets the finite, nonnegative world-axis vertex displacement limit for a virtual geometry material. See [member Material.max_vertex_displacement].
+			</description>
+		</method>
 		<method name="material_set_render_priority">
 			<return type="void" />
 			<param index="0" name="material" type="RID" />

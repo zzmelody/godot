@@ -16,16 +16,34 @@ namespace RendererRD {
 // textures belong to RenderSceneBuffersRD; lighting is a separate consumer.
 class VirtualGeometryShading {
 public:
+	struct ViewParameters {
+		Projection projection;
+		Transform3D camera;
+		Vector2 jitter;
+		float time = 0.0f;
+		float exposure = 1.0f;
+		uint32_t layers = 1;
+	};
 	Error prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry);
+	Error prepare_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const ViewParameters &p_view, RD::FramebufferFormatID p_raster_format);
 	void record_sources(Span<VirtualGeometrySelection::Result> p_sources);
 	void record_bins();
-	Error record_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const Projection &p_projection, const Transform3D &p_camera, const Vector2 &p_jitter, float p_time, float p_exposure, uint32_t p_layers);
+	void record_materials();
 	RID get_surface(uint32_t p_index) const { return surfaces[p_index]; }
 	bool are_materials_ready() const { return materials_ready; }
 	RID get_scene() const { return scene_buffer; }
 	RID get_bins() const { return bins_buffer; }
 	RID get_arguments() const { return arguments; }
 	RID get_draw_arguments() const { return draw_arguments; }
+	struct RasterMaterialWork {
+		uint32_t material = 0;
+		RID programs[3];
+		RID pipelines[3];
+		RID parameters[3];
+	};
+	Span<RasterMaterialWork> get_raster_work() const { return Span<RasterMaterialWork>(raster_work.ptr(), raster_work.size()); }
+	RID get_material_view() const { return material_view; }
+	RID get_status() const { return view_status; }
 	RID get_raster_materials() const { return raster_material_buffer; }
 	uint32_t get_entries_word() const { return entries_word; }
 	uint32_t get_source_base(uint32_t p_batch) const { return sources[p_batch].first; }
@@ -55,9 +73,11 @@ private:
 	RID draw_arguments;
 	uint32_t draw_argument_words = 0;
 	RID material_view;
+	RID view_status;
+	LocalVector<RasterMaterialWork> raster_work;
 	RID raster_material_buffer;
 	uint32_t raster_material_words = 0;
-	LocalVector<uint32_t> material_cull_modes;
+	LocalVector<uint32_t> raster_material_data;
 	RID surfaces[9];
 	bool materials_ready = false;
 	Size2i surface_size;

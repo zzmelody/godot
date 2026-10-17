@@ -13,7 +13,8 @@ float projected_edge(uint instance, vec4 sphere, mat4 transform) {
 		return 1.0;
 	}
 	vec3 center = (transform * vec4(sphere.xyz, 1.0)).xyz;
-	float radius = sphere.w * uintBitsToFloat(work.data[instance_base() + instance * 16u + 13u]);
+	float radius = sphere.w * uintBitsToFloat(work.data[instance_base() + instance * 16u + 13u]) +
+			uintBitsToFloat(params.offsets.w) * 1.7320509;
 	float distance_squared = dot(center, center);
 	float z = -center.z;
 	float near_plane = params.lod.x;

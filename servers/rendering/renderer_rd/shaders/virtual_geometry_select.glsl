@@ -90,14 +90,23 @@ void initialize_instance(uint id) {
 }
 
 bool in_frustum(vec3 lower, vec3 upper, mat4 transform) {
+	// Expand each clip-plane interval by a world-axis displacement cube. This
+	// preserves all instance columns and needs no inverse for sheared instances.
+	vec4 displacement = vec4(0.0);
+	float maximum = uintBitsToFloat(params.offsets.w);
+	if (maximum > 0.0) {
+		mat4 world_to_clip = params.projection * params.world_to_view;
+		displacement = maximum * (abs(world_to_clip[0]) + abs(world_to_clip[1]) + abs(world_to_clip[2]));
+	}
+	vec2 side_padding = displacement.xy + vec2((1.0 + params.lod.w) * displacement.w);
 	uint outside = 63u;
 	for (uint corner = 0u; corner < 8u; ++corner) {
 		vec3 point = mix(lower, upper, bvec3((corner & 1u) != 0u, (corner & 2u) != 0u, (corner & 4u) != 0u));
 		vec4 clip = params.projection * transform * vec4(point, 1.0);
 		float extent = (1.0 + params.lod.w) * clip.w;
-		uint mask = (clip.x < -extent ? 1u : 0u) | (clip.x > extent ? 2u : 0u) |
-				(clip.y < -extent ? 4u : 0u) | (clip.y > extent ? 8u : 0u) |
-				(clip.z < 0.0 ? 16u : 0u) | (clip.z > clip.w ? 32u : 0u);
+		uint mask = (clip.x < -extent - side_padding.x ? 1u : 0u) | (clip.x > extent + side_padding.x ? 2u : 0u) |
+				(clip.y < -extent - side_padding.y ? 4u : 0u) | (clip.y > extent + side_padding.y ? 8u : 0u) |
+				(clip.z < -displacement.z ? 16u : 0u) | (clip.z > clip.w + displacement.z + displacement.w ? 32u : 0u);
 		outside &= mask;
 	}
 	return outside == 0u;

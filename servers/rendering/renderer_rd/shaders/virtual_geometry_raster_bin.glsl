@@ -5,13 +5,18 @@
 #VERSION_DEFINES
 
 #define VG_BIN_BUILD
-#include "virtual_geometry_raster_inc.glsl"
 #define VG_SCENE_WRITE
+#define VG_MATERIAL_LOOKUP
+/* clang-format off */
+#include "virtual_geometry_raster_inc.glsl"
+#include "virtual_geometry_raster_cull_inc.glsl"
 #include "virtual_geometry_scene_inc.glsl"
+/* clang-format on */
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 shared uint maximum_edge;
 shared uint needs_hardware;
+shared uint active_triangles;
 
 void main() {
 	uint index = gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u;
@@ -19,16 +24,24 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	uvec2 selected = vg_selected(index);
 	uint record = vg_record(selected.y);
-	if (lane == 0u) { maximum_edge = 0u; needs_hardware = 0u; }
+	if (lane == 0u) {
+		maximum_edge = 0u;
+		needs_hardware = 0u;
+		active_triangles = 0u;
+	}
 	barrier();
 	for (uint triangle = lane; triangle < geometry.data[record + 5u]; triangle += 64u) {
+		if (!vg_raster_material_active(selected, triangle)) {
+			continue;
+		}
+		atomicAdd(active_triangles, 1u);
 		uvec3 vertices = vg_triangle(selected.y, triangle);
 		vec3 points[3];
 		vec2 lower = vec2(3.402823e38);
 		vec2 upper = vec2(-3.402823e38);
 		for (uint corner = 0u; corner < 3u; ++corner) {
-			points[corner] = vg_position(selected.y, vertices[corner]);
-			vec4 clip = vg_clip(selected.x, selected.y, vertices[corner]);
+			points[corner] = vg_raster_position(selected.x, selected.y, vertices[corner]);
+			vec4 clip = vg_project(selected.x, points[corner]);
 			if (clip.w <= 0.0 || clip.z <= 0.0 || clip.z >= clip.w || any(isnan(clip)) || any(isinf(clip))) {
 				atomicOr(needs_hardware, 1u);
 			} else {
@@ -49,6 +62,9 @@ void main() {
 		uint visible_word = scene.data[1] + (raster_info.raster.z + index) * 2u;
 		scene.data[visible_word] = raster_info.source_base + selected.x;
 		scene.data[visible_word + 1u] = selected.y;
+		if (active_triangles == 0u) {
+			return;
+		}
 		vec4 sphere = uintBitsToFloat(uvec4(geometry.data[record + 12u], geometry.data[record + 13u], geometry.data[record + 14u], geometry.data[record + 15u]));
 		float scale = uintBitsToFloat(work.data[instance_base() + selected.x * 16u + 13u]);
 		// UE SmallEnoughToDraw hardware threshold, default MinPixelsPerEdgeHW=32.

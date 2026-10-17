@@ -53,7 +53,8 @@ Error VirtualGeometrySelection::record(const Batch &p_batch) {
 	}
 	ERR_FAIL_COND_V(p_batch.geometry.metadata.is_null() || p_batch.geometry.geometry.is_null() ||
 					(p_batch.stride != 0 && (p_batch.stride < 3 || p_batch.transforms.is_null())) ||
-					!p_batch.model.is_finite() || p_batch.model.basis.determinant() == 0 || lod_scale <= 0,
+					!p_batch.model.is_finite() || p_batch.model.basis.determinant() == 0 || lod_scale <= 0 ||
+					!Math::is_finite(p_batch.max_vertex_displacement) || p_batch.max_vertex_displacement < 0,
 			ERR_INVALID_PARAMETER);
 	// Root coverage is reserved before any dispatch. Refuse the whole batch
 	// when even that complete cut cannot fit; never emit a truncated list.
@@ -126,6 +127,7 @@ Error VirtualGeometrySelection::record(const Batch &p_batch) {
 	parameters.offsets[0] = p_batch.geometry.parts_word;
 	parameters.offsets[1] = p_batch.geometry.page_table_word;
 	parameters.offsets[2] = p_batch.geometry.groups_word;
+	memcpy(&parameters.offsets[3], &p_batch.max_vertex_displacement, sizeof(float));
 	rd->buffer_update(result.parameters, 0, sizeof(parameters), &parameters);
 	rd->buffer_clear(result.work, 0, 64);
 	const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,

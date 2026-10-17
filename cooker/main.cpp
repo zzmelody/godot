@@ -12,6 +12,7 @@
 #include "pipeline_cache.h"
 #include "atomic_save.h"
 #include "output_lock.h"
+#include <cfloat>
 #include <memory>
 #include "stage_source.h"
 #include "usd_import.h"
@@ -877,6 +878,18 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		Ref<Resource> resource = ResourceLoader::load(path, "", ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
 		ERR_FAIL_COND_V(resource.is_null(), error == OK ? ERR_INVALID_DATA : error);
 		ERR_FAIL_COND_V(!expected.is_empty() && !resource->is_class(expected), ERR_INVALID_DATA);
+		const Ref<Material> bounded_material = resource;
+		if (job.has("max_vertex_displacement")) {
+			ERR_FAIL_COND_V(operation != "save-resource" || bounded_material.is_null(), ERR_INVALID_PARAMETER);
+			const Variant bound = job["max_vertex_displacement"];
+			ERR_FAIL_COND_V(bound.get_type() != Variant::INT && bound.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
+			const double maximum = bound;
+			ERR_FAIL_COND_V(!Math::is_finite(maximum) || maximum < 0.0 || maximum > double(FLT_MAX), ERR_INVALID_PARAMETER);
+			bounded_material->set_max_vertex_displacement(float(maximum));
+		}
+		if (bounded_material.is_valid()) {
+			r_result["max_vertex_displacement"] = bounded_material->get_max_vertex_displacement();
+		}
 		r_result["type"] = resource->get_class();
 		Ref<Mesh> mesh_resource = resource;
 		const Ref<VirtualGeometryMesh> virtual_mesh = resource;

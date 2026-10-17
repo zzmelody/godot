@@ -17,22 +17,6 @@ layout(set = 0, binding = 9, std430) buffer Shading {
 	uint data[];
 }
 shading;
-layout(set = 0, binding = 11, std430) readonly buffer GlobalShaderUniformData {
-	vec4 data[];
-}
-global_shader_uniforms;
-layout(set = 0, binding = 12, std140) uniform View {
-	mat4 projection;
-	mat4 inverse_projection;
-	mat4 view;
-	mat4 inverse_view;
-	vec4 dimensions;
-	vec4 state;
-	uvec4 flags;
-}
-vg_view;
-#define SAMPLERS_BINDING_FIRST_INDEX 32
-#include "samplers_inc.glsl"
 layout(set = 0, binding = 16, rgba16f) uniform writeonly image2D vg_albedo;
 layout(set = 0, binding = 17, rgba16f) uniform writeonly image2D vg_normal;
 layout(set = 0, binding = 18, rgba16f) uniform writeonly image2D vg_emission;
@@ -49,56 +33,11 @@ layout(push_constant, std430) uniform Parameters {
 }
 params;
 
-#ifdef MATERIAL_UNIFORMS_USED
-/* clang-format off */
-layout(set = 3, binding = 0, std140) uniform MaterialUniforms {
-#MATERIAL_UNIFORMS
-} material;
-/* clang-format on */
-#endif
-
-uint vg_source;
-bool vg_killed;
-bool vg_front_facing;
-vec4 vg_fragcoord;
-mat4 read_model_matrix, modelview, projection_matrix;
-mat3 model_normal_matrix, modelview_normal;
-vec3 vertex, normal_highp, tangent, binormal, view_highp;
-vec2 uv_interp, uv2_interp;
-vec4 color_interp, instance_custom;
-vec3 albedo_highp, emission, backlight, normal_map;
-float alpha_highp, metallic_highp, roughness_highp, specular, normal_map_depth;
-float ao, ao_light_affect, rim, rim_tint, clearcoat, clearcoat_roughness, anisotropy;
-vec2 anisotropy_flow;
-
-void vg_discard() {
-	vg_killed = true;
-}
-
-#GLOBALS
-
-void vg_user_vertex() {
-#CODE : VERTEX
-}
+#define VG_GLOBALS_BINDING 11
+#define VG_MATERIAL_INDEX params.material
+#include "virtual_geometry_material_vertex_inc.glsl"
 void vg_user_fragment() {
 #CODE : FRAGMENT
-}
-
-void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
-	vertex = value.position;
-	normal_highp = value.normal;
-	tangent = value.tangent.xyz;
-	binormal = cross(normal_highp, tangent) * value.tangent.w;
-	uv_interp = value.uv[0];
-	uv2_interp = value.uv[1];
-	color_interp = value.color * vg_source_vector(source, 36u);
-	vg_user_vertex();
-	value.normal = normal_highp;
-	value.tangent.xyz = tangent;
-	value.uv[0] = uv_interp;
-	value.uv[1] = uv2_interp;
-	value.color = color_interp;
-	vg_corners[corner] = vg_varyings;
 }
 #define VG_EVALUATE_VERTEX vg_evaluate_vertex
 #include "virtual_geometry_surface_inc.glsl"
@@ -109,7 +48,7 @@ void main() {
 		atomicOr(shading.data[1], 4u);
 		return;
 	}
-	if (atomicAdd(shading.data[1], 0u) != 0u || quad >= shading.data[2u + params.material]) {
+	if (atomicAdd(shading.data[1], 0u) != 0u || atomicAdd(vg_status.data[0], 0u) != 0u || quad >= shading.data[2u + params.material]) {
 		return;
 	}
 	uint index = shading.data[2u + params.materials + params.material] + quad;
@@ -117,14 +56,7 @@ void main() {
 	uint origin = shading.data[word];
 	uint payload = shading.data[word + 1u];
 	uvec2 point = uvec2(origin % uint(vg_view.dimensions.x), origin / uint(vg_view.dimensions.x)) + uvec2(lane & 1u, lane >> 1u);
-	vg_source = vg_visible_reference((payload >> 7u) - 1u).x;
-	read_model_matrix = vg_source_matrix(vg_source, 0u);
-	modelview = vg_source_matrix(vg_source, 12u);
-	model_normal_matrix = mat3(vg_source_matrix(vg_source, 24u));
-	modelview_normal = mat3(vg_view.view) * model_normal_matrix;
-	projection_matrix = vg_view.projection;
-	instance_custom = vg_source_vector(vg_source, 40u);
-	roughness_highp = 1.0;
+	vg_setup_vertex(vg_visible_reference((payload >> 7u) - 1u).x);
 	vg_killed = false;
 	VGSurface surface;
 	bool valid = vg_surface(payload, vec2(point) + 0.5, projection_matrix, vg_view.dimensions.xy, vg_view.dimensions.zw, surface);

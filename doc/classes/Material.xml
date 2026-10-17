@@ -50,6 +50,9 @@
 		</method>
 	</methods>
 	<members>
+		<member name="max_vertex_displacement" type="float" setter="set_max_vertex_displacement" getter="get_max_vertex_displacement" default="0.0">
+			Maximum vertex displacement along each world axis, in meters, for virtual geometry. The value must be finite and nonnegative. Virtual geometry uses this limit to expand scene and cluster bounds. Bounded programmable rasterization requires a positive limit and clamps the world displacement of each vertex to this interval on each axis. Other geometry paths retain their existing deformation rules.
+		</member>
 		<member name="next_pass" type="Material" setter="set_next_pass" getter="get_next_pass">
 			Sets the [Material] to be used for the next pass. This renders the object again using a different material.
 			[b]Note:[/b] [member next_pass] materials are not necessarily drawn immediately after the source [Material]. Draw order is determined by material properties, [member render_priority], and distance to camera.

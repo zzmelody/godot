@@ -57,6 +57,18 @@ public:
 		// Render-thread borrow. Asset replacement or destruction invalidates it.
 		Span<RID> rids;
 		Span<uint32_t> identities;
+		RID resolve(uint32_t p_slot, const Vector<RID> &p_overrides, RID p_override, RID p_default = RID()) const {
+			ERR_FAIL_INDEX_V(p_slot, rids.size(), p_default);
+			ERR_FAIL_INDEX_V(p_slot, identities.size(), p_default);
+			if (p_override.is_valid()) {
+				return p_override;
+			}
+			const uint32_t identity = identities[p_slot];
+			if (identity < uint32_t(p_overrides.size()) && p_overrides[identity].is_valid()) {
+				return p_overrides[identity];
+			}
+			return rids[p_slot].is_valid() ? rids[p_slot] : p_default;
+		}
 	};
 	virtual VirtualGeometryMaterials mesh_get_virtual_geometry_materials(RID p_mesh) const { return {}; }
 

@@ -43,6 +43,7 @@ class Material : public Resource {
 	mutable RID material;
 	Ref<Material> next_pass;
 	int render_priority;
+	float max_vertex_displacement = 0.0f;
 
 	enum {
 		INIT_STATE_UNINITIALIZED,
@@ -53,7 +54,7 @@ class Material : public Resource {
 	void inspect_native_shader_code();
 
 protected:
-	_FORCE_INLINE_ void _set_material(RID p_material) const { material = p_material; }
+	void _set_material(RID p_material) const;
 	_FORCE_INLINE_ RID _get_material() const { return material; }
 	static void _bind_methods();
 	virtual bool _can_do_next_pass() const;
@@ -81,6 +82,8 @@ public:
 
 	void set_render_priority(int p_priority);
 	int get_render_priority() const;
+	void set_max_vertex_displacement(float p_maximum);
+	float get_max_vertex_displacement() const;
 
 	virtual RID get_rid() const override;
 	virtual RID get_shader_rid() const;

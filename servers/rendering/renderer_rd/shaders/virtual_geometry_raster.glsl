@@ -4,7 +4,10 @@
 
 #VERSION_DEFINES
 
+/* clang-format off */
 #include "virtual_geometry_raster_inc.glsl"
+#include "virtual_geometry_raster_cull_inc.glsl"
+/* clang-format on */
 
 layout(location = 0) flat out uint pixel_value;
 
@@ -13,7 +16,7 @@ void main() {
 	uvec2 selected = vg_selected(index);
 	uint triangle = uint(gl_VertexIndex) / 3u;
 	pixel_value = ((raster_info.raster.z + index + 1u) << 7u) | triangle;
-	if (triangle >= geometry.data[vg_record(selected.y) + 5u]) {
+	if (triangle >= geometry.data[vg_record(selected.y) + 5u] || !vg_raster_material_active(selected, triangle)) {
 		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 		return;
 	}
@@ -34,6 +37,7 @@ layout(push_constant, std430) uniform RasterParameters {
 	uvec4 raster;
 	vec2 jitter;
 	uint source_base;
+	uint material;
 }
 raster_info;
 layout(location = 0) flat in uint pixel_value;

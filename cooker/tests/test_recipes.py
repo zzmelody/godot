@@ -198,6 +198,45 @@ return {
             with self.subTest(code=code[:40]):
                 self.pipeline(code, success=False)
 
+    def test_virtual_geometry_material_displacement_publication(self):
+        raw = self.project / "assets/raw/material/bounded"
+        raw.mkdir(parents=True)
+        source = raw / "source.tres"
+        source.write_text('[gd_resource type="ShaderMaterial" load_steps=2 format=3]\n'
+                          '[sub_resource type="Shader" id="Shader"]\n'
+                          'code = "shader_type spatial; void vertex(){VERTEX.x+=0.1;}"\n'
+                          '[resource]\nshader = SubResource("Shader")\n', encoding="utf-8")
+        original = source.read_bytes()
+        output = "assets/runtime/material/bounded/material.res"
+        code = ('return {{operation="save-resource",source="res://assets/raw/material/bounded/source.tres",'
+                'output="res://' + output + '",type="ShaderMaterial",max_vertex_displacement=0.794}}')
+        result = self.pipeline(code)["steps"][0]
+        self.assertAlmostEqual(result["max_vertex_displacement"], 0.794, places=6)
+        saved = (self.project / output).read_bytes()
+        loaded = self.job({"operation": "validate-resource", "source": "res://" + output,
+                           "type": "ShaderMaterial"})
+        self.assertAlmostEqual(loaded["max_vertex_displacement"], 0.794, places=6)
+        self.assertTrue(self.pipeline(code)["steps"][0]["skipped"])
+        changed = self.pipeline(code.replace("=0.794", "=0.9"))["steps"][0]
+        self.assertAlmostEqual(changed["max_vertex_displacement"], 0.9, places=6)
+        self.assertNotEqual((self.project / output).read_bytes(), saved)
+        updated = (self.project / output).read_bytes()
+        self.pipeline(code.replace("=0.794", "=-1"), success=False)
+        self.assertEqual((self.project / output).read_bytes(), updated)
+        self.assertEqual(source.read_bytes(), original)
+        for index, value in enumerate(("-1", "math.huge", "0/0", '"0.5"', "true")):
+            rejected = f"assets/runtime/material/bounded/rejected-{index}.res"
+            self.pipeline(code.replace(output, rejected).replace("=0.794", "=" + value), success=False)
+            self.assertFalse((self.project / rejected).exists())
+        box = raw / "box.tres"
+        box.write_text('[gd_resource type="BoxMesh" format=3]\n[resource]\n')
+        self.pipeline(code.replace("source.tres", "box.tres").replace("ShaderMaterial", "BoxMesh")
+                      .replace(output, "assets/runtime/material/bounded/box.res"), success=False)
+        self.assertFalse((self.project / "assets/runtime/material/bounded/box.res").exists())
+        zero = self.pipeline(code.replace(output, "assets/runtime/material/bounded/zero.res")
+                             .replace("=0.794", "=0"))["steps"][0]
+        self.assertEqual(zero["max_vertex_displacement"], 0)
+
     def test_virtual_geometry_builds_root_and_content_addressed_container(self):
         result = self.recipe('''
 local source = cooker.primitive("box", {size={2,3,4}})

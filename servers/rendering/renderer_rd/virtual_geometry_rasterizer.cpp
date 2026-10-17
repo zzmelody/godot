@@ -74,7 +74,9 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 	if (bin_version.is_null()) {
 		Vector<String> modes;
 		modes.push_back("");
+		modes.write[0] = "#define VG_RASTER_MATERIALS\n";
 		bin_shader.initialize(modes);
+		modes.write[0] = "";
 		dispatch_shader.initialize(modes);
 		modes.write[0] = "#define VG_RASTER_MATERIALS\n";
 		software_shader.initialize(modes);
@@ -120,7 +122,7 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 		const RD::Uniform arguments(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { slot.arguments });
 		const RD::Uniform scene(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() });
 		const RD::Uniform materials(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { shading.get_raster_materials() });
-		slot.build_uniforms = cache->get_cache(bin_shader.version_get_shader(bin_version, 0), 0, geometry, parameters, work, bins, scene);
+		slot.build_uniforms = cache->get_cache(bin_shader.version_get_shader(bin_version, 0), 0, geometry, parameters, work, bins, scene, materials);
 		slot.dispatch_uniforms = cache->get_cache(dispatch_shader.version_get_shader(dispatch_version, 0), 0, work, bins, arguments);
 		slot.software_uniforms = cache->get_cache(software_shader.version_get_shader(software_version, 0), 0, geometry, parameters, work, bins, pixels, scene, materials);
 		slot.hardware_uniforms = cache->get_cache(hardware_shader.version_get_shader(hardware_version, 0), 0, geometry, parameters, work, bins, pixels, scene, materials);
@@ -129,65 +131,120 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 	return OK;
 }
 
-Error VirtualGeometryRasterizer::record(const Size2i &p_size, const Vector2 &p_jitter, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material) {
+Error VirtualGeometryRasterizer::record(const Ref<RenderSceneBuffersRD> &p_buffers, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material) {
 	ready = false;
-	const Error error = _prepare(p_size, p_sources, p_default_material);
+	Error error = _prepare(p_buffers->get_internal_size(), p_sources, p_default_material);
+	if (error != OK) {
+		return error;
+	}
+	error = shading.prepare_materials(p_buffers, p_sources.is_empty() ? RID() : p_sources[0].batch.geometry.geometry, p_view, RD::get_singleton()->framebuffer_get_format(framebuffer));
 	if (error != OK) {
 		return error;
 	}
 	RD *rd = RD::get_singleton();
+	// Preflight every descriptor and pipeline before any coverage is recorded.
+	for (uint32_t index = 0; index < p_sources.size(); ++index) {
+		Slot &slot = slots[index];
+		slot.passes.clear();
+		Pass fixed;
+		fixed.work.material = UINT32_MAX;
+		fixed.work.pipelines[0] = bin_pipeline.get_rid();
+		fixed.work.pipelines[1] = software_pipeline.get_rid();
+		fixed.work.pipelines[2] = hardware_pipeline;
+		fixed.uniforms[0] = slot.build_uniforms;
+		fixed.uniforms[1] = slot.software_uniforms;
+		fixed.uniforms[2] = slot.hardware_uniforms;
+		slot.passes.push_back(fixed);
+		const auto &source = p_sources[index];
+		for (const auto &raster : shading.get_raster_work()) {
+			Pass pass;
+			pass.work = raster;
+			for (uint32_t mode = 0; mode < 3; ++mode) {
+				LocalVector<RD::Uniform> uniforms;
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { source.batch.geometry.geometry }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { source.parameters }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { source.work }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { slot.bins }));
+				if (mode != 0) {
+					uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { visibility }));
+				}
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { shading.get_raster_materials() }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 12, { shading.get_material_view() }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 14, { MaterialStorage::get_singleton()->global_shader_uniforms_get_storage_buffer() }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 15, { shading.get_status() }));
+				MaterialStorage::get_singleton()->samplers_rd_get_default().append_uniforms(uniforms, 32);
+				pass.uniforms[mode] = UniformSetCacheRD::get_singleton()->get_cache_vec(raster.programs[mode], 0, uniforms);
+				ERR_FAIL_COND_V(pass.uniforms[mode].is_null(), ERR_CANT_CREATE);
+			}
+			slot.passes.push_back(pass);
+		}
+	}
 	rd->buffer_clear(visibility, 0, uint64_t(size.x) * size.y * 8);
 	shading.record_sources(p_sources);
 	uint32_t base = 0;
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const Slot &slot = slots[index];
 		const auto &source = p_sources[index];
-		rd->buffer_clear(slot.bins, 0, 16);
-		struct RasterParameters {
-			uint32_t raster[4];
-			float jitter[2];
-			uint32_t source_base;
-		} raster = { { uint32_t(size.x), uint32_t(size.y), base, source.selected_capacity }, { float(p_jitter.x), float(p_jitter.y) }, shading.get_source_base(index) };
-		static_assert(sizeof(RasterParameters) == 28);
-		rd->draw_command_begin_label("Virtual Geometry Mixed Raster");
-		RENDER_TIMESTAMP("Virtual Geometry Raster Bins Begin");
-		RD::ComputeListID list = rd->compute_list_begin();
-		auto prepare = [&](uint32_t p_mode) {
-			rd->compute_list_bind_compute_pipeline(list, dispatch_pipeline.get_rid());
-			rd->compute_list_bind_uniform_set(list, slot.dispatch_uniforms, 0);
-			rd->compute_list_set_push_constant(list, &p_mode, sizeof(p_mode));
-			rd->compute_list_dispatch(list, 1, 1, 1);
+		for (const Pass &pass : slot.passes) {
+			rd->buffer_clear(slot.bins, 0, 16);
+			struct RasterParameters {
+				uint32_t raster[4];
+				float jitter[2];
+				uint32_t source_base;
+				uint32_t material;
+			} raster = { { uint32_t(size.x), uint32_t(size.y), base, source.selected_capacity }, { float(p_view.jitter.x), float(p_view.jitter.y) }, shading.get_source_base(index), pass.work.material };
+			static_assert(sizeof(RasterParameters) == 32);
+			rd->draw_command_begin_label("Virtual Geometry Mixed Raster");
+			RENDER_TIMESTAMP("Virtual Geometry Raster Bins Begin");
+			RD::ComputeListID list = rd->compute_list_begin();
+			auto prepare = [&](uint32_t p_mode) {
+				rd->compute_list_bind_compute_pipeline(list, dispatch_pipeline.get_rid());
+				rd->compute_list_bind_uniform_set(list, slot.dispatch_uniforms, 0);
+				rd->compute_list_set_push_constant(list, &p_mode, sizeof(p_mode));
+				rd->compute_list_dispatch(list, 1, 1, 1);
+				rd->compute_list_add_barrier(list);
+			};
+			prepare(0);
+			rd->compute_list_bind_compute_pipeline(list, pass.work.pipelines[0]);
+			rd->compute_list_bind_uniform_set(list, pass.uniforms[0], 0);
+			if (pass.work.parameters[0].is_valid()) {
+				rd->compute_list_bind_uniform_set(list, pass.work.parameters[0], 3);
+			}
+			rd->compute_list_set_push_constant(list, &raster, sizeof(raster));
+			rd->compute_list_dispatch_indirect(list, slot.arguments, 0);
 			rd->compute_list_add_barrier(list);
-		};
-		prepare(0);
-		rd->compute_list_bind_compute_pipeline(list, bin_pipeline.get_rid());
-		rd->compute_list_bind_uniform_set(list, slot.build_uniforms, 0);
-		rd->compute_list_set_push_constant(list, &raster, sizeof(raster));
-		rd->compute_list_dispatch_indirect(list, slot.arguments, 0);
-		rd->compute_list_add_barrier(list);
-		prepare(1);
-		rd->compute_list_end();
-		RENDER_TIMESTAMP("Virtual Geometry Raster Bins End");
-		RENDER_TIMESTAMP("Virtual Geometry Software Raster Begin");
-		list = rd->compute_list_begin();
-		rd->compute_list_bind_compute_pipeline(list, software_pipeline.get_rid());
-		rd->compute_list_bind_uniform_set(list, slot.software_uniforms, 0);
-		rd->compute_list_set_push_constant(list, &raster, sizeof(raster));
-		rd->compute_list_dispatch_indirect(list, slot.arguments, 16);
-		rd->compute_list_end();
-		RENDER_TIMESTAMP("Virtual Geometry Software Raster End");
-		RENDER_TIMESTAMP("Virtual Geometry Hardware Raster Begin");
-		const RD::DrawListID draw = rd->draw_list_begin(framebuffer);
-		rd->draw_list_bind_render_pipeline(draw, hardware_pipeline);
-		rd->draw_list_bind_uniform_set(draw, slot.hardware_uniforms, 0);
-		rd->draw_list_set_push_constant(draw, &raster, sizeof(raster));
-		rd->draw_list_draw_indirect(draw, false, slot.arguments, 32);
-		rd->draw_list_end();
-		RENDER_TIMESTAMP("Virtual Geometry Hardware Raster End");
-		rd->draw_command_end_label();
+			prepare(1);
+			rd->compute_list_end();
+			RENDER_TIMESTAMP("Virtual Geometry Raster Bins End");
+			RENDER_TIMESTAMP("Virtual Geometry Software Raster Begin");
+			list = rd->compute_list_begin();
+			rd->compute_list_bind_compute_pipeline(list, pass.work.pipelines[1]);
+			rd->compute_list_bind_uniform_set(list, pass.uniforms[1], 0);
+			if (pass.work.parameters[1].is_valid()) {
+				rd->compute_list_bind_uniform_set(list, pass.work.parameters[1], 3);
+			}
+			rd->compute_list_set_push_constant(list, &raster, sizeof(raster));
+			rd->compute_list_dispatch_indirect(list, slot.arguments, 16);
+			rd->compute_list_end();
+			RENDER_TIMESTAMP("Virtual Geometry Software Raster End");
+			RENDER_TIMESTAMP("Virtual Geometry Hardware Raster Begin");
+			const RD::DrawListID draw = rd->draw_list_begin(framebuffer);
+			rd->draw_list_bind_render_pipeline(draw, pass.work.pipelines[2]);
+			rd->draw_list_bind_uniform_set(draw, pass.uniforms[2], 0);
+			if (pass.work.parameters[2].is_valid()) {
+				rd->draw_list_bind_uniform_set(draw, pass.work.parameters[2], 3);
+			}
+			rd->draw_list_set_push_constant(draw, &raster, sizeof(raster));
+			rd->draw_list_draw_indirect(draw, false, slot.arguments, 32);
+			rd->draw_list_end();
+			RENDER_TIMESTAMP("Virtual Geometry Hardware Raster End");
+			rd->draw_command_end_label();
+		}
 		base += source.selected_capacity;
 	}
 	shading.record_bins();
+	shading.record_materials();
 	ready = true;
 	return OK;
 }
@@ -227,6 +284,7 @@ Error VirtualGeometryRasterizer::record_depth(RID p_framebuffer, DepthMode p_mod
 	LocalVector<RD::Uniform> uniforms;
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { visibility }));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { shading.get_bins() }));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { shading.get_status() }));
 	RID sampler = MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, { sampler, shading.get_surface(6) }));
 	if (p_mode != DEPTH_ONLY) {

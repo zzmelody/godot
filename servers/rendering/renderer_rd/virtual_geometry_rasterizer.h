@@ -23,7 +23,7 @@ public:
 		DEPTH_NORMAL_ROUGHNESS_VOXEL_GI,
 		DEPTH_MODE_MAX,
 	};
-	Error record(const Size2i &p_size, const Vector2 &p_jitter, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material);
+	Error record(const Ref<RenderSceneBuffersRD> &p_buffers, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material);
 	Error record_depth(RID p_framebuffer, DepthMode p_mode, RID p_fitting_table, const Rect2i &p_region);
 	RID get_visibility() const { return ready ? visibility : RID(); }
 	uint64_t get_buffer_bytes() const;
@@ -32,7 +32,12 @@ public:
 	~VirtualGeometryRasterizer();
 
 private:
+	struct Pass {
+		VirtualGeometryShading::RasterMaterialWork work;
+		RID uniforms[3];
+	};
 	struct Slot {
+		LocalVector<Pass> passes;
 		RID bins;
 		RID arguments;
 		RID build_uniforms;

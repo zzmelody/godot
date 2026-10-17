@@ -1777,6 +1777,7 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		batch.material_override = owner->data->material_override;
 		batch.surface_materials = owner->data->surface_materials;
 		batch.layer_mask = owner->layer_mask;
+		batch.max_vertex_displacement = owner->max_vertex_displacement;
 		batch.shader_uniforms_offset = owner->shader_uniforms_offset;
 		batch.has_color = bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR);
 		batch.has_custom = bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA);
@@ -1794,16 +1795,19 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		if (!data->virtual_geometry_raster) {
 			data->virtual_geometry_raster = memnew(RendererRD::VirtualGeometryRasterizer);
 		}
-		const Error error = data->virtual_geometry_raster->record(buffers->get_internal_size(), p_render_data->scene_data->taa_jitter, data->virtual_geometry->get_results(), scene_shader.default_material);
-		ERR_FAIL_COND_MSG(error != OK, "Virtual geometry mixed raster refused this view: " + itos(error));
 		const auto results = data->virtual_geometry->get_results();
 		Projection correction;
 		correction.set_depth_correction(p_render_data->scene_data->flip_y);
 		const float normalization = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : (p_render_data->scene_data->emissive_exposure_normalization > 0 ? p_render_data->scene_data->emissive_exposure_normalization : 1.0f);
-		const Error shading_error = data->virtual_geometry_raster->get_shading().record_materials(buffers, results.is_empty() ? RID() : results[0].batch.geometry.geometry,
-				correction * p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform, p_render_data->scene_data->taa_jitter,
-				time, 1.0f / normalization, p_render_data->scene_data->camera_visible_layers);
-		ERR_FAIL_COND_MSG(shading_error != OK, "Virtual geometry material evaluation refused this view: " + itos(shading_error));
+		RendererRD::VirtualGeometryShading::ViewParameters view;
+		view.projection = correction * p_render_data->scene_data->cam_projection;
+		view.camera = p_render_data->scene_data->cam_transform;
+		view.jitter = p_render_data->scene_data->taa_jitter;
+		view.time = time;
+		view.exposure = 1.0f / normalization;
+		view.layers = p_render_data->scene_data->camera_visible_layers;
+		const Error error = data->virtual_geometry_raster->record(buffers, view, results, scene_shader.default_material);
+		ERR_FAIL_COND_MSG(error != OK, "Virtual geometry view refused: " + itos(error));
 	}
 }
 
@@ -1834,6 +1838,7 @@ Error RenderForwardClustered::_render_virtual_geometry_color(RenderDataRD *p_ren
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { results[0].batch.geometry.geometry }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { raster->get_visibility() }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 3, { shading.get_bins() }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 15, { shading.get_status() }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() }));
 		for (uint32_t surface = 0; surface < 9; ++surface) {
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 16 + surface, { shading.get_surface(surface) }));

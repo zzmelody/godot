@@ -1,3 +1,7 @@
+layout(set = 2, binding = 15, std430) readonly buffer ViewStatus {
+	uint data[];
+}
+vg_status;
 // Material evaluation has finished. Reuse the scene's lighting and fog with
 // material outputs and the exact visibility depth. All resources are borrowed.
 layout(set = 2, binding = 1, std430) readonly buffer Geometry {

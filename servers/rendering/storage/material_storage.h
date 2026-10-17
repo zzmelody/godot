@@ -81,6 +81,10 @@ public:
 	virtual void material_free(RID p_rid) = 0;
 
 	virtual void material_set_render_priority(RID p_material, int priority) = 0;
+	// Bounds are consumed by virtual geometry. Other backends and offline
+	// resource-only hosts retain their existing unsupported geometry behavior.
+	virtual void material_set_max_vertex_displacement(RID p_material, float p_maximum) {}
+	virtual float material_get_max_vertex_displacement(RID p_material) const { return 0.0f; }
 	virtual void material_set_shader(RID p_shader_material, RID p_shader) = 0;
 
 	virtual void material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) = 0;

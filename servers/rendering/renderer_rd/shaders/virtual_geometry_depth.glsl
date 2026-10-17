@@ -35,10 +35,15 @@ layout(location = 0) out vec4 normal_roughness;
 layout(location = 1) out uvec2 voxel_gi;
 #endif
 
+layout(set = 0, binding = 6, std430) readonly buffer ViewStatus {
+	uint data[];
+}
+vg_status;
+
 void main() {
 	ivec2 pixel = ivec2(gl_FragCoord.xy);
 	ivec2 size = textureSize(surface_flags, 0);
-	if (shading.data[1] != 0u || texelFetch(surface_flags, pixel, 0).r == 0u) {
+	if (vg_status.data[0] != 0u || shading.data[1] != 0u || texelFetch(surface_flags, pixel, 0).r == 0u) {
 		discard;
 	}
 	uvec2 visible = visibility.data[pixel.y * size.x + pixel.x];

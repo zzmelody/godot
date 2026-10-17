@@ -1235,7 +1235,7 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef VG_COMPOSITE
 	ivec2 vg_pixel = ivec2(gl_FragCoord.xy);
 	uint vg_flags_value = texelFetch(usampler2D(vg_flags, SAMPLER_NEAREST_CLAMP), vg_pixel, 0).r;
-	if (vg_shading.data[1] != 0u || vg_flags_value == 0u) {
+	if (vg_status.data[0] != 0u || vg_shading.data[1] != 0u || vg_flags_value == 0u) {
 		discard;
 	}
 	ivec2 vg_size = textureSize(sampler2D(vg_albedo, SAMPLER_NEAREST_CLAMP), 0);

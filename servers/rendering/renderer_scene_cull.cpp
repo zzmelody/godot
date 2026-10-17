@@ -1042,7 +1042,7 @@ void RendererSceneCull::instance_set_surface_override_material(RID p_instance, i
 
 	instance->materials.write[p_surface] = p_material;
 
-	_instance_queue_update(instance, false, true);
+	_instance_queue_update(instance, true, true);
 }
 
 void RendererSceneCull::instance_set_visible(RID p_instance, bool p_visible) {
@@ -1373,7 +1373,7 @@ void RendererSceneCull::instance_geometry_set_material_override(RID p_instance, 
 	ERR_FAIL_NULL(instance);
 
 	instance->material_override = p_material;
-	_instance_queue_update(instance, false, true);
+	_instance_queue_update(instance, true, true);
 
 	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
 		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
@@ -1721,8 +1721,13 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 
 	AABB new_aabb;
 	new_aabb = instance_xform->xform(p_instance->aabb);
-	if (p_instance->gpu_occlusion_margin > 0) {
-		new_aabb.grow_by(p_instance->gpu_occlusion_margin);
+	float margin = MAX(0.0f, p_instance->gpu_occlusion_margin);
+	if (((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) && p_instance->base_data) {
+		const auto *geometry = static_cast<InstanceGeometryData *>(p_instance->base_data);
+		margin = MAX(margin, geometry->geometry_instance->get_max_vertex_displacement());
+	}
+	if (margin > 0) {
+		new_aabb.grow_by(margin);
 	}
 	p_instance->transformed_aabb = new_aabb;
 
@@ -2078,6 +2083,26 @@ void RendererSceneCull::_update_instance_aabb(Instance *p_instance) const {
 	}
 
 	p_instance->aabb = new_aabb;
+	if (((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) && p_instance->base_data) {
+		RID mesh;
+		if (p_instance->base_type == RSE::INSTANCE_MESH) {
+			mesh = p_instance->base;
+		} else if (p_instance->base_type == RSE::INSTANCE_MULTIMESH) {
+			mesh = RSG::mesh_storage->multimesh_get_mesh(p_instance->base);
+		}
+		float maximum = 0.0f;
+		if (mesh.is_valid()) {
+			const auto materials = RSG::mesh_storage->mesh_get_virtual_geometry_materials(mesh);
+			for (uint32_t slot = 0; slot < materials.rids.size(); ++slot) {
+				const RID material = materials.resolve(slot, p_instance->materials, p_instance->material_override);
+				if (material.is_valid()) {
+					maximum = MAX(maximum, RSG::material_storage->material_get_max_vertex_displacement(material));
+				}
+			}
+		}
+		auto *geometry = static_cast<InstanceGeometryData *>(p_instance->base_data);
+		geometry->geometry_instance->set_max_vertex_displacement(maximum);
+	}
 }
 
 void RendererSceneCull::_update_instance_lightmap_captures(Instance *p_instance) const {

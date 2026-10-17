@@ -183,6 +183,7 @@ public:
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const = 0;
 
 	virtual void material_set_render_priority(RID p_material, int priority) = 0;
+	virtual void material_set_max_vertex_displacement(RID p_material, float p_maximum) = 0;
 
 	virtual void material_set_next_pass(RID p_material, RID p_next_material) = 0;
 

@@ -2613,6 +2613,23 @@ void MaterialStorage::material_set_render_priority(RID p_material, int priority)
 	material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
 }
 
+void MaterialStorage::material_set_max_vertex_displacement(RID p_material, float p_maximum) {
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_maximum) || p_maximum < 0.0f, "Max vertex displacement must be finite and nonnegative.");
+	Material *material = material_owner.get_or_null(p_material);
+	ERR_FAIL_NULL(material);
+	if (material->max_vertex_displacement == p_maximum) {
+		return;
+	}
+	material->max_vertex_displacement = p_maximum;
+	material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+	material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_AABB);
+}
+
+float MaterialStorage::material_get_max_vertex_displacement(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	return material ? material->max_vertex_displacement : 0.0f;
+}
+
 bool MaterialStorage::material_is_animated(RID p_material) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL_V(material, false);

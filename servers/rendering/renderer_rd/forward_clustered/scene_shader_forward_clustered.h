@@ -35,6 +35,9 @@
 #include "servers/rendering/renderer_rd/pipeline_hash_map_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_material.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_bin.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_sw.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/rendering_server_types.h"
 
@@ -222,6 +225,12 @@ public:
 		PipelineHashMapRD<PipelineKey, ShaderData, void (ShaderData::*)(PipelineKey)> pipeline_hash_map;
 
 		RID version;
+		RID virtual_geometry_raster_versions[3];
+		PipelineDeferredRD virtual_geometry_raster_compute[2];
+		PipelineCacheRD virtual_geometry_raster_hardware;
+		void _clear_virtual_geometry_raster();
+		RID get_virtual_geometry_raster_shader(uint32_t p_mode) const;
+		RID get_virtual_geometry_raster_pipeline(uint32_t p_mode, RD::FramebufferFormatID p_format);
 		RID virtual_geometry_version;
 		RID virtual_geometry_composite_version;
 		PipelineCacheRD virtual_geometry_composite_pipelines[2];
@@ -267,6 +276,7 @@ public:
 
 		bool unshaded = false;
 		bool uses_vertex = false;
+		bool uses_vertex_id = false;
 		bool uses_position = false;
 		bool uses_sss = false;
 		bool uses_transmittance = false;
@@ -363,6 +373,10 @@ public:
 	ShaderCompiler compiler;
 	VirtualGeometryMaterialShaderRD virtual_geometry_shader;
 	ShaderCompiler virtual_geometry_compiler;
+	ShaderCompiler virtual_geometry_raster_compiler;
+	VirtualGeometryRasterBinShaderRD virtual_geometry_raster_bin;
+	VirtualGeometryRasterSwShaderRD virtual_geometry_raster_sw;
+	VirtualGeometryRasterShaderRD virtual_geometry_raster_hw;
 	bool emulate_point_size = false;
 
 	RID default_shader;

@@ -26,6 +26,9 @@ int vg_bias(ivec2 a, ivec2 b) {
 }
 
 void vg_raster_triangle(uint index, uvec2 selected, uint triangle) {
+	if (!vg_raster_material_active(selected, triangle)) {
+		return;
+	}
 	uvec3 vertices = vg_triangle(selected.y, triangle);
 	vec4 clip[3];
 	ivec2 fixed_position[3];

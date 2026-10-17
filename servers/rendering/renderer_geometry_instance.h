@@ -66,6 +66,8 @@ public:
 
 	virtual Transform3D get_transform() = 0;
 	virtual void set_gpu_occlusion_margin(float p_margin) {}
+	virtual void set_max_vertex_displacement(float p_maximum) {}
+	virtual float get_max_vertex_displacement() const { return 0.0f; }
 	virtual AABB get_aabb() = 0;
 
 	virtual void clear_light_instances() = 0;
@@ -92,6 +94,9 @@ public:
 	Transform3D transform;
 	// -1 disables GPU culling; positive values bound vertex motion in world meters.
 	float gpu_occlusion_margin = 0.0f;
+	float max_vertex_displacement = 0.0f;
+	void set_max_vertex_displacement(float p_maximum) override { max_vertex_displacement = p_maximum; }
+	float get_max_vertex_displacement() const override { return max_vertex_displacement; }
 	virtual void set_gpu_occlusion_margin(float p_margin) override { gpu_occlusion_margin = p_margin; }
 	bool mirror = false;
 	AABB transformed_aabb;

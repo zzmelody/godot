@@ -1,3 +1,5 @@
+#ifndef VIRTUAL_GEOMETRY_SCENE_INCLUDED
+#define VIRTUAL_GEOMETRY_SCENE_INCLUDED
 // Frame-local source records, visible-cluster references and material map.
 // Header words point to 48-word sources, two-word references and material IDs.
 #ifndef VG_SCENE_SET
@@ -24,11 +26,9 @@ uvec2 vg_visible_reference(uint index) {
 
 #ifdef VG_MATERIAL_LOOKUP
 #include "virtual_geometry_page_inc.glsl"
-uint vg_material(uint payload) {
-	uvec2 visible = vg_visible_reference((payload >> 7u) - 1u);
+uint vg_material_reference(uvec2 visible, uint triangle) {
 	uint base = (visible.y >> 8u) * 8192u;
 	uint record = vg_record(visible.y);
-	uint triangle = payload & 127u;
 	uint info = geometry.data[record + 65u];
 	uint palette_index = 0xffffffffu;
 	if ((info >> 25u) != 127u) {
@@ -52,4 +52,9 @@ uint vg_material(uint payload) {
 	uint map = scene.data[vg_source_word(visible.x) + 47u];
 	return scene.data[scene.data[2] + map + model_slot];
 }
+uint vg_material(uint payload) {
+	return vg_material_reference(vg_visible_reference((payload >> 7u) - 1u), payload & 127u);
+}
+#endif
+
 #endif

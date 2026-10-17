@@ -82,6 +82,29 @@ int Material::get_render_priority() const {
 	return render_priority;
 }
 
+void Material::_set_material(RID p_material) const {
+	material = p_material;
+	if (material.is_valid() && max_vertex_displacement > 0.0f) {
+		RS::get_singleton()->material_set_max_vertex_displacement(material, max_vertex_displacement);
+	}
+}
+
+void Material::set_max_vertex_displacement(float p_maximum) {
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_maximum) || p_maximum < 0.0f, "Max vertex displacement must be finite and nonnegative.");
+	if (max_vertex_displacement == p_maximum) {
+		return;
+	}
+	max_vertex_displacement = p_maximum;
+	if (material.is_valid()) {
+		RS::get_singleton()->material_set_max_vertex_displacement(material, p_maximum);
+	}
+	emit_changed();
+}
+
+float Material::get_max_vertex_displacement() const {
+	return max_vertex_displacement;
+}
+
 RID Material::get_rid() const {
 	return material;
 }
@@ -163,6 +186,8 @@ void Material::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_render_priority", "priority"), &Material::set_render_priority);
 	ClassDB::bind_method(D_METHOD("get_render_priority"), &Material::get_render_priority);
+	ClassDB::bind_method(D_METHOD("set_max_vertex_displacement", "maximum"), &Material::set_max_vertex_displacement);
+	ClassDB::bind_method(D_METHOD("get_max_vertex_displacement"), &Material::get_max_vertex_displacement);
 
 	ClassDB::bind_method(D_METHOD("inspect_native_shader_code"), &Material::inspect_native_shader_code);
 	ClassDB::set_method_flags(get_class_static(), StringName("inspect_native_shader_code"), METHOD_FLAGS_DEFAULT | METHOD_FLAG_EDITOR);
@@ -171,6 +196,7 @@ void Material::_bind_methods() {
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "render_priority", PROPERTY_HINT_RANGE, itos(RENDER_PRIORITY_MIN) + "," + itos(RENDER_PRIORITY_MAX) + ",1"), "set_render_priority", "get_render_priority");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "next_pass", PROPERTY_HINT_RESOURCE_TYPE, Material::get_class_static()), "set_next_pass", "get_next_pass");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_vertex_displacement", PROPERTY_HINT_RANGE, "0,100,0.01,or_greater,suffix:m"), "set_max_vertex_displacement", "get_max_vertex_displacement");
 
 	BIND_CONSTANT(RENDER_PRIORITY_MAX);
 	BIND_CONSTANT(RENDER_PRIORITY_MIN);

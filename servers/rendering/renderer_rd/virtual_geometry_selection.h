@@ -31,6 +31,7 @@ public:
 		RID material_override;
 		Vector<RID> surface_materials;
 		uint32_t layer_mask = 1;
+		float max_vertex_displacement = 0.0f;
 		int32_t shader_uniforms_offset = -1;
 		bool has_color = false;
 		bool has_custom = false;
