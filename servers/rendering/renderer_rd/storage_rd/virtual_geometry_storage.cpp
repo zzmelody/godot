@@ -1,6 +1,7 @@
 #include "virtual_geometry_storage.h"
 
 #include "core/io/marshalls.h"
+#include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 
 namespace RendererRD {
 namespace {
@@ -23,6 +24,9 @@ VirtualGeometryStorage::~VirtualGeometryStorage() {
 		detached.insert(entry.value);
 	}
 	for (Asset *asset : detached) {
+		if (asset->bindings.metadata.is_valid()) {
+			RD::get_singleton()->free_rid(asset->bindings.metadata);
+		}
 		for (const KeyValue<uint32_t, Page *> &entry : asset->pages) {
 			if (entry.value->source.is_valid()) {
 				RD::get_singleton()->free_rid(entry.value->source);
@@ -34,6 +38,15 @@ VirtualGeometryStorage::~VirtualGeometryStorage() {
 	if (pool.is_valid()) {
 		RD::get_singleton()->free_rid(pool);
 	}
+	fixup_pipeline.free();
+	if (fixup_version.is_valid()) {
+		fixup_shader.version_free(fixup_version);
+	}
+}
+
+const VirtualGeometryStorage::Bindings *VirtualGeometryStorage::get_bindings(RID p_mesh) const {
+	Asset *const *found = assets.getptr(p_mesh);
+	return found != nullptr && (*found)->roots_published == (*found)->root.hierarchy.root_pages ? &(*found)->bindings : nullptr;
 }
 
 void VirtualGeometryStorage::_prune_outcomes() {
@@ -54,12 +67,12 @@ void VirtualGeometryStorage::_publish_feedback() {
 	value.resize(SNAPSHOT_BYTES + outcomes.size() * OUTCOME_BYTES);
 	uint8_t *bytes = value.ptrw();
 	const uint64_t header[] = { RD::get_singleton()->get_recording_submission_serial(), RD::get_singleton()->get_completed_submission_serial(),
-		pool_bytes, occupied_bytes, retiring_bytes, metadata_reserved, staging_bytes, work_reserved, sequence };
-	for (uint32_t word = 0; word < 9; ++word) {
+		pool_bytes, occupied_bytes, retiring_bytes, metadata_reserved, staging_bytes, work_reserved, sequence, gpu_metadata_bytes };
+	for (uint32_t word = 0; word < 10; ++word) {
 		encode_uint64(header[word], bytes + word * 8);
 	}
-	encode_uint32(outcomes.size(), bytes + 72);
-	encode_uint32(OUTCOME_BYTES, bytes + 76);
+	encode_uint32(outcomes.size(), bytes + 80);
+	encode_uint32(OUTCOME_BYTES, bytes + 84);
 	for (uint32_t index = 0; index < outcomes.size(); ++index) {
 		const Outcome &outcome = outcomes[index];
 		uint8_t *record = bytes + SNAPSHOT_BYTES + index * OUTCOME_BYTES;
@@ -89,14 +102,14 @@ Vector<uint8_t> VirtualGeometryStorage::get_feedback(uint64_t p_after_sequence) 
 	while (previous < p_after_sequence && !acknowledged.compare_exchange_weak(previous, p_after_sequence, std::memory_order_release, std::memory_order_relaxed)) {
 	}
 	uint32_t first = 0;
-	const uint32_t count = decode_uint32(value.ptr() + 72);
+	const uint32_t count = decode_uint32(value.ptr() + 80);
 	while (first < count && decode_uint64(value.ptr() + SNAPSHOT_BYTES + first * OUTCOME_BYTES) <= p_after_sequence) {
 		++first;
 	}
 	if (first != 0) {
 		uint8_t *bytes = value.ptrw();
 		memmove(bytes + SNAPSHOT_BYTES, bytes + SNAPSHOT_BYTES + first * OUTCOME_BYTES, (count - first) * OUTCOME_BYTES);
-		encode_uint32(count - first, bytes + 72);
+		encode_uint32(count - first, bytes + 80);
 		value.resize(SNAPSHOT_BYTES + (count - first) * OUTCOME_BYTES);
 	}
 	return value;
@@ -158,9 +171,22 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	if (p_materials.size() != int64_t(root.materials.size())) {
 		return ERR_INVALID_PARAMETER;
 	}
-	const uint64_t charge = sizeof(Asset) + root_memory(root) + uint64_t(p_materials.size()) * sizeof(RID);
-	if (charge > metadata_budget - metadata_reserved || pool.is_null() || uint64_t(root.hierarchy.root_pages) * UNIT_BYTES > pool_bytes) {
+	const uint32_t table_byte = (uint32_t(p_root.size()) + 15) & ~15u;
+	const uint64_t gpu_bytes = table_byte + uint64_t(root.hierarchy.pages.size()) * 4;
+	const uint64_t charge = sizeof(Asset) + root_memory(root) + uint64_t(p_materials.size()) * sizeof(Variant) + uint64_t(root.hierarchy.pages.size()) * 9;
+	if (charge + gpu_bytes > metadata_budget - metadata_reserved || gpu_bytes > UINT32_MAX || pool.is_null() || uint64_t(root.hierarchy.root_pages) * UNIT_BYTES > pool_bytes) {
 		return ERR_OUT_OF_MEMORY;
+	}
+	Vector<uint8_t> gpu = p_root;
+	if (gpu.resize(gpu_bytes) != OK) {
+		return ERR_OUT_OF_MEMORY;
+	}
+	uint8_t *gpu_data = gpu.ptrw();
+	memset(gpu_data + p_root.size(), 0, table_byte - p_root.size());
+	memset(gpu_data + table_byte, 0xff, gpu_bytes - table_byte);
+	const RID metadata = RD::get_singleton()->storage_buffer_create(gpu_bytes, gpu);
+	if (metadata.is_null()) {
+		return ERR_CANT_CREATE;
 	}
 	Asset *asset = memnew(Asset);
 	asset->mesh = p_mesh;
@@ -168,13 +194,22 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	asset->root = std::move(root);
 	asset->materials = p_materials.duplicate();
 	asset->metadata = charge;
-	metadata_reserved += charge;
+	asset->gpu_bytes = gpu_bytes;
+	asset->bindings = { metadata, pool, table_byte / 4, p_generation };
+	asset->committed.resize(asset->root.hierarchy.pages.size(), 0);
+	asset->physical_slots.resize(asset->root.hierarchy.pages.size(), UINT32_MAX);
+	asset->dependency_users.resize(asset->root.hierarchy.pages.size(), 0);
+	metadata_reserved += charge + gpu_bytes;
+	gpu_metadata_bytes += gpu_bytes;
 	assets.insert(p_mesh, asset);
 	_publish_feedback();
 	return OK;
 }
 
 void VirtualGeometryStorage::_outcome(Page *p_page, uint32_t p_status, Error p_error) {
+	if (p_status == PAGE_RESIDENT || p_status == PAGE_FAILED) {
+		p_page->install_pending = false;
+	}
 	--outcome_reservations;
 	outcomes.push_back({ ++sequence, p_page->asset->mesh.get_id(), p_page->asset->generation, p_page->lease,
 			p_page->upload, p_page->index, p_status, p_error, RD::get_singleton()->get_completed_submission_serial() });
@@ -200,12 +235,100 @@ uint32_t VirtualGeometryStorage::_allocate(uint32_t p_units) {
 }
 
 void VirtualGeometryStorage::_retire(Page *p_page) {
+	if (p_page->canceled) {
+		return;
+	}
 	p_page->canceled = true;
-	if (p_page->state == Page::TRANSCODED) {
-		p_page->state = Page::RETIRING;
-		p_page->serial = RD::get_singleton()->get_recording_submission_serial();
-		retiring_bytes += uint64_t(p_page->units) * UNIT_BYTES;
-		retiring.push_back(p_page);
+	if (p_page->root_counted) {
+		--p_page->asset->roots_transcoded;
+		p_page->root_counted = false;
+	}
+	_drop_dependencies(p_page);
+	if (p_page->state != Page::QUEUED && p_page->state != Page::TRANSCODING) {
+		_begin_retirement(p_page);
+	}
+}
+
+void VirtualGeometryStorage::_remove_page_reference(LocalVector<Page *> &p_list, Page *p_page) {
+	for (uint32_t index = 0; index < p_list.size(); ++index) {
+		if (p_list[index] == p_page) {
+			p_list.remove_at_unordered(index);
+			return;
+		}
+	}
+}
+
+Span<uint32_t> VirtualGeometryStorage::_dependencies(const Page *p_page) {
+	const auto &directory = p_page->asset->root.directory;
+	const auto &location = directory.pages[p_page->index];
+	return location.dependency_count == 0 ? Span<uint32_t>() : Span<uint32_t>(directory.dependencies.data() + location.dependency_start, location.dependency_count);
+}
+
+void VirtualGeometryStorage::_remove_waiting(Page *p_page) {
+	Asset *asset = p_page->asset;
+	if (p_page->waiting_roots) {
+		_remove_page_reference(asset->root_waiters, p_page);
+		p_page->waiting_roots = false;
+	}
+	for (uint32_t dependency : _dependencies(p_page)) {
+		LocalVector<Page *> *list = asset->waiters.getptr(dependency);
+		if (list != nullptr) {
+			_remove_page_reference(*list, p_page);
+			if (list->is_empty()) {
+				asset->waiters.erase(dependency);
+			}
+		}
+	}
+}
+
+void VirtualGeometryStorage::_drop_dependencies(Page *p_page) {
+	if (p_page->dependencies_held) {
+		for (uint32_t dependency : _dependencies(p_page)) {
+			--p_page->asset->dependency_users[dependency];
+		}
+		p_page->dependencies_held = false;
+	}
+}
+
+void VirtualGeometryStorage::_begin_retirement(Page *p_page) {
+	if (p_page->state == Page::UNINSTALLING || p_page->state == Page::RETIRING) {
+		return;
+	}
+	if (p_page->state == Page::PUBLISHING) {
+		_remove_page_reference(publishing, p_page);
+	} else if (p_page->state == Page::INSTALL_READY) {
+		_remove_page_reference(ready, p_page);
+	}
+	_remove_waiting(p_page);
+	p_page->state = Page::UNINSTALLING;
+	uninstalls.push_back(p_page);
+}
+
+void VirtualGeometryStorage::_queue_ready(Page *p_page) {
+	if (p_page->state == Page::TRANSCODED && !p_page->canceled && p_page->unresolved == 0 && p_page->asset->roots_committed) {
+		p_page->state = Page::INSTALL_READY;
+		ready.push_back(p_page);
+	}
+}
+
+void VirtualGeometryStorage::_notify_committed(Page *p_page) {
+	Asset *asset = p_page->asset;
+	LocalVector<Page *> *found = asset->waiters.getptr(p_page->index);
+	if (found != nullptr) {
+		LocalVector<Page *> listeners = std::move(*found);
+		asset->waiters.erase(p_page->index);
+		for (Page *listener : listeners) {
+			--listener->unresolved;
+			_queue_ready(listener);
+		}
+	}
+}
+
+void VirtualGeometryStorage::_free_metadata(Asset *p_asset) {
+	if (p_asset->bindings.metadata.is_valid()) {
+		RD::get_singleton()->free_rid(p_asset->bindings.metadata);
+		freed_buffers.push_back({ RD::get_singleton()->get_recording_submission_serial(), p_asset->gpu_bytes, true });
+		p_asset->bindings.metadata = RID();
 	}
 }
 
@@ -217,6 +340,7 @@ void VirtualGeometryStorage::release_mesh(RID p_mesh) {
 	Asset *asset = *found;
 	assets.erase(p_mesh);
 	asset->destroyed = true;
+	_free_metadata(asset);
 	if (asset->pages.is_empty()) {
 		metadata_reserved -= asset->metadata;
 		memdelete(asset);
@@ -230,6 +354,8 @@ void VirtualGeometryStorage::release_mesh(RID p_mesh) {
 }
 
 void VirtualGeometryStorage::_delete_page(Page *p_page) {
+	_remove_waiting(p_page);
+	_drop_dependencies(p_page);
 	if (p_page->slot != UINT32_MAX) {
 		for (uint32_t offset = 0; offset < p_page->units; ++offset) {
 			slots[p_page->slot + offset] = 0;
@@ -239,6 +365,10 @@ void VirtualGeometryStorage::_delete_page(Page *p_page) {
 	work_reserved -= p_page->work;
 	metadata_reserved -= sizeof(Page) + 64; // Includes a conservative hash entry allowance.
 	Asset *asset = p_page->asset;
+	asset->physical_slots[p_page->index] = UINT32_MAX;
+	if (p_page->root_counted) {
+		--asset->roots_transcoded;
+	}
 	asset->pages.erase(p_page->index);
 	memdelete(p_page);
 	if (asset->destroyed && asset->pages.is_empty()) {
@@ -293,7 +423,7 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 		Asset *asset = *found;
 		Page **existing = asset->pages.getptr(page);
 		if (operation == 1) {
-			if (payload != UINT32_MAX || existing == nullptr || (*existing)->lease != lease || (*existing)->upload != upload || (*existing)->canceled) {
+			if (page < asset->root.hierarchy.root_pages || payload != UINT32_MAX || existing == nullptr || (*existing)->lease != lease || (*existing)->upload != upload || (*existing)->canceled) {
 				refusal = ERR_INVALID_PARAMETER;
 				break;
 			}
@@ -328,6 +458,43 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 			refusal = ERR_INVALID_DATA;
 			break;
 		}
+		for (uint32_t dependency : _dependencies(candidate)) {
+			Page **target = asset->pages.getptr(dependency);
+			if (target != nullptr && (*target)->canceled) {
+				refusal = ERR_BUSY;
+				break;
+			}
+		}
+		if (refusal != OK) {
+			break;
+		}
+	}
+	if (refusal == OK) {
+		HashMap<RID, HashMap<uint32_t, uint32_t>> retiring_users;
+		HashMap<RID, HashMap<uint32_t, uint32_t>> incoming_users;
+		for (Page *page : prepared) {
+			for (uint32_t dependency : _dependencies(page)) {
+				++incoming_users[page->asset->mesh][dependency];
+			}
+		}
+		for (Page *page : removals) {
+			for (uint32_t dependency : _dependencies(page)) {
+				++retiring_users[page->asset->mesh][dependency];
+			}
+		}
+		for (Page *page : removals) {
+			if (uint64_t(page->asset->dependency_users[page->index]) + incoming_users[page->asset->mesh][page->index] > retiring_users[page->asset->mesh][page->index]) {
+				refusal = ERR_BUSY;
+				break;
+			}
+			const uint64_t patch_bytes = uint64_t(page->fixups.hierarchy_fixups.size() + page->fixups.cluster_fixups.size() + 1) * 16;
+			if (patch_bytes > page->work) {
+				added_work += patch_bytes - page->work;
+			}
+		}
+		if (added_work > work_budget - work_reserved) {
+			refusal = ERR_OUT_OF_MEMORY;
+		}
 	}
 	if (refusal != OK) {
 		for (Page *page : prepared) {
@@ -339,15 +506,225 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 	work_reserved += added_work;
 	metadata_reserved += added_metadata;
 	for (Page *page : prepared) {
-		page->asset->pages.insert(page->index, page);
+		Asset *asset = page->asset;
+		asset->pages.insert(page->index, page);
+		page->dependencies_held = true;
+		for (uint32_t dependency : _dependencies(page)) {
+			++asset->dependency_users[dependency];
+			if (page->index >= asset->root.hierarchy.root_pages && dependency >= asset->root.hierarchy.root_pages && !asset->committed[dependency]) {
+				asset->waiters[dependency].push_back(page);
+				++page->unresolved;
+			}
+		}
+		if (page->index >= asset->root.hierarchy.root_pages && !asset->roots_committed) {
+			asset->root_waiters.push_back(page);
+			page->waiting_roots = true;
+		}
 		queued.push_back(page);
 	}
 	for (Page *page : removals) {
+		const uint64_t patch_bytes = uint64_t(page->fixups.hierarchy_fixups.size() + page->fixups.cluster_fixups.size() + 1) * 16;
+		page->work = MAX(page->work, patch_bytes);
 		page->retire_outcome = true;
 		_retire(page);
 	}
 	_publish_feedback();
 	return OK;
+}
+
+Error VirtualGeometryStorage::_make_patch_batch(Page *p_page, bool p_uninstall, PatchBatch &r_batch) {
+	Asset *asset = p_page->asset;
+	VirtualGeometry::GeometryFixupUpdates updates;
+	const auto planned = VirtualGeometry::plan_geometry_fixups(asset->root.hierarchy, p_page->index, p_page->fixups, p_uninstall, asset->committed, updates);
+	if (planned != VirtualGeometry::FixupPlanError::OK) {
+		return planned == VirtualGeometry::FixupPlanError::MEMORY ? ERR_OUT_OF_MEMORY : ERR_INVALID_DATA;
+	}
+	std::vector<VirtualGeometry::GeometryGpuFixup> commands;
+	const VirtualGeometry::GeometryGpuLayout layout{ asset->gpu_bytes / 4, asset->bindings.page_table_word, uint32_t(pool_bytes / 4) };
+	const auto resolved = VirtualGeometry::resolve_geometry_gpu_fixups(asset->root, p_page->index, p_uninstall, updates, asset->physical_slots, layout, commands);
+	if (resolved != VirtualGeometry::GpuFixupError::OK) {
+		return resolved == VirtualGeometry::GpuFixupError::MEMORY ? ERR_OUT_OF_MEMORY : ERR_INVALID_DATA;
+	}
+	r_batch.page = p_page;
+	if (r_batch.commands.resize(commands.size() * 16) != OK) {
+		return ERR_OUT_OF_MEMORY;
+	}
+	uint8_t *bytes = r_batch.commands.ptrw();
+	for (uint32_t index = 0; index < commands.size(); ++index) {
+		const auto &command = commands[index];
+		encode_uint32(command.buffer, bytes + index * 16);
+		encode_uint32(command.word, bytes + index * 16 + 4);
+		encode_uint32(command.value, bytes + index * 16 + 8);
+		encode_uint32(command.operation, bytes + index * 16 + 12);
+	}
+	return OK;
+}
+
+Error VirtualGeometryStorage::_record_fixup_batch(LocalVector<PatchBatch> &p_batches) {
+	if (p_batches.is_empty()) {
+		return OK;
+	}
+	if (fixup_version.is_null()) {
+		Vector<String> variants;
+		variants.push_back("");
+		fixup_shader.initialize(variants);
+		fixup_version = fixup_shader.version_create();
+		const RID program = fixup_shader.version_get_shader(fixup_version, 0);
+		if (program.is_null()) {
+			return ERR_CANT_CREATE;
+		}
+		fixup_pipeline.create_compute_pipeline(program);
+	}
+	const RID program = fixup_shader.version_get_shader(fixup_version, 0);
+	const RID pipeline = fixup_pipeline.get_rid();
+	if (program.is_null() || pipeline.is_null()) {
+		return ERR_CANT_CREATE;
+	}
+	Error error = OK;
+	// Complete allocation/binding preflight before recording any destination
+	// write. Failure can then restore the CPU committed snapshot atomically.
+	for (PatchBatch &batch : p_batches) {
+		if (uint64_t(batch.commands.size()) > batch.page->work) {
+			error = ERR_OUT_OF_MEMORY;
+			break;
+		}
+		batch.source = RD::get_singleton()->storage_buffer_create(batch.commands.size(), batch.commands);
+		if (batch.source.is_null()) {
+			error = ERR_CANT_CREATE;
+			break;
+		}
+		staging_bytes += batch.commands.size();
+		batch.page->work -= batch.commands.size();
+		const RD::Uniform input(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { batch.source });
+		const RD::Uniform metadata(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { batch.page->asset->bindings.metadata });
+		const RD::Uniform geometry(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { pool });
+		batch.uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0, input, metadata, geometry);
+		if (batch.uniforms.is_null()) {
+			error = ERR_CANT_CREATE;
+			break;
+		}
+	}
+	if (error == OK) {
+		const RD::ComputeListID commands = RD::get_singleton()->compute_list_begin();
+		RD::get_singleton()->compute_list_bind_compute_pipeline(commands, pipeline);
+		for (const PatchBatch &batch : p_batches) {
+			const uint32_t count = batch.commands.size() / 16;
+			RD::get_singleton()->compute_list_bind_uniform_set(commands, batch.uniforms, 0);
+			RD::get_singleton()->compute_list_set_push_constant(commands, &count, sizeof(count));
+			RD::get_singleton()->compute_list_dispatch(commands, (count + 63) / 64, 1, 1);
+		}
+		RD::get_singleton()->compute_list_end();
+	}
+	for (const PatchBatch &batch : p_batches) {
+		if (batch.source.is_valid()) {
+			RD::get_singleton()->free_rid(batch.source);
+			freed_buffers.push_back({ RD::get_singleton()->get_recording_submission_serial(), uint64_t(batch.commands.size()), false });
+		}
+	}
+	return error;
+}
+
+void VirtualGeometryStorage::_process_installs() {
+	while (!ready.is_empty()) {
+		LocalVector<Page *> pages = std::move(ready);
+		for (Page *page : pages) {
+			page->asset->committed[page->index] = 1;
+		}
+		LocalVector<PatchBatch> batches;
+		Error error = OK;
+		for (Page *page : pages) {
+			PatchBatch batch;
+			error = _make_patch_batch(page, false, batch);
+			if (error != OK) {
+				break;
+			}
+			batches.push_back(std::move(batch));
+		}
+		if (error == OK) {
+			error = _record_fixup_batch(batches);
+		}
+		if (error != OK) {
+			for (Page *page : pages) {
+				page->asset->committed[page->index] = 0;
+				page->install_error = error;
+				_retire(page);
+			}
+			continue;
+		}
+		const uint64_t serial = RD::get_singleton()->get_recording_submission_serial();
+		for (Page *page : pages) {
+			page->state = Page::PUBLISHING;
+			page->serial = serial;
+			publishing.push_back(page);
+		}
+		for (Page *page : pages) {
+			Asset *asset = page->asset;
+			if (!asset->roots_committed && page->index < asset->root.hierarchy.root_pages) {
+				asset->roots_committed = true; // All roots were preflighted in this batch.
+				LocalVector<Page *> listeners = std::move(asset->root_waiters);
+				for (Page *listener : listeners) {
+					listener->waiting_roots = false;
+					_queue_ready(listener);
+				}
+			}
+			_notify_committed(page);
+		}
+	}
+}
+
+void VirtualGeometryStorage::_process_uninstalls() {
+	if (uninstalls.is_empty()) {
+		return;
+	}
+	LocalVector<Page *> pages = std::move(uninstalls);
+	LocalVector<Page *> committed;
+	for (Page *page : pages) {
+		if (page->asset->committed[page->index] && !page->asset->destroyed) {
+			committed.push_back(page);
+		}
+		page->asset->committed[page->index] = 0;
+	}
+	LocalVector<PatchBatch> batches;
+	Error error = OK;
+	for (Page *page : committed) {
+		PatchBatch batch;
+		error = _make_patch_batch(page, true, batch);
+		if (error != OK) {
+			break;
+		}
+		batches.push_back(std::move(batch));
+	}
+	if (error == OK) {
+		error = _record_fixup_batch(batches);
+	}
+	if (error != OK) {
+		for (Page *page : committed) {
+			page->asset->committed[page->index] = 1;
+			page->canceled = false;
+			page->dependencies_held = true;
+			for (uint32_t dependency : _dependencies(page)) {
+				++page->asset->dependency_users[dependency];
+			}
+			if (page->retire_outcome) {
+				_outcome(page, PAGE_RETIRE_FAILED, error);
+				page->retire_outcome = false;
+			}
+			page->state = page->install_pending ? Page::PUBLISHING : Page::RESIDENT;
+			if (page->install_pending) {
+				publishing.push_back(page);
+			}
+		}
+	}
+	const uint64_t serial = RD::get_singleton()->get_recording_submission_serial();
+	for (Page *page : pages) {
+		if (page->state != Page::UNINSTALLING) {
+			continue; // A refused uninstall preserved its published ownership.
+		}
+		page->state = Page::RETIRING;
+		page->serial = serial;
+		retiring_bytes += uint64_t(page->units) * UNIT_BYTES;
+		retiring.push_back(page);
+	}
 }
 
 void VirtualGeometryStorage::update() {
@@ -363,8 +740,13 @@ void VirtualGeometryStorage::update() {
 	const uint64_t disposed = RD::get_singleton()->get_retired_resource_serial();
 	for (uint32_t index = 0; index < freed_buffers.size();) {
 		if (freed_buffers[index].serial <= disposed) {
-			staging_bytes -= freed_buffers[index].bytes;
-			work_reserved -= freed_buffers[index].bytes;
+			if (freed_buffers[index].metadata) {
+				gpu_metadata_bytes -= freed_buffers[index].bytes;
+				metadata_reserved -= freed_buffers[index].bytes;
+			} else {
+				staging_bytes -= freed_buffers[index].bytes;
+				work_reserved -= freed_buffers[index].bytes;
+			}
 			freed_buffers.remove_at_unordered(index);
 		} else {
 			++index;
@@ -378,10 +760,26 @@ void VirtualGeometryStorage::update() {
 		}
 		retiring.remove_at_unordered(index);
 		retiring_bytes -= uint64_t(page->units) * UNIT_BYTES;
+		if (page->install_pending) {
+			_outcome(page, PAGE_FAILED, page->install_error);
+		}
 		if (page->retire_outcome) {
-			_outcome(page, 1, OK);
+			_outcome(page, PAGE_RETIRED, OK);
 		}
 		_delete_page(page);
+	}
+	for (uint32_t index = 0; index < publishing.size();) {
+		Page *page = publishing[index];
+		if (page->serial > completed) {
+			++index;
+			continue;
+		}
+		publishing.remove_at_unordered(index);
+		page->state = Page::RESIDENT;
+		if (page->index < page->asset->root.hierarchy.root_pages) {
+			++page->asset->roots_published;
+		}
+		_outcome(page, PAGE_RESIDENT, OK);
 	}
 	for (uint32_t index = 0; index < inflight.size();) {
 		Page *page = inflight[index];
@@ -391,22 +789,36 @@ void VirtualGeometryStorage::update() {
 		}
 		inflight.remove_at_unordered(index);
 		_free_source(page);
-		_outcome(page, page->canceled ? 2 : 0, page->canceled ? ERR_SKIP : OK);
 		page->state = Page::TRANSCODED;
 		if (page->canceled) {
-			_retire(page);
+			_begin_retirement(page);
+		} else if (page->index < page->asset->root.hierarchy.root_pages) {
+			Asset *asset = page->asset;
+			page->root_counted = true;
+			if (++asset->roots_transcoded == asset->root.hierarchy.root_pages) {
+				for (uint32_t root = 0; root < asset->root.hierarchy.root_pages; ++root) {
+					Page *root_page = asset->pages[root];
+					root_page->state = Page::INSTALL_READY;
+					ready.push_back(root_page);
+				}
+			}
+		} else {
+			_queue_ready(page);
 		}
 	}
+	_process_uninstalls();
+	_process_installs();
 	for (Page *page : queued) {
 		if (page->canceled) {
-			_outcome(page, 2, ERR_SKIP);
+			_outcome(page, PAGE_FAILED, page->install_error);
 			if (page->retire_outcome) {
-				_outcome(page, 1, OK);
+				_outcome(page, PAGE_RETIRED, OK);
 			}
 			_delete_page(page);
 			continue;
 		}
 		page->slot = _allocate(page->units);
+		page->asset->physical_slots[page->index] = page->slot;
 		Error error = page->slot == UINT32_MAX ? ERR_OUT_OF_MEMORY : OK;
 		if (error == OK) {
 			page->source = RD::get_singleton()->storage_buffer_create(page->bytes.size(), page->bytes);
@@ -422,7 +834,7 @@ void VirtualGeometryStorage::update() {
 		}
 		if (error != OK) {
 			_free_source(page);
-			_outcome(page, 2, error);
+			_outcome(page, PAGE_FAILED, error);
 			_delete_page(page);
 			continue;
 		}

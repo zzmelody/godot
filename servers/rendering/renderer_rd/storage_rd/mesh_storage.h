@@ -385,6 +385,7 @@ public:
 	Error virtual_geometry_submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads) override;
 	Vector<uint8_t> virtual_geometry_get_feedback(uint64_t p_after_sequence) const override;
 	void update_virtual_geometry();
+	const VirtualGeometryStorage::Bindings *mesh_get_virtual_geometry(RID p_mesh) const { return virtual_geometry.get_bindings(p_mesh); }
 
 	virtual int mesh_get_blend_shape_count(RID p_mesh) const override;
 

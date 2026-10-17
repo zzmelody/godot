@@ -1,11 +1,13 @@
 #ifndef VIRTUAL_GEOMETRY_STORAGE_RD_H
 #define VIRTUAL_GEOMETRY_STORAGE_RD_H
 
-#include "core/io/virtual_geometry/model_codec.h"
+#include "core/io/virtual_geometry/runtime_fixups.h"
 #include "core/os/mutex.h"
 #include "core/templates/hash_set.h"
 #include "core/templates/local_vector.h"
+#include "core/templates/span.h"
 #include "core/variant/typed_array.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_fixup.glsl.gen.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_transcoder.h"
 
 #include <atomic>
@@ -15,11 +17,24 @@ namespace RendererRD {
 // MeshStorage owns this service. All mutations run on the rendering thread.
 // Feedback borrows only a mutex-protected value snapshot, never live GPU state.
 class VirtualGeometryStorage {
+public:
+	struct Bindings {
+		RID metadata;
+		RID geometry;
+		uint32_t page_table_word = 0;
+		uint64_t generation = 0;
+	};
+
+private:
 	struct Asset;
 	struct Page {
 		enum State { QUEUED,
 			TRANSCODING,
 			TRANSCODED,
+			INSTALL_READY,
+			PUBLISHING,
+			RESIDENT,
+			UNINSTALLING,
 			RETIRING } state = QUEUED;
 		Asset *asset = nullptr;
 		uint32_t index = 0;
@@ -34,15 +49,31 @@ class VirtualGeometryStorage {
 		VirtualGeometry::HierarchyPage fixups;
 		bool canceled = false;
 		bool retire_outcome = false;
+		bool install_pending = true;
+		bool dependencies_held = false;
+		bool waiting_roots = false;
+		bool root_counted = false;
+		uint32_t unresolved = 0;
+		Error install_error = ERR_SKIP;
 	};
 	struct Asset {
 		RID mesh;
 		uint64_t generation = 0;
 		uint64_t metadata = 0;
+		uint32_t gpu_bytes = 0;
+		uint32_t roots_transcoded = 0;
+		uint32_t roots_published = 0;
+		bool roots_committed = false;
 		bool destroyed = false;
+		Bindings bindings;
 		VirtualGeometry::GeometryModelRoot root;
 		TypedArray<RID> materials;
 		HashMap<uint32_t, Page *> pages;
+		std::vector<uint8_t> committed;
+		std::vector<uint32_t> physical_slots;
+		std::vector<uint32_t> dependency_users;
+		HashMap<uint32_t, LocalVector<Page *>> waiters;
+		LocalVector<Page *> root_waiters;
 	};
 	struct Outcome {
 		uint64_t sequence;
@@ -58,22 +89,39 @@ class VirtualGeometryStorage {
 	struct FreedBuffer {
 		uint64_t serial;
 		uint64_t bytes;
+		bool metadata = false;
+	};
+	struct PatchBatch {
+		Page *page = nullptr;
+		Vector<uint8_t> commands;
+		RID source;
+		RID uniforms;
 	};
 	static constexpr uint32_t UNIT_BYTES = VirtualGeometry::ROOT_PAGE_GPU_CAPACITY;
 	static constexpr uint32_t MAX_OUTCOMES = 4096;
 	static constexpr uint32_t REQUEST_BYTES = 44;
 	static constexpr uint32_t OUTCOME_BYTES = 60;
-	static constexpr uint32_t SNAPSHOT_BYTES = 80;
+	static constexpr uint32_t SNAPSHOT_BYTES = 88;
+	enum PageResult { PAGE_RESIDENT,
+		PAGE_RETIRED,
+		PAGE_FAILED,
+		PAGE_RETIRE_FAILED };
 
 	HashMap<RID, Asset *> assets;
 	HashSet<Asset *> detached;
 	LocalVector<Page *> queued;
 	LocalVector<Page *> inflight;
+	LocalVector<Page *> ready;
+	LocalVector<Page *> publishing;
+	LocalVector<Page *> uninstalls;
 	LocalVector<Page *> retiring;
 	LocalVector<FreedBuffer> freed_buffers;
 	LocalVector<Outcome> outcomes;
 	LocalVector<uint8_t> slots;
 	VirtualGeometryTranscoder transcoder;
+	VirtualGeometryFixupShaderRD fixup_shader;
+	RID fixup_version;
+	PipelineDeferredRD fixup_pipeline;
 	RID pool;
 	uint64_t pool_bytes = 0;
 	uint64_t metadata_budget = 0;
@@ -83,6 +131,7 @@ class VirtualGeometryStorage {
 	uint64_t occupied_bytes = 0;
 	uint64_t retiring_bytes = 0;
 	uint64_t staging_bytes = 0;
+	uint64_t gpu_metadata_bytes = 0;
 	uint64_t sequence = 0;
 	uint64_t updated_serial = 0;
 	uint32_t outcome_reservations = 0;
@@ -95,6 +144,18 @@ class VirtualGeometryStorage {
 	void _publish_feedback();
 	void _prune_outcomes();
 	void _retire(Page *p_page);
+	static Span<uint32_t> _dependencies(const Page *p_page);
+	static void _remove_page_reference(LocalVector<Page *> &p_list, Page *p_page);
+	void _begin_retirement(Page *p_page);
+	void _drop_dependencies(Page *p_page);
+	void _remove_waiting(Page *p_page);
+	void _queue_ready(Page *p_page);
+	void _notify_committed(Page *p_page);
+	void _process_installs();
+	void _process_uninstalls();
+	Error _make_patch_batch(Page *p_page, bool p_uninstall, PatchBatch &r_batch);
+	Error _record_fixup_batch(LocalVector<PatchBatch> &p_batches);
+	void _free_metadata(Asset *p_asset);
 	void _delete_page(Page *p_page);
 	uint32_t _allocate(uint32_t p_units);
 	void _free_source(Page *p_page);
@@ -102,12 +163,15 @@ class VirtualGeometryStorage {
 public:
 	~VirtualGeometryStorage();
 	bool has(RID p_mesh) const { return assets.has(p_mesh); }
+	// Render-thread borrow, valid only while the Mesh RID remains owned. A null
+	// result means the complete root set has not finished GPU publication.
+	const Bindings *get_bindings(RID p_mesh) const;
 	Error set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes);
 	Error register_mesh(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials);
 	void release_mesh(RID p_mesh);
 	// Whole-batch refusal retains caller ownership. Accepted input uses COW owned
-	// bytes; transcode outcomes are keyed by lease/upload generation. They do
-	// not acknowledge hierarchy publication or a host's complete install lease.
+	// bytes. Resident outcomes follow GPU fixup publication; slots cannot retire
+	// while an uncanceled finer page still owns a dependency on them.
 	Error submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads);
 	Vector<uint8_t> get_feedback(uint64_t p_after_sequence) const;
 	void update();
