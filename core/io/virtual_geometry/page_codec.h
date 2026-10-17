@@ -17,6 +17,8 @@ struct GeometryPageCluster {
 	uint32_t group = UINT32_MAX;
 	uint32_t generating_group = UINT32_MAX;
 	uint32_t level = 0;
+	// Static full/root/streaming leaf flags, finalized by model assembly.
+	uint32_t flags = 0;
 	std::array<float, 4> bounds = {};
 	std::array<float, 4> lod_bounds = {};
 	float lod_error = 0;

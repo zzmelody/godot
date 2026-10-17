@@ -21,11 +21,11 @@ bool dependencies_ready(uint32_t p_first, uint32_t p_count, const std::vector<ui
 
 } // namespace
 
-FixupPlanError plan_geometry_fixups(const GeometryHierarchy &p_hierarchy, uint32_t p_page,
+FixupPlanError plan_geometry_fixups(const GeometryHierarchy &p_hierarchy, uint32_t p_page, const HierarchyPage &p_chunk,
 		bool p_uninstall, const std::vector<uint8_t> &p_committed, GeometryFixupUpdates &r_updates) {
 	if (p_hierarchy.root_pages == 0 || p_hierarchy.root_pages > p_hierarchy.pages.size() || p_page >= p_hierarchy.pages.size() ||
 			p_committed.size() != p_hierarchy.pages.size() || (p_uninstall && p_page < p_hierarchy.root_pages) ||
-			(!p_uninstall && p_committed[p_page] == 0)) {
+			(!p_uninstall && p_committed[p_page] == 0) || p_chunk.clusters != p_hierarchy.pages[p_page].clusters) {
 		return FixupPlanError::INVALID_INPUT;
 	}
 	for (uint32_t root = 0; root < p_hierarchy.root_pages; ++root) {
@@ -35,7 +35,7 @@ FixupPlanError plan_geometry_fixups(const GeometryHierarchy &p_hierarchy, uint32
 	}
 	try {
 		GeometryFixupUpdates candidate;
-		const auto &page = p_hierarchy.pages[p_page];
+		const auto &page = p_chunk;
 		for (const auto &fixup : page.cluster_fixups) {
 			if (fixup.page >= p_hierarchy.pages.size() || fixup.cluster >= p_hierarchy.pages[fixup.page].clusters ||
 					!valid_dependencies(fixup.dependency_first, fixup.dependency_count, p_hierarchy)) {

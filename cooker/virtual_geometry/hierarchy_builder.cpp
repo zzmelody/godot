@@ -144,6 +144,13 @@ class HierarchyBuilder {
 				return fail(HierarchyBuildError::INVALID_PAGES, id);
 			}
 			const auto &group = geometry.groups[part.group];
+			auto &page = output.pages[part.page];
+			if (page.part_count == 0) {
+				page.first_part = id;
+			} else if (page.first_part + page.part_count != id) {
+				return fail(HierarchyBuildError::INVALID_PAGES, id);
+			}
+			++page.part_count;
 			if (!std::isfinite(group.min_child_error) || !std::isfinite(group.max_parent_error) || group.min_child_error < -1 ||
 					group.max_parent_error < 0 || group.min_child_error > group.max_parent_error) {
 				return fail(HierarchyBuildError::INVALID_GEOMETRY, id);
@@ -154,7 +161,7 @@ class HierarchyBuilder {
 				const auto &source = geometry.clusters[cluster].geometry;
 				const Box bound{ source.lower, source.upper };
 				if (covered[cluster]++ != 0 || source.group != part.group || !valid_box(bound) ||
-						(part.page < output.root_pages) != (part.group == geometry.root_group)) {
+						(part.group == geometry.root_group && part.page >= output.root_pages)) {
 					return fail(HierarchyBuildError::INVALID_GEOMETRY, id);
 				}
 				include_box(bound, box);

@@ -47,7 +47,8 @@ struct PageBuildResult {
 
 // Coarse-to-fine, alternating Morton group order, then diagonal cluster order.
 // Accounts for the actual GPU triangle output when splitting pages. Root pages
-// contain the complete root cluster set and remain separate from detail pages.
+// contain the complete root cluster set and fill spare capacity with finer
+// groups, matching the reference's default zero-KiB minimum-residency profile.
 // Output limit covers container+serialized directory; caller separately owns
 // input, maps, candidate metadata and one bounded page's transient storage.
 // Dependencies conservatively retain each fine group's parent-cluster pages.

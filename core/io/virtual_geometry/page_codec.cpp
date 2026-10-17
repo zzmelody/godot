@@ -80,7 +80,7 @@ PageCodecError validate_cluster(const GeometryPageCluster &p_cluster) {
 	if (!valid_shape(p_cluster)) {
 		return PageCodecError::INVALID_LAYOUT;
 	}
-	if (p_cluster.cluster == UINT32_MAX || p_cluster.group == UINT32_MAX ||
+	if (p_cluster.cluster == UINT32_MAX || p_cluster.group == UINT32_MAX || (p_cluster.flags & ~15u) != 0 ||
 			!std::isfinite(p_cluster.lod_error) || p_cluster.lod_error < 0 ||
 			!std::isfinite(p_cluster.position_error) || p_cluster.position_error < 0) {
 		return PageCodecError::INVALID_METADATA;
@@ -166,6 +166,7 @@ Record make_record(const GeometryPageCluster &p_cluster) {
 	record[4] = p_cluster.positions.vertices;
 	record[5] = p_cluster.topology.layout.triangles;
 	record[6] = static_cast<uint32_t>(p_cluster.material_palette.size());
+	record[7] = p_cluster.flags;
 	for (uint32_t axis = 0; axis < 4; ++axis) {
 		record[8 + axis] = float_word(p_cluster.bounds[axis]);
 		record[12 + axis] = float_word(p_cluster.lod_bounds[axis]);
@@ -289,7 +290,7 @@ bool read_words(const uint8_t *p_bytes, size_t p_size, size_t &r_cursor, uint32_
 }
 
 PageCodecError read_cluster(const Record &p_record, const uint8_t *p_bytes, size_t p_size, size_t &r_cursor, GeometryPageCluster &r_cluster) {
-	if (p_record[7] != 0 || p_record[71] != 0 || (p_record[35] & ~7u) != 0 || (p_record[40] >> 16) != 0 ||
+	if ((p_record[7] & ~15u) != 0 || p_record[71] != 0 || (p_record[35] & ~7u) != 0 || (p_record[40] >> 16) != 0 ||
 			p_record[4] < 3 || p_record[4] > MAX_CLUSTER_VERTICES || p_record[5] == 0 || p_record[5] > MAX_CLUSTER_TRIANGLES ||
 			p_record[6] == 0 || p_record[6] > MAX_CLUSTER_MATERIALS || p_record[32] > 2016 || p_record[38] > 10592 ||
 			p_record[64] > 240 || p_record[67] > MAX_CLUSTER_MATERIALS || p_record[70] > 28) {
@@ -299,6 +300,7 @@ PageCodecError read_cluster(const Record &p_record, const uint8_t *p_bytes, size
 	r_cluster.group = p_record[1];
 	r_cluster.generating_group = p_record[2];
 	r_cluster.level = p_record[3];
+	r_cluster.flags = p_record[7];
 	r_cluster.positions.vertices = p_record[4];
 	r_cluster.attributes.layout.vertices = p_record[4];
 	r_cluster.topology.layout.vertices = p_record[4];

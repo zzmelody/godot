@@ -171,13 +171,6 @@ PageBuildResult build_geometry_pages(const EncodableGeometry &p_geometry, uint64
 					(source_group.root ? !source_group.parents.empty() : source_group.parents.empty())) {
 				return { PageBuildError::INVALID_GEOMETRY };
 			}
-			if (page.root != source_group.root) {
-				const auto flushed = flush_page(page, p_max_output_bytes, candidate);
-				if (flushed.error != PageBuildError::OK) {
-					return flushed;
-				}
-				page.root = source_group.root;
-			}
 			std::vector<uint32_t> children = source_group.children;
 			for (uint32_t child : children) {
 				if (child >= candidate.clusters.size() || p_geometry.clusters[child].geometry.group != group || candidate.clusters[child].page != INVALID_PAGE) {
@@ -216,6 +209,10 @@ PageBuildResult build_geometry_pages(const EncodableGeometry &p_geometry, uint64
 					if (flushed.error != PageBuildError::OK) {
 						return flushed;
 					}
+					// UE's default minimum residency is zero KiB: use one root
+					// page and fill its spare space across group boundaries.
+					// The mandatory coarse cover must still remain root-resident.
+					page.root = source_group.root;
 					page.clusters.push_back(std::move(encoded));
 					measured = measure_geometry_page(page, sizes);
 				}

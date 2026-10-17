@@ -60,6 +60,8 @@ struct ClusterFixup {
 struct HierarchyPage {
 	uint32_t clusters = 0;
 	uint32_t depth = 0;
+	uint32_t first_part = 0;
+	uint32_t part_count = 0;
 	std::vector<HierarchyFixup> hierarchy_fixups;
 	std::vector<ClusterFixup> cluster_fixups;
 	// Coarser target pages, excluding this page, sorted and unique.
@@ -106,12 +108,13 @@ enum class FixupPlanError {
 // Value-only installation planning, matching dependency-committed gating.
 // The host owns the validated model and committed-page snapshot (zero absent,
 // nonzero committed). Only this chunk and its dependency ranges are visited.
-// Installation
-// runs after this page's transcode completes. Uninstall invalidates its group's
+// The resident page owner lends p_chunk only for this call; root metadata need
+// not retain fixup payloads. Installation runs after its transcode completes.
+// Uninstall invalidates its group's
 // hierarchy references unconditionally and restores resident parent leaves.
 // Root pages remain committed until whole-resource destruction. Old output
 // survives refusal. This function does no GPU work or per-frame traversal.
-FixupPlanError plan_geometry_fixups(const GeometryHierarchy &p_hierarchy, uint32_t p_page,
+FixupPlanError plan_geometry_fixups(const GeometryHierarchy &p_hierarchy, uint32_t p_page, const HierarchyPage &p_chunk,
 		bool p_uninstall, const std::vector<uint8_t> &p_committed, GeometryFixupUpdates &r_updates);
 
 } // namespace VirtualGeometry
