@@ -76,7 +76,7 @@ geometry_library = geometry_env.add_library("#cooker/virtual_geometry", [
     "#cooker/virtual_geometry/hierarchy_builder.cpp",
     "#cooker/virtual_geometry/model_builder.cpp",
 ])
-recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp", "#cooker/usd_import.cpp", "#cooker/virtual_geometry_mesh.cpp"])
+recipe_library = recipe_env.add_library("#cooker/recipe", ["#cooker/recipe.cpp", "#cooker/pipeline.cpp", "#cooker/usd_import.cpp", "#cooker/virtual_geometry_mesh.cpp", "#cooker/virtual_geometry_validation.cpp"])
 # Portable USD transport is Cooker-only; no PXR runtime or Python dependency.
 usd_env = luau_env.Clone()
 usd_env.Append(CPPPATH=["#thirdparty/tinyusdz/src"], CPPDEFINES=["TINYUSDZ_PRODUCTION_BUILD", "TINYUSDZ_WITH_TYDRA"])

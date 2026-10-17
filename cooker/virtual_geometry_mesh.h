@@ -37,14 +37,6 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 Error publish_container(const BuildOutput &p_output, const String &p_resource_path,
 		uint64_t p_serialized_resource_bytes, uint64_t p_max_output_bytes, Array &r_files);
 
-// Publication-only validation. Reads one page block at a time, checks the
-// content-addressed container and the root/page contract, and runs the CPU
-// transcode oracle. Ordinary resource loading never calls this function.
-Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p_resource_path);
-
-// Conservative CPU metadata reservation, excluding materials and GPU pages.
-uint64_t metadata_bytes(const Ref<VirtualGeometryMesh> &p_mesh);
-
 } // namespace CookerVirtualGeometry
 
 #endif // COOKER_VIRTUAL_GEOMETRY_MESH_H

@@ -2,7 +2,7 @@
 /*<<----- VEYA_COOKER: Value-only admission profile with conservative runtime accounting. */
 
 #include "character_actions.h"
-#include "virtual_geometry_mesh.h"
+#include "virtual_geometry_validation.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"

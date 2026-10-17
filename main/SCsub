@@ -15,6 +15,8 @@ if env["veya_cooker"]:
     env_main.add_source_files(env.main_sources, ["#cooker/main.cpp", "#cooker/retarget.cpp", "#cooker/character_actions.cpp", "#cooker/character_rig.cpp", "#cooker/character_face.cpp", "#cooker/output_lock.cpp", "performance.cpp"])
 else:
     env_main.add_source_files(env.main_sources, "*.cpp")
+    if env_main.editor_build and not env_main["disable_3d"]:
+        env_main.add_source_files(env.main_sources, "#cooker/virtual_geometry_validation.cpp")
 # /*>>----- VEYA_COOKER */
 
 if env["steamapi"] and env.editor_build:

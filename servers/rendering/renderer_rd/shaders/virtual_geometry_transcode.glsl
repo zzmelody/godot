@@ -78,10 +78,14 @@ uvec3 triangle_at(uint triangle) {
 		return indices;
 	}
 	bool left = flag(triangle, 1u) != 0u;
-	uint anchor_triangle = triangle - 1u;
-	while (flag(anchor_triangle, 0u) == 0u && (flag(anchor_triangle, 1u) != 0u) == left) {
-		--anchor_triangle;
-	}
+	uint block = triangle >> 5u;
+	uint local = triangle & 31u;
+	uint start_mask = record(49u + block * 3u);
+	uint left_mask = record(50u + block * 3u);
+	uint stop_mask = start_mask | (left ? ~left_mask : left_mask);
+	// Every block starts a strip. The nearest earlier Start/opposite turn is
+	// therefore in this block, without a serial walk along the strip.
+	uint anchor_triangle = block * 32u + uint(findMSB(stop_mask & ((1u << local) - 1u)));
 	uint anchor;
 	if (flag(anchor_triangle, 0u) != 0u) {
 		uint corner = left ? 1u : 0u;

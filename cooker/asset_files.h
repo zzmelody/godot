@@ -2,7 +2,7 @@
 #pragma once
 
 #include "atomic_save.h"
-#include "virtual_geometry_mesh.h"
+#include "virtual_geometry_validation.h"
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
