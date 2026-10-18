@@ -361,7 +361,7 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 			format.width = expected_motion.x;
 			format.height = expected_motion.y;
 			format.format = RD::DATA_FORMAT_R16G16_SFLOAT;
-			format.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+			format.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 			motion_surface = p_buffers->create_texture_from_format(motion_context, "motion", format);
 			format.format = RD::DATA_FORMAT_R32_SFLOAT;
 			reactive_surface = p_buffers->create_texture_from_format(motion_context, "reactivity", format);

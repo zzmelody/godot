@@ -121,7 +121,7 @@ void main() {
 	uint record = vg_record(reference.y);
 	uint count = geometry.data[record + 6u];
 	uint pipeline = 0xffffffffu;
-	if (count == 0u || count > 64u || vg_source_word(reference.x) + 63u >= scene.data.length()) {
+	if (count == 0u || count > 64u || reference.x >= (scene.data[1] - scene.data[0]) / 64u) {
 		atomicOr(status.data[0], 4u);
 		return; // Same admitted reference and condition for the complete group.
 	}
