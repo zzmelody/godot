@@ -51,11 +51,18 @@ void initialize_instance(uint id) {
 	mat4 world = params.model * local;
 	mat3 basis = mat3(world);
 	float det = determinant(basis);
-	bool valid = !isnan(det) && !isinf(det) && det != 0.0;
+	bool valid = !isnan(det) && !isinf(det);
 	for (uint column = 0u; column < 4u; ++column) {
 		valid = valid && !any(isnan(world[column])) && !any(isinf(world[column]));
 	}
-	if (!valid) {
+	uint base = instance_base() + id * 16u;
+	// MultiMesh uses a zero basis to hide a harvested member. It contributes
+	// neither a frontier task nor root coverage; it must not refuse its batch.
+	if (valid && all(equal(basis[0], vec3(0.0))) && all(equal(basis[1], vec3(0.0))) && all(equal(basis[2], vec3(0.0)))) {
+		for (uint word = 0u; word < 16u; ++word) { work.data[base + word] = 0u; }
+		return;
+	}
+	if (!valid || det == 0.0) {
 		atomicOr(work.data[4], 16u);
 		return;
 	}
@@ -70,7 +77,6 @@ void initialize_instance(uint id) {
 	float minimum = minimum_squared > 0.0 ? sqrt(minimum_squared) : 1.0 / norm_bound(inverse(basis));
 	float maximum = sqrt(max(max(upper.x, upper.y), upper.z));
 	mat4 rows = transpose(params.world_to_view * world);
-	uint base = instance_base() + id * 16u;
 	for (uint row = 0u; row < 3u; ++row) {
 		for (uint column = 0u; column < 4u; ++column) {
 			work.data[base + row * 4u + column] = floatBitsToUint(rows[row][column]);
@@ -80,10 +86,10 @@ void initialize_instance(uint id) {
 	work.data[base + 13u] = floatBitsToUint(maximum);
 	work.data[base + 14u] = floatBitsToUint(sign(det));
 	work.data[base + 15u] = 0u;
-	if (id < params.limits.x) {
-		work.data[queue_base(0u) + id * 2u] = id;
-		work.data[queue_base(0u) + id * 2u + 1u] = 0u;
-		atomicAdd(work.data[0], 1u);
+	uint task = atomicAdd(work.data[0], 1u);
+	if (task < params.limits.x) {
+		work.data[queue_base(0u) + task * 2u] = id;
+		work.data[queue_base(0u) + task * 2u + 1u] = 0u;
 	} else {
 		atomicOr(work.data[4], 1u);
 	}
@@ -193,6 +199,7 @@ void visit_node(uint id) {
 }
 
 void select_cluster(uint instance, uint reference, bool root_only) {
+	if (work.data[instance_base() + instance * 16u + 14u] == 0u) { return; }
 	uint record = (reference >> 8u) * 8192u + 8u + (reference & 255u) * 72u;
 	uint flags = geometry.data[record + 7u];
 	if (root_only && (flags & 9u) != 9u) { return; }
