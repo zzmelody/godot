@@ -18,7 +18,7 @@ Error VirtualGeometryWorkMemory::ensure(RID &r_buffer, uint32_t &r_words, uint64
 	uint64_t capacity = MAX(MAX(uint64_t(1), p_words), uint64_t(r_words) + r_words / 4);
 	capacity = (capacity + 15) & ~uint64_t(15);
 	if (capacity > UINT32_MAX / 4) {
-		capacity = p_words;
+		capacity = MAX(uint64_t(1), p_words);
 	}
 	const uint32_t words = uint32_t(capacity);
 	const RID candidate = storage(words * 4, p_indirect ? RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT : 0);
