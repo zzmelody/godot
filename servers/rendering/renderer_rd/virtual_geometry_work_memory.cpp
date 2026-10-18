@@ -13,10 +13,14 @@ Error VirtualGeometryWorkMemory::ensure(RID &r_buffer, uint32_t &r_words, uint64
 	if (r_words >= p_words && r_buffer.is_valid()) {
 		return OK;
 	}
-	uint32_t words = Math::next_power_of_2(uint32_t(MAX(uint64_t(1), p_words)));
-	if (uint64_t(words) * 4 > UINT32_MAX) {
-		words = uint32_t(p_words);
+	// Large scene tables share capacity with selection, history and other views.
+	// Grow from the current allocation instead of doubling the new requirement.
+	uint64_t capacity = MAX(MAX(uint64_t(1), p_words), uint64_t(r_words) + r_words / 4);
+	capacity = (capacity + 15) & ~uint64_t(15);
+	if (capacity > UINT32_MAX / 4) {
+		capacity = p_words;
 	}
+	const uint32_t words = uint32_t(capacity);
 	const RID candidate = storage(words * 4, p_indirect ? RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT : 0);
 	if (candidate.is_null()) {
 		return ERR_OUT_OF_MEMORY;

@@ -144,12 +144,9 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 		results.push_back(Result());
 	}
 	Result &result = results[used];
-	if (result.words < words || result.work.is_null()) {
-		if (result.work.is_valid()) {
-			memory.free(result.work);
-		}
-		result.words = Math::next_power_of_2(words);
-		result.work = memory.storage(result.words * 4);
+	const Error result_error = memory.ensure(result.work, result.words, words);
+	if (result_error != OK) {
+		return result_error;
 	}
 	if (result.parameters.is_null()) {
 		result.parameters = memory.uniform(256);
