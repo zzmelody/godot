@@ -8,7 +8,8 @@
 #include "core/os/os.h"
 
 namespace CookerCache {
-inline constexpr int MAX_MANIFEST_FILES = 2048;
+// Match Veya's published admission-identity file range.
+inline constexpr int MAX_MANIFEST_FILES = 65536;
 inline bool force_rebuild = false;
 struct Receipt { String path, output, fingerprint; Dictionary dependencies, auxiliary_outputs; };
 // Materials, shaders, shader includes and textures reached *through* another

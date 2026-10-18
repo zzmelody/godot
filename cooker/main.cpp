@@ -347,27 +347,42 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	if (bool(p_job.get("include_render_dependencies", false))) {
 		HashSet<String> visited;
 		Vector<String> pending;
-		for (const Variant &file : declared) pending.push_back(base.path_join(String(file)));
+		for (const Variant &file : declared) {
+			pending.push_back(base.path_join(String(file)));
+		}
 		Vector<String> extras;
+		HashSet<String> extra_paths;
 		while (!pending.is_empty()) {
-			const String path = pending[pending.size() - 1]; pending.resize(pending.size() - 1);
-			if (visited.has(path)) continue;
+			const String path = pending[pending.size() - 1];
+			pending.resize(pending.size() - 1);
+			if (visited.has(path)) {
+				continue;
+			}
 			ERR_FAIL_COND_V(visited.size() >= CookerCache::MAX_MANIFEST_FILES, ERR_INVALID_DATA);
 			visited.insert(path);
 			List<String> dependencies;
 			ResourceLoader::get_dependencies(path, &dependencies);
 			for (const String &reference : dependencies) {
 				String dependency = reference;
-				if (dependency.is_relative_path()) dependency = path.get_base_dir().path_join(dependency);
+				if (dependency.is_relative_path()) {
+					dependency = path.get_base_dir().path_join(dependency);
+				}
 				dependency = dependency.simplify_path();
-				if (!dependency.begins_with(base.path_join("render-resources") + "/")) continue;
+				if (!dependency.begins_with(base.path_join("render-resources") + "/")) {
+					continue;
+				}
 				ERR_FAIL_COND_V(dependency.get_extension() != "res", ERR_INVALID_DATA);
-				if (!extras.has(dependency)) extras.push_back(dependency);
-				pending.push_back(dependency);
+				if (!extra_paths.has(dependency)) {
+					extra_paths.insert(dependency);
+					extras.push_back(dependency);
+					pending.push_back(dependency);
+				}
 			}
 		}
 		extras.sort();
-		for (const String &path : extras) declared.push_back(path.substr(base.length() + 1));
+		for (const String &path : extras) {
+			declared.push_back(path.substr(base.length() + 1));
+		}
 	}
 	ERR_FAIL_COND_V(declared.is_empty() || declared.size() > CookerCache::MAX_MANIFEST_FILES, ERR_INVALID_PARAMETER);
 	Array records;
