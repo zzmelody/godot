@@ -62,8 +62,9 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 	}
 }
 
-Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only) {
+Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only, bool p_motion) {
 	depth_only = p_depth_only;
+	const bool record_history = !depth_only && p_motion;
 	materials.clear();
 	raster_material_data.clear();
 	material_ids[0].clear();
@@ -136,7 +137,18 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		WARN_PRINT_ONCE(vformat("Virtual geometry scene table refused: batches=%s instances=%s references=%s words=%s depth_only=%s.", p_sources.size(), instances, visible, total_words, depth_only));
 		return error;
 	}
-	error = ensure_words(memory, previous_sources, previous_source_words, depth_only ? 1 : MAX(uint64_t(1), instances) * 24);
+	if (!record_history) {
+		if (previous_source_words > 16) {
+			memory.free(previous_sources);
+			previous_sources = RID();
+			previous_source_words = 0;
+		}
+		for (RID parameters : previous_parameters) {
+			memory.free(parameters);
+		}
+		previous_parameters.clear();
+	}
+	error = ensure_words(memory, previous_sources, previous_source_words, record_history ? MAX(uint64_t(1), instances) * 24 : 1);
 	if (error != OK) {
 		WARN_PRINT_ONCE(vformat("Virtual geometry previous-source table refused: batches=%s instances=%s words=%s depth_only=%s.", p_sources.size(), instances, MAX(uint64_t(1), instances) * 24, depth_only));
 		return error;
@@ -198,10 +210,10 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	}
 	ERR_FAIL_COND_V(init_pipeline.get_rid().is_null() || bin_pipeline.get_rid().is_null() || scan_pipeline.get_rid().is_null() || dispatch_pipeline.get_rid().is_null() || dummy_transforms.is_null(), ERR_CANT_CREATE);
 	UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
-	if (!depth_only && previous_parameters.size() < p_sources.size()) {
+	if (record_history && previous_parameters.size() < p_sources.size()) {
 		previous_parameters.resize(p_sources.size());
 	}
-	if (depth_only && empty_history_parameters.is_null()) {
+	if (!record_history && empty_history_parameters.is_null()) {
 		empty_history_parameters = memory.uniform(80);
 		ERR_FAIL_COND_V(empty_history_parameters.is_null(), ERR_CANT_CREATE);
 		const uint32_t empty[20] = {};
@@ -213,7 +225,7 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
 		RID previous_buffer = empty_history_parameters;
-		if (!depth_only) {
+		if (record_history) {
 			if (previous_parameters[index].is_null()) {
 				previous_parameters[index] = memory.uniform(80);
 			}

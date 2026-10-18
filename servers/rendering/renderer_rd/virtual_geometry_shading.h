@@ -39,7 +39,7 @@ public:
 		RID occlusion;
 		Projection occlusion_projection;
 	};
-	Error prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only = false);
+	Error prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only, bool p_motion);
 	Error prepare_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const ViewParameters &p_view, RD::FramebufferFormatID p_raster_format, bool p_voxel = false);
 	void record_sources(Span<VirtualGeometrySelection::Result> p_sources);
 	void record_bins();

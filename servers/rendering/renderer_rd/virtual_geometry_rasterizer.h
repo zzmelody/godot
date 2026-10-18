@@ -84,7 +84,7 @@ private:
 	bool ready = false;
 	VirtualGeometryShading shading;
 
-	Error _prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow);
+	Error _prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow, bool p_motion);
 	Error _prepare_bins(Span<VirtualGeometrySelection::Result> p_sources, bool p_voxel = false);
 	Error _prepare_candidates(const VirtualGeometryShading::ViewParameters &p_view);
 	void _record_material_bins(uint32_t p_phase);

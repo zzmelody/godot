@@ -61,7 +61,7 @@ VirtualGeometryRasterizer::~VirtualGeometryRasterizer() {
 	}
 }
 
-Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow) {
+Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow, bool p_motion) {
 	RD *rd = RD::get_singleton();
 	ERR_FAIL_COND_V(!rd->has_feature(RD::SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX), ERR_UNAVAILABLE);
 	ERR_FAIL_COND_V(p_size.x <= 0 || p_size.y <= 0 || uint64_t(p_size.x) * p_size.y > UINT32_MAX / 8, ERR_INVALID_PARAMETER);
@@ -84,7 +84,7 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 		framebuffer = rd->framebuffer_create_empty(size);
 	}
 	ERR_FAIL_COND_V(visibility.is_null() || framebuffer.is_null(), ERR_CANT_CREATE);
-	const Error shade_error = shading.prepare(p_size, p_sources, p_default_material, visibility, p_sources.is_empty() ? RID() : p_sources[0].batch.geometry.geometry, p_shadow);
+	const Error shade_error = shading.prepare(p_size, p_sources, p_default_material, visibility, p_sources.is_empty() ? RID() : p_sources[0].batch.geometry.geometry, p_shadow, p_motion);
 	if (shade_error != OK) {
 		return shade_error;
 	}
@@ -278,7 +278,7 @@ Error VirtualGeometryRasterizer::record_sdfgi(const Size2i &p_size, const Virtua
 	if (p_sources.is_empty()) {
 		return OK;
 	}
-	Error error = _prepare(p_size, p_sources, p_default_material, true);
+	Error error = _prepare(p_size, p_sources, p_default_material, true, false);
 	if (error != OK) {
 		return error;
 	}
@@ -359,7 +359,7 @@ Error VirtualGeometryRasterizer::_record(const Ref<RenderSceneBuffersRD> &p_buff
 	if (p_sources.is_empty()) {
 		return OK;
 	}
-	Error error = _prepare(p_size, p_sources, p_default_material, p_shadow);
+	Error error = _prepare(p_size, p_sources, p_default_material, p_shadow, p_view.motion);
 	if (error != OK) {
 		return error;
 	}
