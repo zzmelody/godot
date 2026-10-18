@@ -592,21 +592,25 @@ inline Error CheckSupport(Node* root, const String& path,
 	return OK;
 }
 
-inline Error Record(const String &path, Dictionary &output,
-		HashMap<String, String> &digests) {
-	Error error = OK;
-	const Ref<Resource> resource = ResourceLoader::load(
-			path, "", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
-	ERR_FAIL_COND_V(resource.is_null() || error != OK, ERR_INVALID_DATA);
-	Measure measure;
-	measure.path = path;
-	error = MeasureValue(resource, measure, 0);
-	ERR_FAIL_COND_V(error != OK, error);
-	Ref<Mesh> mesh = resource;
-	if (mesh.is_valid()) {
-		measure.bounds = mesh->get_aabb();
+inline Error Record(const String& path, Dictionary& output,
+                    HashMap<String, String>& digests,
+                    Vector<Ref<Resource>>* retained_roots = nullptr) {
+  Error error = OK;
+  const Ref<Resource> resource = ResourceLoader::load(
+      path, "", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
+  ERR_FAIL_COND_V(resource.is_null() || error != OK, ERR_INVALID_DATA);
+  if (retained_roots) {
+    retained_roots->push_back(resource);
+  }
+  Measure measure;
+  measure.path = path;
+  error = MeasureValue(resource, measure, 0);
+  ERR_FAIL_COND_V(error != OK, error);
+  Ref<Mesh> mesh = resource;
+  if (mesh.is_valid()) {
+    measure.bounds = mesh->get_aabb();
 		measure.geometry = true;
-	}
+  }
   if (Ref<HeightMapShape3D> heightfield = resource; heightfield.is_valid()) {
     const double half = (heightfield->get_map_width() - 1) * 0.5;
     measure.collision_bounds = AABB(

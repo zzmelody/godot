@@ -378,19 +378,23 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 				ERR_FAIL_COND_V(dependency.get_extension() != "res", ERR_INVALID_DATA);
 				if (!extra_paths.has(dependency)) {
 					extra_paths.insert(dependency);
-					extras.push_back(dependency);
-					pending.push_back(dependency);
-				}
-			}
-		}
-		extras.sort();
-		for (const String &path : extras) {
-			declared.push_back(path.substr(base.length() + 1));
-		}
-	}
-	ERR_FAIL_COND_V(declared.is_empty(), ERR_INVALID_PARAMETER);
+          extras.push_back(dependency);
+          pending.push_back(dependency);
+        }
+      }
+    }
+    extras.sort();
+    for (const String& path : extras) {
+      declared.push_back(path.substr(base.length() + 1));
+    }
+  }
+  ERR_FAIL_COND_V(declared.is_empty(), ERR_INVALID_PARAMETER);
 	Array records;
 	HashMap<String, String> resource_digests;
+  // The manifest reads one immutable publication set. Keep these roots alive
+  // so ResourceLoader can reuse their shared dependencies between records.
+  // No resources survive this operation through this owner.
+  Vector<Ref<Resource>> retained_roots;
 	HashSet<String> seen;
 	bool found_entry = false;
 	for (int declared_index = 0; declared_index < declared.size(); ++declared_index) {
@@ -411,16 +415,17 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 		record["md5"] = CookerStreaming::Digest(path, resource_digests);
 		if (extension == "scn" || extension == "res") {
 			Dictionary streaming;
-			error = CookerStreaming::Record(path, streaming, resource_digests);
+			error = CookerStreaming::Record(path, streaming, resource_digests,
+                                        &retained_roots);
 			ERR_FAIL_COND_V(error != OK, error);
 			// Container names are content-addressed. Authors declare the root;
 			// publication transports its verified local containers automatically.
 			for (const Dictionary &dependency : Array(streaming["dependencies"])) {
-				if (!bool(dependency.get("deferred", false))) {
-					continue;
-				}
-				String container = dependency["path"];
-				if (container.is_relative_path()) {
+        if (!bool(dependency.get("deferred", false))) {
+          continue;
+        }
+        String container = dependency["path"];
+        if (container.is_relative_path()) {
 					container = path.get_base_dir().path_join(container).simplify_path();
 				}
 				if (container.begins_with(base + "/")) {

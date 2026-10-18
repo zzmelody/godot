@@ -252,15 +252,23 @@ return cooker.scene({{asset=mesh}})
  {operation="run-recipe",source="res://inspect.luau",parameters={width=2},
   inputs={model="res://assets/runtime/model/shared-update/model.res"},
   output="res://assets/runtime/world/shared-update/before.scn"},
+ {operation="asset-manifest",asset_id="before-update",revision=1,kind="world",entry="before.scn",
+  output="res://assets/runtime/world/shared-update/asset.manifest.json",files={"before.scn"}},
  {operation="save-resource",source="res://assets/runtime/model/replacement/model.res",
   output="res://assets/runtime/model/shared-update/model.res"},
  {operation="run-recipe",source="res://inspect.luau",parameters={width=4},
   inputs={model="res://assets/runtime/model/shared-update/model.res"},
-  output="res://assets/runtime/world/shared-update/after.scn"},
+  output="res://assets/runtime/world/after-update/after.scn"},
+ {operation="asset-manifest",asset_id="after-update",revision=1,kind="world",entry="after.scn",
+  output="res://assets/runtime/world/after-update/asset.manifest.json",files={"after.scn"}},
 }
 ''')
         self.assertEqual(result["shared_input_reuses"], 0)
         self.assertTrue(all(step["ok"] for step in result["steps"]))
+        for folder, width in (("shared-update", 2), ("after-update", 4)):
+            published = json.loads((self.project / "assets/runtime/world" / folder / "asset.manifest.json").read_text())
+            record = published["files"][0]["streaming"]
+            self.assertEqual(record["maximum"][0] - record["minimum"][0], width)
 
     def test_module_package_paths_reject_wrong_owner_and_intermediate_folders(self):
         package = "content/worlds/fixture/props/fixture_asset"
