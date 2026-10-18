@@ -1995,9 +1995,6 @@ struct Recipe {
 				r_error = "cannot allocate recipe VM";
 				return false;
 			}
-			// Batch recipes release temporary tables while retaining native assets.
-			// Start the next cycle at live-heap size, within the fixed VM ceiling.
-			lua_gc(L, LUA_GCSETGOAL, 100);
 			lua_callbacks(L)->userdata = this;
 			int status = lua_cpcall(L, setup, nullptr);
 			if (status == LUA_OK) {
