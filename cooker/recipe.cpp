@@ -68,16 +68,6 @@ constexpr int SOURCE_BYTES = 64 * 1024;
 struct Limits {
 	int memory_mb = 128;
 	int time_ms = 0; // 0 = no execution deadline; a job may opt in with limits.time_ms.
-	// Vertex and instance limits are opt-in; keep the signed array range safe.
-	int max_vertices = std::numeric_limits<int>::max();
-	// No default ceiling: memory_mb, input_mb and output_mb bound the result.
-	// A job may still opt in with limits.max_instances.
-	int max_instances = std::numeric_limits<int>::max();
-	// Fine spatial batches retain one scene handle per nonempty cell.
-	// Keep a bounded handle count alongside the memory and output budgets.
-	int max_resources = 1024;
-	int input_mb = 1024;
-	int output_mb = 128;
 };
 
 struct NodeDeleter {
@@ -92,7 +82,7 @@ struct Recipe {
 	std::string host_message;
 	bool memory_failed = false;
 	size_t allocated = 0, peak_memory = 0;
-	int vertices = 0, instances = 0;
+	uint64_t vertices = 0, instances = 0;
 	HashSet<ObjectID> accounted_meshes;
 	int effect_layers = 0, effect_particle_systems = 0, effect_particles = 0, effect_textures = 0;
 	int field_cells = 0, point_count = 0;
@@ -317,18 +307,16 @@ struct Recipe {
 	}
 	int push_resource(const Ref<Resource> &p_resource) {
 		check_budget();
-		require(p_resource.is_valid() && resources.size() < size_t(limits.max_resources), "asset resource limit exceeded");
+		require(p_resource.is_valid(), "asset resource is invalid");
 		Ref<Mesh> mesh = p_resource;
 		if (mesh.is_valid()) {
 			vertices += account_mesh(mesh);
-			require(vertices <= limits.max_vertices, "mesh vertex budget exceeded");
 		}
 		Ref<PackedScene> packed = p_resource;
 		if (packed.is_valid()) {
 			OwnedNode root(packed->instantiate());
 			require(root != nullptr, "could not instantiate PackedScene input");
 			vertices += count_vertices(root.get());
-			require(vertices <= limits.max_vertices, "scene vertex budget exceeded");
 		}
 		size_t id = resources.size();
 		Ref<Image> image = p_resource;
@@ -344,7 +332,7 @@ struct Recipe {
 		*static_cast<size_t *>(lua_newuserdatatagged(L, sizeof(size_t), HANDLE_TAG)) = id;
 		return 1;
 	}
-	int account_mesh(const Ref<Mesh> &p_mesh) {
+	uint64_t account_mesh(const Ref<Mesh> &p_mesh) {
 		if (p_mesh.is_null() || accounted_meshes.has(p_mesh->get_instance_id())) { return 0; }
 		uint64_t count = 0;
 		const Ref<VirtualGeometryMesh> geometry = p_mesh;
@@ -357,11 +345,10 @@ struct Recipe {
 		} else {
 			for (int surface = 0; surface < p_mesh->get_surface_count(); ++surface) { count += p_mesh->surface_get_array_len(surface); }
 		}
-		require(count <= uint64_t(limits.max_vertices - vertices), "mesh vertex budget exceeded");
 		accounted_meshes.insert(p_mesh->get_instance_id());
-		return int(count);
+		return count;
 	}
-	int count_vertices(Node *p_node) {
+	uint64_t count_vertices(Node *p_node) {
 		uint64_t count = 0;
 		if (const auto *instance = Object::cast_to<MeshInstance3D>(p_node)) {
 			count += account_mesh(instance->get_mesh());
@@ -369,12 +356,10 @@ struct Recipe {
 		if (const auto *instance = Object::cast_to<MultiMeshInstance3D>(p_node); instance && instance->get_multimesh().is_valid()) {
 			count += account_mesh(instance->get_multimesh()->get_mesh());
 		}
-		require(count <= uint64_t(limits.max_vertices - vertices), "scene vertex budget exceeded");
 		for (int child = 0; child < p_node->get_child_count(); ++child) {
 			count += count_vertices(p_node->get_child(child));
-			require(count <= uint64_t(limits.max_vertices - vertices), "scene vertex budget exceeded");
 		}
-		return int(count);
+		return count;
 	}
 	static void collect_bounds(Node *p_node, const Transform3D &p_parent, AABB &r_bounds, bool &r_has_bounds) {
 		Transform3D transform = p_parent;
@@ -932,7 +917,6 @@ struct Recipe {
                   "collision simplification requires trimesh");
 		const Vector<Face3> triangles = mesh->get_faces();
 		s.require(!triangles.is_empty(), "collision requires complete triangle faces");
-		s.require(triangles.size() <= int64_t(s.limits.max_vertices) * 2, "collision triangle budget exceeded");
 		Vector<Vector3> faces;
 		faces.resize(triangles.size() * 3);
 		for (int index = 0; index < triangles.size(); ++index) {
@@ -1145,10 +1129,8 @@ struct Recipe {
 		if (cached != s.geometry_cache.end()) {
 			return s.push_resource(cached->second);
 		}
-		s.require(s.resources.size() < size_t(s.limits.max_resources), "asset resource limit exceeded");
 		if (source_scene.is_valid()) {
-			settings.max_source_vertices = s.limits.max_vertices;
-			settings.max_output_bytes = uint64_t(s.limits.output_mb) * 1024 * 1024 - s.geometry_pending_bytes;
+			settings.max_output_bytes = UINT64_MAX - s.geometry_pending_bytes;
 			s.require(settings.max_output_bytes > 0, "virtual geometry output budget exceeded");
 			Ref<Resource> prepared;
 			std::map<ObjectID, CookerVirtualGeometry::BuildOutput> builds;
@@ -1167,8 +1149,7 @@ struct Recipe {
 			return s.push_resource(prepared);
 		}
 		const bool source_accounted = s.accounted_meshes.has(source->get_instance_id());
-		settings.max_source_vertices = uint32_t(source_accounted ? s.limits.max_vertices : s.limits.max_vertices - s.vertices);
-		settings.max_output_bytes = uint64_t(s.limits.output_mb) * 1024 * 1024 - s.geometry_pending_bytes;
+		settings.max_output_bytes = UINT64_MAX - s.geometry_pending_bytes;
 		s.require(settings.max_output_bytes > 0, "virtual geometry output budget exceeded");
 		CookerVirtualGeometry::BuildOutput built;
 		String message;
@@ -1225,13 +1206,13 @@ struct Recipe {
 		auto &s = self(p_state); s.arity(1);
 		s.fields(1, {"vertices", "indices", "normals", "uvs"});
 		s.field(1, "vertices");
-		int count = s.array(-1, s.limits.max_vertices - s.vertices);
+		int count = s.array(-1, std::numeric_limits<int>::max());
 		s.require(count >= 3, "a mesh requires at least three vertices");
 		PackedVector3Array vertices; vertices.resize(count);
 		for (int i = 0; i < count; ++i) { lua_rawgeti(p_state, -1, i + 1); vertices.set(i, s.vector(-1)); lua_pop(p_state, 1); }
 		lua_pop(p_state, 1);
 		s.field(1, "indices");
-		const int max_indices = int(std::min(int64_t(s.limits.max_vertices) * 6, int64_t(std::numeric_limits<int>::max())));
+		const int max_indices = std::numeric_limits<int>::max();
 		int index_count = s.array(-1, max_indices);
 		s.require(index_count >= 3 && index_count % 3 == 0, "indices must contain complete triangles");
 		PackedInt32Array indices;
@@ -1299,7 +1280,7 @@ struct Recipe {
 	static int scene(lua_State *p_state) {
 		auto &s = self(p_state);
 		s.arity(1);
-		int count = s.array(1, s.limits.max_instances - s.instances);
+		int count = s.array(1, std::numeric_limits<int>::max());
 		s.require(count > 0, "scene must contain at least one instance");
 		s.instances += count;
 		struct Batch {
@@ -1524,54 +1505,53 @@ struct Recipe {
 	}
 	static int resource_index(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
-		const int count = s.array(1, 100000);
-    PackedStringArray ids, kinds;
-    PackedFloat64Array values;
-    PackedByteArray blocking;
-    ids.resize(count);
-    kinds.resize(count);
-    values.resize(int64_t(count) * 18);
-    blocking.resize(count);
-    HashSet<String> identities;
-    for (int i = 0; i < count; ++i) {
-      lua_rawgeti(p_state, 1, i + 1);
-      const int row = lua_absindex(p_state, -1);
-      s.fields(row, {"id", "kind", "position", "basis", "size", "offset",
-                     "blocking"});
-      const String id = s.string_field(row, "id", "");
-      const String kind = s.string_field(row, "kind", "");
-      s.require(!id.is_empty() && id.length() <= 96 &&
-                    id.is_valid_identifier() && !identities.has(id),
-                "resource_index requires unique stable IDs");
-      s.require(
-          !kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(),
-          "resource_index requires an explicit kind");
-      identities.insert(id);
-      ids.set(i, id);
-      kinds.set(i, kind);
-      const Transform3D pose = s.transform(row);
-      const Vector3 size = s.vector_field(row, "size", Vector3(1, 1, 1));
-      const Vector3 offset = s.vector_field(row, "offset", Vector3());
-      s.require(pose.is_finite() &&
-                    Math::abs(pose.basis.determinant()) >= 1e-9 &&
-                    size.is_finite() && offset.is_finite() && size.x > 0 &&
-                    size.y > 0 && size.z > 0,
-                "resource_index requires a finite pose and positive collider "
-                "extents");
-      const Vector3 vectors[] = {pose.origin,
-                                 pose.basis.get_column(0),
-                                 pose.basis.get_column(1),
-                                 pose.basis.get_column(2),
-                                 size,
-                                 offset};
-      for (int vector = 0; vector < 6; ++vector) {
-        for (int axis = 0; axis < 3; ++axis) {
-          values.set(int64_t(i) * 18 + vector * 3 + axis,
-                     vectors[vector][axis]);
-        }
-      }
-      blocking.set(i, s.boolean_field(row, "blocking", false));
-      lua_pop(p_state, 1);
+		const int count = s.array(1, std::numeric_limits<int>::max());
+		PackedStringArray ids, kinds;
+		PackedFloat64Array values;
+		PackedByteArray blocking;
+		ids.resize(count);
+		kinds.resize(count);
+		values.resize(int64_t(count) * 18);
+		blocking.resize(count);
+		HashSet<String> identities;
+		for (int i = 0; i < count; ++i) {
+			lua_rawgeti(p_state, 1, i + 1);
+			const int row = lua_absindex(p_state, -1);
+			s.fields(row, { "id", "kind", "position", "basis", "size", "offset", "blocking" });
+			const String id = s.string_field(row, "id", "");
+			const String kind = s.string_field(row, "kind", "");
+			s.require(!id.is_empty() && id.length() <= 96 &&
+							id.is_valid_identifier() && !identities.has(id),
+					"resource_index requires unique stable IDs");
+			s.require(
+					!kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(),
+					"resource_index requires an explicit kind");
+			identities.insert(id);
+			ids.set(i, id);
+			kinds.set(i, kind);
+			const Transform3D pose = s.transform(row);
+			const Vector3 size = s.vector_field(row, "size", Vector3(1, 1, 1));
+			const Vector3 offset = s.vector_field(row, "offset", Vector3());
+			s.require(pose.is_finite() &&
+							Math::abs(pose.basis.determinant()) >= 1e-9 &&
+							size.is_finite() && offset.is_finite() && size.x > 0 &&
+							size.y > 0 && size.z > 0,
+					"resource_index requires a finite pose and positive collider "
+					"extents");
+			const Vector3 vectors[] = { pose.origin,
+				pose.basis.get_column(0),
+				pose.basis.get_column(1),
+				pose.basis.get_column(2),
+				size,
+				offset };
+			for (int vector = 0; vector < 6; ++vector) {
+				for (int axis = 0; axis < 3; ++axis) {
+					values.set(int64_t(i) * 18 + vector * 3 + axis,
+							vectors[vector][axis]);
+				}
+			}
+			blocking.set(i, s.boolean_field(row, "blocking", false));
+			lua_pop(p_state, 1);
     }
     Dictionary entries;
     entries["format"] = 1;
@@ -1766,7 +1746,6 @@ struct Recipe {
 		OwnedNode root(packed->instantiate());
 		s.require(root != nullptr, "could not instantiate PackedScene for child names");
 		const int count = root->get_child_count();
-		s.require(count <= 65536, "child_names exceeds 65536 children");
 		lua_createtable(p_state, count, 0);
 		for (int index = 0; index < count; ++index) {
 			const CharString name = String(root->get_child(index)->get_name()).utf8();
@@ -1783,7 +1762,6 @@ struct Recipe {
 		OwnedNode root(packed->instantiate());
 		s.require(root != nullptr, "could not instantiate PackedScene for children");
 		const int count = root->get_child_count();
-		s.require(count <= 4096, "children exceeds 4096 instances");
 		lua_createtable(p_state, count, 0);
 		int index = 0;
 		for (int i = 0; i < count; ++i) {
@@ -1806,7 +1784,7 @@ struct Recipe {
 		}
 		return 1;
 	}
-	static constexpr size_t MAX_PARTS = 65536;
+
 	struct Part {
 		Ref<Mesh> mesh;
 		Ref<Material> material;
@@ -1815,17 +1793,11 @@ struct Recipe {
 		bool has_color = false, has_custom_data = false;
 	};
 	static bool collect_parts(Node *p_node, const Transform3D &p_parent, std::vector<Part> &r_parts, int p_depth) {
-		if (p_depth > 32) {
-			return false;
-		}
 		Transform3D transform = p_parent;
 		if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
 			transform = p_parent * node_3d->get_transform();
 		}
 		if (MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(p_node); mesh && mesh->get_mesh().is_valid()) {
-			if (r_parts.size() == MAX_PARTS) {
-				return false;
-			}
 			Ref<Material> material = mesh->get_material_override();
 			if (material.is_null() && mesh->get_mesh()->get_surface_count() == 1) {
 				material = mesh->get_surface_override_material(0);
@@ -1836,9 +1808,6 @@ struct Recipe {
 		if (MultiMeshInstance3D *multi = Object::cast_to<MultiMeshInstance3D>(p_node); multi && multi->get_multimesh().is_valid() && multi->get_multimesh()->get_mesh().is_valid()) {
 			const Ref<MultiMesh> batch = multi->get_multimesh();
 			for (int i = 0; i < batch->get_instance_count(); ++i) {
-				if (r_parts.size() == MAX_PARTS) {
-					return false;
-				}
 				Part part;
 				part.mesh = batch->get_mesh();
 				part.material = multi->get_material_override();
@@ -1900,7 +1869,7 @@ struct Recipe {
 		}
 		std::vector<Part> found;
 		s.require(collect_parts(root, parent, found, 0), "parts hierarchy or instance limit exceeded");
-		s.require(!found.empty() && found.size() <= MAX_PARTS, "parts requires 1..65536 mesh instances");
+		s.require(!found.empty() && found.size() <= size_t(std::numeric_limits<int>::max()), "parts requires a nonempty representable array");
 		lua_createtable(p_state, found.size(), 0);
 		for (size_t i = 0; i < found.size(); ++i) {
 			const Transform3D &transform = found[i].transform;
@@ -2069,7 +2038,6 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	Recipe recipe;
 	for (const char *key : {"parameters", "inputs", "limits"}) if (p_job.has(key) && p_job[key].get_type() != Variant::DICTIONARY) return reject(r_result, String(key) + " must be an object");
 	recipe.parameters = p_job.get("parameters", Dictionary());
-	if (JSON::stringify(recipe.parameters).utf8().length() > SOURCE_BYTES) return reject(r_result, "parameters exceed 64 KiB");
 	Variant seed = p_job.get("seed", 1);
 	if ((seed.get_type() != Variant::INT && seed.get_type() != Variant::FLOAT) || !std::isfinite(double(seed)) || double(seed) < 0 || double(seed) > UINT32_MAX || double(seed) != std::floor(double(seed))) return reject(r_result, "seed must be a uint32");
 	recipe.random_state = uint32_t(int64_t(seed));
@@ -2080,11 +2048,6 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		String name = *key; int *target = nullptr;
 		if (name == "memory_mb") target = &recipe.limits.memory_mb;
 		else if (name == "time_ms") target = &recipe.limits.time_ms;
-		else if (name == "max_vertices") target = &recipe.limits.max_vertices;
-		else if (name == "max_instances") target = &recipe.limits.max_instances;
-		else if (name == "max_resources") target = &recipe.limits.max_resources;
-		else if (name == "input_mb") target = &recipe.limits.input_mb;
-		else if (name == "output_mb") target = &recipe.limits.output_mb;
 		if (!target) return reject(r_result, "unknown recipe limit: " + name);
 		Variant value = limits[*key];
 		const bool unbounded = target == &recipe.limits.time_ms; // Default is no deadline.
@@ -2092,8 +2055,6 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		*target = int(value);
 	}
 	Dictionary inputs = p_job.get("inputs", Dictionary());
-	// Byte (input_mb) and VM budgets still bound what the declared inputs load.
-	if (inputs.size() > 64) return reject(r_result, "at most 64 declared inputs are supported");
 	HashSet<String> inspected_inputs;
 	uint64_t input_bytes = 0;
 	for (const Variant *key = inputs.next(); key; key = inputs.next(key)) {
@@ -2113,9 +2074,6 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			// deferred container as a resource loaded by this recipe.
 			if (!file.ends_with(".vgp")) {
 				input_bytes += input->get_length();
-			}
-			if (input_bytes > uint64_t(recipe.limits.input_mb) * 1024 * 1024) {
-				return reject(r_result, "input dependency bytes exceed recipe limit");
 			}
 			recipe.input_hashes[file] = FileAccess::get_sha256(file);
 		}
@@ -2144,9 +2102,6 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			if (!dependency.ends_with(".vgp")) {
 				input_bytes += input->get_length();
 			}
-			if (input_bytes > uint64_t(recipe.limits.input_mb) * 1024 * 1024) {
-				return reject(r_result, "input dependency bytes exceed recipe limit");
-			}
 			recipe.input_hashes[dependency] = FileAccess::get_sha256(dependency);
 		}
 		recipe.inputs[*key] = resource;
@@ -2168,14 +2123,14 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	// staging path stable so identical Luau inputs/seed produce identical bytes.
 	if (bool(p_job.get("external_render_resources", false))) {
 		Array render_outputs;
-		error = CookerRender::save(scene, output.get_base_dir(), render_outputs, uint64_t(recipe.limits.output_mb) * 1024 * 1024, &recipe.geometry_builds);
+		error = CookerRender::save(scene, output.get_base_dir(), render_outputs, UINT64_MAX, &recipe.geometry_builds);
 		if (error != OK) return reject(r_result, "cannot publish shared render resources", error);
 		r_result["render_outputs"] = render_outputs;
 	}
 	if (scene.is_valid() && !bool(p_job.get("external_render_resources", false))) {
 		Array containers;
 		error = CookerVirtualGeometry::publish_resource_containers(scene, recipe.geometry_builds, output,
-				uint64_t(recipe.limits.output_mb) * 1024 * 1024, containers);
+				UINT64_MAX, containers);
 		if (error != OK) {
 			return reject(r_result, "cannot publish scene virtual geometry containers", error);
 		}
@@ -2188,7 +2143,9 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	error = ResourceSaver::save(recipe.result, temporary, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	if (error == OK) {
 		Ref<FileAccess> saved = FileAccess::open(temporary, FileAccess::READ);
-		if (saved.is_null() || saved->get_length() > uint64_t(recipe.limits.output_mb) * 1024 * 1024) error = ERR_OUT_OF_MEMORY;
+		if (saved.is_null() || saved->get_length() > UINT64_MAX) {
+			error = ERR_OUT_OF_MEMORY;
+		}
 		if (error == OK && Ref<VirtualGeometryMesh>(recipe.result).is_valid()) {
 			const auto built = recipe.geometry_builds.find(recipe.result->get_instance_id());
 			if (built == recipe.geometry_builds.end()) {
@@ -2196,7 +2153,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			} else {
 				Array files;
 				error = CookerVirtualGeometry::publish_container(built->second, output, saved->get_length(),
-						uint64_t(recipe.limits.output_mb) * 1024 * 1024, files);
+						UINT64_MAX, files);
 				if (error == OK) {
 					r_result["geometry_outputs"] = files;
 					r_result["virtual_geometry"] = built->second.report;
@@ -2215,13 +2172,12 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	r_result["parameters"] = recipe.parameters; r_result["seed"] = seed;
 	Dictionary effective_limits;
 	effective_limits["memory_mb"] = recipe.limits.memory_mb; effective_limits["time_ms"] = recipe.limits.time_ms;
-	effective_limits["max_vertices"] = recipe.limits.max_vertices; effective_limits["max_instances"] = recipe.limits.max_instances;
-	effective_limits["max_resources"] = recipe.limits.max_resources; effective_limits["input_mb"] = recipe.limits.input_mb;
-	effective_limits["output_mb"] = recipe.limits.output_mb;
 	r_result["limits"] = effective_limits;
 	r_result["runtime"] = capabilities();
-	r_result["resources"] = int64_t(recipe.resources.size()); r_result["vertices"] = recipe.vertices;
-	r_result["instances"] = recipe.instances; r_result["vm_peak_bytes"] = int64_t(recipe.peak_memory);
+	r_result["resources"] = int64_t(recipe.resources.size());
+	r_result["vertices"] = int64_t(recipe.vertices);
+	r_result["instances"] = int64_t(recipe.instances);
+	r_result["vm_peak_bytes"] = int64_t(recipe.peak_memory);
 	Dictionary effect_stats;
 	effect_stats["layers"] = recipe.effect_layers; effect_stats["particle_systems"] = recipe.effect_particle_systems;
 	effect_stats["declared_particles"] = recipe.effect_particles; effect_stats["textures"] = recipe.effect_textures;

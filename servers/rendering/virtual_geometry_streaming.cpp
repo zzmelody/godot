@@ -96,12 +96,11 @@ Error VirtualGeometryStreaming::_configure() {
 			(rd->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) == 0) {
 		return ERR_UNAVAILABLE;
 	}
-	if (pool_bytes == 0 || pool_bytes > UINT32_MAX || pool_bytes % VirtualGeometry::ROOT_PAGE_GPU_CAPACITY != 0 ||
-			metadata_bytes > UINT32_MAX || work_bytes > UINT32_MAX) {
+	if (pool_bytes > UINT32_MAX || pool_bytes % VirtualGeometry::ROOT_PAGE_GPU_CAPACITY != 0) {
 		return ERR_INVALID_PARAMETER;
 	}
-	const uint64_t host_capacity = uint64_t(MAX_DEMANDS) * sizeof(Demand) * 2 + uint64_t(MAX_READS) * (sizeof(Read) + 128);
-	const uint64_t token = _acquire(1, 0, "virtual-geometry:physical-capacity", pool_bytes + metadata_bytes + work_bytes + host_capacity);
+	const uint64_t host_capacity = uint64_t(MAX_READS) * (sizeof(Read) + 128);
+	const uint64_t token = _acquire(1, 0, "virtual-geometry:physical-capacity", (pool_bytes == 0 ? 128ull * 1024 * 1024 : pool_bytes) + metadata_bytes + work_bytes + host_capacity);
 	if (token == 0) {
 		return ERR_BUSY;
 	}
@@ -126,11 +125,8 @@ Error VirtualGeometryStreaming::install(const PackedByteArray &p_root, const Vir
 		return configured_error;
 	}
 	const uint32_t roots = p_model.hierarchy.root_pages;
-	if ((pinned_roots + roots) * VirtualGeometry::ROOT_PAGE_GPU_CAPACITY > pool_bytes || roots > MAX_DEMANDS) {
+	if (pool_bytes != 0 && (pinned_roots + roots) * VirtualGeometry::ROOT_PAGE_GPU_CAPACITY > pool_bytes) {
 		return ERR_OUT_OF_MEMORY;
-	}
-	if (demands.size() + roots > MAX_DEMANDS) {
-		return ERR_BUSY;
 	}
 	// The storage grant accounts for its decoded root and GPU metadata. This
 	// separate owner accounts only for host directory, page states and queues.
@@ -200,9 +196,6 @@ bool VirtualGeometryStreaming::_demand(Asset *p_asset, uint32_t p_page, float p_
 		if (!_demand(p_asset, dependency, p_priority, p_depth + 1)) {
 			return false;
 		}
-	}
-	if (demands.size() == MAX_DEMANDS) {
-		return false;
 	}
 	for (uint32_t index = 0; index < location.dependency_count; ++index) {
 		++p_asset->pages[p_asset->directory.dependencies[location.dependency_start + index]].users;
@@ -296,6 +289,9 @@ void VirtualGeometryStreaming::_outcomes() {
 	}
 	occupied = decode_uint64(bytes.ptr() + 24);
 	retiring = decode_uint64(bytes.ptr() + 32);
+	physical_bytes = decode_uint64(bytes.ptr() + 16);
+	metadata_reserved = decode_uint64(bytes.ptr() + 40);
+	work_reserved = decode_uint64(bytes.ptr() + 56);
 	for (uint32_t index = 0; index < decode_uint32(bytes.ptr() + 80); ++index) {
 		const uint8_t *record = bytes.ptr() + 88 + index * 60;
 		const uint64_t lease = decode_uint64(record + 24);
@@ -536,7 +532,7 @@ void VirtualGeometryStreaming::_start_reads() {
 		}
 		Page &page = asset->pages[demand.key.page];
 		const uint64_t slot = demand.key.page < asset->roots ? VirtualGeometry::ROOT_PAGE_GPU_CAPACITY : VirtualGeometry::STREAMING_PAGE_GPU_CAPACITY;
-		if (occupied + reserved_slots + slot > pool_bytes) {
+		if (pool_bytes != 0 && occupied + reserved_slots + slot > pool_bytes) {
 			// Only one retirement is requested per frame. Its fence, rather than
 			// this request, makes the capacity available to a future read.
 			if (retiring == 0) {
@@ -597,7 +593,10 @@ Dictionary VirtualGeometryStreaming::get_statistics() const {
 	result["ready_pages"] = int64_t(ready.size());
 	result["gpu_pending"] = transfers.size();
 	result["resident_detail_pages"] = int64_t(residents.size());
-	result["pool_bytes"] = int64_t(configured ? pool_bytes : 0);
+	result["pool_bytes"] = int64_t(physical_bytes);
+	result["pool_automatic"] = pool_bytes == 0;
+	result["metadata_reserved_bytes"] = int64_t(metadata_reserved);
+	result["work_reserved_bytes"] = int64_t(work_reserved);
 	result["reserved_read_bytes"] = int64_t(reserved_slots);
 	result["read_deferrals"] = int64_t(refused_reads);
 	result["failed_pages"] = int64_t(failed_reads);

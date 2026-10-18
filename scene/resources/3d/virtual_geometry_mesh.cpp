@@ -10,10 +10,6 @@
 #include <utility>
 
 namespace {
-// Bound root bytes and decoded metadata independently. These are admission
-// limits, not a claim about live renderer memory or the page-pool budget.
-constexpr uint64_t MAX_ROOT_BYTES = 64 * 1024 * 1024;
-constexpr uint64_t MAX_METADATA_BYTES = 256 * 1024 * 1024;
 
 bool valid_container_file(const String &p_file) {
 	if (p_file.is_empty() || p_file.length() > 128 || p_file.begins_with(".") || !p_file.ends_with(".vgp")) {
@@ -46,11 +42,11 @@ Error VirtualGeometryMesh::set_geometry_data(const Dictionary &p_data) {
 	const String file = p_data["container"];
 	const int64_t length = p_data["container_bytes"];
 	const Array slots = p_data["materials"];
-	if (bytes.is_empty() || uint64_t(bytes.size()) > MAX_ROOT_BYTES || length <= 0 || !valid_container_file(file)) {
+	if (bytes.is_empty() || uint64_t(bytes.size()) > UINT32_MAX - 15 || length <= 0 || !valid_container_file(file)) {
 		return ERR_INVALID_DATA;
 	}
 	VirtualGeometry::GeometryModelRoot candidate;
-	const auto decoded = VirtualGeometry::decode_geometry_model_root(bytes.ptr(), bytes.size(), uint64_t(length), MAX_METADATA_BYTES, candidate);
+	const auto decoded = VirtualGeometry::decode_geometry_model_root(bytes.ptr(), bytes.size(), uint64_t(length), UINT64_MAX, candidate);
 	if (decoded.error != VirtualGeometry::ModelCodecError::OK || uint64_t(slots.size()) != candidate.materials.size()) {
 		return ERR_INVALID_DATA;
 	}

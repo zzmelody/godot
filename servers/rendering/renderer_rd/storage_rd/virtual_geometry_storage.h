@@ -192,6 +192,7 @@ private:
 	mutable std::atomic<uint64_t> requests_acknowledged{ 0 };
 	uint64_t request_sequence = 0, request_overflow = 0, request_invalid = 0;
 	uint64_t pool_bytes = 0;
+	bool automatic_pool = true;
 	uint64_t metadata_budget = 0;
 	uint64_t work_budget = 0;
 	uint64_t metadata_reserved = 0;
@@ -226,6 +227,10 @@ private:
 	void _free_metadata(Asset *p_asset);
 	void _delete_page(Page *p_page);
 	uint32_t _allocate(uint32_t p_units);
+	Error _grow_pool(uint64_t p_bytes);
+	static uint64_t _available(uint64_t p_budget, uint64_t p_reserved) {
+		return (p_budget == 0 ? UINT64_MAX : p_budget) - p_reserved;
+	}
 	void _free_source(Page *p_page);
 	void _consume_requests();
 	void _publish_requests();

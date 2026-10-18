@@ -73,8 +73,8 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 			continue;
 		}
 		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
-		ERR_FAIL_COND_V(roots == 0 || roots > MAX_WORK_ITEMS || batch.count > MAX_WORK_ITEMS, ERR_OUT_OF_MEMORY);
-		const uint64_t desired = p_root_only ? roots : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(batch.count) * batch.geometry.clusters);
+		ERR_FAIL_COND_V(roots == 0 || roots > UINT32_MAX, ERR_OUT_OF_MEMORY);
+		const uint64_t desired = p_root_only ? roots : MAX(roots, MIN(uint64_t(FINE_WORK_TARGET), uint64_t(batch.count) * batch.geometry.clusters));
 		ERR_FAIL_COND_V(desired < roots, ERR_INVALID_DATA);
 		roots_total += roots;
 		instances_total += batch.count;
@@ -82,14 +82,14 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	}
 	// Reserve complete roots first. The view shares the remaining fine-output
 	// capacity instead of reserving a full maximum for every source batch.
-	const uint64_t extra_capacity = roots_total < MAX_WORK_ITEMS ? MAX_WORK_ITEMS - roots_total : 0;
+	const uint64_t extra_capacity = roots_total < FINE_WORK_TARGET ? FINE_WORK_TARGET - roots_total : 0;
 	uint64_t result_size = 0;
 	for (const Batch &batch : batches) {
 		if (batch.count == 0) {
 			continue;
 		}
 		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
-		const uint64_t desired = p_root_only ? roots : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(batch.count) * batch.geometry.clusters);
+		const uint64_t desired = p_root_only ? roots : MAX(roots, MIN(uint64_t(FINE_WORK_TARGET), uint64_t(batch.count) * batch.geometry.clusters));
 		const uint64_t extra = extra_total > extra_capacity ? (desired - roots) * extra_capacity / extra_total : desired - roots;
 		result_size += 16 + uint64_t(batch.count) * 16 + (roots + extra) * 2 + roots * 2;
 	}
@@ -105,7 +105,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	uint32_t work_word = 0;
 	for (const Batch &batch : batches) {
 		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
-		const uint64_t desired = p_root_only ? roots : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(batch.count) * batch.geometry.clusters);
+		const uint64_t desired = p_root_only ? roots : MAX(roots, MIN(uint64_t(FINE_WORK_TARGET), uint64_t(batch.count) * batch.geometry.clusters));
 		const uint64_t extra = extra_total > extra_capacity ? (desired - roots) * extra_capacity / extra_total : desired - roots;
 		const Error error = _record(batch, uint32_t(roots + extra), work_word, p_root_only);
 		if (error != OK) {
@@ -132,11 +132,11 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 	// Root coverage is reserved before any dispatch. Refuse the whole batch
 	// when even that complete cut cannot fit; never emit a truncated list.
 	const uint64_t roots = uint64_t(p_batch.count) * p_batch.geometry.root_clusters;
-	ERR_FAIL_COND_V(roots == 0 || roots > MAX_WORK_ITEMS || p_batch.count > MAX_WORK_ITEMS, ERR_OUT_OF_MEMORY);
-	const uint32_t nodes = p_root_only ? 0 : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.nodes);
+	ERR_FAIL_COND_V(roots == 0 || roots > UINT32_MAX, ERR_OUT_OF_MEMORY);
+	const uint32_t nodes = p_root_only ? 0 : MIN(uint64_t(FINE_WORK_TARGET), uint64_t(p_batch.count) * p_batch.geometry.nodes);
 	const uint32_t clusters = p_cluster_capacity;
 	const uint32_t requests = p_root_only ? 0 : MIN(uint64_t(65536), uint64_t(p_batch.count) * p_batch.geometry.pages);
-	const uint32_t work_words = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2 + requests * 2 + 128 * 2;
+	const uint64_t work_words = 16 + uint64_t(p_batch.count) * 16 + uint64_t(nodes) * 4 + uint64_t(clusters) * 4 + roots * 2 + uint64_t(requests) * 2 + 128 * 2;
 	RD *rd = RD::get_singleton();
 	if (version.is_null()) {
 		Vector<String> modes;

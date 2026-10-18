@@ -70,7 +70,9 @@ public:
 private:
 	VirtualGeometryWorkMemory memory;
 	Error _record(const Batch &p_batch, uint32_t p_cluster_capacity, uint32_t p_work_word, bool p_root_only);
-	static constexpr uint32_t MAX_WORK_ITEMS = 1048576;
+	// Fine traversal may fall back to complete roots. This queue target never
+	// limits admitted instances or the complete root coverage allocation.
+	static constexpr uint32_t FINE_WORK_TARGET = 1048576;
 	VirtualGeometrySelectShaderRD shader;
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
 	VirtualGeometrySelectCompactShaderRD compact_shader;

@@ -298,7 +298,7 @@ Error VirtualGeometryStorage::record_requests(RID p_mesh, uint64_t p_generation,
 		// Reserve output, returned bytes and aligned download payload together.
 		// Backend allocator granularity is separate from these byte capacities.
 		const uint64_t charge = ((REQUEST_BUFFER_BYTES + 31u) & ~31u) * 3u + sizeof(RequestReadback);
-		if (charge > work_budget - work_reserved) {
+		if (charge > _available(work_budget, work_reserved)) {
 			++request_overflow;
 			return ERR_BUSY;
 		}
@@ -338,7 +338,7 @@ Error VirtualGeometryStorage::record_diagnostics(RID p_view_status, RID p_materi
 	RD *rd = RD::get_singleton();
 	if (diagnostics_buffer.is_null()) {
 		const uint64_t charge = 32u * 3u + sizeof(RequestReadback);
-		if (charge > work_budget - work_reserved) {
+		if (charge > _available(work_budget, work_reserved)) {
 			return ERR_BUSY;
 		}
 		diagnostics_buffer = rd->storage_buffer_create(8);
@@ -410,42 +410,68 @@ Vector<uint8_t> VirtualGeometryStorage::get_feedback(uint64_t p_after_sequence) 
 	return value;
 }
 
+Error VirtualGeometryStorage::_grow_pool(uint64_t p_bytes) {
+	if (p_bytes <= pool_bytes) {
+		return OK;
+	}
+	// Physical cluster addresses are uint32 byte offsets. Preserve existing
+	// offsets while RD orders the copy and defers destruction of the old buffer.
+	if (p_bytes > UINT32_MAX || p_bytes % UNIT_BYTES != 0) {
+		return ERR_OUT_OF_MEMORY;
+	}
+	RD *rd = RD::get_singleton();
+	const RID candidate = rd->storage_buffer_create(p_bytes);
+	if (candidate.is_null()) {
+		return ERR_CANT_CREATE;
+	}
+	if (pool.is_valid()) {
+		const Error copied = rd->buffer_copy(pool, candidate, 0, 0, pool_bytes);
+		if (copied != OK) {
+			rd->free_rid(candidate);
+			return copied;
+		}
+		rd->free_rid(pool);
+		work_reserved += pool_bytes;
+		freed_buffers.push_back({ rd->get_recording_submission_serial(), pool_bytes, false, false });
+	}
+	const uint32_t previous_slots = slots.size();
+	slots.resize(p_bytes / UNIT_BYTES);
+	for (uint32_t index = previous_slots; index < slots.size(); ++index) {
+		slots[index] = 0;
+	}
+	metadata_reserved += slots.size() - previous_slots;
+	pool = candidate;
+	pool_bytes = p_bytes;
+	for (KeyValue<RID, Asset *> &entry : assets) {
+		entry.value->bindings.geometry = pool;
+	}
+	for (Asset *asset : detached) {
+		asset->bindings.geometry = pool;
+	}
+	return OK;
+}
+
 Error VirtualGeometryStorage::set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes) {
-	if (p_pool_bytes == 0 || (p_pool_bytes % UNIT_BYTES) != 0 || p_pool_bytes > UINT32_MAX || p_metadata_bytes < metadata_reserved || p_work_bytes < work_reserved) {
+	if ((p_pool_bytes % UNIT_BYTES) != 0 || p_pool_bytes > UINT32_MAX ||
+			(p_metadata_bytes != 0 && p_metadata_bytes < metadata_reserved) ||
+			(p_work_bytes != 0 && p_work_bytes < work_reserved) ||
+			(p_pool_bytes != 0 && p_pool_bytes < pool_bytes)) {
 		return ERR_INVALID_PARAMETER;
 	}
 	// Reserve the bounded result queue, both owned snapshots and slot bytes.
 	// Copies retained by a feedback reader belong to that reader's allocation.
-	const uint64_t bookkeeping = pool.is_null() ? 2 * SNAPSHOT_BYTES + uint64_t(MAX_OUTCOMES) * (sizeof(Outcome) + 2 * OUTCOME_BYTES) + p_pool_bytes / UNIT_BYTES +
+	const uint64_t bookkeeping = pool.is_null() ? 2 * SNAPSHOT_BYTES + uint64_t(MAX_OUTCOMES) * (sizeof(Outcome) + 2 * OUTCOME_BYTES) +
 					2 * REQUEST_HEADER_BYTES + uint64_t(MAX_REQUESTS) * (sizeof(RequestRecord) + 2 * REQUEST_RECORD_BYTES)
 												: 0;
-	if (bookkeeping > p_metadata_bytes - metadata_reserved) {
+	const uint64_t target = p_pool_bytes == 0 ? MAX(pool_bytes, uint64_t(128) * 1024 * 1024) : p_pool_bytes;
+	if (bookkeeping + (target - pool_bytes) / UNIT_BYTES > _available(p_metadata_bytes, metadata_reserved)) {
 		return ERR_OUT_OF_MEMORY;
 	}
-	if (p_pool_bytes != pool_bytes) {
-		// Pool migration is not yet connected. Preserve the current allocation and
-		// grant until all mesh and GPU owners are gone; never overwrite live slots.
-		if (!assets.is_empty() || !detached.is_empty() || occupied_bytes != 0 || staging_bytes != 0) {
-			return ERR_BUSY;
-		}
-		// Release uses RD's deferred buffer destruction. A replacement would
-		// overlap physical allocations, so changing a nonempty grant is refused.
-		if (pool.is_valid()) {
-			return ERR_UNAVAILABLE;
-		}
-		if (p_pool_bytes != 0) {
-			const RID candidate = RD::get_singleton()->storage_buffer_create(p_pool_bytes);
-			if (candidate.is_null()) {
-				return ERR_CANT_CREATE;
-			}
-			pool = candidate;
-			slots.resize(p_pool_bytes / UNIT_BYTES);
-			for (uint8_t &slot : slots) {
-				slot = 0;
-			}
-		}
-		pool_bytes = p_pool_bytes;
+	const Error grown = _grow_pool(target);
+	if (grown != OK) {
+		return grown;
 	}
+	automatic_pool = p_pool_bytes == 0;
 	metadata_budget = p_metadata_bytes;
 	work_budget = p_work_bytes;
 	metadata_reserved += bookkeeping;
@@ -454,7 +480,7 @@ Error VirtualGeometryStorage::set_budget(uint64_t p_pool_bytes, uint64_t p_metad
 }
 
 bool VirtualGeometryStorage::reserve_view_work(uint64_t p_bytes) {
-	if (p_bytes == 0 || p_bytes > work_budget - work_reserved) {
+	if (p_bytes == 0 || p_bytes > _available(work_budget, work_reserved)) {
 		WARN_PRINT_ONCE(vformat("Virtual geometry work capacity refused: requested=%s reserved=%s budget=%s bytes.", p_bytes, work_reserved, work_budget));
 		return false;
 	}
@@ -472,11 +498,11 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	if (has(p_mesh)) {
 		return ERR_ALREADY_IN_USE;
 	}
-	if (p_generation == 0 || p_generation > INT64_MAX || p_root.size() < VirtualGeometry::MODEL_ROOT_HEADER_BYTES || p_root.size() > 64 * 1024 * 1024) {
+	if (p_generation == 0 || p_generation > INT64_MAX || p_root.size() < VirtualGeometry::MODEL_ROOT_HEADER_BYTES || uint64_t(p_root.size()) > UINT32_MAX - 15) {
 		return ERR_INVALID_PARAMETER;
 	}
 	VirtualGeometry::GeometryModelRoot root;
-	const auto decoded = VirtualGeometry::decode_geometry_model_root(p_root.ptr(), p_root.size(), decode_uint64(p_root.ptr() + 184), metadata_budget - metadata_reserved, root);
+	const auto decoded = VirtualGeometry::decode_geometry_model_root(p_root.ptr(), p_root.size(), decode_uint64(p_root.ptr() + 184), _available(metadata_budget, metadata_reserved), root);
 	if (decoded.error != VirtualGeometry::ModelCodecError::OK) {
 		return decoded.error == VirtualGeometry::ModelCodecError::MEMORY_LIMIT ? ERR_OUT_OF_MEMORY : ERR_INVALID_DATA;
 	}
@@ -498,7 +524,7 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	const uint32_t table_byte = (uint32_t(p_root.size()) + 15) & ~15u;
 	const uint64_t gpu_bytes = table_byte + uint64_t(root.hierarchy.pages.size()) * 4;
 	const uint64_t charge = sizeof(Asset) + root_memory(root) + uint64_t(p_materials.size()) * sizeof(RID) + uint64_t(root.hierarchy.pages.size()) * 9;
-	if (charge + gpu_bytes > metadata_budget - metadata_reserved || gpu_bytes > UINT32_MAX || pool.is_null() || uint64_t(root.hierarchy.root_pages) * UNIT_BYTES > pool_bytes) {
+	if (charge + gpu_bytes > _available(metadata_budget, metadata_reserved) || gpu_bytes > UINT32_MAX || pool.is_null() || (!automatic_pool && uint64_t(root.hierarchy.root_pages) * UNIT_BYTES > pool_bytes)) {
 		return ERR_OUT_OF_MEMORY;
 	}
 	Vector<uint8_t> gpu = p_root;
@@ -582,6 +608,13 @@ uint32_t VirtualGeometryStorage::_allocate(uint32_t p_units) {
 			}
 			occupied_bytes += uint64_t(p_units) * UNIT_BYTES;
 			return first;
+		}
+	}
+	if (automatic_pool) {
+		const uint64_t addressable = (uint64_t(UINT32_MAX) / UNIT_BYTES) * UNIT_BYTES;
+		const uint64_t target = MIN(addressable, MAX(pool_bytes * 2, pool_bytes + uint64_t(p_units) * UNIT_BYTES));
+		if (target > pool_bytes && _grow_pool(target) == OK) {
+			return _allocate(p_units);
 		}
 	}
 	return UINT32_MAX;
@@ -795,7 +828,7 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 		const uint64_t work = uint64_t(bytes.size()) * 2 + uint64_t(location.fixup_bytes) * 4;
 		added_work += work;
 		added_metadata += sizeof(Page) + 64;
-		if (added_work > work_budget - work_reserved || added_metadata > metadata_budget - metadata_reserved) {
+		if (added_work > _available(work_budget, work_reserved) || added_metadata > _available(metadata_budget, metadata_reserved)) {
 			refusal = ERR_OUT_OF_MEMORY;
 			break;
 		}
@@ -853,7 +886,7 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 				added_work += patch_bytes - page->work;
 			}
 		}
-		if (added_work > work_budget - work_reserved) {
+		if (added_work > _available(work_budget, work_reserved)) {
 			refusal = ERR_OUT_OF_MEMORY;
 		}
 	}

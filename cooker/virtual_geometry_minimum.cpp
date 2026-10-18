@@ -34,14 +34,8 @@ Error minimum_root_mesh(const Ref<VirtualGeometryMesh> &p_source, Ref<ArrayMesh>
 	const Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ, &error);
 	ERR_FAIL_COND_V(file.is_null(), error == OK ? ERR_FILE_CANT_READ : error);
 	ERR_FAIL_COND_V(file->get_length() != p_source->get_container_bytes(), ERR_INVALID_DATA);
-	uint64_t root_bytes = 0;
-	for (uint32_t page = 0; page < model.hierarchy.root_pages; ++page) {
-		root_bytes += model.directory.pages[page].disk_bytes;
-	}
-	ERR_FAIL_COND_V(root_bytes > 64 * 1024 * 1024, ERR_OUT_OF_MEMORY);
 	try {
 		std::map<uint32_t, RootSurface> surfaces;
-		uint64_t vertices = 0;
 		for (uint32_t page = 0; page < model.hierarchy.root_pages; ++page) {
 			const auto &location = model.directory.pages[page];
 			file->seek(location.container_offset);
@@ -77,8 +71,7 @@ Error minimum_root_mesh(const Ref<VirtualGeometryMesh> &p_source, Ref<ArrayMesh>
 						if (a == b || a == c || b == c) {
 							continue;
 						}
-						ERR_FAIL_COND_V(vertices + 3 > 2000000, ERR_OUT_OF_MEMORY);
-						vertices += 3;
+						ERR_FAIL_COND_V(uint64_t(surface.positions.size()) + 3 > INT32_MAX, ERR_OUT_OF_MEMORY);
 						for (uint32_t corner = 0; corner < 3; ++corner) {
 							const uint32_t vertex = indices[triangle * 3 + corner];
 							const auto &position = positions[vertex];
@@ -152,7 +145,6 @@ Error BakeMeshCache::get(const Ref<VirtualGeometryMesh> &p_source, BakeMesh &r_m
 			r_mesh = found->second;
 			return OK;
 		}
-		ERR_FAIL_COND_V(meshes.size() >= 4096, ERR_OUT_OF_MEMORY);
 		BakeMesh candidate;
 		const Error error = minimum_root_mesh(p_source, candidate.mesh, candidate.source_slots);
 		ERR_FAIL_COND_V(error != OK, error);
@@ -160,7 +152,7 @@ Error BakeMeshCache::get(const Ref<VirtualGeometryMesh> &p_source, BakeMesh &r_m
 		for (int surface = 0; surface < candidate.mesh->get_surface_count(); ++surface) {
 			added += candidate.mesh->surface_get_array_len(surface);
 		}
-		ERR_FAIL_COND_V(added > 16000000 - vertices, ERR_OUT_OF_MEMORY);
+		ERR_FAIL_COND_V(added > UINT64_MAX - vertices, ERR_OUT_OF_MEMORY);
 		meshes.emplace(p_source->get_instance_id(), candidate);
 		vertices += added;
 		r_mesh = std::move(candidate);

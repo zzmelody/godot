@@ -245,7 +245,7 @@ local second = cooker.virtual_geometry(source, {})
 local bounds = cooker.bounds(second)
 assert(bounds.max[1] >= 1 and bounds.min[1] <= -1)
 return second
-''', output="res://assets/runtime/model/vg/model.res", limits={"max_vertices": 24})
+''', output="res://assets/runtime/model/vg/model.res")
         self.assertEqual(result["type"], "VirtualGeometryMesh")
         self.assertEqual(result["virtual_geometry_builds"], 1)
         report = result["virtual_geometry"]
@@ -1566,7 +1566,7 @@ assert(not pcall(function() math.sin = nil end))
             with self.subTest(code=code):
                 self.recipe('pcall(function() ' + code + ' end); ' + BOX, success=False)
 
-    def test_host_resource_and_geometry_limits(self):
+    def test_removed_capacity_options_and_unlimited_instances(self):
         self.recipe('cooker.material({}); ' + BOX, limits={"max_resources": 1}, success=False)
         self.recipe(limits={"max_vertices": 3}, success=False)
         self.recipe('local b=cooker.primitive("box",{}); return cooker.scene({{asset=b},{asset=b}})',
@@ -1616,7 +1616,7 @@ assert(not pcall(function() math.sin = nil end))
         self.job({"operation": "run-recipe", "source": "res://replacement.luau", "output": output}, False)
         self.assertEqual(target.read_bytes(), before)
 
-    def test_output_size_failure_removes_only_its_temporary_file(self):
+    def test_large_output_keeps_its_input_unchanged(self):
         directory = self.project / "content/worlds/fixture/generated"
         directory.mkdir(parents=True)
         name = base64.b64encode(random.Random(42).randbytes(1400000)).decode()
@@ -1624,7 +1624,7 @@ assert(not pcall(function() math.sin = nil end))
         asset.write_text('[gd_resource type="StandardMaterial3D" format=3]\n[resource]\nresource_name="' + name + '"\n')
         digest = hashlib.sha256(asset.read_bytes()).hexdigest()
         self.recipe('return cooker.input("large")', inputs={"large": "res://content/worlds/fixture/generated/large.tres"},
-                    limits={"output_mb": 1}, success=False)
+                    success=True)
         self.assertEqual(hashlib.sha256(asset.read_bytes()).hexdigest(), digest)
 
     def test_symlink_input_escape_is_rejected(self):

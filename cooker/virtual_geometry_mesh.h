@@ -15,8 +15,8 @@ struct Settings {
 	VirtualGeometry::DagBuildSettings dag;
 	VirtualGeometry::ClusterEncodingSettings encoding;
 	bool interpolate_uvs = true;
-	uint32_t max_source_vertices = 500000;
-	uint64_t max_output_bytes = 64 * 1024 * 1024;
+	uint32_t max_source_vertices = UINT32_MAX;
+	uint64_t max_output_bytes = UINT64_MAX;
 };
 
 struct BuildOutput {

@@ -8,8 +8,6 @@
 #include "core/os/os.h"
 
 namespace CookerCache {
-// Match Veya's published admission-identity file range.
-inline constexpr int MAX_MANIFEST_FILES = 65536;
 inline bool force_rebuild = false;
 struct Receipt { String path, output, fingerprint; Dictionary dependencies, auxiliary_outputs; };
 // Materials, shaders, shader includes and textures reached *through* another
@@ -39,7 +37,6 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 			Error error=CookerFiles::collect_directory(path,roots,metadata,directories);ERR_FAIL_COND_V(error!=OK,error);
 			for(const String &entry:metadata)result[entry]=FileAccess::get_sha256(entry);
 			for(const Variant &entry:roots) {error=dependencies(entry,result,depth+1);ERR_FAIL_COND_V(error!=OK,error);}
-			ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);
 			return OK;
 		}
 		if (!FileAccess::exists(path)) {
@@ -86,22 +83,19 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 				result[source] = "sha256:" + FileAccess::get_sha256(source);
 			}
 		}
-		ERR_FAIL_COND_V(result.size() > 4096, ERR_OUT_OF_MEMORY);
 	} else if (value.get_type() == Variant::ARRAY) {
 		const Array values = value;
-		ERR_FAIL_COND_V(values.size() > 16384, ERR_OUT_OF_MEMORY);
 		for (const Variant &entry : values) {
 			const Error error = dependencies(entry, result, depth + 1);
 			ERR_FAIL_COND_V(error != OK, error);
 		}
 	} else if (value.get_type() == Variant::DICTIONARY) {
 		const Dictionary values = value;
-		ERR_FAIL_COND_V(values.size() > 16384, ERR_OUT_OF_MEMORY);
 		for(const Variant *key=values.next();key;key=values.next(key)) {const Error error=dependencies(values[*key],result,depth+1,*key);ERR_FAIL_COND_V(error!=OK,error);}
 	}
 	return OK;
 }
-inline Error read(const String &path,Dictionary &out, uint64_t maximum_bytes = 1024 * 1024) {
+inline Error read(const String &path, Dictionary &out, uint64_t maximum_bytes = INT64_MAX) {
 	Ref<FileAccess> file=FileAccess::open(path,FileAccess::READ);
 	ERR_FAIL_COND_V(file.is_null() || file->get_length()>maximum_bytes,ERR_INVALID_DATA);
 	const Variant value=JSON::parse_string(file->get_as_text());ERR_FAIL_COND_V(value.get_type()!=Variant::DICTIONARY,ERR_INVALID_DATA);
@@ -112,7 +106,8 @@ inline Error validate_manifest_files(const String &path) {
 	Error error = read(path, manifest, CookerFiles::MAX_MANIFEST_BYTES);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V(int64_t(manifest.get("schema_version", 0)) != 2 || String(manifest.get("hash_algorithm", "")) != "md5" || manifest.get("files", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_DATA);
-	const Array files=manifest["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>MAX_MANIFEST_FILES,ERR_INVALID_DATA);
+	const Array files = manifest["files"];
+	ERR_FAIL_COND_V(files.is_empty(), ERR_INVALID_DATA);
 	const String base=path.get_base_dir();HashSet<String> seen;
 	for(const Variant &value:files) {
 		ERR_FAIL_COND_V(value.get_type()!=Variant::DICTIONARY,ERR_INVALID_DATA);
@@ -147,7 +142,8 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	ERR_FAIL_COND_V(error!=OK,error);
 	if(String(job.get("operation",""))=="asset-manifest") {
 		ERR_FAIL_COND_V(job.get("files",Variant()).get_type()!=Variant::ARRAY,ERR_INVALID_PARAMETER);
-		const Array files=job["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>MAX_MANIFEST_FILES,ERR_INVALID_PARAMETER);
+		const Array files = job["files"];
+		ERR_FAIL_COND_V(files.is_empty(), ERR_INVALID_PARAMETER);
 		for(const Variant &entry:files) {
 			ERR_FAIL_COND_V(entry.get_type()!=Variant::STRING,ERR_INVALID_PARAMETER);
 			const String relative=entry;ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.contains(":"),ERR_INVALID_PARAMETER);

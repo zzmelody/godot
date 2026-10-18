@@ -63,7 +63,6 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 		if (material.is_valid() && material->get_shader().is_valid()) shaders.push_back(material->get_shader());
 	}
 	for (const Ref<Shader> &shader : shaders) resources[shader->get_instance_id()] = shader;
-	ERR_FAIL_COND_V(resources.size() > 256, ERR_INVALID_DATA);
 	Vector<Ref<Resource>> ordered;
 	for (const KeyValue<ObjectID, Ref<Resource>> &entry : resources) ordered.push_back(entry.value);
 	ordered.sort_custom<PathOrder>();

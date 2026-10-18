@@ -358,7 +358,6 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 			if (visited.has(path)) {
 				continue;
 			}
-			ERR_FAIL_COND_V(visited.size() >= CookerCache::MAX_MANIFEST_FILES, ERR_INVALID_DATA);
 			visited.insert(path);
 			List<String> dependencies;
 			ResourceLoader::get_dependencies(path, &dependencies);
@@ -384,7 +383,7 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 			declared.push_back(path.substr(base.length() + 1));
 		}
 	}
-	ERR_FAIL_COND_V(declared.is_empty() || declared.size() > CookerCache::MAX_MANIFEST_FILES, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(declared.is_empty(), ERR_INVALID_PARAMETER);
 	Array records;
 	HashMap<String, String> resource_digests;
 	HashSet<String> seen;
@@ -422,7 +421,6 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 				if (container.begins_with(base + "/")) {
 					const String relative_container = container.substr(base.length() + 1);
 					if (!declared.has(relative_container)) {
-						ERR_FAIL_COND_V(declared.size() >= CookerCache::MAX_MANIFEST_FILES, ERR_PARAMETER_RANGE_ERROR);
 						declared.push_back(relative_container);
 					}
 				}
@@ -894,7 +892,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			ERR_FAIL_COND_V(error != OK, error);
 			Array render_outputs;
 			const Ref<PackedScene> scene = imported;
-			error = CookerRender::save(scene, published_path.get_base_dir(), render_outputs, 256ull * 1024 * 1024, &geometry_builds);
+			error = CookerRender::save(scene, published_path.get_base_dir(), render_outputs, UINT64_MAX, &geometry_builds);
 			ERR_FAIL_COND_V(error != OK, error);
 			r_result["render_outputs"] = render_outputs;
 			// Save beside the final path so external relative references survive
@@ -904,7 +902,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			CookerAtomicSave::discard_stale(imported_path);
 		} else {
 			Array geometry_outputs;
-			error = CookerVirtualGeometry::publish_resource_containers(imported, geometry_builds, published_path, 256ull * 1024 * 1024, geometry_outputs);
+			error = CookerVirtualGeometry::publish_resource_containers(imported, geometry_builds, published_path, UINT64_MAX, geometry_outputs);
 			ERR_FAIL_COND_V(error != OK, error);
 			r_result["geometry_outputs"] = geometry_outputs;
 			error = CookerAtomicSave::save_resource(imported, imported_path,

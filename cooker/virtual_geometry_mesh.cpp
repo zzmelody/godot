@@ -619,7 +619,7 @@ Error convert_imported_scene(const Ref<Resource> &p_source, Ref<Resource> &r_res
 	pending.push_back(root);
 	Array policy;
 	uint64_t output_bytes = 0;
-	const uint64_t output_limit = p_explicit_settings != nullptr ? p_explicit_settings->max_output_bytes : 256ull * 1024 * 1024;
+	const uint64_t output_limit = p_explicit_settings != nullptr ? p_explicit_settings->max_output_bytes : UINT64_MAX;
 	Error error = OK;
 	while (!pending.is_empty() && error == OK) {
 		Node *node = pending[pending.size() - 1];
@@ -688,7 +688,6 @@ Error convert_imported_scene(const Ref<Resource> &p_source, Ref<Resource> &r_res
 				Settings settings = p_explicit_settings != nullptr ? *p_explicit_settings : Settings();
 				settings.dag.preserve_area = preserve_area;
 				if (p_explicit_settings == nullptr) {
-					settings.max_source_vertices = 2000000;
 				}
 				settings.max_output_bytes = output_limit - output_bytes;
 				BuildOutput built;

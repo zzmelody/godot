@@ -78,7 +78,6 @@ class VirtualGeometryStreaming {
 		bool retiring = false;
 	};
 	static VirtualGeometryStreaming *singleton;
-	static constexpr uint32_t MAX_DEMANDS = 8192;
 	static constexpr uint32_t MAX_READS = 16;
 	static constexpr uint32_t MAX_SUBMISSIONS = 16;
 	HashMap<RID, Asset *> assets;
@@ -88,14 +87,16 @@ class VirtualGeometryStreaming {
 	std::vector<Read *> reads;
 	std::vector<Read *> ready;
 	Callable acquire, received, release;
-	uint64_t pool_bytes = 128ull * 1024 * 1024;
-	uint64_t metadata_bytes = 64ull * 1024 * 1024;
-	uint64_t work_bytes = 512ull * 1024 * 1024;
+	// Zero selects automatic pool growth and unrestricted aggregate accounting.
+	uint64_t pool_bytes = 0;
+	uint64_t metadata_bytes = 0;
+	uint64_t work_bytes = 0;
 	uint64_t generation = 0, order = 0, transaction = 0;
 	uint64_t requests_after = 0, outcomes_after = 0;
 	uint64_t pool_admission = 0;
 	uint64_t refused_reads = 0, failed_reads = 0, evictions = 0;
 	uint64_t occupied = 0, retiring = 0, reserved_slots = 0;
+	uint64_t physical_bytes = 0, metadata_reserved = 0, work_reserved = 0;
 	uint64_t pinned_roots = 0;
 	bool configured = false;
 	bool stopping = false;
