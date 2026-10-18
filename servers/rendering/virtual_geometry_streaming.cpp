@@ -72,6 +72,16 @@ void VirtualGeometryStreaming::_release(uint64_t p_token) {
 	}
 }
 
+void VirtualGeometryStreaming::_withdraw_read_waiter() {
+	if (!waiting_for_read) {
+		return;
+	}
+	if (acquire.is_valid()) {
+		acquire.call(2, int64_t(0), String(), int64_t(0));
+	}
+	waiting_for_read = false;
+}
+
 Error VirtualGeometryStreaming::_configure() {
 	if (configured) {
 		return OK;
@@ -541,9 +551,11 @@ void VirtualGeometryStreaming::_start_reads() {
 		const uint64_t owner = (asset->generation << 32) | uint64_t(demand.key.page);
 		const uint64_t token = _acquire(0, owner, key, length);
 		if (token == 0) {
+			waiting_for_read = true;
 			++refused_reads;
 			break;
 		}
+		waiting_for_read = false;
 		demands.pop();
 		Read *read = memnew(Read);
 		read->key = demand.key;
@@ -559,6 +571,11 @@ void VirtualGeometryStreaming::_start_reads() {
 		++asset->pending;
 		read->task = WorkerThreadPool::get_singleton()->add_native_task(&_read, read, false, "Virtual geometry page read");
 		reads.push_back(read);
+	}
+	if (demands.empty()) {
+		// Removing the last queued asset also removes its unadmitted FIFO turn.
+		// Accepted read leases remain charged through worker/GPU retirement.
+		_withdraw_read_waiter();
 	}
 }
 
@@ -622,4 +639,5 @@ void VirtualGeometryStreaming::stop() {
 	while (!demands.empty()) {
 		demands.pop();
 	}
+	_withdraw_read_waiter();
 }

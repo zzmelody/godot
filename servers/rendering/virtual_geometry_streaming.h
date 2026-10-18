@@ -99,12 +99,14 @@ class VirtualGeometryStreaming {
 	uint64_t pinned_roots = 0;
 	bool configured = false;
 	bool stopping = false;
+	bool waiting_for_read = false;
 	Mutex removals_mutex;
 	Vector<RID> deferred_removals;
 
 	uint64_t _acquire(uint32_t p_kind, uint64_t p_owner, const String &p_key, uint64_t p_bytes);
 	void _received(uint64_t p_token);
 	void _release(uint64_t p_token);
+	void _withdraw_read_waiter();
 	static void _read(void *p_read);
 	Asset *_find(const Key &p_key) const;
 	void _drop_dependencies(Asset *p_asset, uint32_t p_page);
@@ -124,7 +126,8 @@ public:
 	VirtualGeometryStreaming();
 	~VirtualGeometryStreaming();
 	static VirtualGeometryStreaming *get_singleton() { return singleton; }
-	// Kind 0 borrows a read slot; kind 1 reserves persistent capacity. A zero
+	// Kind 0 borrows a read slot; kind 1 reserves persistent capacity; kind 2
+	// withdraws the process reader's unadmitted FIFO turn and returns zero. A zero
 	// result defers admission. Received frees only the read slot. Release follows
 	// the GPU outcome, or worker completion when a read is canceled/refused.
 	Error set_admission(const Callable &p_acquire, const Callable &p_received, const Callable &p_release);
