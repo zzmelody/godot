@@ -1,6 +1,21 @@
 /*<<----- VEYA_COOKER: native batch asset entry. The ordinary editor main is not linked. */
 #include "main/main.h"
 
+#include "atomic_save.h"
+#include "content_hash.h"
+#include "cooker/asset_files.h"
+#include "cooker/lightmap_bake.h"
+#include "cooker/pipeline.h"
+#include "cooker/recipe.h"
+#include "cooker/streaming_record.h"
+#include "cooker/virtual_geometry_mesh.h"
+#include "output_lock.h"
+#include "pipeline_cache.h"
+#include "render_dependencies.h"
+#include "shared_inputs.h"
+#include "stage_source.h"
+#include "usd_import.h"
+
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/core_globals.h"
@@ -8,17 +23,8 @@
 #include "core/extension/gdextension_manager.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access_pack.h"
-#include "core/io/json.h"
-#include "pipeline_cache.h"
-#include "content_hash.h"
-#include "atomic_save.h"
-#include "render_dependencies.h"
-#include "output_lock.h"
-#include <cfloat>
-#include <memory>
-#include "stage_source.h"
-#include "usd_import.h"
 #include "core/io/image.h"
+#include "core/io/json.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
@@ -32,41 +38,39 @@
 #include "editor/import/3d/resource_importer_obj.h"
 #include "editor/import/3d/resource_importer_scene.h"
 #include "main/performance.h"
-#include "modules/fbx/editor/editor_scene_importer_ufbx.h"
-#include "modules/gltf/editor/editor_scene_importer_gltf.h"
-#include "modules/gltf/gltf_state.h"
-#include "modules/register_module_types.h"
-#include "platform/register_platform_apis.h"
-#include "scene/property_list_helper.h"
-#include "scene/register_scene_types.h"
-#include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/gpu_particles_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/3d/physics/static_body_3d.h"
 #include "scene/3d/skeleton_3d.h"
 #include "scene/animation/animation_player.h"
-#include "scene/resources/packed_scene.h"
-#include "scene/resources/portable_compressed_texture.h"
-#include "scene/resources/image_texture.h"
-#include "scene/resources/material.h"
-#include "scene/resources/particle_process_material.h"
+#include "scene/property_list_helper.h"
+#include "scene/register_scene_types.h"
 #include "scene/resources/3d/height_map_shape_3d.h"
 #include "scene/resources/3d/importer_mesh.h"
-#include "scene/resources/multimesh.h"
-#include "scene/resources/surface_tool.h"
 #include "scene/resources/3d/navigation_mesh_source_geometry_data_3d.h"
+#include "scene/resources/image_texture.h"
+#include "scene/resources/material.h"
+#include "scene/resources/multimesh.h"
 #include "scene/resources/navigation_mesh.h"
+#include "scene/resources/packed_scene.h"
+#include "scene/resources/particle_process_material.h"
+#include "scene/resources/portable_compressed_texture.h"
+#include "scene/resources/surface_tool.h"
 #include "servers/navigation_3d/navigation_server_3d.h"
 #include "servers/physics_3d/physics_server_3d.h"
 #include "servers/register_server_types.h"
 #include "servers/rendering/dummy/rasterizer_dummy.h"
 #include "servers/rendering/rendering_server_default.h"
-#include "cooker/asset_files.h"
-#include "cooker/virtual_geometry_mesh.h"
-#include "cooker/pipeline.h"
-#include "cooker/recipe.h"
-#include "cooker/streaming_record.h"
-#include "cooker/lightmap_bake.h"
+
+#include "modules/fbx/editor/editor_scene_importer_ufbx.h"
+#include "modules/gltf/editor/editor_scene_importer_gltf.h"
+#include "modules/gltf/gltf_state.h"
+#include "modules/register_module_types.h"
+#include "platform/register_platform_apis.h"
+
+#include <cfloat>
+#include <memory>
 /*<<----- VEYA_COOKER: headless standard skeleton retarget jobs and processors. */
 #include "cooker/retarget.h"
 #include "cooker/character_actions.h"
@@ -1091,7 +1095,8 @@ Error execute_pipeline(Dictionary &r_result) {
 		return ERR_BUSY;
 	}
 	cooker_hash::Batch content_hash_batch;
-	Array reports;
+  CookerSharedInputs::Batch shared_inputs(steps);
+  Array reports;
   if (!selected_steps.is_empty()) {
     HashSet<String> found;
     for (const Dictionary& step : steps) {
@@ -1218,12 +1223,14 @@ Error execute_pipeline(Dictionary &r_result) {
 			r_result = description;
 			r_result["steps"] = reports;
 			r_result["failed_step"] = index;
-			return error;
+      r_result["shared_input_reuses"] = int64_t(shared_inputs.reuses());
+      return error;
 		}
 	}
 	r_result = description;
 	r_result["steps"] = reports;
-	return OK;
+  r_result["shared_input_reuses"] = int64_t(shared_inputs.reuses());
+  return OK;
 }
 } // namespace
 

@@ -48,8 +48,21 @@ run are discarded on the next run.
 The script returns one dense array of job tables. It may use deterministic Luau
 control flow to reduce repetition, but has no filesystem, process, network,
 clock, random, `require`, bytecode-loading or engine-object API. The VM is limited
-to 16 MiB, 1 second, 256 steps, depth 16 and 65,536 converted values. Cooker
+to 16 MiB, 1 second, depth 16 and 1,048,576 converted values. Cooker
 converts the returned tables to native jobs and executes them sequentially.
+
+On Windows, one CLI pipeline can retain repeated declared resource inputs.
+An input is eligible only when none of its validated dependency files is in
+any declared producer output directory, including auxiliary resource trees.
+The first use checks every file's SHA-256, freezes the closure with read handles
+that refuse writes and deletion, and reloads the Resource under those leases.
+Later recipe and receipt reads check file identities, lengths and digests before
+reusing the same validated Resource and closure. Material/texture identity-only
+receipt rules stay unchanged. A changed input fails the pipeline. Producers and
+their inputs remain on the normal validation path. All Resources and leases end
+with this CLI pipeline; there is no persistent admission cache. Other platforms
+keep the existing uncached input path. The result's `shared_input_reuses` counts
+proof lookups by both receipt preparation and recipes, rather than source files.
 
 Resource input fingerprints use tagged `md5:<digest>` values. Luau source,
 parameters, executable identity and durable receipts retain real SHA-256.

@@ -121,12 +121,16 @@ class Batch {
   static thread_local Batch* current_;
 
   friend Error PinGeometryFile(const String&, String&);
+  friend Error PinSharedInputFile(const String&, String&, uint64_t&);
   friend String Md5File(const String&);
 };
 
 // Returns a digest only when this batch can keep the .vgp bytes immutable.
 // Otherwise returns OK with an empty digest; validation hashes its open file.
 Error PinGeometryFile(const String& path, String& digest);
+// Freeze one shared input until the CLI batch ends. Windows denies writes
+// and deletion. Other platforms return ERR_UNAVAILABLE.
+Error PinSharedInputFile(const String& path, String& digest, uint64_t& bytes);
 String HashFile(const String& path);
 String Md5File(const String& path);
 

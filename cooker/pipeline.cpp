@@ -30,7 +30,9 @@ constexpr int SOURCE_BYTES = 256 * 1024;
 constexpr int MEMORY_BYTES = 16 * 1024 * 1024;
 constexpr int TIME_MS = 1000;
 constexpr int MAX_DEPTH = 16;
-constexpr int MAX_ENTRIES = 65536;
+// A spatial asset inventory and its sharded job graph share this conversion
+// allowance. VM memory, execution time and nesting retain independent limits.
+constexpr int MAX_ENTRIES = 1024 * 1024;
 constexpr int MAX_MODULES = 12;
 constexpr double MAX_EXACT_INTEGER = 9007199254740991.0;
 

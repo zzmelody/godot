@@ -9,6 +9,17 @@ namespace cooker_hash {
 namespace {
 
 #ifdef WINDOWS_ENABLED
+String AbsolutePath(const String& path) {
+  String absolute = ProjectSettings::get_singleton()
+                        ->globalize_path(path)
+                        .simplify_path()
+                        .replace_char('/', '\\');
+  if (!absolute.is_network_share_path() && !absolute.begins_with(R"(\\?\)")) {
+    absolute = R"(\\?\)" + absolute;
+  }
+  return absolute;
+}
+
 struct PinnedGeometry {
   HANDLE file = INVALID_HANDLE_VALUE;
   BY_HANDLE_FILE_INFORMATION identity = {};
@@ -83,14 +94,12 @@ struct Batch::State {
 #ifdef WINDOWS_ENABLED
   std::map<String, std::unique_ptr<PinnedGeometry>> files;
 
+  bool Has(const String& path) const {
+    return files.find(AbsolutePath(path)) != files.end();
+  }
+
   Error Get(const String& path, PinnedGeometry*& result) {
-    String absolute = ProjectSettings::get_singleton()
-                          ->globalize_path(path)
-                          .simplify_path()
-                          .replace_char('/', '\\');
-    if (!absolute.is_network_share_path() && !absolute.begins_with(R"(\\?\)")) {
-      absolute = R"(\\?\)" + absolute;
-    }
+    const String absolute = AbsolutePath(path);
     PinnedGeometry opened;
     // The handle pins these bytes, rather than trusting a timestamp or
     // filename. Opening again on a hit also detects replacement of an ancestor
@@ -142,7 +151,8 @@ Batch::~Batch() {
 Error PinGeometryFile(const String& path, String& digest) {
   digest = String();
 #ifdef WINDOWS_ENABLED
-  if (Batch::current_ && path.get_extension() == "vgp") {
+  if (Batch::current_ &&
+      (path.get_extension() == "vgp" || Batch::current_->state_->Has(path))) {
     PinnedGeometry* pinned = nullptr;
     const Error error = Batch::current_->state_->Get(path, pinned);
     ERR_FAIL_COND_V(error != OK, error);
@@ -158,9 +168,25 @@ String HashFile(const String& path) {
   return digest.is_empty() ? HashUncachedFile(path) : digest;
 }
 
+Error PinSharedInputFile(const String& path, String& digest, uint64_t& bytes) {
+#ifdef WINDOWS_ENABLED
+  ERR_FAIL_COND_V(!Batch::current_, ERR_UNAVAILABLE);
+  PinnedGeometry* pinned = nullptr;
+  const Error error = Batch::current_->state_->Get(path, pinned);
+  ERR_FAIL_COND_V(error != OK, error);
+  digest = pinned->sha256;
+  bytes = (uint64_t(pinned->identity.nFileSizeHigh) << 32) |
+          pinned->identity.nFileSizeLow;
+  return OK;
+#else
+  return ERR_UNAVAILABLE;
+#endif
+}
+
 String Md5File(const String& path) {
 #ifdef WINDOWS_ENABLED
-  if (Batch::current_ && path.get_extension() == "vgp") {
+  if (Batch::current_ &&
+      (path.get_extension() == "vgp" || Batch::current_->state_->Has(path))) {
     PinnedGeometry* pinned = nullptr;
     ERR_FAIL_COND_V(Batch::current_->state_->Get(path, pinned) != OK, String());
     return pinned->md5;

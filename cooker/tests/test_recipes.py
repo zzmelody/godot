@@ -9,6 +9,7 @@ import random
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 
 parser = argparse.ArgumentParser()
@@ -150,6 +151,110 @@ return {
                     recorded = {entry["path"]: entry["sha256"] for entry in manifest["files"]}
                     self.assertEqual(recorded["model.res"], hashlib.sha256(generated.read_bytes()).hexdigest())
                     self.assertEqual(recorded["model.res.uid"], hashlib.sha256(payload).hexdigest())
+
+    def test_nested_spatial_inventory_exceeds_the_old_conversion_allowance(self):
+        folder = self.project / "content/worlds/fixture/modules/cells/cooker"
+        folder.mkdir(parents=True)
+        (folder / "inventory.luau").write_text('''local cells = {}
+for i = 1, 12000 do cells[i] = {x=i, z=-i, kind="forest"} end
+return {cells=cells}
+''')
+        (folder / "jobs.luau").write_text('''return pipeline.import(
+"res://content/worlds/fixture/modules/cells/cooker/inventory.luau", "data")
+''')
+        (self.project / "asset.luau").write_text(BOX)
+        result = self.pipeline('''local inventory = pipeline.import(
+"res://content/worlds/fixture/modules/cells/cooker/jobs.luau", "data")
+assert(#inventory.cells == 12000 and inventory.cells[12000].z == -12000)
+return {{operation="run-recipe", source="res://asset.luau",
+output="res://assets/runtime/model/cells/marker.res"}}
+''')
+        self.assertEqual(result["step_count"], 1)
+        self.assertTrue(result["steps"][0]["ok"])
+
+    def test_shared_recipe_inputs_keep_one_validated_resource_per_batch(self):
+        source = "res://assets/runtime/model/shared-input/model.res"
+        self.recipe(output=source)
+        (self.project / "view.luau").write_text('''local mesh = cooker.input("model")
+return cooker.scene({{asset=mesh,position={cooker.parameters.x,0,0}}})
+''')
+        result = self.pipeline('''local steps = {}
+for x = 1, 3 do
+  table.insert(steps, {operation="run-recipe",source="res://view.luau",
+    output="res://assets/runtime/world/shared-views/cell_"..x..".scn",
+    inputs={model="res://assets/runtime/model/shared-input/model.res"},
+    parameters={x=x}})
+end
+return steps
+''')
+        if os.name == "nt":
+            # Both consumers reuse the input. Receipt fingerprinting may
+            # consult the same frozen proof before recipe execution as well.
+            self.assertGreaterEqual(result["shared_input_reuses"], 2)
+        else:
+            self.assertEqual(result["shared_input_reuses"], 0)
+        self.assertTrue(all(step["ok"] for step in result["steps"]))
+
+    @unittest.skipUnless(os.name == "nt", "Windows shared-input file leases")
+    def test_shared_input_lease_blocks_writes_and_ends_with_the_pipeline(self):
+        source = "res://assets/runtime/model/shared-lease/model.res"
+        self.recipe(output=source)
+        asset = self.project / source.removeprefix("res://")
+        original = asset.read_bytes()
+        (self.project / "lease.luau").write_text('''local mesh = cooker.input("model")
+if cooker.parameters.wait then while true do end end
+return cooker.scene({{asset=mesh}})
+''')
+        (self.project / "lease.pipeline.luau").write_text('''return {
+ {operation="run-recipe",source="res://lease.luau",parameters={wait=false},
+  inputs={model="res://assets/runtime/model/shared-lease/model.res"},
+  output="res://assets/runtime/world/shared-lease/ready.scn"},
+ {operation="run-recipe",source="res://lease.luau",parameters={wait=true},
+  inputs={model="res://assets/runtime/model/shared-lease/model.res"},
+  limits={time_ms=500},output="res://assets/runtime/world/shared-lease/wait.scn"},
+}
+''')
+        process = subprocess.Popen(
+            [str(EXECUTABLE), "--path", str(self.project), "--pipeline", "res://lease.pipeline.luau"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        ready = self.project / "assets/runtime/world/shared-lease/ready.scn"
+        deadline = time.monotonic() + 5
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.002)
+        self.assertTrue(ready.is_file(), "first output must publish before checking the input lease")
+        with self.assertRaises(PermissionError):
+            asset.write_bytes(original)
+        output, errors = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0, output + errors)
+        result = json.loads(next(line for line in output.splitlines() if line.startswith('{')))
+        self.assertIn("budget exceeded", result["steps"][-1]["message"])
+        self.assertEqual(asset.read_bytes(), original)
+        asset.write_bytes(original)
+
+    def test_shared_input_cache_does_not_freeze_a_declared_producer_directory(self):
+        source = "res://assets/runtime/model/shared-update/model.res"
+        replacement = "res://assets/runtime/model/replacement/model.res"
+        self.recipe(output=source)
+        self.recipe('return cooker.primitive("box", {size={4,3,4}})', output=replacement)
+        (self.project / "inspect.luau").write_text('''local mesh = cooker.input("model")
+local bounds = cooker.bounds(mesh)
+assert(bounds.max[1] - bounds.min[1] == cooker.parameters.width)
+return cooker.scene({{asset=mesh}})
+''')
+        result = self.pipeline('''return {
+ {operation="run-recipe",source="res://inspect.luau",parameters={width=2},
+  inputs={model="res://assets/runtime/model/shared-update/model.res"},
+  output="res://assets/runtime/world/shared-update/before.scn"},
+ {operation="save-resource",source="res://assets/runtime/model/replacement/model.res",
+  output="res://assets/runtime/model/shared-update/model.res"},
+ {operation="run-recipe",source="res://inspect.luau",parameters={width=4},
+  inputs={model="res://assets/runtime/model/shared-update/model.res"},
+  output="res://assets/runtime/world/shared-update/after.scn"},
+}
+''')
+        self.assertEqual(result["shared_input_reuses"], 0)
+        self.assertTrue(all(step["ok"] for step in result["steps"]))
 
     def test_module_package_paths_reject_wrong_owner_and_intermediate_folders(self):
         package = "content/worlds/fixture/props/fixture_asset"

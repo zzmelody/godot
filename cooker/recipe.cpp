@@ -1,58 +1,59 @@
 /*<<----- VEYA_COOKER: bounded Luau asset recipes with native builders and one atomic output. */
 #include "recipe.h"
+
+#include "Luau/Compiler.h"
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "collision_support.h"
 #include "content_hash.h"
 #include "heightfield_support.h"
+#include "lua.h"
+#include "lualib.h"
 #include "minimum_visual.h"
 #include "render_dependencies.h"
+#include "shared_inputs.h"
 #include "virtual_geometry_mesh.h"
 #include "virtual_geometry_validation.h"
 
-#include "core/io/json.h"
 #include "core/io/image.h"
+#include "core/io/json.h"
 #include "core/io/resource_saver.h"
 #include "core/os/os.h"
-#include "scene/animation/animation_player.h"
-#include "scene/3d/mesh_instance_3d.h"
-#include "scene/3d/lightmap_gi.h"
-#include "scene/3d/light_3d.h"
-#include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/gpu_particles_3d.h"
-#include "scene/resources/3d/primitive_meshes.h"
+#include "scene/3d/light_3d.h"
+#include "scene/3d/lightmap_gi.h"
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/multimesh_instance_3d.h"
+#include "scene/animation/animation_player.h"
 #include "scene/resources/3d/concave_polygon_shape_3d.h"
 #include "scene/resources/3d/convex_polygon_shape_3d.h"
+#include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/animation.h"
 #include "scene/resources/animation_library.h"
+#include "scene/resources/camera_attributes.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/curve_texture.h"
 #include "scene/resources/environment.h"
-#include "scene/resources/camera_attributes.h"
 #include "scene/resources/gradient.h"
 #include "scene/resources/gradient_texture.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/multimesh.h"
-#include "scene/resources/particle_process_material.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/particle_process_material.h"
 #include "scene/resources/portable_compressed_texture.h"
 #include "scene/resources/shader.h"
 #include "scene/resources/sky.h"
 #include "scene/resources/texture.h"
 
-#include "Luau/Compiler.h"
-#include "lua.h"
-#include "lualib.h"
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <limits>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -2061,7 +2062,26 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		if (key->get_type() != Variant::STRING || String(*key).utf8().length() > 256 || inputs[*key].get_type() != Variant::STRING) return reject(r_result, "input names and paths must be bounded strings");
 		String path = inputs[*key];
 		if (!CookerFiles::is_generated(path)) return reject(r_result, "inputs must already be cooked assets");
-		HashSet<String> files;
+    const CookerSharedInputs::Input* prepared = nullptr;
+    error = CookerSharedInputs::Batch::Find(path, prepared);
+    if (error != OK) {
+      return reject(r_result, "shared recipe input changed", error);
+    }
+    if (prepared) {
+      for (const String& file : prepared->files) {
+        if (inspected_inputs.has(file)) {
+          continue;
+        }
+        inspected_inputs.insert(file);
+        if (!file.ends_with(".vgp")) {
+          input_bytes += prepared->bytes.at(file);
+        }
+        recipe.input_hashes[file] = prepared->hashes[file];
+      }
+      recipe.inputs[*key] = prepared->resource;
+      continue;
+    }
+    HashSet<String> files;
 		error = CookerFiles::collect(path, files);
 		if (error != OK) return reject(r_result, "input dependency validation failed", error);
 		for (const String &file : files) {
@@ -2104,8 +2124,13 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			}
 			recipe.input_hashes[dependency] = cooker_hash::HashFile(dependency);
 		}
-		recipe.inputs[*key] = resource;
-	}
+    error = CookerSharedInputs::Batch::Store(path, files, recipe.input_hashes,
+                                             prepared);
+    if (error != OK) {
+      return reject(r_result, "cannot freeze shared recipe input", error);
+    }
+    recipe.inputs[*key] = prepared ? prepared->resource : resource;
+  }
 	Ref<FileAccess> file = FileAccess::open(source, FileAccess::READ);
 	if (file.is_null() || file->get_length() == 0 || file->get_length() > SOURCE_BYTES) return reject(r_result, "recipe source must contain 1..65536 bytes");
 	PackedByteArray code = file->get_buffer(file->get_length());

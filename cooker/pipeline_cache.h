@@ -3,8 +3,10 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "content_hash.h"
+#include "shared_inputs.h"
 #include "stage_source.h"
 #include "usd_import.h"
+
 #include "core/io/json.h"
 #include "core/os/os.h"
 
@@ -20,12 +22,14 @@ struct Receipt { String path, output, fingerprint; Dictionary dependencies, auxi
 inline const String IDENTITY = "path-identity";
 // Steps that copy dependency bytes (PCK packs) must see every byte change.
 inline bool embeds_dependencies = false;
-inline bool pass_through(const String &p_path) {
-	if(embeds_dependencies) return false;
-	const String type = ResourceLoader::get_resource_type(p_path);
+inline bool pass_through_type(const String& type) {
+  if(embeds_dependencies) return false;
 	if(type.is_empty() || !ClassDB::class_exists(type)) return false;
 	for(const char *base:{"Material","Shader","ShaderInclude","Texture"}) if(type==base || ClassDB::is_parent_class(type,base)) return true;
 	return false;
+}
+inline bool pass_through(const String& p_path) {
+  return pass_through_type(ResourceLoader::get_resource_type(p_path));
 }
 inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,const String &field="") {
 	ERR_FAIL_COND_V(depth>16,ERR_INVALID_DATA);
@@ -33,7 +37,29 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 	if(value.get_type()==Variant::STRING) {
 		const String path=value;
 		if(!path.begins_with("res://")) return OK;
-		if(CookerFiles::is_generated(path) && DirAccess::dir_exists_absolute(path)) {
+    const CookerSharedInputs::Input* prepared = nullptr;
+    Error cached_error = CookerSharedInputs::Batch::Find(path, prepared);
+    ERR_FAIL_COND_V(cached_error != OK, cached_error);
+    if (prepared) {
+      for (const String& source : prepared->files) {
+        if (result.has(source) && String(result[source]) != IDENTITY) {
+          continue;
+        }
+        if (source != path && pass_through_type(prepared->types.at(source))) {
+          if (!result.has(source)) {
+            result[source] = IDENTITY;
+          }
+        } else if (CookerFiles::is_generated(source) &&
+                   source.get_file() != "asset.manifest.json" &&
+                   !source.ends_with(".cook.json")) {
+          result[source] = "md5:" + String(prepared->md5[source]);
+        } else {
+          result[source] = "sha256:" + String(prepared->hashes[source]);
+        }
+      }
+      return OK;
+    }
+    if(CookerFiles::is_generated(path) && DirAccess::dir_exists_absolute(path)) {
 			Array roots;HashSet<String> metadata;int directories=0;
 			Error error=CookerFiles::collect_directory(path,roots,metadata,directories);ERR_FAIL_COND_V(error!=OK,error);
 			for(const String &entry:metadata)result[entry]=FileAccess::get_sha256(entry);
