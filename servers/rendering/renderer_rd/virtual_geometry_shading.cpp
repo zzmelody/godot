@@ -36,7 +36,7 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 			memory.free(snapshot);
 		}
 	}
-	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, dummy_transforms, material_view, frame_history, previous_sources, view_status, raster_material_buffer }) {
+	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, dummy_transforms, material_view, frame_history, previous_sources, empty_history_parameters, view_status, raster_material_buffer }) {
 		if (rid.is_valid()) {
 			memory.free(rid);
 		}
@@ -136,7 +136,7 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		WARN_PRINT_ONCE(vformat("Virtual geometry scene table refused: batches=%s instances=%s references=%s words=%s depth_only=%s.", p_sources.size(), instances, visible, total_words, depth_only));
 		return error;
 	}
-	error = ensure_words(memory, previous_sources, previous_source_words, MAX(uint64_t(1), instances) * 24);
+	error = ensure_words(memory, previous_sources, previous_source_words, depth_only ? 1 : MAX(uint64_t(1), instances) * 24);
 	if (error != OK) {
 		WARN_PRINT_ONCE(vformat("Virtual geometry previous-source table refused: batches=%s instances=%s words=%s depth_only=%s.", p_sources.size(), instances, MAX(uint64_t(1), instances) * 24, depth_only));
 		return error;
@@ -198,29 +198,40 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	}
 	ERR_FAIL_COND_V(init_pipeline.get_rid().is_null() || bin_pipeline.get_rid().is_null() || scan_pipeline.get_rid().is_null() || dispatch_pipeline.get_rid().is_null() || dummy_transforms.is_null(), ERR_CANT_CREATE);
 	UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
-	if (previous_parameters.size() < p_sources.size()) {
+	if (!depth_only && previous_parameters.size() < p_sources.size()) {
 		previous_parameters.resize(p_sources.size());
+	}
+	if (depth_only && empty_history_parameters.is_null()) {
+		empty_history_parameters = memory.uniform(80);
+		ERR_FAIL_COND_V(empty_history_parameters.is_null(), ERR_CANT_CREATE);
+		const uint32_t empty[20] = {};
+		rd->buffer_update(empty_history_parameters, 0, sizeof(empty), empty);
 	}
 	if (source_bindings.size() < p_sources.size()) {
 		source_bindings.resize(p_sources.size());
 	}
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
-		if (previous_parameters[index].is_null()) {
-			previous_parameters[index] = memory.uniform(80);
+		RID previous_buffer = empty_history_parameters;
+		if (!depth_only) {
+			if (previous_parameters[index].is_null()) {
+				previous_parameters[index] = memory.uniform(80);
+			}
+			ERR_FAIL_COND_V(previous_parameters[index].is_null(), ERR_CANT_CREATE);
+			previous_buffer = previous_parameters[index];
+			struct PreviousBatch {
+				float model[16];
+				uint32_t info[4];
+			} previous = {};
+			static_assert(sizeof(PreviousBatch) == 80);
+			MaterialStorage::store_transform(source.batch.previous_model, previous.model);
+			previous.info[0] = source.batch.previous_transform_offset;
+			previous.info[1] = 1;
+			rd->buffer_update(previous_buffer, 0, sizeof(previous), &previous);
 		}
-		ERR_FAIL_COND_V(previous_parameters[index].is_null(), ERR_CANT_CREATE);
-		struct PreviousBatch {
-			float model[16];
-			uint32_t info[4];
-		} previous = {};
-		static_assert(sizeof(PreviousBatch) == 80);
-		MaterialStorage::store_transform(source.batch.previous_model, previous.model);
-		previous.info[0] = source.batch.previous_transform_offset;
-		rd->buffer_update(previous_parameters[index], 0, sizeof(previous), &previous);
 		SourceBinding &binding = source_bindings[index];
 		const RID transforms = source.batch.stride != 0 ? source.batch.transforms : dummy_transforms;
-		if (binding.transforms != transforms || binding.parameters != source.parameters || binding.work != source.work) {
+		if (binding.transforms != transforms || binding.parameters != source.parameters || binding.work != source.work || binding.history_parameters != previous_buffer) {
 			if (rd->uniform_set_is_valid(binding.uniforms)) {
 				rd->free_rid(binding.uniforms);
 			}
@@ -231,12 +242,13 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { source.parameters }), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { source.work }),
 				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }),
 				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }),
-				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 27, { previous_parameters[index] })
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 27, { previous_buffer })
 			};
 			binding.uniforms = rd->uniform_set_create(uniforms, init_shader.version_get_shader(init_version, 0), 0);
 			binding.transforms = transforms;
 			binding.parameters = source.parameters;
 			binding.work = source.work;
+			binding.history_parameters = previous_buffer;
 		}
 		sources[index].uniforms = binding.uniforms;
 		ERR_FAIL_COND_V(sources[index].uniforms.is_null(), ERR_CANT_CREATE);
@@ -570,7 +582,7 @@ void VirtualGeometryShading::record_materials() {
 uint64_t VirtualGeometryShading::get_buffer_bytes() const {
 	return uint64_t(scene_words + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words) * 4 +
 			uint64_t(global_history_words[0] + global_history_words[1]) * 4 +
-			uint64_t(previous_parameters.size()) * 80 + (dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 320 : 0) +
+			uint64_t(previous_parameters.size()) * 80 + (empty_history_parameters.is_valid() ? 80 : 0) + (dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 320 : 0) +
 			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;
 }
 

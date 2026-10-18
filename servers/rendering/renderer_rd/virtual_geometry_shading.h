@@ -106,12 +106,14 @@ private:
 	bool global_history_valid = false;
 	RID previous_sources;
 	uint32_t previous_source_words = 0;
+	RID empty_history_parameters;
 	LocalVector<RID> previous_parameters;
 	struct SourceBinding {
 		RID uniforms;
 		RID transforms;
 		RID parameters;
 		RID work;
+		RID history_parameters;
 	};
 	LocalVector<SourceBinding> source_bindings;
 	RID view_status;

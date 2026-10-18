@@ -24,7 +24,7 @@ layout(set = 0, binding = 26, std430) buffer PreviousSources {
 previous_sources;
 layout(set = 0, binding = 27, std140) uniform PreviousBatch {
 	mat4 model;
-	uvec4 info;
+	uvec4 info; // Previous transform offset, history enabled, reserved[2].
 }
 previous_batch;
 layout(push_constant, std430) uniform SourceParameters {
@@ -57,13 +57,15 @@ void vg_initialize_source(uint instance) {
 		local = transpose(mat4(transforms.data[word], transforms.data[word + 1u], transforms.data[word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
 		if (source_info.has_color != 0u) { color = transforms.data[word + 3u]; }
 		if (source_info.has_custom != 0u) { custom = transforms.data[word + 3u + source_info.has_color]; }
-		uint previous_word = (instance + previous_batch.info.x) * params.source.y;
-		previous_local = transpose(mat4(transforms.data[previous_word], transforms.data[previous_word + 1u], transforms.data[previous_word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
-		if (source_info.has_color != 0u) {
-			previous_color = transforms.data[previous_word + 3u];
-		}
-		if (source_info.has_custom != 0u) {
-			previous_custom = transforms.data[previous_word + 3u + source_info.has_color];
+		if (previous_batch.info.y != 0u) {
+			uint previous_word = (instance + previous_batch.info.x) * params.source.y;
+			previous_local = transpose(mat4(transforms.data[previous_word], transforms.data[previous_word + 1u], transforms.data[previous_word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
+			if (source_info.has_color != 0u) {
+				previous_color = transforms.data[previous_word + 3u];
+			}
+			if (source_info.has_custom != 0u) {
+				previous_custom = transforms.data[previous_word + 3u + source_info.has_color];
+			}
 		}
 	}
 	mat4 world = params.model * local;
@@ -100,6 +102,9 @@ void vg_initialize_source(uint instance) {
 	}
 	for (uint reserved = 60u; reserved < 64u; ++reserved) {
 		scene.data[output_word + reserved] = source_info.identity[reserved - 60u];
+	}
+	if (previous_batch.info.y == 0u) {
+		return;
 	}
 	mat4 previous_rows = transpose(previous_batch.model * previous_local);
 	uint history_word = (source_info.first + instance) * 24u;
