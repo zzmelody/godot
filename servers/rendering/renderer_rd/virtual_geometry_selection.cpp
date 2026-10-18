@@ -24,13 +24,20 @@ VirtualGeometrySelection::~VirtualGeometrySelection() {
 	if (dummy_transforms.is_valid()) {
 		memory.free(dummy_transforms);
 	}
+	if (scratch.is_valid()) {
+		memory.free(scratch);
+	}
 	pipeline.free();
 	dispatch_pipeline.free();
+	compact_pipeline.free();
 	if (version.is_valid()) {
 		shader.version_free(version);
 	}
 	if (dispatch_version.is_valid()) {
 		dispatch_shader.version_free(dispatch_version);
+	}
+	if (compact_version.is_valid()) {
+		compact_shader.version_free(compact_version);
 	}
 }
 
@@ -69,7 +76,8 @@ Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
 	const uint32_t nodes = p_root_only ? 0 : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.nodes);
 	const uint32_t clusters = p_root_only ? uint32_t(roots) : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.clusters);
 	const uint32_t requests = p_root_only ? 0 : MIN(uint64_t(65536), uint64_t(p_batch.count) * p_batch.geometry.pages);
-	const uint32_t words = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2 + requests * 2 + 128 * 2;
+	const uint32_t words = 16 + p_batch.count * 16 + clusters * 2 + roots * 2;
+	const uint32_t work_words = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2 + requests * 2 + 128 * 2;
 	RD *rd = RD::get_singleton();
 	if (version.is_null()) {
 		Vector<String> modes;
@@ -80,6 +88,9 @@ Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
 		dispatch_shader.initialize(modes);
 		dispatch_version = dispatch_shader.version_create();
 		dispatch_pipeline.create_compute_pipeline(dispatch_shader.version_get_shader(dispatch_version, 0));
+		compact_shader.initialize(modes);
+		compact_version = compact_shader.version_create();
+		compact_pipeline.create_compute_pipeline(compact_shader.version_get_shader(compact_version, 0));
 	}
 	if (dummy_transforms.is_null()) {
 		dummy_transforms = memory.storage(48);
@@ -88,7 +99,13 @@ Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
 	const RID compute = pipeline.get_rid();
 	const RID dispatch_program = dispatch_shader.version_get_shader(dispatch_version, 0);
 	const RID prepare = dispatch_pipeline.get_rid();
-	ERR_FAIL_COND_V(program.is_null() || compute.is_null() || dispatch_program.is_null() || prepare.is_null() || dummy_transforms.is_null(), ERR_CANT_CREATE);
+	const RID compact_program = compact_shader.version_get_shader(compact_version, 0);
+	const RID compact = compact_pipeline.get_rid();
+	ERR_FAIL_COND_V(program.is_null() || compute.is_null() || dispatch_program.is_null() || prepare.is_null() || compact_program.is_null() || compact.is_null() || dummy_transforms.is_null(), ERR_CANT_CREATE);
+	const Error scratch_error = memory.ensure(scratch, scratch_words, work_words);
+	if (scratch_error != OK) {
+		return scratch_error;
+	}
 	if (used == results.size()) {
 		results.push_back(Result());
 	}
@@ -137,24 +154,29 @@ Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
 	parameters.offsets[2] = p_batch.geometry.groups_word;
 	memcpy(&parameters.offsets[3], &p_batch.max_vertex_displacement, sizeof(float));
 	rd->buffer_update(result.parameters, 0, sizeof(parameters), &parameters);
-	rd->buffer_clear(result.work, 0, 64);
+	rd->buffer_clear(scratch, 0, 64);
 	const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { p_batch.geometry.metadata }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_batch.geometry.geometry }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { p_batch.stride != 0 ? p_batch.transforms : dummy_transforms }),
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { result.work }));
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }));
 	ERR_FAIL_COND_V(uniforms.is_null(), ERR_CANT_CREATE);
 	const RID dispatch_uniforms = UniformSetCacheRD::get_singleton()->get_cache(dispatch_program, 0,
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { result.work }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { result.dispatch }));
 	ERR_FAIL_COND_V(dispatch_uniforms.is_null(), ERR_CANT_CREATE);
+	const RID compact_uniforms = UniformSetCacheRD::get_singleton()->get_cache(compact_program, 0,
+			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result.work }));
+	ERR_FAIL_COND_V(compact_uniforms.is_null(), ERR_CANT_CREATE);
 	rd->draw_command_begin_label("Virtual Geometry Selection");
 	RENDER_TIMESTAMP(p_batch.stride == 0 ? "Virtual Geometry Mesh Begin" : "Virtual Geometry MultiMesh Begin");
 	const RD::ComputeListID list = rd->compute_list_begin();
 	auto dispatch = [&](uint32_t p_mode, uint32_t p_round, uint32_t p_count, bool p_indirect = false) {
-		const bool preparing = p_mode == 1 || p_mode == 3;
+		const bool preparing = p_mode == 1 || p_mode == 3 || p_mode == 8;
 		rd->compute_list_bind_compute_pipeline(list, preparing ? prepare : compute);
 		rd->compute_list_bind_uniform_set(list, preparing ? dispatch_uniforms : uniforms, 0);
 		const uint32_t phase[2] = { p_mode, p_round };
@@ -177,9 +199,15 @@ Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
 	}
 	dispatch(5, 0, p_batch.count * p_batch.geometry.root_pages);
 	dispatch(p_root_only ? 7 : 6, VirtualGeometry::MAX_HIERARCHY_DEPTH, 1);
+	dispatch(8, 0, 1);
+	rd->compute_list_bind_compute_pipeline(list, compact);
+	rd->compute_list_bind_uniform_set(list, compact_uniforms, 0);
+	const uint32_t root_only = 0;
+	rd->compute_list_set_push_constant(list, &root_only, sizeof(root_only));
+	rd->compute_list_dispatch_indirect(list, result.dispatch, 0);
 	rd->compute_list_end();
 	const uint32_t request_word = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2;
-	const Error feedback_error = p_root_only ? OK : MeshStorage::get_singleton()->record_virtual_geometry_requests(p_batch.mesh, p_batch.geometry.generation, result.work, request_word, requests);
+	const Error feedback_error = p_root_only ? OK : MeshStorage::get_singleton()->record_virtual_geometry_requests(p_batch.mesh, p_batch.geometry.generation, scratch, request_word, requests);
 	if (feedback_error != OK && feedback_error != ERR_BUSY) {
 		WARN_PRINT_ONCE("Virtual geometry page feedback is unavailable; retaining current resident coverage.");
 	}
@@ -194,20 +222,18 @@ Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
 
 void VirtualGeometrySelection::use_root_coverage() {
 	RD *rd = RD::get_singleton();
-	const RID program = shader.version_get_shader(version, 0);
+	const RID program = compact_shader.version_get_shader(compact_version, 0);
 	for (uint32_t index = 0; index < used; ++index) {
 		Result &result = results[index];
 		const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { result.batch.geometry.metadata }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { result.batch.geometry.geometry }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { result.batch.stride != 0 ? result.batch.transforms : dummy_transforms }),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { result.work }));
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result.work }));
 		const RD::ComputeListID list = rd->compute_list_begin();
-		rd->compute_list_bind_compute_pipeline(list, pipeline.get_rid());
+		rd->compute_list_bind_compute_pipeline(list, compact_pipeline.get_rid());
 		rd->compute_list_bind_uniform_set(list, uniforms, 0);
-		const uint32_t phase[2] = { 7, 0 };
-		rd->compute_list_set_push_constant(list, phase, sizeof(phase));
+		const uint32_t root_only = 1;
+		rd->compute_list_set_push_constant(list, &root_only, sizeof(root_only));
 		rd->compute_list_dispatch(list, 1, 1, 1);
 		rd->compute_list_end();
 		result.selected_capacity = result.root_capacity;
@@ -219,7 +245,7 @@ uint64_t VirtualGeometrySelection::get_buffer_bytes() const {
 	for (const Result &result : results) {
 		bytes += uint64_t(result.words) * 4 + 268;
 	}
-	return bytes + (dummy_transforms.is_valid() ? 48 : 0);
+	return bytes + uint64_t(scratch_words) * 4 + (dummy_transforms.is_valid() ? 48 : 0);
 }
 
 } // namespace RendererRD

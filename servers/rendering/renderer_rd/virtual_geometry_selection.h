@@ -5,6 +5,7 @@
 #include "core/math/transform_3d.h"
 #include "core/templates/local_vector.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_select_compact.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select_dispatch.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/virtual_geometry_storage.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_work_memory.h"
@@ -67,10 +68,15 @@ private:
 	static constexpr uint32_t MAX_WORK_ITEMS = 1048576;
 	VirtualGeometrySelectShaderRD shader;
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
+	VirtualGeometrySelectCompactShaderRD compact_shader;
 	RID version;
 	RID dispatch_version;
+	RID compact_version;
 	PipelineDeferredRD pipeline;
 	PipelineDeferredRD dispatch_pipeline;
+	PipelineDeferredRD compact_pipeline;
+	RID scratch;
+	uint32_t scratch_words = 0;
 	RID dummy_transforms;
 	LocalVector<Result> results;
 	uint32_t used = 0;

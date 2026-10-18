@@ -18,10 +18,13 @@ void main() {
 		uint parity = phase.round & 1u;
 		work.data[1u - parity] = 0u;
 		count = min(work.data[parity], params.data[14].x);
+	} else if (phase.mode == 8u) {
+		count = max(params.data[13].x * 16u, max(min(work.data[3], params.data[14].y) * 2u, min(work.data[6], params.data[14].z) * 2u));
 	} else {
 		count = min(work.data[2], params.data[14].y);
 	}
-	dispatch.groups[0] = max(1u, (count + 63u) / 64u);
-	dispatch.groups[1] = 1u;
+	uint groups = max(1u, (count + 63u) / 64u);
+	dispatch.groups[0] = min(groups, 65535u);
+	dispatch.groups[1] = max(1u, (groups + 65534u) / 65535u);
 	dispatch.groups[2] = 1u;
 }
