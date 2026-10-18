@@ -15,27 +15,20 @@ void main() {
 	uint instances = params.data[13].x;
 	uvec4 limits = params.data[14];
 	uint fine = 16u + instances * 16u;
-	uint roots = fine + limits.y * 2u;
-	if (phase.root_only != 0u) {
-		if (id == 0u) {
-			result.data[phase.result_word + 4u] |= 1u;
-			result.data[phase.result_word + 7u] = (result.data[phase.result_word + 4u] & 24u) != 0u ? 0u : result.data[phase.result_word + 6u];
-			result.data[phase.result_word + 11u] = roots;
-		}
-		return;
-	}
 	uint source_fine = fine + limits.x * 4u + limits.y * 2u;
 	uint source_roots = source_fine + limits.y * 2u;
+	uint count = phase.root_only != 0u ? ((work.data[4] & 24u) != 0u ? 0u : work.data[6]) : work.data[7];
+	uint selected = phase.root_only != 0u ? source_roots : work.data[11];
 	if (id < 16u) {
-		result.data[phase.result_word + id] = id == 11u ? (work.data[11] == source_roots ? roots : fine) : work.data[id];
+		uint value = work.data[id];
+		if (id == 4u && phase.root_only != 0u) { value |= 1u; }
+		if (id == 7u) { value = count; }
+		result.data[phase.result_word + id] = id == 11u ? fine : value;
 	}
 	if (id < instances * 16u) {
 		result.data[phase.result_word + 16u + id] = work.data[16u + id];
 	}
-	if (id < min(work.data[3], limits.y) * 2u) {
-		result.data[phase.result_word + fine + id] = work.data[source_fine + id];
-	}
-	if (id < min(work.data[6], limits.z) * 2u) {
-		result.data[phase.result_word + roots + id] = work.data[source_roots + id];
+	if (id < min(count, limits.y) * 2u) {
+		result.data[phase.result_word + fine + id] = work.data[selected + id];
 	}
 }

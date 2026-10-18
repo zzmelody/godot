@@ -19,7 +19,10 @@ void main() {
 		work.data[1u - parity] = 0u;
 		count = min(work.data[parity], params.data[14].x);
 	} else if (phase.mode == 8u) {
-		count = max(params.data[13].x * 16u, max(min(work.data[3], params.data[14].y) * 2u, min(work.data[6], params.data[14].z) * 2u));
+		count = max(params.data[13].x * 16u, min(work.data[7], params.data[14].y) * 2u);
+	} else if (phase.mode == 9u) {
+		if (work.data[1u - (phase.round & 1u)] != 0u) { work.data[4] |= 1u; }
+		count = (work.data[4] & 3u) != 0u ? params.data[13].x * params.data[13].w : 0u;
 	} else {
 		count = min(work.data[2], params.data[14].y);
 	}

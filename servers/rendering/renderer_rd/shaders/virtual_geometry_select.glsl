@@ -227,7 +227,8 @@ void main() {
 			select_cluster(work.data[base], work.data[base + 1u], false);
 		}
 	} else if (phase.mode == 5u) {
-		if (id >= params.source.x * params.source.w || (atomicOr(work.data[4], 0u) & 16u) != 0u) { return; }
+		uint flags = atomicOr(work.data[4], 0u);
+		if (id >= params.source.x * params.source.w || (flags & 16u) != 0u || (phase.round == 0u && (flags & 3u) == 0u)) { return; }
 		uint page = id % params.source.w;
 		uint slot = metadata.data[params.offsets.y + page];
 		if (slot == INVALID) { atomicOr(work.data[4], 8u); return; }

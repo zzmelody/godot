@@ -65,6 +65,7 @@ void VirtualGeometrySelection::begin(const Transform3D &p_camera, const Projecti
 }
 
 Error VirtualGeometrySelection::record(bool p_root_only) {
+	used = 0;
 	uint64_t roots_total = 0;
 	uint64_t extra_total = 0;
 	uint64_t instances_total = 0;
@@ -91,7 +92,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
 		const uint64_t desired = p_root_only ? roots : MAX(roots, MIN(uint64_t(FINE_WORK_TARGET), uint64_t(batch.count) * batch.geometry.clusters));
 		const uint64_t extra = extra_total > extra_capacity ? (desired - roots) * extra_capacity / extra_total : desired - roots;
-		result_size += 16 + uint64_t(batch.count) * 16 + (roots + extra) * 2 + roots * 2;
+		result_size += 16 + uint64_t(batch.count) * 16 + (roots + extra) * 2;
 	}
 	if (result_size == 0) {
 		return OK;
@@ -114,7 +115,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 			return error;
 		}
 		if (batch.count != 0) {
-			work_word += 16 + batch.count * 16 + uint32_t(roots + extra) * 2 + uint32_t(roots) * 2;
+			work_word += 16 + batch.count * 16 + uint32_t(roots + extra) * 2;
 		}
 	}
 	return OK;
@@ -250,7 +251,7 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 	RENDER_TIMESTAMP(p_batch.stride == 0 ? "Virtual Geometry Mesh Begin" : "Virtual Geometry MultiMesh Begin");
 	const RD::ComputeListID list = rd->compute_list_begin();
 	auto dispatch = [&](uint32_t p_mode, uint32_t p_round, uint32_t p_count, bool p_indirect = false) {
-		const bool preparing = p_mode == 1 || p_mode == 3 || p_mode == 8;
+		const bool preparing = p_mode == 1 || p_mode == 3 || p_mode == 8 || p_mode == 9;
 		rd->compute_list_bind_compute_pipeline(list, preparing ? prepare : compute);
 		rd->compute_list_bind_uniform_set(list, preparing ? result.dispatch_uniforms : result.selection_uniforms, 0);
 		const uint32_t phase[2] = { p_mode, p_round };
@@ -271,7 +272,14 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 		dispatch(3, 0, 1);
 		dispatch(4, 0, 0, true);
 	}
-	dispatch(5, 0, p_batch.count * p_batch.geometry.root_pages);
+	if (p_root_only) {
+		dispatch(5, 1, p_batch.count * p_batch.geometry.root_pages);
+	} else {
+		// Most views already have a complete fine cut. Build mandatory roots
+		// only when traversal overflow requires them, not for every frame.
+		dispatch(9, p_batch.geometry.hierarchy_depth - 1, 1);
+		dispatch(5, 0, 0, true);
+	}
 	dispatch(p_root_only ? 7 : 6, p_root_only ? 0 : p_batch.geometry.hierarchy_depth - 1, 1);
 	dispatch(8, 0, 1);
 	rd->compute_list_bind_compute_pipeline(list, compact);
@@ -294,31 +302,10 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 	return OK;
 }
 
-void VirtualGeometrySelection::use_root_coverage() {
-	RD *rd = RD::get_singleton();
-	const RID program = compact_shader.version_get_shader(compact_version, 0);
-	for (uint32_t index = 0; index < used; ++index) {
-		Result &result = results[index];
-		// A later batch can grow the shared scratch and invalidate this binding.
-		// Root-only compaction reads the retained result, not scratch contents.
-		if (!rd->uniform_set_is_valid(result.compact_uniforms)) {
-			const Vector<RD::Uniform> uniforms = {
-				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result.work })
-			};
-			result.compact_uniforms = rd->uniform_set_create(uniforms, program, 0);
-		}
-		ERR_FAIL_COND(!rd->uniform_set_is_valid(result.compact_uniforms));
-		const RD::ComputeListID list = rd->compute_list_begin();
-		rd->compute_list_bind_compute_pipeline(list, compact_pipeline.get_rid());
-		rd->compute_list_bind_uniform_set(list, result.compact_uniforms, 0);
-		const uint32_t compact_parameters[2] = { 1, result.work_word };
-		rd->compute_list_set_push_constant(list, compact_parameters, sizeof(compact_parameters));
-		rd->compute_list_dispatch(list, 1, 1, 1);
-		rd->compute_list_end();
-		result.selected_capacity = result.root_capacity;
-	}
+Error VirtualGeometrySelection::use_root_coverage() {
+	// A downstream allocation refusal is rare. Reuse this view's arena and
+	// regenerate the complete root cut instead of retaining it in every result.
+	return record(true);
 }
 
 uint64_t VirtualGeometrySelection::get_buffer_bytes() const {

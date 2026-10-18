@@ -62,7 +62,7 @@ public:
 	// SDFGI captures the complete resident root proxy without requesting fine
 	// pages; its dirty regions do not track ordinary page-residency changes.
 	Error record(bool p_root_only = false);
-	void use_root_coverage();
+	Error use_root_coverage();
 	Span<Result> get_results() const { return Span<Result>(results.ptr(), used); }
 	uint64_t get_buffer_bytes() const;
 	~VirtualGeometrySelection();

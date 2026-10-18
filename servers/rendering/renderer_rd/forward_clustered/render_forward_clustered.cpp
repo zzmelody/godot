@@ -2552,8 +2552,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				Error error = vg_data->virtual_geometry_raster[eye]->record(rb, view, vg_data->virtual_geometry[eye]->get_results(), scene_shader.default_material);
 				if (error == ERR_OUT_OF_MEMORY) {
 					view.history_valid = false;
-					vg_data->virtual_geometry[eye]->use_root_coverage();
-					error = vg_data->virtual_geometry_raster[eye]->record(rb, view, vg_data->virtual_geometry[eye]->get_results(), scene_shader.default_material);
+					error = vg_data->virtual_geometry[eye]->use_root_coverage();
+					if (error == OK) {
+						error = vg_data->virtual_geometry_raster[eye]->record(rb, view, vg_data->virtual_geometry[eye]->get_results(), scene_shader.default_material);
+					}
 				}
 				ERR_FAIL_COND_MSG(error != OK, "Virtual geometry prediction refused: " + itos(error));
 			}
