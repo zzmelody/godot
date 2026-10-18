@@ -68,8 +68,9 @@ constexpr int SOURCE_BYTES = 64 * 1024;
 struct Limits {
 	int memory_mb = 128;
 	int time_ms = 0; // 0 = no execution deadline; a job may opt in with limits.time_ms.
-	int max_vertices = 500000;
-	// No default ceiling: memory_mb, max_vertices and output_mb bound the result.
+	// Vertex and instance limits are opt-in; keep the signed array range safe.
+	int max_vertices = std::numeric_limits<int>::max();
+	// No default ceiling: memory_mb, input_mb and output_mb bound the result.
 	// A job may still opt in with limits.max_instances.
 	int max_instances = std::numeric_limits<int>::max();
 	// Fine spatial batches retain one scene handle per nonempty cell.
@@ -361,14 +362,19 @@ struct Recipe {
 		return int(count);
 	}
 	int count_vertices(Node *p_node) {
-		int count = 0;
-		if (const auto *instance = Object::cast_to<MeshInstance3D>(p_node)) { count += account_mesh(instance->get_mesh()); }
-		if (const auto *instance = Object::cast_to<MultiMeshInstance3D>(p_node); instance && instance->get_multimesh().is_valid()) { count += account_mesh(instance->get_multimesh()->get_mesh()); }
+		uint64_t count = 0;
+		if (const auto *instance = Object::cast_to<MeshInstance3D>(p_node)) {
+			count += account_mesh(instance->get_mesh());
+		}
+		if (const auto *instance = Object::cast_to<MultiMeshInstance3D>(p_node); instance && instance->get_multimesh().is_valid()) {
+			count += account_mesh(instance->get_multimesh()->get_mesh());
+		}
+		require(count <= uint64_t(limits.max_vertices - vertices), "scene vertex budget exceeded");
 		for (int child = 0; child < p_node->get_child_count(); ++child) {
 			count += count_vertices(p_node->get_child(child));
-			require(count <= limits.max_vertices - vertices, "scene vertex budget exceeded");
+			require(count <= uint64_t(limits.max_vertices - vertices), "scene vertex budget exceeded");
 		}
-		return count;
+		return int(count);
 	}
 	static void collect_bounds(Node *p_node, const Transform3D &p_parent, AABB &r_bounds, bool &r_has_bounds) {
 		Transform3D transform = p_parent;
@@ -1225,9 +1231,11 @@ struct Recipe {
 		for (int i = 0; i < count; ++i) { lua_rawgeti(p_state, -1, i + 1); vertices.set(i, s.vector(-1)); lua_pop(p_state, 1); }
 		lua_pop(p_state, 1);
 		s.field(1, "indices");
-		int index_count = s.array(-1, 6 * s.limits.max_vertices);
+		const int max_indices = int(std::min(int64_t(s.limits.max_vertices) * 6, int64_t(std::numeric_limits<int>::max())));
+		int index_count = s.array(-1, max_indices);
 		s.require(index_count >= 3 && index_count % 3 == 0, "indices must contain complete triangles");
-		PackedInt32Array indices; indices.resize(index_count);
+		PackedInt32Array indices;
+		indices.resize(index_count);
 		for (int i = 0; i < index_count; ++i) {
 			lua_rawgeti(p_state, -1, i + 1); double index = s.number(-1, 1, count);
 			s.require(index == std::floor(index), "mesh indices must be 1-based integers");

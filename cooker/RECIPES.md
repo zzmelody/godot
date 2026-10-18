@@ -301,17 +301,18 @@ default deadline (v6, 2026-10-04); a job may set one (1..86,400,000 ms):
 
 | Key | Default |
 | --- | --- |
-| `memory_mb` | 32 MiB VM allocator memory |
+| `memory_mb` | 128 MiB VM allocator memory |
 | `time_ms` | none (opt-in execution deadline) |
-| `max_resources` | 256 handles |
-| `input_mb` | 256 MiB declared input dependency bytes |
-| `max_vertices` | 500000 mesh vertices across requested handles |
+| `max_resources` | 1024 handles |
+| `input_mb` | 1024 MiB declared input dependency bytes |
+| `max_vertices` | No default policy cap; signed 32-bit array range |
 | `max_instances` | none (opt-in cap on scene instance declarations) |
-| `output_mb` | 64 MiB serialized output |
+| `output_mb` | 128 MiB serialized output |
 
-Index arrays are limited to `6 * max_vertices`. Repeated input requests consume
-handle/vertex budget again. The vertex budget is not an expanded draw-vertex
-budget: repeated instances use MultiMesh.
+Jobs may set `max_vertices` to constrain mesh vertices across requested handles.
+Index arrays are limited to `min(6 * max_vertices, INT_MAX)`. Each input request
+consumes a handle; shared Mesh resources are counted once per recipe. The vertex
+budget is not an expanded draw-vertex budget: repeated instances use MultiMesh.
 
 Only base/table/string/math/bit32/utf8 are opened. No os/io/debug/coroutine/require,
 network, dynamic code loading, environment manipulation, print, GC controls or
