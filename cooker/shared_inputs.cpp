@@ -110,11 +110,12 @@ Error Batch::Store(const String& path, const HashSet<String>& files,
     prepared.types.emplace(file, ResourceLoader::get_resource_type(file));
     prepared.bytes.emplace(file, bytes);
   }
-  // Reload under the file leases. Preserve canonical resource paths while
-  // replacing weak ResourceLoader entries read before the leases existed.
+  // Reload fresh objects under the leases. The binary loader preserves path
+  // identities in IGNORE mode. REPLACE would reset live MultiMesh properties
+  // in serialization order while their instance count is still nonzero.
   Error error = OK;
   prepared.resource = ResourceLoader::load(
-      path, "", ResourceFormatLoader::CACHE_MODE_REPLACE_DEEP, &error);
+      path, "", ResourceFormatLoader::CACHE_MODE_IGNORE_DEEP, &error);
   ERR_FAIL_COND_V(error != OK || prepared.resource.is_null(),
                   error == OK ? ERR_FILE_CANT_READ : error);
   const auto stored = current_->inputs_.emplace(Key(path), std::move(prepared));

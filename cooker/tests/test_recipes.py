@@ -77,6 +77,8 @@ class RecipeTests(unittest.TestCase):
         result = json.loads(lines[-1])
         self.assertEqual(result["ok"], success, result)
         self.assertEqual(run.returncode == 0, success, run.stdout + run.stderr)
+        if success:
+            self.assertNotIn("ERROR:", run.stdout + run.stderr)
         return result
 
     def test_capabilities_and_no_external_runtime(self):
@@ -173,8 +175,12 @@ output="res://assets/runtime/model/cells/marker.res"}}
         self.assertTrue(result["steps"][0]["ok"])
 
     def test_shared_recipe_inputs_keep_one_validated_resource_per_batch(self):
-        source = "res://assets/runtime/model/shared-input/model.res"
-        self.recipe(output=source)
+        source = "res://assets/runtime/model/shared-input/model.scn"
+        self.recipe('''local mesh = cooker.primitive("box", {size={2,3,4}})
+return cooker.scene({
+ {asset=mesh, color={0.8,0.2,0.1,1}, custom_data={1,0,0,0}},
+ {asset=mesh, position={3,0,0}, color={0.1,0.8,0.2,1}, custom_data={0,1,0,0}},
+})''', output=source)
         (self.project / "view.luau").write_text('''local mesh = cooker.input("model")
 return cooker.scene({{asset=mesh,position={cooker.parameters.x,0,0}}})
 ''')
@@ -182,7 +188,7 @@ return cooker.scene({{asset=mesh,position={cooker.parameters.x,0,0}}})
 for x = 1, 3 do
   table.insert(steps, {operation="run-recipe",source="res://view.luau",
     output="res://assets/runtime/world/shared-views/cell_"..x..".scn",
-    inputs={model="res://assets/runtime/model/shared-input/model.res"},
+    inputs={model="res://assets/runtime/model/shared-input/model.scn"},
     parameters={x=x}})
 end
 return steps
