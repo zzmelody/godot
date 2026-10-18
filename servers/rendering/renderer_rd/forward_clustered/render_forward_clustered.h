@@ -507,6 +507,8 @@ private:
 	bool _virtual_geometry_batch(RenderGeometryInstance *p_instance, RendererRD::VirtualGeometrySelection::Batch &r_batch) const;
 	RendererRD::VirtualGeometrySelection *virtual_geometry_aux_selection = nullptr;
 	RendererRD::VirtualGeometryRasterizer *virtual_geometry_aux_raster = nullptr;
+	RendererRD::VirtualGeometrySelection *virtual_geometry_sdfgi_selection = nullptr;
+	RendererRD::VirtualGeometryRasterizer *virtual_geometry_sdfgi_raster = nullptr;
 	struct VirtualGeometryColorWork {
 		RID program;
 		RID pipeline;

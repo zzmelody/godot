@@ -3717,9 +3717,9 @@ void RenderForwardClustered::_render_sdfgi(Ref<RenderSceneBuffersRD> p_render_bu
 			virtual_batches.push_back(batch);
 		}
 	}
-	if (!virtual_batches.is_empty() && virtual_geometry_aux_selection == nullptr) {
-		virtual_geometry_aux_selection = memnew(RendererRD::VirtualGeometrySelection);
-		virtual_geometry_aux_raster = memnew(RendererRD::VirtualGeometryRasterizer);
+	if (!virtual_batches.is_empty() && virtual_geometry_sdfgi_selection == nullptr) {
+		virtual_geometry_sdfgi_selection = memnew(RendererRD::VirtualGeometrySelection);
+		virtual_geometry_sdfgi_raster = memnew(RendererRD::VirtualGeometryRasterizer);
 	}
 
 	Vector3 half_size = p_bounds.size * 0.5;
@@ -3777,28 +3777,48 @@ void RenderForwardClustered::_render_sdfgi(Ref<RenderSceneBuffersRD> p_render_bu
 		RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), true, pass_mode, 0, true, false, rp_uniform_set, false);
 		_render_list_with_draw_list(&render_list_params, E->value);
 		if (!virtual_batches.is_empty()) {
-			virtual_geometry_aux_selection->begin(scene_data.cam_transform, scene_data.cam_projection, scene_data.flip_y, fb_size);
-			for (const auto &batch : virtual_batches) {
-				// SDFGI uses the stable complete root proxy. Page residency changes
-				// cannot leave a dirty region waiting for a later camera recapture.
-				virtual_geometry_aux_selection->add_batch(batch);
-			}
-			Error error = virtual_geometry_aux_selection->record(true);
-			if (error == OK) {
-				RendererRD::VirtualGeometryShading::ViewParameters view;
-				Projection correction;
-				correction.set_depth_correction(scene_data.flip_y);
-				view.projection = correction * scene_data.cam_projection;
-				view.camera = scene_data.cam_transform;
-				view.main_camera = scene_data.cam_transform;
-				view.time = time;
-				view.exposure = p_exposure_normalization;
-				view.layers = UINT32_MAX;
-				error = virtual_geometry_aux_raster->record_sdfgi(fb_size, view, virtual_geometry_aux_selection->get_results(), scene_shader.default_material,
-						p_bounds, p_from, p_size, p_albedo_texture, p_emission_texture, p_emission_aniso_texture, p_geom_facing_texture);
-			}
-			if (error != OK) {
-				ERR_PRINT("Virtual geometry SDFGI capture refused: " + itos(error));
+			RendererRD::VirtualGeometryShading::ViewParameters view;
+			Projection correction;
+			correction.set_depth_correction(scene_data.flip_y);
+			view.projection = correction * scene_data.cam_projection;
+			view.camera = scene_data.cam_transform;
+			view.main_camera = scene_data.cam_transform;
+			view.time = time;
+			view.exposure = p_exposure_normalization;
+			view.layers = UINT32_MAX;
+			uint32_t next_batch = 0;
+			while (next_batch < virtual_batches.size()) {
+				virtual_geometry_sdfgi_selection->begin(scene_data.cam_transform, scene_data.cam_projection, scene_data.flip_y, fb_size);
+				uint64_t instances = 0;
+				uint64_t roots = 0;
+				uint32_t count = 0;
+				while (next_batch < virtual_batches.size()) {
+					const auto &batch = virtual_batches[next_batch];
+					const uint64_t batch_roots = uint64_t(batch.count) * batch.geometry.root_clusters;
+					// Voxel writes accumulate directly into the existing GI images.
+					// Keep all source instances intact, but do not retain a whole
+					// region's selection and scene tables at once. A single large
+					// source still uses the existing per-batch admission contract.
+					if (count != 0 && (count == 128 || instances + batch.count > 65536 || roots + batch_roots > 262144)) {
+						break;
+					}
+					virtual_geometry_sdfgi_selection->add_batch(batch);
+					instances += batch.count;
+					roots += batch_roots;
+					++count;
+					++next_batch;
+				}
+				// Every window uses the stable complete root proxy. Residency
+				// changes cannot leave a dirty region waiting for recapture.
+				Error error = virtual_geometry_sdfgi_selection->record(true);
+				if (error == OK) {
+					error = virtual_geometry_sdfgi_raster->record_sdfgi(fb_size, view, virtual_geometry_sdfgi_selection->get_results(), scene_shader.default_material,
+							p_bounds, p_from, p_size, p_albedo_texture, p_emission_texture, p_emission_aniso_texture, p_geom_facing_texture);
+				}
+				if (error != OK) {
+					ERR_PRINT("Virtual geometry SDFGI capture refused: " + itos(error));
+					break;
+				}
 			}
 		}
 	}
@@ -5892,6 +5912,12 @@ RenderForwardClustered::RenderForwardClustered() {
 }
 
 RenderForwardClustered::~RenderForwardClustered() {
+	if (virtual_geometry_sdfgi_raster != nullptr) {
+		memdelete(virtual_geometry_sdfgi_raster);
+	}
+	if (virtual_geometry_sdfgi_selection != nullptr) {
+		memdelete(virtual_geometry_sdfgi_selection);
+	}
 	if (virtual_geometry_aux_raster != nullptr) {
 		memdelete(virtual_geometry_aux_raster);
 	}
