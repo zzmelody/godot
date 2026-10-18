@@ -1848,7 +1848,6 @@ struct Recipe {
 			s.require(!child_name.is_empty() && child_name.length() <= 96 && !child_name.contains("/") && !child_name.contains(".."), "parts child must be a bounded direct child name");
 			auto found = s.part_roots.find(packed->get_instance_id());
 			if (found == s.part_roots.end()) {
-				s.require(s.part_roots.size() < 64, "parts scene cache exceeds 64 inputs");
 				found = s.part_roots.emplace(packed->get_instance_id(), OwnedNode(packed->instantiate())).first;
 			}
 			s.require(found->second != nullptr, "could not instantiate PackedScene for parts");
