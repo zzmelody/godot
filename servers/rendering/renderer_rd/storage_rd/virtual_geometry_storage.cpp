@@ -419,6 +419,12 @@ Error VirtualGeometryStorage::_grow_pool(uint64_t p_bytes) {
 	if (p_bytes > UINT32_MAX || p_bytes % UNIT_BYTES != 0) {
 		return ERR_OUT_OF_MEMORY;
 	}
+	const uint64_t slot_bytes = (p_bytes - pool_bytes) / UNIT_BYTES;
+	const uint64_t retiring_pool = pool.is_valid() ? pool_bytes : 0;
+	if (slot_bytes > _available(metadata_budget, metadata_reserved) ||
+			retiring_pool > _available(work_budget, work_reserved)) {
+		return ERR_OUT_OF_MEMORY;
+	}
 	RD *rd = RD::get_singleton();
 	const RID candidate = rd->storage_buffer_create(p_bytes);
 	if (candidate.is_null()) {
@@ -467,13 +473,17 @@ Error VirtualGeometryStorage::set_budget(uint64_t p_pool_bytes, uint64_t p_metad
 	if (bookkeeping + (target - pool_bytes) / UNIT_BYTES > _available(p_metadata_bytes, metadata_reserved)) {
 		return ERR_OUT_OF_MEMORY;
 	}
+	const uint64_t previous_metadata_budget = metadata_budget;
+	const uint64_t previous_work_budget = work_budget;
+	metadata_budget = p_metadata_bytes;
+	work_budget = p_work_bytes;
 	const Error grown = _grow_pool(target);
 	if (grown != OK) {
+		metadata_budget = previous_metadata_budget;
+		work_budget = previous_work_budget;
 		return grown;
 	}
 	automatic_pool = p_pool_bytes == 0;
-	metadata_budget = p_metadata_bytes;
-	work_budget = p_work_bytes;
 	metadata_reserved += bookkeeping;
 	_publish_feedback();
 	return OK;

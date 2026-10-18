@@ -229,7 +229,8 @@ private:
 	uint32_t _allocate(uint32_t p_units);
 	Error _grow_pool(uint64_t p_bytes);
 	static uint64_t _available(uint64_t p_budget, uint64_t p_reserved) {
-		return (p_budget == 0 ? UINT64_MAX : p_budget) - p_reserved;
+		const uint64_t limit = p_budget == 0 ? UINT64_MAX : p_budget;
+		return p_reserved < limit ? limit - p_reserved : 0;
 	}
 	void _free_source(Page *p_page);
 	void _consume_requests();
