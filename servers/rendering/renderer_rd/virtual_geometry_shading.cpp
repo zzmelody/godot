@@ -265,7 +265,7 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
 		uint32_t push[20] = { sources[index].first, sources[index].map, uint32_t(source.batch.has_color), uint32_t(source.batch.has_custom), uint32_t(source.batch.shader_uniforms_offset), source.batch.layer_mask,
-			sources[index].visible_base, source.selected_capacity, sources[index].material_slots, source.batch.render_flags, source.batch.gi_offset, 0 };
+			sources[index].visible_base, source.selected_capacity, sources[index].material_slots, source.batch.render_flags, source.batch.gi_offset, source.work_word };
 		const Rect2 &uv = source.batch.lightmap_uv_scale;
 		const float lightmap_uv[4] = { uv.position.x, uv.position.y, uv.size.x, uv.size.y };
 		memcpy(push + 12, lightmap_uv, sizeof(lightmap_uv));

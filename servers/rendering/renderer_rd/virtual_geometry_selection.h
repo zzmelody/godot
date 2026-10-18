@@ -46,13 +46,13 @@ public:
 	};
 	struct Result {
 		Batch batch;
+		// Borrowed view arena; this result's header begins at work_word.
 		RID work;
 		RID parameters;
-		RID dispatch;
 		RID selection_uniforms;
 		RID dispatch_uniforms;
 		RID compact_uniforms;
-		uint32_t words = 0;
+		uint32_t work_word = 0;
 		uint32_t selected_capacity = 0;
 		uint32_t root_capacity = 0;
 	};
@@ -69,7 +69,7 @@ public:
 
 private:
 	VirtualGeometryWorkMemory memory;
-	Error _record(const Batch &p_batch, uint32_t p_cluster_capacity, bool p_root_only);
+	Error _record(const Batch &p_batch, uint32_t p_cluster_capacity, uint32_t p_work_word, bool p_root_only);
 	static constexpr uint32_t MAX_WORK_ITEMS = 1048576;
 	VirtualGeometrySelectShaderRD shader;
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
@@ -82,6 +82,9 @@ private:
 	PipelineDeferredRD compact_pipeline;
 	RID scratch;
 	uint32_t scratch_words = 0;
+	RID result_buffer;
+	uint32_t result_words = 0;
+	RID dispatch_buffer;
 	RID dummy_transforms;
 	LocalVector<Result> results;
 	LocalVector<Batch> batches;

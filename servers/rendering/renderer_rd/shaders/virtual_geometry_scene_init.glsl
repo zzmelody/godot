@@ -39,13 +39,13 @@ layout(push_constant, std430) uniform SourceParameters {
 	uint material_slots;
 	uint render_flags;
 	uint gi_offset;
-	uint reserved;
+	uint work_word;
 	vec4 lightmap_uv_scale;
 	uvec4 identity;
 } source_info;
 
 void vg_initialize_source(uint instance) {
-	if (instance >= params.source.x || (work.data[4] & 16u) != 0u) { return; }
+	if (instance >= params.source.x || (work.data[source_info.work_word + 4u] & 16u) != 0u) { return; }
 	mat4 local = mat4(1.0);
 	vec4 color = vec4(1.0);
 	vec4 custom = vec4(0.0);
@@ -73,12 +73,12 @@ void vg_initialize_source(uint instance) {
 	for (uint row = 0u; row < 3u; ++row) {
 		for (uint column = 0u; column < 4u; ++column) {
 			scene.data[output_word + row * 4u + column] = floatBitsToUint(world_rows[row][column]);
-			scene.data[output_word + 12u + row * 4u + column] = work.data[16u + instance * 16u + row * 4u + column];
+			scene.data[output_word + 12u + row * 4u + column] = work.data[source_info.work_word + 16u + instance * 16u + row * 4u + column];
 			scene.data[output_word + 24u + row * 4u + column] = column < 3u ? floatBitsToUint(normal_rows[row][column]) : 0u;
 		}
 	}
 	// Reuse selection's determinant sign; normal-matrix XYZ ignores padding.
-	scene.data[output_word + 35u] = work.data[16u + instance * 16u + 14u];
+	scene.data[output_word + 35u] = work.data[source_info.work_word + 16u + instance * 16u + 14u];
 	for (uint channel = 0u; channel < 4u; ++channel) {
 		scene.data[output_word + 36u + channel] = floatBitsToUint(color[channel]);
 		scene.data[output_word + 40u + channel] = floatBitsToUint(custom[channel]);
@@ -88,8 +88,8 @@ void vg_initialize_source(uint instance) {
 	scene.data[output_word + 46u] = source_info.layers;
 	scene.data[output_word + 47u] = source_info.material_map;
 	scene.data[output_word + 48u] = params.offsets.w;
-	scene.data[output_word + 49u] = work.data[16u + instance * 16u + 12u];
-	scene.data[output_word + 50u] = work.data[16u + instance * 16u + 13u];
+	scene.data[output_word + 49u] = work.data[source_info.work_word + 16u + instance * 16u + 12u];
+	scene.data[output_word + 50u] = work.data[source_info.work_word + 16u + instance * 16u + 13u];
 	scene.data[output_word + 51u] = 0u;
 	scene.data[output_word + 52u] = source_info.material_slots;
 	scene.data[output_word + 53u] = source_info.render_flags;
@@ -120,8 +120,8 @@ void main() {
 	vg_initialize_source(index);
 	if (index < source_info.visible_capacity) {
 		uint word = scene.data[1] + (source_info.visible_base + index) * 2u;
-		if ((work.data[4] & 16u) == 0u && index < min(work.data[7], source_info.visible_capacity)) {
-			uint selected = work.data[11] + index * 2u;
+		if ((work.data[source_info.work_word + 4u] & 16u) == 0u && index < min(work.data[source_info.work_word + 7u], source_info.visible_capacity)) {
+			uint selected = source_info.work_word + work.data[source_info.work_word + 11u] + index * 2u;
 			scene.data[word] = source_info.first + work.data[selected];
 			scene.data[word + 1u] = work.data[selected + 1u];
 		} else {

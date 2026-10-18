@@ -15,14 +15,13 @@ VirtualGeometrySelection::~VirtualGeometrySelection() {
 				RD::get_singleton()->free_rid(uniforms);
 			}
 		}
-		if (result.work.is_valid()) {
-			memory.free(result.work);
-		}
 		if (result.parameters.is_valid()) {
 			memory.free(result.parameters);
 		}
-		if (result.dispatch.is_valid()) {
-			memory.free(result.dispatch);
+	}
+	for (RID buffer : { result_buffer, dispatch_buffer }) {
+		if (buffer.is_valid()) {
+			memory.free(buffer);
 		}
 	}
 	if (dummy_transforms.is_valid()) {
@@ -84,21 +83,44 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	// Reserve complete roots first. The view shares the remaining fine-output
 	// capacity instead of reserving a full maximum for every source batch.
 	const uint64_t extra_capacity = roots_total < MAX_WORK_ITEMS ? MAX_WORK_ITEMS - roots_total : 0;
+	uint64_t result_size = 0;
+	for (const Batch &batch : batches) {
+		if (batch.count == 0) {
+			continue;
+		}
+		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
+		const uint64_t desired = p_root_only ? roots : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(batch.count) * batch.geometry.clusters);
+		const uint64_t extra = extra_total > extra_capacity ? (desired - roots) * extra_capacity / extra_total : desired - roots;
+		result_size += 16 + uint64_t(batch.count) * 16 + (roots + extra) * 2 + roots * 2;
+	}
+	if (result_size == 0) {
+		return OK;
+	}
+	// A single view allocation follows this view's aggregate requirement.
+	// Per-slot high-water capacities otherwise accumulate as source order changes.
+	const Error arena_error = memory.ensure(result_buffer, result_words, result_size);
+	if (arena_error != OK) {
+		return arena_error;
+	}
+	uint32_t work_word = 0;
 	for (const Batch &batch : batches) {
 		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
 		const uint64_t desired = p_root_only ? roots : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(batch.count) * batch.geometry.clusters);
 		const uint64_t extra = extra_total > extra_capacity ? (desired - roots) * extra_capacity / extra_total : desired - roots;
-		const Error error = _record(batch, uint32_t(roots + extra), p_root_only);
+		const Error error = _record(batch, uint32_t(roots + extra), work_word, p_root_only);
 		if (error != OK) {
 			WARN_PRINT_ONCE(vformat("Virtual geometry selection view refused: batches=%s instances=%s roots=%s batch_index=%s batch_instances=%s selected_capacity=%s retained_bytes=%s root_only=%s.", batches.size(), instances_total, roots_total, used, batch.count, roots + extra, get_buffer_bytes(), p_root_only));
 			used = 0;
 			return error;
 		}
+		if (batch.count != 0) {
+			work_word += 16 + batch.count * 16 + uint32_t(roots + extra) * 2 + uint32_t(roots) * 2;
+		}
 	}
 	return OK;
 }
 
-Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster_capacity, bool p_root_only) {
+Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster_capacity, uint32_t p_work_word, bool p_root_only) {
 	if (p_batch.count == 0) {
 		return OK;
 	}
@@ -114,7 +136,6 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 	const uint32_t nodes = p_root_only ? 0 : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.nodes);
 	const uint32_t clusters = p_cluster_capacity;
 	const uint32_t requests = p_root_only ? 0 : MIN(uint64_t(65536), uint64_t(p_batch.count) * p_batch.geometry.pages);
-	const uint32_t words = 16 + p_batch.count * 16 + clusters * 2 + roots * 2;
 	const uint32_t work_words = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2 + requests * 2 + 128 * 2;
 	RD *rd = RD::get_singleton();
 	if (version.is_null()) {
@@ -148,17 +169,15 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 		results.push_back(Result());
 	}
 	Result &result = results[used];
-	const Error result_error = memory.ensure(result.work, result.words, words);
-	if (result_error != OK) {
-		return result_error;
-	}
+	result.work = result_buffer;
+	result.work_word = p_work_word;
 	if (result.parameters.is_null()) {
 		result.parameters = memory.uniform(256);
 	}
-	if (result.dispatch.is_null()) {
-		result.dispatch = memory.storage(12, RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
+	if (dispatch_buffer.is_null()) {
+		dispatch_buffer = memory.storage(12, RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
 	}
-	ERR_FAIL_COND_V(result.work.is_null() || result.parameters.is_null() || result.dispatch.is_null(), ERR_CANT_CREATE);
+	ERR_FAIL_COND_V(result.work.is_null() || result.parameters.is_null() || dispatch_buffer.is_null(), ERR_CANT_CREATE);
 	struct Parameters {
 		float model[16];
 		float view[16];
@@ -214,7 +233,7 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 		const Vector<RD::Uniform> uniforms = {
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { result.dispatch })
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { dispatch_buffer })
 		};
 		result.dispatch_uniforms = rd->uniform_set_create(uniforms, dispatch_program, 0);
 	}
@@ -237,7 +256,7 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 		const uint32_t phase[2] = { p_mode, p_round };
 		rd->compute_list_set_push_constant(list, phase, sizeof(phase));
 		if (p_indirect) {
-			rd->compute_list_dispatch_indirect(list, result.dispatch, 0);
+			rd->compute_list_dispatch_indirect(list, dispatch_buffer, 0);
 		} else {
 			rd->compute_list_dispatch(list, MAX(1u, (p_count + 63) / 64), 1, 1);
 		}
@@ -257,9 +276,9 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 	dispatch(8, 0, 1);
 	rd->compute_list_bind_compute_pipeline(list, compact);
 	rd->compute_list_bind_uniform_set(list, result.compact_uniforms, 0);
-	const uint32_t root_only = 0;
-	rd->compute_list_set_push_constant(list, &root_only, sizeof(root_only));
-	rd->compute_list_dispatch_indirect(list, result.dispatch, 0);
+	const uint32_t compact_parameters[2] = { 0, result.work_word };
+	rd->compute_list_set_push_constant(list, compact_parameters, sizeof(compact_parameters));
+	rd->compute_list_dispatch_indirect(list, dispatch_buffer, 0);
 	rd->compute_list_end();
 	const uint32_t request_word = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2;
 	const Error feedback_error = p_root_only ? OK : MeshStorage::get_singleton()->record_virtual_geometry_requests(p_batch.mesh, p_batch.geometry.generation, scratch, request_word, requests);
@@ -294,8 +313,8 @@ void VirtualGeometrySelection::use_root_coverage() {
 		const RD::ComputeListID list = rd->compute_list_begin();
 		rd->compute_list_bind_compute_pipeline(list, compact_pipeline.get_rid());
 		rd->compute_list_bind_uniform_set(list, result.compact_uniforms, 0);
-		const uint32_t root_only = 1;
-		rd->compute_list_set_push_constant(list, &root_only, sizeof(root_only));
+		const uint32_t compact_parameters[2] = { 1, result.work_word };
+		rd->compute_list_set_push_constant(list, compact_parameters, sizeof(compact_parameters));
 		rd->compute_list_dispatch(list, 1, 1, 1);
 		rd->compute_list_end();
 		result.selected_capacity = result.root_capacity;
@@ -305,9 +324,10 @@ void VirtualGeometrySelection::use_root_coverage() {
 uint64_t VirtualGeometrySelection::get_buffer_bytes() const {
 	uint64_t bytes = 0;
 	for (const Result &result : results) {
-		bytes += (result.work.is_valid() ? uint64_t(result.words) * 4 : 0) + (result.parameters.is_valid() ? 256 : 0) + (result.dispatch.is_valid() ? 12 : 0);
+		bytes += result.parameters.is_valid() ? 256 : 0;
 	}
-	return bytes + (scratch.is_valid() ? uint64_t(scratch_words) * 4 : 0) + (dummy_transforms.is_valid() ? 48 : 0);
+	return bytes + (result_buffer.is_valid() ? uint64_t(result_words) * 4 : 0) + (scratch.is_valid() ? uint64_t(scratch_words) * 4 : 0) +
+			(dispatch_buffer.is_valid() ? 12 : 0) + (dummy_transforms.is_valid() ? 48 : 0);
 }
 
 } // namespace RendererRD
