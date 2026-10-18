@@ -24,6 +24,34 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 	// even if another process atomically replaces the source path during a job.
 	Vector<uint8_t> snapshot;
 	String digest;
+	auto hash_open_file = [&](String &r_digest) -> Error {
+		if (file->get_length() != p_mesh->get_container_bytes()) {
+			return ERR_FILE_CORRUPT;
+		}
+		file->seek(0);
+		CryptoCore::SHA256Context hash;
+		if (hash.start() != OK) {
+			return FAILED;
+		}
+		std::array<uint8_t, 64 * 1024> block;
+		uint64_t remaining = p_mesh->get_container_bytes();
+		while (remaining != 0) {
+			const uint32_t count = uint32_t(MIN(remaining, uint64_t(block.size())));
+			if (file->get_buffer(block.data(), count) != count) {
+				return ERR_FILE_CANT_READ;
+			}
+			if (hash.update(block.data(), count) != OK) {
+				return FAILED;
+			}
+			remaining -= count;
+		}
+		std::array<uint8_t, 32> bytes;
+		if (hash.finish(bytes.data()) != OK) {
+			return FAILED;
+		}
+		r_digest = String::hex_encode_buffer(bytes.data(), bytes.size());
+		return OK;
+	};
 	if (file->get_length() <= 16 * 1024 * 1024) {
 		snapshot = file->get_buffer(file->get_length());
 		ERR_FAIL_COND_V(uint64_t(snapshot.size()) != p_mesh->get_container_bytes(), ERR_FILE_CANT_READ);
@@ -32,7 +60,10 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 		ERR_FAIL_COND_V(container_hash.start() != OK || container_hash.update(snapshot.ptr(), snapshot.size()) != OK || container_hash.finish(hash.data()) != OK, FAILED);
 		digest = String::hex_encode_buffer(hash.data(), hash.size());
 	} else {
-		digest = FileAccess::get_sha256(path);
+		// Keep the same open file through hashing and page validation. A path
+		// reopened for hashing could refer to a concurrent atomic replacement.
+		error = hash_open_file(digest);
+		ERR_FAIL_COND_V(error != OK, error);
 	}
 	ERR_FAIL_COND_V(digest.length() != 64, ERR_INVALID_DATA);
 	ERR_FAIL_COND_V(p_mesh->get_container_file().begins_with("geometry--") && p_mesh->get_container_file() != "geometry--" + digest + ".vgp", ERR_INVALID_DATA);
@@ -47,7 +78,7 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 	CryptoCore::SHA256Context root_hash;
 	ERR_FAIL_COND_V(root_hash.start() != OK || root_hash.update(root.ptr(), root.size()) != OK || root_hash.finish(validation_key.data() + 64) != OK, FAILED);
 	static std::set<std::array<uint8_t, 96>> validated;
-	if (!snapshot.is_empty() && validated.count(validation_key) != 0) {
+	if (validated.count(validation_key) != 0) {
 		return OK;
 	}
 	const auto &model = p_mesh->get_model();
@@ -69,15 +100,19 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 		std::vector<uint8_t> gpu;
 		ERR_FAIL_COND_V(vg::transcode_geometry_page_cpu(page_bytes, location.fixup_offset, gpu).error != vg::PageCodecError::OK || gpu.size() != location.gpu_bytes, ERR_INVALID_DATA);
 	}
-	if (!snapshot.is_empty()) {
-		try {
-			if (validated.size() == 256) {
-				validated.clear();
-			}
-			validated.insert(validation_key);
-		} catch (const std::bad_alloc &) {
-			// Validation completed. Failure to remember it only loses reuse.
+	if (snapshot.is_empty()) {
+		String checked_digest;
+		error = hash_open_file(checked_digest);
+		ERR_FAIL_COND_V(error != OK, error);
+		ERR_FAIL_COND_V_MSG(checked_digest != digest, ERR_FILE_CORRUPT, "Geometry container changed during validation.");
+	}
+	try {
+		if (validated.size() == 256) {
+			validated.clear();
 		}
+		validated.insert(validation_key);
+	} catch (const std::bad_alloc &) {
+		// Validation completed. Failure to remember it only loses reuse.
 	}
 	return OK;
 }
