@@ -1,4 +1,5 @@
 #include "virtual_geometry_mesh.h"
+#include "content_hash.h"
 
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
@@ -447,12 +448,13 @@ Error publish_container(const BuildOutput &p_output, const String &p_resource_pa
 		return error == OK ? ERR_ALREADY_EXISTS : error;
 	}
 	unsigned char hash[32];
-	if (CryptoCore::sha256(p_output.container.data(), p_output.container.size(), hash) != OK) {
+	cooker_hash::Sha256 container_hash;
+	if (container_hash.Start() != OK || container_hash.Update(p_output.container.data(), p_output.container.size()) != OK || container_hash.Finish(hash) != OK) {
 		return ERR_CANT_CREATE;
 	}
 	const String expected_hash = String::hex_encode_buffer(hash, sizeof(hash));
 	if (CookerAtomicSave::occupied(path)) {
-		if (FileAccess::get_sha256(path) != expected_hash) {
+		if (cooker_hash::HashFile(path) != expected_hash) {
 			return ERR_ALREADY_EXISTS;
 		}
 	} else {

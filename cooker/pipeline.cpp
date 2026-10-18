@@ -29,7 +29,6 @@ constexpr const char *LUAU_COMMIT = "c54f558b4d5748ab0658610b8ce0c432053e41eb";
 constexpr int SOURCE_BYTES = 256 * 1024;
 constexpr int MEMORY_BYTES = 16 * 1024 * 1024;
 constexpr int TIME_MS = 1000;
-constexpr int MAX_STEPS = 256;
 constexpr int MAX_DEPTH = 16;
 constexpr int MAX_ENTRIES = 65536;
 constexpr int MAX_MODULES = 12;
@@ -128,7 +127,9 @@ struct Pipeline {
 
 
 	bool collect_manifests(const String &path, Array &steps, int depth) {
-		if (depth > 16 || steps.size() > MAX_STEPS) return fail("manifest inventory limit exceeded");
+		if (depth > 16) {
+			return fail("manifest inventory depth exceeded");
+		}
 		Ref<DirAccess> directory = DirAccess::open(path);
 		if (directory.is_null()) return fail("manifest inventory directory missing");
 		for (const String &name : directory->get_files()) {
@@ -184,7 +185,9 @@ struct Pipeline {
 	}
 
 	bool collect_sources(const String &source, const String &output, Array &steps, int depth) {
-		if (depth > 16 || steps.size() > MAX_STEPS) return fail("source inventory limit exceeded");
+		if (depth > 16) {
+			return fail("source inventory depth exceeded");
+		}
 		Ref<DirAccess> directory = DirAccess::open(source);
 		if (directory.is_null()) return fail("source inventory directory missing: " + source);
 		for (const String &name : directory->get_files()) {
@@ -298,7 +301,9 @@ struct Pipeline {
 		}
 		Variant layout;
 		if (!value(-1,layout)) return false;
-		if(kind=="steps" && (layout.get_type()!=Variant::ARRAY || Array(layout).is_empty() || Array(layout).size()>MAX_STEPS)) return fail("step module requires 1..256 data-only jobs");
+		if (kind == "steps" && (layout.get_type() != Variant::ARRAY || Array(layout).is_empty())) {
+			return fail("step module requires a nonempty array of data-only jobs");
+		}
 		lua_settop(L,1); push_data(layout);
 		layout_cache.emplace(key,lua_ref(L,-1)); dependencies[path]=FileAccess::get_sha256(path);
 		return true;
@@ -467,8 +472,8 @@ struct Pipeline {
 				return fail(fault.is_empty() ? "pipeline must return a dense array" : fault);
 			}
 			r_steps = root;
-			if (r_steps.is_empty() || r_steps.size() > MAX_STEPS) {
-				return fail("pipeline must contain 1..256 steps");
+			if (r_steps.is_empty()) {
+				return fail("pipeline must contain at least one step");
 			}
 			for (const Variant &step : r_steps) {
 				if (step.get_type() != Variant::DICTIONARY) {
@@ -490,7 +495,6 @@ Dictionary capabilities() {
 	result["commit"] = LUAU_COMMIT;
 	result["api_version"] = 1;
 	result["operation"] = "run-pipeline";
-	result["max_steps"] = MAX_STEPS;
 	result["layout_import"] = true;
 	result["data_import"] = true;
 	result["manifest_inventory"] = true;

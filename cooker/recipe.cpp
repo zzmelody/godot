@@ -3,6 +3,7 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "collision_support.h"
+#include "content_hash.h"
 #include "heightfield_support.h"
 #include "minimum_visual.h"
 #include "render_dependencies.h"
@@ -2074,7 +2075,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			if (!file.ends_with(".vgp")) {
 				input_bytes += input->get_length();
 			}
-			recipe.input_hashes[file] = FileAccess::get_sha256(file);
+			recipe.input_hashes[file] = cooker_hash::HashFile(file);
 		}
 		Ref<Resource> resource = ResourceLoader::load(path);
 		Ref<Mesh> mesh = resource; Ref<Material> material = resource; Ref<PackedScene> scene = resource; Ref<Shader> shader = resource; Ref<Texture2D> texture = resource;
@@ -2101,7 +2102,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			if (!dependency.ends_with(".vgp")) {
 				input_bytes += input->get_length();
 			}
-			recipe.input_hashes[dependency] = FileAccess::get_sha256(dependency);
+			recipe.input_hashes[dependency] = cooker_hash::HashFile(dependency);
 		}
 		recipe.inputs[*key] = resource;
 	}

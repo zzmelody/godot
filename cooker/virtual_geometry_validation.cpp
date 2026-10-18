@@ -1,6 +1,7 @@
 #include "virtual_geometry_validation.h"
 
 #include "asset_files.h"
+#include "content_hash.h"
 #include "core/crypto/crypto_core.h"
 #include "core/os/thread.h"
 
@@ -29,8 +30,8 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 			return ERR_FILE_CORRUPT;
 		}
 		file->seek(0);
-		CryptoCore::SHA256Context hash;
-		if (hash.start() != OK) {
+		cooker_hash::Sha256 hash;
+		if (hash.Start() != OK) {
 			return FAILED;
 		}
 		std::array<uint8_t, 64 * 1024> block;
@@ -40,13 +41,13 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 			if (file->get_buffer(block.data(), count) != count) {
 				return ERR_FILE_CANT_READ;
 			}
-			if (hash.update(block.data(), count) != OK) {
+			if (hash.Update(block.data(), count) != OK) {
 				return FAILED;
 			}
 			remaining -= count;
 		}
 		std::array<uint8_t, 32> bytes;
-		if (hash.finish(bytes.data()) != OK) {
+		if (hash.Finish(bytes.data()) != OK) {
 			return FAILED;
 		}
 		r_digest = String::hex_encode_buffer(bytes.data(), bytes.size());
@@ -56,8 +57,8 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 		snapshot = file->get_buffer(file->get_length());
 		ERR_FAIL_COND_V(uint64_t(snapshot.size()) != p_mesh->get_container_bytes(), ERR_FILE_CANT_READ);
 		std::array<uint8_t, 32> hash;
-		CryptoCore::SHA256Context container_hash;
-		ERR_FAIL_COND_V(container_hash.start() != OK || container_hash.update(snapshot.ptr(), snapshot.size()) != OK || container_hash.finish(hash.data()) != OK, FAILED);
+		cooker_hash::Sha256 container_hash;
+		ERR_FAIL_COND_V(container_hash.Start() != OK || container_hash.Update(snapshot.ptr(), snapshot.size()) != OK || container_hash.Finish(hash.data()) != OK, FAILED);
 		digest = String::hex_encode_buffer(hash.data(), hash.size());
 	} else {
 		// Keep the same open file through hashing and page validation. A path
