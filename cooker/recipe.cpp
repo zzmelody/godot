@@ -75,8 +75,8 @@ struct Limits {
 	// Fine spatial batches retain one scene handle per nonempty cell.
 	// Keep a bounded handle count alongside the memory and output budgets.
 	int max_resources = 1024;
-	int input_mb = 256;
-	int output_mb = 64;
+	int input_mb = 1024;
+	int output_mb = 128;
 };
 
 struct NodeDeleter {
