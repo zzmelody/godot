@@ -1,23 +1,26 @@
 #include "usd_import.h"
+
 #include "asset_files.h"
 #include "atomic_save.h"
-#include "virtual_geometry_mesh.h"
+#include "composition.hh"
 #include "render_dependencies.h"
-#include "core/crypto/crypto_core.h"
-#include "scene/resources/mesh.h"
-#include "scene/resources/3d/importer_mesh.h"
-#include "scene/resources/material.h"
-#include "scene/resources/packed_scene.h"
-#include "scene/3d/mesh_instance_3d.h"
-#include "scene/3d/multimesh_instance_3d.h"
-#include "scene/resources/multimesh.h"
-#include "core/io/resource_saver.h"
 #include "thirdparty/meshoptimizer/meshoptimizer.h"
 #include "tinyusdz.hh"
+#include "tydra/scene-access.hh"
 #include "usdGeom.hh"
 #include "usdSkel.hh"
-#include "composition.hh"
-#include "tydra/scene-access.hh"
+#include "virtual_geometry_mesh.h"
+
+#include "core/crypto/crypto_core.h"
+#include "core/io/resource_saver.h"
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/multimesh_instance_3d.h"
+#include "scene/resources/3d/importer_mesh.h"
+#include "scene/resources/material.h"
+#include "scene/resources/mesh.h"
+#include "scene/resources/multimesh.h"
+#include "scene/resources/packed_scene.h"
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -25,6 +28,7 @@
 #include <map>
 #include <new>
 #include <set>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 
@@ -410,7 +414,7 @@ struct Import {
 		return OK;
 	}
 };
-// PackedScene imports keep prototype geometry and instance transforms separate.
+// PackedScene imports retain top-level instances and bounded prototype geometry.
 // The ordinary ArrayMesh transport below deliberately remains a bounded flatten.
 struct ScenePart {
 	Ref<ArrayMesh> mesh;
@@ -419,16 +423,26 @@ struct ScenePart {
 
 struct SceneImport {
 	static constexpr size_t MAX_PARTS = 1000000;
+	static constexpr size_t MAX_PROTOTYPE_VERTICES = 4000000;
 	Import &source;
 	std::array<Ref<Material>, 2> materials;
 	std::map<std::string, Ref<ArrayMesh>> meshes;
 	std::map<std::array<uint8_t, 32>, Ref<ArrayMesh>> geometry_values;
+	std::map<std::array<uint8_t, 32>, Ref<ArrayMesh>> combined_geometry_values;
+	std::map<ObjectID, std::array<Surface, 2>> source_surfaces;
 	std::map<std::string, std::vector<ScenePart>> prototypes;
+	std::map<std::string, std::vector<ScenePart>> render_prototypes;
 	std::set<std::string> active;
 	uint64_t unique_triangles[2] = {};
 	uint64_t instanced_triangles[2] = {};
+	uint64_t authored_triangles[2] = {};
 	uint64_t zero_area_triangles = 0;
 	uint64_t reused_mesh_values = 0;
+	uint64_t combined_zero_area_triangles = 0;
+	uint64_t reused_combined_mesh_values = 0;
+	uint64_t combined_unique_triangles = 0;
+	uint64_t combined_prototype_parts = 0;
+	uint64_t render_instances = 0;
 	int authored_instances = 0;
 	uint64_t visible_point_instances = 0;
 	bool asset_coordinates = false;
@@ -461,19 +475,12 @@ struct SceneImport {
 		return OK;
 	}
 
-	Error geometry(const XformNode &p_node, Ref<ArrayMesh> &r_mesh) {
-		const std::string key = p_node.absolute_path.full_path_name();
-		const auto cached = meshes.find(key);
-		if (cached != meshes.end()) {
-			r_mesh = cached->second;
-			return OK;
-		}
-		std::array<Surface, 2> surfaces;
-		const Error error = source.mesh(p_node, surfaces);
-		ERR_FAIL_COND_V(error != OK, error);
+	Error geometry_value(const std::string &p_key, std::array<Surface, 2> &surfaces, Ref<ArrayMesh> &r_mesh, bool p_source) {
+		auto &values = p_source ? geometry_values : combined_geometry_values;
+		uint64_t &removed = p_source ? zero_area_triangles : combined_zero_area_triangles;
 		Ref<ArrayMesh> mesh;
 		mesh.instantiate();
-		mesh->set_name(String::utf8(key.c_str()));
+		mesh->set_name(String::utf8(p_key.c_str()));
 		CryptoCore::SHA256Context content;
 		ERR_FAIL_COND_V(content.start() != OK, FAILED);
 		for (int role = 0; role < 2; ++role) {
@@ -490,7 +497,7 @@ struct SceneImport {
 					ac[axis] = double(c[axis]) - a[axis];
 				}
 				if (ab[1] * ac[2] == ab[2] * ac[1] && ab[2] * ac[0] == ab[0] * ac[2] && ab[0] * ac[1] == ab[1] * ac[0]) {
-					++zero_area_triangles;
+					++removed;
 					continue;
 				}
 				for (int corner = 0; corner < 3; ++corner) {
@@ -508,10 +515,10 @@ struct SceneImport {
 			static_assert(sizeof(Vector3) == sizeof(float) * 3 && sizeof(Vector2) == sizeof(float) * 2);
 			const std::array<uint64_t, 5> header = { uint64_t(role), surface.points.size(), surface.normals.size(), surface.uv.size(), surface.indices.size() };
 			ERR_FAIL_COND_V(content.update(reinterpret_cast<const uint8_t *>(header.data()), sizeof(header)) != OK ||
-						content.update(reinterpret_cast<const uint8_t *>(surface.points.data()), surface.points.size() * sizeof(Vector3)) != OK ||
-						content.update(reinterpret_cast<const uint8_t *>(surface.normals.data()), surface.normals.size() * sizeof(Vector3)) != OK ||
-						content.update(reinterpret_cast<const uint8_t *>(surface.uv.data()), surface.uv.size() * sizeof(Vector2)) != OK ||
-						content.update(reinterpret_cast<const uint8_t *>(surface.indices.data()), surface.indices.size() * sizeof(unsigned int)) != OK,
+							content.update(reinterpret_cast<const uint8_t *>(surface.points.data()), surface.points.size() * sizeof(Vector3)) != OK ||
+							content.update(reinterpret_cast<const uint8_t *>(surface.normals.data()), surface.normals.size() * sizeof(Vector3)) != OK ||
+							content.update(reinterpret_cast<const uint8_t *>(surface.uv.data()), surface.uv.size() * sizeof(Vector2)) != OK ||
+							content.update(reinterpret_cast<const uint8_t *>(surface.indices.data()), surface.indices.size() * sizeof(unsigned int)) != OK,
 					FAILED);
 			const Array arrays = surface.arrays();
 			ERR_FAIL_COND_V(arrays.size() != Mesh::ARRAY_MAX, ERR_OUT_OF_MEMORY);
@@ -526,19 +533,114 @@ struct SceneImport {
 		}
 		std::array<uint8_t, 32> digest;
 		ERR_FAIL_COND_V(content.finish(digest.data()) != OK, FAILED);
-		const auto same_value = geometry_values.find(digest);
-		if (same_value != geometry_values.end()) {
+		const auto same_value = values.find(digest);
+		if (same_value != values.end()) {
 			mesh = same_value->second;
-			++reused_mesh_values;
+			++(p_source ? reused_mesh_values : reused_combined_mesh_values);
 		} else {
-			ERR_FAIL_COND_V(geometry_values.size() >= 65536, ERR_OUT_OF_MEMORY);
-			geometry_values.emplace(digest, mesh);
+			ERR_FAIL_COND_V(values.size() >= 65536, ERR_OUT_OF_MEMORY);
+			values.emplace(digest, mesh);
 			for (int role = 0; role < 2; ++role) {
-				unique_triangles[role] += surfaces[role].indices.size() / 3;
+				if (p_source) {
+					unique_triangles[role] += surfaces[role].indices.size() / 3;
+				} else {
+					combined_unique_triangles += surfaces[role].indices.size() / 3;
+				}
 			}
 		}
-		meshes.emplace(key, mesh);
 		r_mesh = mesh;
+		return OK;
+	}
+
+	Error geometry(const XformNode &p_node, Ref<ArrayMesh> &r_mesh) {
+		const std::string key = p_node.absolute_path.full_path_name();
+		const auto cached = meshes.find(key);
+		if (cached != meshes.end()) {
+			r_mesh = cached->second;
+			return OK;
+		}
+		std::array<Surface, 2> surfaces;
+		Error error = source.mesh(p_node, surfaces);
+		ERR_FAIL_COND_V(error != OK, error);
+		error = geometry_value(key, surfaces, r_mesh, true);
+		ERR_FAIL_COND_V(error != OK, error);
+		meshes.emplace(key, r_mesh);
+		return OK;
+	}
+
+	Error render_prototype(const std::string &p_key) {
+		if (render_prototypes.count(p_key)) {
+			return OK;
+		}
+		const auto &parts = prototypes.at(p_key);
+		if (parts.size() <= 1) {
+			render_prototypes.emplace(p_key, parts);
+			return OK;
+		}
+		// Keep authored top-level instances. Bake their nested static parts once
+		// into bounded prototype chunks, instead of replicating a leaf-instance
+		// list for every placed tree. There is no triangle reduction here.
+		std::array<Surface, 2> combined;
+		size_t vertices = 0, indices = 0;
+		std::vector<ScenePart> chunks;
+		auto flush = [&]() -> Error {
+			if (vertices == 0) {
+				return OK;
+			}
+			Ref<ArrayMesh> mesh;
+			const Error error = geometry_value(p_key + "/RenderPart" + std::to_string(chunks.size()), combined, mesh, false);
+			if (error != OK) {
+				return error;
+			}
+			if (mesh.is_valid()) {
+				chunks.push_back({ mesh, Transform3D() });
+			}
+			combined = {};
+			vertices = indices = 0;
+			return OK;
+		};
+		for (const auto &part : parts) {
+			const ObjectID id = part.mesh->get_instance_id();
+			auto cached = source_surfaces.find(id);
+			if (cached == source_surfaces.end()) {
+				std::array<Surface, 2> surfaces;
+				for (int slot = 0; slot < part.mesh->get_surface_count(); ++slot) {
+					const int role = part.mesh->surface_get_name(slot) == "leaves" ? 1 : 0;
+					auto &surface = surfaces[role];
+					const Array arrays = part.mesh->surface_get_arrays(slot);
+					ERR_FAIL_COND_V(arrays.size() != Mesh::ARRAY_MAX, ERR_INVALID_DATA);
+					const PackedVector3Array points = arrays[Mesh::ARRAY_VERTEX], normals = arrays[Mesh::ARRAY_NORMAL];
+					const PackedVector2Array uv = arrays[Mesh::ARRAY_TEX_UV];
+					const PackedInt32Array triangles = arrays[Mesh::ARRAY_INDEX];
+					ERR_FAIL_COND_V(points.size() != normals.size() || points.size() != uv.size(), ERR_INVALID_DATA);
+					surface.points.assign(points.ptr(), points.ptr() + points.size());
+					surface.normals.assign(normals.ptr(), normals.ptr() + normals.size());
+					surface.uv.assign(uv.ptr(), uv.ptr() + uv.size());
+					surface.indices.assign(triangles.ptr(), triangles.ptr() + triangles.size());
+				}
+				cached = source_surfaces.emplace(id, std::move(surfaces)).first;
+			}
+			size_t part_vertices = 0, part_indices = 0;
+			for (const auto &surface : cached->second) {
+				part_vertices += surface.points.size();
+				part_indices += surface.indices.size();
+			}
+			ERR_FAIL_COND_V(part_vertices > MAX_PROTOTYPE_VERTICES || part_indices > Surface::MAX_INDICES, ERR_OUT_OF_MEMORY);
+			if (part_vertices > MAX_PROTOTYPE_VERTICES - vertices || part_indices > Surface::MAX_INDICES - indices) {
+				const Error error = flush();
+				ERR_FAIL_COND_V(error != OK, error);
+			}
+			for (int role = 0; role < 2; ++role) {
+				const Error error = combined[role].append(cached->second[role], part.transform);
+				ERR_FAIL_COND_V(error != OK, error);
+			}
+			vertices += part_vertices;
+			indices += part_indices;
+		}
+		const Error error = flush();
+		ERR_FAIL_COND_V(error != OK, error);
+		combined_prototype_parts += parts.size();
+		render_prototypes.emplace(p_key, std::move(chunks));
 		return OK;
 	}
 
@@ -549,6 +651,13 @@ struct SceneImport {
 		ERR_FAIL_COND_V(!transform.is_finite() || !Math::is_finite(determinant) || Math::abs(determinant) < 1e-12, ERR_INVALID_DATA);
 		r_parts.push_back({ p_part.mesh, transform });
 		return OK;
+	}
+
+	void account_authored_triangles(const Ref<ArrayMesh> &p_mesh) {
+		for (int slot = 0; slot < p_mesh->get_surface_count(); ++slot) {
+			const int role = p_mesh->surface_get_name(slot) == "leaves" ? 1 : 0;
+			authored_triangles[role] += p_mesh->surface_get_array_index_len(slot) / 3;
+		}
 	}
 
 	Error branch(const XformNode &p_node, const Transform3D &p_relative, std::vector<ScenePart> &r_parts, bool p_visible) {
@@ -618,7 +727,18 @@ struct SceneImport {
 						basis.scale(vector(scales[index]));
 					}
 					const Transform3D placement = p_relative * transform(p_node.get_world_matrix()) * Transform3D(basis, vector(positions[index]));
-					for (const auto &part : prototypes.at(paths[ids[index]].full_path_name())) {
+					const std::string key = paths[ids[index]].full_path_name();
+					if (p_visible) {
+						for (const auto &part : prototypes.at(key)) {
+							account_authored_triangles(part.mesh);
+						}
+					}
+					if (p_visible && asset_coordinates) {
+						const Error error = render_prototype(key);
+						ERR_FAIL_COND_V(error != OK, error);
+					}
+					const auto &parts = p_visible && asset_coordinates ? render_prototypes.at(key) : prototypes.at(key);
+					for (const auto &part : parts) {
 						const Error error = append(r_parts, part, placement);
 						ERR_FAIL_COND_V(error != OK, error);
 					}
@@ -636,6 +756,9 @@ struct SceneImport {
 				Error error = geometry(p_node, mesh);
 				ERR_FAIL_COND_V(error != OK, error);
 				if (mesh.is_valid()) {
+					if (p_visible) {
+						account_authored_triangles(mesh);
+					}
 					error = append(r_parts, { mesh, Transform3D() }, p_relative * transform(p_node.get_world_matrix()));
 					ERR_FAIL_COND_V(error != OK, error);
 				}
@@ -650,6 +773,7 @@ struct SceneImport {
 
 	Error pack(const std::vector<ScenePart> &p_parts, Ref<PackedScene> &r_scene) {
 		ERR_FAIL_COND_V(p_parts.empty(), ERR_INVALID_DATA);
+		render_instances = p_parts.size();
 		struct Batch {
 			Ref<ArrayMesh> mesh;
 			std::vector<Transform3D> placements;
@@ -674,6 +798,8 @@ struct SceneImport {
 				instanced_triangles[role] += part.mesh->surface_get_array_index_len(surface) / 3;
 			}
 		}
+		ERR_FAIL_COND_V_MSG(authored_triangles[0] != instanced_triangles[0] || authored_triangles[1] != instanced_triangles[1], ERR_INVALID_DATA,
+				"USD prototype grouping changed the complete source triangle coverage.");
 		ERR_FAIL_COND_V(!bounds.position.is_finite() || !bounds.size.is_finite() || !bounds.get_end().is_finite(), ERR_INVALID_DATA);
 		Transform3D normalization;
 		if (target_height > 0) {
@@ -842,7 +968,7 @@ Error import_scene(const Dictionary &job, Dictionary &result) {
 			CookerVirtualGeometry::Settings settings;
 			// Composed USD models retain every unique prototype. Their aggregate
 			// page output is separate from the ordinary recipe/fragment allowance.
-			settings.max_source_vertices = 4000000;
+			settings.max_source_vertices = SceneImport::MAX_PROTOTYPE_VERTICES;
 			settings.max_output_bytes = 1024ull * 1024 * 1024;
 			settings.dag.preserve_area = options.get("preserve_area", false);
 			e = CookerVirtualGeometry::convert_imported_scene(scene, prepared, builds, report, message, explicit_geometry ? &settings : nullptr);
@@ -867,6 +993,11 @@ Error import_scene(const Dictionary &job, Dictionary &result) {
 			result["source_zero_area_triangles"] = int64_t(shared.zero_area_triangles);
 			result["source_mesh_values"] = int64_t(shared.geometry_values.size());
 			result["reused_source_mesh_values"] = int64_t(shared.reused_mesh_values);
+			result["combined_prototype_parts"] = int64_t(shared.combined_prototype_parts);
+			result["combined_mesh_values"] = int64_t(shared.combined_geometry_values.size());
+			result["combined_unique_triangles"] = int64_t(shared.combined_unique_triangles);
+			result["combined_zero_area_triangles"] = int64_t(shared.combined_zero_area_triangles);
+			result["render_instances"] = int64_t(shared.render_instances);
 			result["unique_geometry_triangles"] = int64_t(shared.unique_triangles[0] + shared.unique_triangles[1]);
 			result["bark_triangles"] = int64_t(shared.instanced_triangles[0]);
 			result["leaf_triangles"] = int64_t(shared.instanced_triangles[1]);
