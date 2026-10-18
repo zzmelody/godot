@@ -31,6 +31,7 @@
 #include "multimesh.h"
 
 #include "core/object/callable_mp.h"
+#include "core/object/message_queue.h"
 #include "core/os/thread.h"
 #include "scene/resources/3d/virtual_geometry_mesh.h"
 
@@ -239,9 +240,9 @@ void MultiMesh::set_mesh(const Ref<Mesh> &p_mesh) {
 
 void MultiMesh::_virtual_geometry_mesh_changed() {
 	if (!Thread::is_main_thread()) {
-		// Threaded resource decoding may assign this Mesh before main-thread
-		// capacity admission. Resolve only the current resource at the boundary.
-		callable_mp(this, &MultiMesh::_virtual_geometry_mesh_changed).call_deferred();
+		// ResourceLoader flushes its own thread-local queue on the loading worker.
+		// Send admission to the main queue so it cannot requeue on that worker.
+		MessageQueue::get_main_singleton()->push_callable(callable_mp(this, &MultiMesh::_virtual_geometry_mesh_changed));
 		return;
 	}
 	if (mesh.is_valid()) {
