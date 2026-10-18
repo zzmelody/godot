@@ -8,6 +8,7 @@
 #include "core/io/image.h"
 #include "core/object/script_language.h"
 #include "lod_silhouette.h"
+#include "scene/resources/3d/virtual_geometry_mesh.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/skeleton_3d.h"
@@ -416,6 +417,34 @@ class Builder {
     if (meshes_.count(id)) {
       return meshes_.at(id);
     }
+    const Ref<VirtualGeometryMesh> virtual_source = source;
+    if (virtual_source.is_valid()) {
+      // Minimum textures do not require a second, ordinary geometry path.
+      // Keep the published hierarchy and let each view select its own cut.
+      Dictionary data = virtual_source->get_geometry_data();
+      Array materials = data["materials"];
+      for (int slot = 0; slot < materials.size(); ++slot) {
+        const Ref<Material> original = materials[slot];
+        const Ref<Material> minimum = MaterialValue(original);
+        if (original.is_valid() && minimum.is_null()) {
+          return Ref<Mesh>();
+        }
+        materials[slot] = minimum;
+      }
+      data["materials"] = materials;
+      Ref<VirtualGeometryMesh> minimum;
+      minimum.instantiate();
+      if (minimum->set_geometry_data(data) != OK) {
+        return Ref<Mesh>();
+      }
+      // The unpublished built-in path records container provenance until the
+      // normal publication step copies it beside the new standalone root.
+      // Do not register this temporary identity in ResourceCache.
+      minimum->set_path_cache(virtual_source->get_path().get_slice("::", 0) +
+          "::minimum_geometry");
+      meshes_.emplace(id, minimum);
+      return minimum;
+    }
     Ref<ArrayMesh> result;
     result.instantiate();
     bool source_has_lods = false;
@@ -558,7 +587,7 @@ class Builder {
   }
   /*>>----- VEYA_COOKER */
   bool CopyTree(Node* source, Node3D* destination, const Transform3D& parent,
-                 int depth) {
+                int depth) {
     const Ref<Script> script = source->get_script();
     if (depth > 64 || ++nodes_ > 65536 || script.is_valid() ||
         Object::cast_to<Skeleton3D>(source)) {
@@ -577,16 +606,19 @@ class Builder {
       if (mesh->get_mesh()->get_aabb().size.y >= options_.minimum_height) {
         auto* copy = memnew(MeshInstance3D);
         copy->set_mesh(MeshValue(mesh->get_mesh()));
-        copy->set_material_override(MaterialValue(mesh->get_material_override()));
+        copy->set_material_override(
+            MaterialValue(mesh->get_material_override()));
         if (copy->get_mesh().is_null() ||
             (mesh->get_material_override().is_valid() &&
              copy->get_material_override().is_null())) {
           memdelete(copy);
           return false;
         }
-        for (int surface = 0; surface < mesh->get_mesh()->get_surface_count(); ++surface) {
-          copy->set_surface_override_material(surface,
-              MaterialValue(mesh->get_surface_override_material(surface)));
+        for (int surface = 0; surface < copy->get_mesh()->get_surface_count();
+             ++surface) {
+          copy->set_surface_override_material(
+              surface, MaterialValue(mesh->get_surface_override_material(
+                           surface)));
           if (mesh->get_surface_override_material(surface).is_valid() &&
               copy->get_surface_override_material(surface).is_null()) {
             memdelete(copy);
@@ -608,8 +640,9 @@ class Builder {
         batch->set_mesh(MeshValue(original->get_mesh()));
         auto* copy = memnew(MultiMeshInstance3D);
         copy->set_multimesh(batch);
-          copy->set_extra_cull_margin(multi->get_extra_cull_margin());
-        copy->set_material_override(MaterialValue(multi->get_material_override()));
+        copy->set_extra_cull_margin(multi->get_extra_cull_margin());
+        copy->set_material_override(
+            MaterialValue(multi->get_material_override()));
         if (batch->get_mesh().is_null() ||
             (multi->get_material_override().is_valid() &&
              copy->get_material_override().is_null())) {

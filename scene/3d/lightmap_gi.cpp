@@ -30,6 +30,8 @@
 
 #include "lightmap_gi.h"
 
+#include "cooker/virtual_geometry_minimum.h"
+
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/config_file.h"
@@ -396,10 +398,24 @@ LightmapGIData::~LightmapGIData() {
 
 ///////////////////////////
 
-void LightmapGI::_find_meshes_and_lights(Node *p_at_node, Vector<MeshesFound> &meshes, Vector<LightsFound> &lights, Vector<Vector3> &probes) {
+bool LightmapGI::_find_meshes_and_lights(Node *p_at_node, Vector<MeshesFound> &meshes, Vector<LightsFound> &lights, Vector<Vector3> &probes, CookerVirtualGeometry::BakeMeshCache &p_geometry) {
 	MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_at_node);
 	if (mi && mi->get_gi_mode() == GeometryInstance3D::GI_MODE_STATIC && mi->is_visible_in_tree()) {
 		Ref<Mesh> mesh = mi->get_mesh();
+		std::vector<uint32_t> source_slots;
+		const Ref<VirtualGeometryMesh> virtual_mesh = mesh;
+		if (virtual_mesh.is_valid() && virtual_mesh->get_model().attributes.uv_sets < 2) {
+			mesh.unref(); // As with ordinary geometry, lightmaps require authored UV2.
+		} else if (virtual_mesh.is_valid()) {
+#ifdef TOOLS_ENABLED
+			CookerVirtualGeometry::BakeMesh geometry;
+			ERR_FAIL_COND_V_MSG(p_geometry.get(virtual_mesh, geometry) != OK, false, vformat("Cannot reconstruct virtual geometry for lightmap baking: %s", mi->get_path()));
+			mesh = geometry.mesh;
+			source_slots = std::move(geometry.source_slots);
+#else
+			ERR_FAIL_V_MSG(false, "Virtual geometry lightmap baking requires an editor build.");
+#endif
+		}
 		if (mesh.is_valid()) {
 			bool all_have_uv2_and_normal = true;
 			bool surfaces_found = false;
@@ -433,7 +449,7 @@ void LightmapGI::_find_meshes_and_lights(Node *p_at_node, Vector<MeshesFound> &m
 					if (all_override.is_valid()) {
 						mf.overrides.push_back(all_override);
 					} else {
-						mf.overrides.push_back(mi->get_surface_override_material(i));
+						mf.overrides.push_back(mi->get_surface_override_material(source_slots.empty() ? i : source_slots[i]));
 					}
 				}
 
@@ -452,6 +468,19 @@ void LightmapGI::_find_meshes_and_lights(Node *p_at_node, Vector<MeshesFound> &m
 				Ref<Mesh> mesh = bmeshes[i];
 				if (mesh.is_null()) {
 					continue;
+				}
+				const Ref<VirtualGeometryMesh> virtual_mesh = mesh;
+				if (virtual_mesh.is_valid()) {
+					if (virtual_mesh->get_model().attributes.uv_sets < 2) {
+						continue;
+					}
+#ifdef TOOLS_ENABLED
+					CookerVirtualGeometry::BakeMesh geometry;
+					ERR_FAIL_COND_V_MSG(p_geometry.get(virtual_mesh, geometry) != OK, false, vformat("Cannot reconstruct virtual geometry for lightmap baking: %s", s->get_path()));
+					mesh = geometry.mesh;
+#else
+					ERR_FAIL_V_MSG(false, "Virtual geometry lightmap baking requires an editor build.");
+#endif
 				}
 
 				MeshesFound mf;
@@ -490,8 +519,11 @@ void LightmapGI::_find_meshes_and_lights(Node *p_at_node, Vector<MeshesFound> &m
 			continue; //maybe a helper
 		}
 
-		_find_meshes_and_lights(child, meshes, lights, probes);
+		if (!_find_meshes_and_lights(child, meshes, lights, probes, p_geometry)) {
+			return false;
+		}
 	}
+	return true;
 }
 
 int LightmapGI::_bsp_get_simplex_side(const LocalVector<Vector3> &p_points, const LocalVector<BSPSimplex> &p_simplices, const Plane &p_plane, uint32_t p_simplex) const {
@@ -1105,7 +1137,10 @@ LightmapGI::BakeError LightmapGI::bake(Node *p_from_node, String p_image_data_pa
 	AABB bounds;
 	{
 		Vector<MeshesFound> meshes_found;
-		_find_meshes_and_lights(p_from_node ? p_from_node : get_parent(), meshes_found, lights_found, probes_found);
+		CookerVirtualGeometry::BakeMeshCache geometry;
+		if (!_find_meshes_and_lights(p_from_node ? p_from_node : get_parent(), meshes_found, lights_found, probes_found, geometry)) {
+			return BAKE_ERROR_MESHES_INVALID;
+		}
 
 		if (meshes_found.is_empty()) {
 			return BAKE_ERROR_NO_MESHES;

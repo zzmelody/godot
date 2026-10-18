@@ -2346,6 +2346,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("material_set_param", "material", "parameter", "value"), &RenderingServer::material_set_param);
 	ClassDB::bind_method(D_METHOD("material_get_param", "material", "parameter"), &RenderingServer::material_get_param);
 	ClassDB::bind_method(D_METHOD("material_set_render_priority", "material", "priority"), &RenderingServer::material_set_render_priority);
+	ClassDB::bind_method(D_METHOD("material_set_max_vertex_displacement", "material", "maximum"), &RenderingServer::material_set_max_vertex_displacement);
 
 	ClassDB::bind_method(D_METHOD("material_set_next_pass", "material", "next_material"), &RenderingServer::material_set_next_pass);
 
@@ -2358,6 +2359,16 @@ void RenderingServer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("mesh_create_from_surfaces", "surfaces", "blend_shape_count"), &RenderingServer::_mesh_create_from_surfaces, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("mesh_create"), &RenderingServer::mesh_create);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_set_budget", "pool_bytes", "metadata_bytes", "work_bytes"), &RenderingServer::virtual_geometry_set_budget);
+	ClassDB::bind_method(D_METHOD("mesh_set_virtual_geometry", "mesh", "generation", "root", "materials"), &RenderingServer::mesh_set_virtual_geometry);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_submit_pages", "records", "payloads"), &RenderingServer::virtual_geometry_submit_pages);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_get_feedback", "after_sequence"), &RenderingServer::virtual_geometry_get_feedback);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_get_requests", "after_sequence"), &RenderingServer::virtual_geometry_get_requests);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_set_streaming_admission", "acquire", "received", "release"), &RenderingServer::virtual_geometry_set_streaming_admission);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_get_streaming_statistics"), &RenderingServer::virtual_geometry_get_streaming_statistics);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_shutdown_streaming"), &RenderingServer::virtual_geometry_shutdown_streaming);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_initialize_streaming"), &RenderingServer::virtual_geometry_initialize_streaming);
+	ClassDB::bind_method(D_METHOD("virtual_geometry_prepare_materials", "materials"), &RenderingServer::virtual_geometry_prepare_materials);
 	ClassDB::bind_method(D_METHOD("mesh_surface_get_format_offset", "format", "vertex_count", "array_index"), &RenderingServer::mesh_surface_get_format_offset);
 	ClassDB::bind_method(D_METHOD("mesh_surface_get_format_vertex_stride", "format", "vertex_count"), &RenderingServer::mesh_surface_get_format_vertex_stride);
 	ClassDB::bind_method(D_METHOD("mesh_surface_get_format_normal_tangent_stride", "format", "vertex_count"), &RenderingServer::mesh_surface_get_format_normal_tangent_stride);

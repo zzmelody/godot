@@ -8064,8 +8064,10 @@ uint64_t RenderingDevice::get_memory_usage(MemoryType p_type) const {
 
 void RenderingDevice::_begin_frame(bool p_presented) {
 	GodotProfileZoneGroupedFirst(_profile_zone, "_stall_for_frame");
+	const uint64_t retiring_serial = frames[frame].submission_serial;
 	// Before writing to this frame, wait for it to be finished.
 	_stall_for_frame(frame);
+	frames[frame].submission_serial = next_submission_serial++;
 
 	if (command_pool_reset_enabled) {
 		GodotProfileZoneGrouped(_profile_zone, "driver->command_pool_reset");
@@ -8092,6 +8094,7 @@ void RenderingDevice::_begin_frame(bool p_presented) {
 	// Erase pending resources.
 	GodotProfileZoneGrouped(_profile_zone, "_free_pending_resources");
 	_free_pending_resources(frame);
+	frames[frame].resources_retired_serial = retiring_serial;
 
 	// Advance staging buffers if used.
 	if (upload_staging_buffers.used) {
@@ -8234,6 +8237,7 @@ void RenderingDevice::_stall_for_frame(uint32_t p_frame) {
 	if (frames[p_frame].fence_signaled) {
 		GodotProfileZoneGroupedFirst(_profile_zone, "driver->fence_wait");
 		driver->fence_wait(frames[p_frame].fence);
+		completed_submission_serial = MAX(completed_submission_serial, frames[p_frame].submission_serial);
 		frames[p_frame].fence_signaled = false;
 
 		// Flush any pending requests for asynchronous buffer downloads.
@@ -8537,6 +8541,7 @@ Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServ
 
 	// Start from frame count, so everything else is immediately old.
 	frames_drawn = frames.size();
+	frames[frame].submission_serial = next_submission_serial++;
 
 	// Initialize recording on the first frame.
 	driver->begin_segment(frame, frames_drawn++);

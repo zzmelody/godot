@@ -73,25 +73,25 @@ void GpuOcclusion::add(uint32_t p_element, Batch p_batch) {
 }
 
 bool GpuOcclusion::prepare(const Size2i &p_size, uint64_t p_epoch, const Projection &p_projection, const Projection &p_lens) {
-	if (candidate_count == 0 || !cull_pipeline.is_valid() || !cull_dynamic_pipeline.is_valid() || !reduce_pipeline.is_valid() || !reduce_msaa_pipeline.is_valid()) {
+	if (!cull_pipeline.is_valid() || !cull_dynamic_pipeline.is_valid() || !reduce_pipeline.is_valid() || !reduce_msaa_pipeline.is_valid()) {
 		history_valid = false;
 		return false;
 	}
 	RD *rd = RD::get_singleton();
-	if (capacity < candidate_count) {
+	if (capacity < MAX(1u, candidate_count)) {
 		if (indices.is_valid()) {
 			rd->free_rid(indices);
 			rd->free_rid(pending);
 		}
-		capacity = Math::next_power_of_2(candidate_count);
+		capacity = Math::next_power_of_2(MAX(1u, candidate_count));
 		indices = rd->storage_buffer_create(capacity * 3 * sizeof(uint32_t));
 		pending = rd->storage_buffer_create(capacity * sizeof(uint32_t));
 	}
-	if (command_capacity < batches.size()) {
+	if (command_capacity < MAX(1u, batches.size())) {
 		if (commands.is_valid()) {
 			rd->free_rid(commands);
 		}
-		command_capacity = Math::next_power_of_2(batches.size());
+		command_capacity = Math::next_power_of_2(MAX(1u, batches.size()));
 		commands = rd->storage_buffer_create(command_capacity * 15 * sizeof(uint32_t), {}, RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
 		initial_commands.resize(command_capacity * 15);
 	}
@@ -104,7 +104,9 @@ bool GpuOcclusion::prepare(const Size2i &p_size, uint64_t p_epoch, const Project
 		initial_commands.write[i * 15 + 5] = batches[i].depth_vertices;
 		initial_commands.write[i * 15 + 10] = batches[i].color_vertices;
 	}
-	rd->buffer_update(commands, 0, batches.size() * 15 * sizeof(uint32_t), initial_commands.ptr());
+	if (!batches.is_empty()) {
+		rd->buffer_update(commands, 0, batches.size() * 15 * sizeof(uint32_t), initial_commands.ptr());
+	}
 	Size2i new_size(MAX(1, (p_size.x + 1) / 2), MAX(1, (p_size.y + 1) / 2));
 	if (size != new_size || !hierarchy[0].is_valid()) {
 		free_hierarchy();

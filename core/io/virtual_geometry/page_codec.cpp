@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <new>
 #include <utility>
 
@@ -16,6 +17,162 @@ constexpr size_t MAX_DISK_BYTES = STREAMING_PAGE_GPU_CAPACITY * 2;
 constexpr uint32_t SLOW_MATERIAL_MASK = 0x7ffff;
 using Record = std::array<uint32_t, GEOMETRY_PAGE_CLUSTER_BYTES / 4>;
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
+Record make_record(const GeometryPageCluster &p_cluster);
+
+struct VertexChannel {
+	uint32_t bits = 0;
+	uint32_t base = 0;
+	uint32_t offset = 0;
+	bool attribute = false;
+};
+
+struct VertexLayout {
+	std::array<VertexChannel, 18> channels;
+	uint32_t count = 0;
+	uint32_t position_bits = 0;
+	uint32_t attribute_bits = 0;
+	std::array<uint32_t, 4> plane_values = {};
+};
+
+uint32_t bit_mask(uint32_t p_bits) {
+	return p_bits == 32 ? UINT32_MAX : (1u << p_bits) - 1;
+}
+
+bool vertex_layout(const Record &p_record, VertexLayout &r_layout) {
+	if (p_record[33] == 0 || p_record[33] > 15 || p_record[34] > 12 || p_record[36] > 4 ||
+			(p_record[35] & ~7u) != 0 || ((p_record[35] & 1u) != 0 && p_record[34] == 0)) {
+		return false;
+	}
+	auto add = [&](uint32_t p_bits, uint32_t p_base, bool p_attribute) {
+		uint32_t &offset = p_attribute ? r_layout.attribute_bits : r_layout.position_bits;
+		r_layout.channels[r_layout.count++] = { p_bits, p_base, offset, p_attribute };
+		offset += p_bits;
+		for (uint32_t plane = 0; plane < (p_bits + 7) / 8; ++plane) {
+			++r_layout.plane_values[plane];
+		}
+	};
+	for (uint32_t axis = 0; axis < 3; ++axis) {
+		if (p_record[28 + axis] > MAX_POSITION_BITS) {
+			return false;
+		}
+		add(p_record[28 + axis], p_record[25 + axis], false);
+	}
+	add(p_record[33], 0, true);
+	add(p_record[33], 0, true);
+	if ((p_record[35] & 1u) != 0) {
+		add(p_record[34] + 1, 0, true);
+	}
+	if ((p_record[35] & 2u) != 0) {
+		for (uint32_t channel = 0; channel < 4; ++channel) {
+			const uint32_t bits = (p_record[40] >> (channel * 4)) & 15u;
+			if (bits > 8) {
+				return false;
+			}
+			add(bits, (p_record[39] >> (channel * 8)) & 255u, true);
+		}
+	}
+	for (uint32_t uv = 0; uv < p_record[36] * 2; ++uv) {
+		const uint32_t code = p_record[41 + uv];
+		const uint32_t bits = code & 63u;
+		if ((code >> 26) != 0 || bits > 32 || ((p_record[35] & 4u) != 0 ? bits != 32 || (code >> 6) != 0 : bits > 20)) {
+			return false;
+		}
+		add(bits, code >> 6, true);
+	}
+	return true;
+}
+
+uint32_t get_vertex_bits(const std::vector<uint8_t> &p_bytes, uint32_t p_offset, uint32_t p_bits) {
+	uint32_t value = 0;
+	for (uint32_t bit = 0; bit < p_bits; ++bit) {
+		value |= uint32_t((p_bytes[(p_offset + bit) / 8] >> ((p_offset + bit) & 7)) & 1u) << bit;
+	}
+	return value;
+}
+
+void put_vertex_bits(std::vector<uint8_t> &r_bytes, uint32_t p_offset, uint32_t p_bits, uint32_t p_value) {
+	for (uint32_t bit = 0; bit < p_bits; ++bit) {
+		r_bytes[(p_offset + bit) / 8] |= uint8_t(((p_value >> bit) & 1u) << ((p_offset + bit) & 7));
+	}
+}
+
+struct DiskVertices {
+	std::vector<uint8_t> planes;
+	std::vector<uint8_t> references;
+};
+
+// Keys contain absolute integer values, not decoded/requantized floats. This
+// permits references across different cluster origins and UV/color minima.
+using VertexKey = std::array<uint32_t, 24>;
+
+std::vector<DiskVertices> encode_page_vertices(const GeometryPage &p_page) {
+	std::map<VertexKey, uint16_t> coded;
+	std::vector<DiskVertices> output(p_page.clusters.size());
+	for (uint32_t cluster = 0; cluster < p_page.clusters.size(); ++cluster) {
+		const auto &source = p_page.clusters[cluster];
+		const Record record = make_record(source);
+		VertexLayout layout;
+		vertex_layout(record, layout); // encode_geometry_page admitted the layout.
+		auto &encoded = output[cluster];
+		encoded.references.resize(32, 0);
+		std::array<std::vector<uint8_t>, 4> planes;
+		std::array<uint32_t, 18> previous = {};
+		for (uint32_t axis = 0; axis < 3; ++axis) {
+			previous[axis] = (1u << layout.channels[axis].bits) >> 1;
+		}
+		for (uint32_t vertex = 0; vertex < record[4]; ++vertex) {
+			VertexKey key = {};
+			key[0] = record[24];
+			for (uint32_t field = 1; field < 5; ++field) {
+				key[field] = record[32 + field];
+			}
+			key[5] = layout.count;
+			std::array<uint32_t, 18> values;
+			for (uint32_t channel = 0; channel < layout.count; ++channel) {
+				const auto &description = layout.channels[channel];
+				values[channel] = get_vertex_bits(description.attribute ? source.attributes.bytes : source.position_bytes,
+						vertex * (description.attribute ? layout.attribute_bits : layout.position_bits) + description.offset, description.bits);
+				key[6 + channel] = description.base + values[channel];
+			}
+			const auto found = coded.find(key);
+			if (found != coded.end()) {
+				encoded.references[vertex / 8] |= uint8_t(1u << (vertex & 7));
+				// The temporary pairs are separated into byte planes below.
+				encoded.references.push_back(uint8_t(found->second >> 8));
+				encoded.references.push_back(uint8_t(found->second));
+				continue;
+			}
+			coded.emplace(key, uint16_t((cluster << 8) | vertex));
+			for (uint32_t channel = 0; channel < layout.count; ++channel) {
+				const uint32_t bits = layout.channels[channel].bits;
+				const uint32_t mask = bit_mask(bits);
+				const uint32_t delta = (values[channel] - previous[channel]) & mask;
+				const uint32_t sign = bits == 0 ? 0 : delta >> (bits - 1);
+				const uint32_t zigzag = ((delta << 1) ^ (0u - sign)) & mask;
+				for (uint32_t plane = 0; plane < (bits + 7) / 8; ++plane) {
+					planes[plane].push_back(uint8_t(zigzag >> (plane * 8)));
+				}
+				previous[channel] = values[channel];
+			}
+		}
+		for (const auto &plane : planes) {
+			encoded.planes.insert(encoded.planes.end(), plane.begin(), plane.end());
+		}
+		const size_t refs = (encoded.references.size() - 32) / 2;
+		std::vector<uint8_t> reference_planes(encoded.references.size());
+		std::copy_n(encoded.references.begin(), 32, reference_planes.begin());
+		uint32_t previous_reference = 0;
+		for (size_t index = 0; index < refs; ++index) {
+			reference_planes[32 + index] = encoded.references[32 + index * 2];
+			const uint32_t vertex = encoded.references[33 + index * 2];
+			const uint32_t delta = (vertex - previous_reference) & 255u;
+			reference_planes[32 + refs + index] = uint8_t((delta << 1) ^ (0u - (delta >> 7)));
+			previous_reference = vertex;
+		}
+		encoded.references = std::move(reference_planes);
+	}
+	return output;
+}
 
 uint32_t read_word(const uint8_t *p_bytes, size_t p_offset) {
 	uint32_t word = 0;
@@ -223,6 +380,7 @@ void write_words(std::vector<uint8_t> &r_bytes, size_t &r_cursor, const std::vec
 
 PageCodecResult write_page(const GeometryPage &p_page, bool p_gpu, const GeometryPageSizes &p_sizes, std::vector<uint8_t> &r_bytes) {
 	std::vector<uint8_t> candidate(p_gpu ? p_sizes.gpu_bytes : p_sizes.disk_bytes, 0);
+	const std::vector<DiskVertices> vertices = p_gpu ? std::vector<DiskVertices>() : encode_page_vertices(p_page);
 	write_word(candidate, 0, p_gpu ? GEOMETRY_GPU_PAGE_MAGIC : GEOMETRY_DISK_PAGE_MAGIC);
 	write_word(candidate, 4, GEOMETRY_PAGE_VERSION);
 	write_word(candidate, 8, p_page.root ? PAGE_FLAG_ROOT : 0);
@@ -240,9 +398,9 @@ PageCodecResult write_page(const GeometryPage &p_page, bool p_gpu, const Geometr
 		// earlier clusters on every GPU installation. GPU records keep zero.
 		record[71] = p_gpu ? 0 : static_cast<uint32_t>(gpu_cursor);
 		gpu_cursor += gpu_payload_bytes(source);
-		write_bytes(candidate, cursor, record, 31, 32, source.position_bytes);
-		write_bytes(candidate, cursor, record, 37, 38, source.attributes.bytes);
 		if (p_gpu) {
+			write_bytes(candidate, cursor, record, 31, 32, source.position_bytes);
+			write_bytes(candidate, cursor, record, 37, 38, source.attributes.bytes);
 			std::vector<uint32_t> indices;
 			std::vector<uint8_t> gpu_indices;
 			if (unpack_cluster_topology(source.topology.layout, source.topology.references.data(), source.topology.references.size(), indices) != TopologyCodecError::OK ||
@@ -251,6 +409,14 @@ PageCodecResult write_page(const GeometryPage &p_page, bool p_gpu, const Geometr
 			}
 			write_bytes(candidate, cursor, record, 63, 64, gpu_indices);
 		} else {
+			record[32] = static_cast<uint32_t>(source.position_bytes.size());
+			record[38] = static_cast<uint32_t>(source.attributes.bytes.size());
+			record[31] = static_cast<uint32_t>(cursor);
+			std::copy(vertices[cluster].planes.begin(), vertices[cluster].planes.end(), candidate.begin() + cursor);
+			cursor += aligned(vertices[cluster].planes.size());
+			record[37] = static_cast<uint32_t>(cursor);
+			std::copy(vertices[cluster].references.begin(), vertices[cluster].references.end(), candidate.begin() + cursor);
+			cursor += aligned(vertices[cluster].references.size());
 			write_bytes(candidate, cursor, record, 63, 64, source.topology.references);
 		}
 		record[66] = static_cast<uint32_t>(cursor);
@@ -268,9 +434,11 @@ PageCodecResult write_page(const GeometryPage &p_page, bool p_gpu, const Geometr
 			write_word(candidate, GEOMETRY_PAGE_HEADER_BYTES + cluster * GEOMETRY_PAGE_CLUSTER_BYTES + word * 4, record[word]);
 		}
 	}
-	if (cursor != candidate.size() || gpu_cursor != p_sizes.gpu_bytes) {
+	if (cursor > candidate.size() || (p_gpu && cursor != candidate.size()) || gpu_cursor != p_sizes.gpu_bytes) {
 		return { PageCodecError::INVALID_LENGTH };
 	}
+	candidate.resize(cursor);
+	write_word(candidate, 16, static_cast<uint32_t>(cursor));
 	r_bytes = std::move(candidate);
 	return {};
 }
@@ -301,7 +469,129 @@ bool read_words(const uint8_t *p_bytes, size_t p_size, size_t &r_cursor, uint32_
 	return true;
 }
 
-PageCodecError read_cluster(const Record &p_record, const uint8_t *p_bytes, size_t p_size, size_t &r_cursor, GeometryPageCluster &r_cluster) {
+Record disk_record(const uint8_t *p_bytes, uint32_t p_cluster) {
+	Record record;
+	for (uint32_t word = 0; word < record.size(); ++word) {
+		record[word] = read_word(p_bytes, GEOMETRY_PAGE_HEADER_BYTES + size_t(p_cluster) * GEOMETRY_PAGE_CLUSTER_BYTES + word * 4);
+	}
+	return record;
+}
+
+bool is_vertex_reference(const uint8_t *p_bytes, const Record &p_record, uint32_t p_vertex) {
+	return (p_bytes[p_record[37] + p_vertex / 8] & (1u << (p_vertex & 7))) != 0;
+}
+
+bool disk_vertex_layout(const Record &p_record, const uint8_t *p_bytes, size_t p_size, uint32_t p_cluster,
+		VertexLayout &r_layout, uint32_t &r_references, uint32_t &r_coded) {
+	if (!vertex_layout(p_record, r_layout) || p_record[4] < 3 || p_record[4] > 256 ||
+			p_record[32] != (p_record[4] * r_layout.position_bits + 7) / 8 ||
+			p_record[38] != ((p_record[4] * r_layout.attribute_bits + 31) / 32) * 4 ||
+			p_record[37] > p_size || 32 > p_size - p_record[37]) {
+		return false;
+	}
+	r_references = 0;
+	for (uint32_t vertex = 0; vertex < 256; ++vertex) {
+		if (is_vertex_reference(p_bytes, p_record, vertex)) {
+			if (vertex >= p_record[4]) {
+				return false;
+			}
+			++r_references;
+		}
+	}
+	if (r_references * 2 + 32 > p_size - p_record[37]) {
+		return false;
+	}
+	r_coded = p_record[4] - r_references;
+	uint32_t source_vertex = 0;
+	uint32_t reference = 0;
+	for (uint32_t vertex = 0; vertex < p_record[4]; ++vertex) {
+		if (!is_vertex_reference(p_bytes, p_record, vertex)) {
+			continue;
+		}
+		const uint32_t source_cluster = p_bytes[p_record[37] + 32 + reference];
+		const uint32_t delta = p_bytes[p_record[37] + 32 + r_references + reference++];
+		source_vertex = (source_vertex + ((delta >> 1) ^ (0u - (delta & 1u)))) & 255u;
+		if (source_cluster > p_cluster || (source_cluster == p_cluster && source_vertex >= vertex)) {
+			return false;
+		}
+		const Record source = source_cluster == p_cluster ? p_record : disk_record(p_bytes, source_cluster);
+		if (source_vertex >= source[4] || source[37] > p_size || 32 > p_size - source[37] ||
+				is_vertex_reference(p_bytes, source, source_vertex) || source[24] != p_record[24] ||
+				source[33] != p_record[33] || source[34] != p_record[34] || source[35] != p_record[35] || source[36] != p_record[36]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool read_disk_vertices(const Record &p_record, const uint8_t *p_bytes, size_t p_size, size_t &r_cursor,
+		uint32_t p_cluster, std::vector<GeometryPageCluster> &r_clusters) {
+	VertexLayout layout;
+	uint32_t references, coded;
+	if (!disk_vertex_layout(p_record, p_bytes, p_size, p_cluster, layout, references, coded)) {
+		return false;
+	}
+	uint32_t plane_values = 0;
+	std::array<size_t, 4> cursors;
+	for (uint32_t plane = 0; plane < 4; ++plane) {
+		cursors[plane] = size_t(coded) * plane_values;
+		plane_values += layout.plane_values[plane];
+	}
+	std::vector<uint8_t> planes, reference_bytes;
+	if (!read_bytes(p_bytes, p_size, r_cursor, p_record[31], coded * plane_values, planes) ||
+			!read_bytes(p_bytes, p_size, r_cursor, p_record[37], 32 + references * 2, reference_bytes)) {
+		return false;
+	}
+	auto &cluster = r_clusters[p_cluster];
+	cluster.position_bytes.resize(p_record[32], 0);
+	cluster.attributes.bytes.resize(p_record[38], 0);
+	std::array<uint32_t, 18> previous = {};
+	for (uint32_t axis = 0; axis < 3; ++axis) {
+		previous[axis] = (1u << layout.channels[axis].bits) >> 1;
+	}
+	uint32_t reference = 0;
+	uint32_t source_vertex = 0;
+	for (uint32_t vertex = 0; vertex < p_record[4]; ++vertex) {
+		const bool referred = is_vertex_reference(p_bytes, p_record, vertex);
+		uint32_t source_cluster = 0;
+		VertexLayout source_layout;
+		if (referred) {
+			source_cluster = reference_bytes[32 + reference];
+			const uint32_t delta = reference_bytes[32 + references + reference++];
+			source_vertex = (source_vertex + ((delta >> 1) ^ (0u - (delta & 1u)))) & 255u;
+			vertex_layout(make_record(r_clusters[source_cluster]), source_layout);
+		}
+		for (uint32_t channel = 0; channel < layout.count; ++channel) {
+			const auto &description = layout.channels[channel];
+			uint32_t value;
+			if (referred) {
+				const auto &source = r_clusters[source_cluster];
+				const auto &source_channel = source_layout.channels[channel];
+				value = source_channel.base + get_vertex_bits(source_channel.attribute ? source.attributes.bytes : source.position_bytes, source_vertex * (source_channel.attribute ? source_layout.attribute_bits : source_layout.position_bits) + source_channel.offset, source_channel.bits) - description.base;
+				if ((value & ~bit_mask(description.bits)) != 0) {
+					return false;
+				}
+			} else {
+				uint32_t zigzag = 0;
+				for (uint32_t plane = 0; plane < (description.bits + 7) / 8; ++plane) {
+					zigzag |= uint32_t(planes[cursors[plane]++]) << (plane * 8);
+				}
+				if ((zigzag & ~bit_mask(description.bits)) != 0) {
+					return false;
+				}
+				value = (previous[channel] + ((zigzag >> 1) ^ (0u - (zigzag & 1u)))) & bit_mask(description.bits);
+				previous[channel] = value;
+			}
+			put_vertex_bits(description.attribute ? cluster.attributes.bytes : cluster.position_bytes,
+					vertex * (description.attribute ? layout.attribute_bits : layout.position_bits) + description.offset, description.bits, value);
+		}
+	}
+	return true;
+}
+
+PageCodecError read_cluster(const Record &p_record, const uint8_t *p_bytes, size_t p_size, size_t &r_cursor,
+		uint32_t p_cluster, std::vector<GeometryPageCluster> &r_clusters) {
+	GeometryPageCluster &r_cluster = r_clusters[p_cluster];
 	if ((p_record[7] & ~15u) != 0 || (p_record[35] & ~7u) != 0 || (p_record[40] >> 16) != 0 ||
 			p_record[4] < 3 || p_record[4] > MAX_CLUSTER_VERTICES || p_record[5] == 0 || p_record[5] > MAX_CLUSTER_TRIANGLES ||
 			p_record[6] == 0 || p_record[6] > MAX_CLUSTER_MATERIALS || p_record[32] > 2016 || p_record[38] > 10592 ||
@@ -354,8 +644,7 @@ PageCodecError read_cluster(const Record &p_record, const uint8_t *p_bytes, size
 	}
 	r_cluster.topology.layout.new_vertices_before = p_record[61];
 	r_cluster.topology.layout.references_before = p_record[62];
-	if (!read_bytes(p_bytes, p_size, r_cursor, p_record[31], p_record[32], r_cluster.position_bytes) ||
-			!read_bytes(p_bytes, p_size, r_cursor, p_record[37], p_record[38], r_cluster.attributes.bytes) ||
+	if (!read_disk_vertices(p_record, p_bytes, p_size, r_cursor, p_cluster, r_clusters) ||
 			!read_bytes(p_bytes, p_size, r_cursor, p_record[63], p_record[64], r_cluster.topology.references) ||
 			!read_words(p_bytes, p_size, r_cursor, p_record[66], p_record[67], r_cluster.materials.table) ||
 			!read_words(p_bytes, p_size, r_cursor, p_record[68], p_record[6], r_cluster.material_palette) ||
@@ -388,9 +677,16 @@ PageCodecResult measure_geometry_page(const GeometryPage &p_page, GeometryPageSi
 		if (!valid_shape(cluster)) {
 			return { PageCodecError::INVALID_LAYOUT, static_cast<uint32_t>(index) };
 		}
-		const size_t common = aligned(cluster.position_bytes.size()) + aligned(cluster.attributes.bytes.size()) +
+		VertexLayout layout;
+		if (!vertex_layout(make_record(cluster), layout)) {
+			return { PageCodecError::INVALID_LAYOUT, static_cast<uint32_t>(index) };
+		}
+		size_t vertex_bytes = 0;
+		for (uint32_t values : layout.plane_values) {
+			vertex_bytes += size_t(values) * cluster.positions.vertices;
+		}
+		disk += aligned(vertex_bytes) + 40 + aligned(cluster.topology.references.size()) +
 				(cluster.materials.table.size() + cluster.material_palette.size() + cluster.reuse_batch_words.size()) * 4;
-		disk += common + aligned(cluster.topology.references.size());
 		gpu += gpu_payload_bytes(cluster);
 	}
 	if (disk > MAX_DISK_BYTES || gpu > (p_page.root ? ROOT_PAGE_GPU_CAPACITY : STREAMING_PAGE_GPU_CAPACITY)) {
@@ -450,7 +746,7 @@ PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, Geom
 			for (size_t word = 0; word < record.size(); ++word) {
 				record[word] = read_word(p_bytes, GEOMETRY_PAGE_HEADER_BYTES + cluster * GEOMETRY_PAGE_CLUSTER_BYTES + word * 4);
 			}
-			const auto valid = read_cluster(record, p_bytes, p_size, cursor, candidate.clusters[cluster]);
+			const auto valid = read_cluster(record, p_bytes, p_size, cursor, cluster, candidate.clusters);
 			if (valid != PageCodecError::OK) {
 				return { valid, cluster };
 			}
@@ -469,7 +765,7 @@ PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, Geom
 		if (measured.error != PageCodecError::OK) {
 			return measured;
 		}
-		if (cursor != p_size || sizes.disk_bytes != p_size || sizes.gpu_bytes != gpu_bytes || gpu_cursor != gpu_bytes) {
+		if (cursor != p_size || p_size > sizes.disk_bytes || sizes.gpu_bytes != gpu_bytes || gpu_cursor != gpu_bytes) {
 			return { PageCodecError::INVALID_LENGTH };
 		}
 		r_page = std::move(candidate);
@@ -477,6 +773,86 @@ PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, Geom
 	} catch (const std::bad_alloc &) {
 		return { PageCodecError::MEMORY };
 	}
+}
+
+PageCodecResult validate_geometry_page_layout(const uint8_t *p_bytes, size_t p_size) {
+	if (p_bytes == nullptr || p_size < GEOMETRY_PAGE_HEADER_BYTES || p_size > MAX_DISK_BYTES ||
+			read_word(p_bytes, 0) != GEOMETRY_DISK_PAGE_MAGIC || read_word(p_bytes, 4) != GEOMETRY_PAGE_VERSION ||
+			read_word(p_bytes, 8) > PAGE_FLAG_ROOT || read_word(p_bytes, 24) != GEOMETRY_PAGE_HEADER_BYTES || read_word(p_bytes, 28) != 0) {
+		return { PageCodecError::INVALID_HEADER };
+	}
+	const bool root = read_word(p_bytes, 8) != 0;
+	const uint32_t count = read_word(p_bytes, 12);
+	const uint32_t gpu_bytes = read_word(p_bytes, 20);
+	if (count == 0 || count > (root ? 64u : 256u) || gpu_bytes > (root ? ROOT_PAGE_GPU_CAPACITY : STREAMING_PAGE_GPU_CAPACITY)) {
+		return { PageCodecError::CAPACITY };
+	}
+	size_t cursor = GEOMETRY_PAGE_HEADER_BYTES + size_t(count) * GEOMETRY_PAGE_CLUSTER_BYTES;
+	size_t gpu_cursor = cursor;
+	if (cursor > p_size || read_word(p_bytes, 16) != p_size) {
+		return { PageCodecError::INVALID_LENGTH };
+	}
+	const auto range = [&](uint32_t p_offset, size_t p_bytes_count) {
+		if (p_offset != cursor || cursor > p_size || aligned(p_bytes_count) > p_size - cursor) {
+			return false;
+		}
+		for (size_t byte = p_bytes_count; byte < aligned(p_bytes_count); ++byte) {
+			if (p_bytes[cursor + byte] != 0) {
+				return false;
+			}
+		}
+		cursor += aligned(p_bytes_count);
+		return true;
+	};
+	for (uint32_t cluster = 0; cluster < count; ++cluster) {
+		Record record;
+		for (size_t word = 0; word < record.size(); ++word) {
+			record[word] = read_word(p_bytes, GEOMETRY_PAGE_HEADER_BYTES + size_t(cluster) * GEOMETRY_PAGE_CLUSTER_BYTES + word * 4);
+		}
+		if ((record[7] & ~15u) != 0 || (record[35] & ~7u) != 0 || (record[40] >> 16) != 0 ||
+				record[33] == 0 || record[33] > 15 || record[34] > 12 || record[36] > 4 ||
+				record[28] > 21 || record[29] > 21 || record[30] > 21 ||
+				record[4] < 3 || record[4] > MAX_CLUSTER_VERTICES || record[5] == 0 || record[5] > MAX_CLUSTER_TRIANGLES ||
+				record[6] == 0 || record[6] > MAX_CLUSTER_MATERIALS || record[32] > 2016 || record[38] > 10592 ||
+				record[64] > 240 || record[67] > MAX_CLUSTER_MATERIALS || record[70] > 28) {
+			return { PageCodecError::INVALID_LAYOUT, cluster };
+		}
+		VertexLayout layout;
+		uint32_t references, coded;
+		if (!disk_vertex_layout(record, p_bytes, p_size, cluster, layout, references, coded)) {
+			return { PageCodecError::INVALID_LAYOUT, cluster };
+		}
+		uint32_t plane_values = 0;
+		for (uint32_t values : layout.plane_values) {
+			plane_values += values;
+		}
+		if (record[71] != gpu_cursor || !range(record[31], coded * plane_values) ||
+				!range(record[37], 32 + references * 2) || !range(record[63], record[64])) {
+			return { PageCodecError::INVALID_OFFSET, cluster };
+		}
+		ClusterStripLayout strip;
+		strip.vertices = record[4];
+		strip.triangles = record[5];
+		strip.new_vertices_before = record[61];
+		strip.references_before = record[62];
+		for (uint32_t block = 0; block < 4; ++block) {
+			for (uint32_t mask = 0; mask < 3; ++mask) {
+				strip.masks[block][mask] = record[49 + block * 3 + mask];
+			}
+		}
+		if (validate_cluster_strip_layout(strip, p_bytes + record[63], record[64]) != TopologyCodecError::OK) {
+			return { PageCodecError::TOPOLOGY, cluster };
+		}
+		if ((slow_material(record[65]) && (record[65] & SLOW_MATERIAL_MASK) != record[66] / 4) ||
+				!range(record[66], size_t(record[67]) * 4) || !range(record[68], size_t(record[6]) * 4) || !range(record[69], size_t(record[70]) * 4)) {
+			return { PageCodecError::INVALID_OFFSET, cluster };
+		}
+		gpu_cursor += aligned(record[32]) + aligned(record[38]) + gpu_index_bytes(record[4], record[5]) + size_t(record[67] + record[6] + record[70]) * 4;
+	}
+	if (cursor != p_size || gpu_cursor != gpu_bytes) {
+		return { PageCodecError::INVALID_LENGTH };
+	}
+	return {};
 }
 
 PageCodecResult transcode_geometry_page_cpu(const uint8_t *p_bytes, size_t p_size, std::vector<uint8_t> &r_gpu_bytes) {

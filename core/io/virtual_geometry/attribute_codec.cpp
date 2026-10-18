@@ -60,13 +60,15 @@ Vector cross(const Vector &p_first, const Vector &p_second) {
 
 Vector decode_normal(uint32_t p_code, uint32_t p_bits) {
 	const uint32_t maximum = (1u << p_bits) - 1;
-	double x = static_cast<double>(p_code & maximum) * (2.0 / maximum) - 1;
-	double y = static_cast<double>(p_code >> p_bits) * (2.0 / maximum) - 1;
-	const double z = 1 - std::abs(x) - std::abs(y);
-	const double shift = std::clamp(-z, 0.0, 1.0);
+	// Integer unfolding preserves exact axis ties in both CPU and GPU decoders.
+	// The tangent angle depends on the resulting basis, including its tie rule.
+	int32_t x = static_cast<int32_t>((p_code & maximum) * 2) - static_cast<int32_t>(maximum);
+	int32_t y = static_cast<int32_t>((p_code >> p_bits) * 2) - static_cast<int32_t>(maximum);
+	const int32_t z = static_cast<int32_t>(maximum) - std::abs(x) - std::abs(y);
+	const int32_t shift = std::max(-z, 0);
 	x += x >= 0 ? -shift : shift;
 	y += y >= 0 ? -shift : shift;
-	Vector result{ x, y, z };
+	Vector result{ static_cast<double>(x), static_cast<double>(y), static_cast<double>(z) };
 	normalize(result);
 	return result;
 }

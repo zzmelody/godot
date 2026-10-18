@@ -1,0 +1,71 @@
+#ifndef VIRTUAL_GEOMETRY_SCENE_INCLUDED
+#define VIRTUAL_GEOMETRY_SCENE_INCLUDED
+// Frame-local source records, visible-cluster references and material map.
+// Header words point to 48-word sources, two-word references and material IDs.
+// Per-batch fields live once after the material map. Logical field offsets
+// retain their meaning through vg_source_data(); they are not physical words.
+#ifndef VG_SCENE_SET
+#define VG_SCENE_SET 0
+#endif
+#ifdef VG_SCENE_WRITE
+layout(set = VG_SCENE_SET, binding = 8, std430) buffer Scene { uint data[]; } scene;
+#else
+layout(set = VG_SCENE_SET, binding = 8, std430) readonly buffer Scene { uint data[]; } scene;
+#endif
+
+uint vg_source_word(uint index) {
+	return scene.data[0] + index * 48u;
+}
+uint vg_source_data(uint source, uint offset) {
+	uint word = vg_source_word(source);
+	if (offset < 44u) { return scene.data[word + offset]; }
+	if (offset == 44u) { return scene.data[word + 45u]; }
+	if (offset == 49u) { return scene.data[word + 46u]; }
+	if (offset == 50u) { return scene.data[word + 47u]; }
+	return scene.data[scene.data[word + 44u] + offset - 44u];
+}
+vec4 vg_source_vector(uint source, uint offset) {
+	return uintBitsToFloat(uvec4(vg_source_data(source, offset), vg_source_data(source, offset + 1u), vg_source_data(source, offset + 2u), vg_source_data(source, offset + 3u)));
+}
+mat4 vg_source_matrix(uint source, uint offset) {
+	return transpose(mat4(vg_source_vector(source, offset), vg_source_vector(source, offset + 4u), vg_source_vector(source, offset + 8u), vec4(0.0, 0.0, 0.0, 1.0)));
+}
+uvec2 vg_visible_reference(uint index) {
+	uint word = scene.data[1] + index * 2u;
+	return uvec2(scene.data[word], scene.data[word + 1u]);
+}
+
+#ifdef VG_MATERIAL_LOOKUP
+#include "virtual_geometry_page_inc.glsl"
+uint vg_material_reference(uvec2 visible, uint triangle) {
+	uint base = (visible.y >> 8u) * 8192u;
+	uint record = vg_record(visible.y);
+	uint info = geometry.data[record + 65u];
+	uint palette_index = 0xffffffffu;
+	if ((info >> 25u) != 127u) {
+		uint first = ((info >> 18u) & 127u) + 1u;
+		uint second = info >> 25u;
+		palette_index = triangle < first ? info & 63u : triangle < first + second ? (info >> 6u) & 63u : (info >> 12u) & 63u;
+	} else {
+		uint count = ((info >> 19u) & 63u) + 1u;
+		uint table = base + (info & 0x7ffffu);
+		for (uint index = 0u; index < count; ++index) {
+			uint range = geometry.data[table + index];
+			uint first = range & 255u;
+			if (triangle >= first && triangle < first + ((range >> 8u) & 255u)) {
+				palette_index = (range >> 16u) & 63u;
+				break;
+			}
+		}
+	}
+	if (palette_index >= geometry.data[record + 6u]) { return 0xffffffffu; }
+	uint model_slot = geometry.data[base + (geometry.data[record + 68u] >> 2u) + palette_index];
+	uint map = vg_source_data(visible.x, 47u);
+	return scene.data[scene.data[2] + map + model_slot];
+}
+uint vg_material(uint payload) {
+	return vg_material_reference(vg_visible_reference((payload >> 7u) - 1u), payload & 127u);
+}
+#endif
+
+#endif

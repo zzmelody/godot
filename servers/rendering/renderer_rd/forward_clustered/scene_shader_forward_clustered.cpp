@@ -40,6 +40,22 @@ using namespace RendererSceneRenderImplementation;
 
 void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	//compile
+	_clear_virtual_geometry_raster();
+	for (uint32_t color_variant = 0; color_variant < 2; ++color_variant) {
+		virtual_geometry_composite_pipelines[color_variant].clear();
+		virtual_geometry_composite_initialized[color_variant] = false;
+	}
+	if (virtual_geometry_composite_version.is_valid()) {
+		SceneShaderForwardClustered::singleton->shader.version_free(virtual_geometry_composite_version);
+		virtual_geometry_composite_version = RID();
+	}
+	virtual_geometry_pipeline.free();
+	if (virtual_geometry_version.is_valid()) {
+		SceneShaderForwardClustered::singleton->virtual_geometry_shader.version_free(virtual_geometry_version);
+		virtual_geometry_version = RID();
+	}
+	virtual_geometry_attempted = false;
+	virtual_geometry_error = String();
 
 	code = p_code;
 	ubo_size = 0;
@@ -75,6 +91,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 
 	unshaded = false;
 	uses_vertex = false;
+	uses_vertex_id = false;
 	uses_position = false;
 	uses_sss = false;
 	uses_transmittance = false;
@@ -139,6 +156,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.usage_flag_pointers["NORMAL_MAP"] = &uses_normal_map;
 	actions.usage_flag_pointers["BENT_NORMAL_MAP"] = &uses_bent_normal_map;
 
+	actions.usage_flag_pointers["VERTEX_ID"] = &uses_vertex_id;
 	actions.usage_flag_pointers["POINT_SIZE"] = &uses_point_size;
 	actions.usage_flag_pointers["POINT_COORD"] = &uses_point_size;
 
@@ -561,6 +579,233 @@ bool SceneShaderForwardClustered::ShaderData::is_valid() const {
 	}
 }
 
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String &r_error) {
+	MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+	auto *owner = SceneShaderForwardClustered::singleton;
+	if (!virtual_geometry_attempted) {
+		virtual_geometry_attempted = true;
+		const uint32_t required = RD::SUBGROUP_BASIC_BIT | RD::SUBGROUP_BALLOT_BIT | RD::SUBGROUP_QUAD_BIT;
+		if ((RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & required) != required ||
+				(RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) == 0) {
+			virtual_geometry_error = "Virtual geometry material evaluation requires compute subgroup ballot and quad operations.";
+		} else if (!is_valid() || uses_vertex_id || uses_position || writes_tangent || writes_modelview_or_projection ||
+				uses_world_coordinates || uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_antialiasing ||
+				uses_sss || uses_transmittance || uses_bent_normal_map || stencil_enabled || wireframe) {
+			virtual_geometry_error = "Virtual geometry material requires an unsupported coverage, vertex input or shading feature: " + path;
+		} else {
+			ShaderCompiler::IdentifierActions actions;
+			actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
+			actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
+			actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
+			ShaderCompiler::GeneratedCode generated;
+			HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> generated_uniforms;
+			actions.uniforms = &generated_uniforms;
+			Error error = owner->virtual_geometry_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, generated);
+			if (error != OK || generated.uniform_total_size != ubo_size || generated.uniform_offsets != ubo_offsets || generated.texture_uniforms.size() != texture_uniforms.size()) {
+				virtual_geometry_error = "Virtual geometry material compilation or shared parameter layout failed: " + path;
+			} else if (generated.code.has("light")) {
+				virtual_geometry_error = "Virtual geometry custom light functions are not connected yet: " + path;
+			} else if (generated.defines.has("#define SKIP_TRANSFORM_USED\n") || generated.defines.has("#define USE_VERTEX_LIGHTING\n") ||
+					generated.defines.has("#define USE_SHADOW_TO_OPACITY\n") || generated.defines.has("#define LIGHT_VERTEX_USED\n") ||
+					generated.defines.has("#define CUSTOM_FOG_USED\n") || generated.defines.has("#define CUSTOM_RADIANCE_USED\n") ||
+					generated.defines.has("#define CUSTOM_IRRADIANCE_USED\n")) {
+				virtual_geometry_error = "Virtual geometry static material mode is not connected: " + path;
+			} else {
+				Vector<String> composite_defines;
+				composite_defines.push_back("#define VG_COMPOSITE\n#define USE_LIGHTMAP\n");
+				for (const String &define : generated.defines) {
+					// Attribute/varying, material UBO and texture declarations belong
+					// to compute evaluation. Keep only the scene's lighting choices.
+					if (define.begins_with("#define LIGHT_") || define.begins_with("#define DIFFUSE_") || define.begins_with("#define SPECULAR_") ||
+							define == "#define MODE_UNSHADED\n" || define == "#define FOG_DISABLED\n" ||
+							define == "#define SHADOWS_DISABLED\n" || define == "#define AMBIENT_LIGHT_DISABLED\n") {
+						composite_defines.push_back(define);
+					}
+				}
+				if (uses_vertex || uses_alpha_clip || uses_discard) {
+					const bool masked = uses_alpha_clip || uses_discard;
+					ShaderCompiler::IdentifierActions vertex_actions;
+					vertex_actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
+					HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> vertex_uniforms;
+					vertex_actions.uniforms = &vertex_uniforms;
+					ShaderCompiler::GeneratedCode vertex_code;
+					Error vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &vertex_actions, path, vertex_code);
+					ShaderCompiler::GeneratedCode fragment_code;
+					if (vertex_error == OK && masked) {
+						ShaderCompiler::IdentifierActions fragment_actions;
+						fragment_actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
+						fragment_actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
+						HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> fragment_uniforms;
+						fragment_actions.uniforms = &fragment_uniforms;
+						vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &fragment_actions, path, fragment_code);
+						if (vertex_error == OK && (fragment_code.uniform_total_size != ubo_size || fragment_code.uniform_offsets != ubo_offsets || fragment_code.texture_uniforms.size() != texture_uniforms.size())) {
+							vertex_error = ERR_INVALID_DATA;
+						}
+					}
+					if (vertex_error != OK || vertex_code.uniform_total_size != ubo_size || vertex_code.uniform_offsets != ubo_offsets || vertex_code.texture_uniforms.size() != texture_uniforms.size()) {
+						virtual_geometry_error = "Virtual geometry programmable vertex layout failed: " + path;
+					} else {
+						ShaderRD *templates[3] = { &owner->virtual_geometry_raster_bin, &owner->virtual_geometry_raster_sw, &owner->virtual_geometry_raster_hw };
+						for (uint32_t mode = 0; mode < 3; ++mode) {
+							const ShaderCompiler::GeneratedCode &raster_code = masked && mode == 1 ? generated : masked && mode == 2 ? fragment_code
+																																	 : vertex_code;
+							Vector<String> raster_defines = raster_code.defines;
+							if (masked && mode != 0) {
+								raster_defines.push_back("#define VG_MASKED\n");
+							}
+							RID &raster_version = virtual_geometry_raster_versions[mode];
+							raster_version = templates[mode]->version_create(false);
+							if (mode < 2) {
+								templates[mode]->version_set_compute_code(raster_version, raster_code.code, raster_code.uniforms, raster_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], raster_defines);
+							} else {
+								templates[mode]->version_set_code(raster_version, raster_code.code, raster_code.uniforms,
+										vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], masked ? fragment_code.stage_globals[ShaderCompiler::STAGE_COMPUTE] : String(), raster_defines);
+							}
+							RID raster_program = templates[mode]->version_get_shader(raster_version, 0);
+							if (raster_program.is_null()) {
+								virtual_geometry_error = "Virtual geometry programmable raster compilation failed: " + path;
+								break;
+							}
+							if (mode < 2) {
+								virtual_geometry_raster_compute[mode].create_compute_pipeline(raster_program);
+								if (virtual_geometry_raster_compute[mode].get_rid().is_null()) {
+									virtual_geometry_error = "Virtual geometry programmable compute pipeline failed: " + path;
+									break;
+								}
+							} else {
+								RD::PipelineRasterizationState raster;
+								raster.cull_mode = RD::POLYGON_CULL_DISABLED;
+								virtual_geometry_raster_hardware.setup(raster_program, RD::RENDER_PRIMITIVE_TRIANGLES, raster, RD::PipelineMultisampleState(), RD::PipelineDepthStencilState(), RD::PipelineColorBlendState());
+							}
+						}
+					}
+				}
+				virtual_geometry_composite_version = owner->shader.version_create(false);
+				owner->shader.version_set_code(virtual_geometry_composite_version, {}, "", "", "", composite_defines);
+				virtual_geometry_version = owner->virtual_geometry_shader.version_create(false);
+				owner->virtual_geometry_shader.version_set_compute_code(virtual_geometry_version, generated.code, generated.uniforms, generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
+				RID program = owner->virtual_geometry_shader.version_get_shader(virtual_geometry_version, 0);
+				if (program.is_valid()) {
+					virtual_geometry_pipeline.create_compute_pipeline(program);
+				}
+				if (program.is_null() || virtual_geometry_pipeline.get_rid().is_null()) {
+					virtual_geometry_error = "Virtual geometry compute material pipeline creation failed: " + path;
+				}
+			}
+		}
+	}
+	r_error = virtual_geometry_error;
+	return r_error.is_empty() && virtual_geometry_version.is_valid() ? owner->virtual_geometry_shader.version_get_shader(virtual_geometry_version, 0) : RID();
+}
+
+void SceneShaderForwardClustered::ShaderData::_clear_virtual_geometry_raster() {
+	auto *owner = SceneShaderForwardClustered::singleton;
+	ShaderRD *templates[3] = { &owner->virtual_geometry_raster_bin, &owner->virtual_geometry_raster_sw, &owner->virtual_geometry_raster_hw };
+	for (auto &pipeline : virtual_geometry_raster_compute) {
+		pipeline.free();
+	}
+	virtual_geometry_raster_hardware.clear();
+	virtual_geometry_voxel_pipeline.clear();
+	if (virtual_geometry_voxel_version.is_valid()) {
+		owner->virtual_geometry_raster_hw.version_free(virtual_geometry_voxel_version);
+		virtual_geometry_voxel_version = RID();
+	}
+	for (uint32_t mode = 0; mode < 3; ++mode) {
+		if (virtual_geometry_raster_versions[mode].is_valid()) {
+			templates[mode]->version_free(virtual_geometry_raster_versions[mode]);
+			virtual_geometry_raster_versions[mode] = RID();
+		}
+	}
+}
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_raster_shader(uint32_t p_mode) const {
+	ERR_FAIL_COND_V(p_mode >= 3, RID());
+	auto *owner = SceneShaderForwardClustered::singleton;
+	ShaderRD *templates[3] = { &owner->virtual_geometry_raster_bin, &owner->virtual_geometry_raster_sw, &owner->virtual_geometry_raster_hw };
+	return virtual_geometry_raster_versions[p_mode].is_valid() ? templates[p_mode]->version_get_shader(virtual_geometry_raster_versions[p_mode], 0) : RID();
+}
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_raster_pipeline(uint32_t p_mode, RD::FramebufferFormatID p_format) {
+	ERR_FAIL_COND_V(p_mode >= 3, RID());
+	return p_mode < 2 ? virtual_geometry_raster_compute[p_mode].get_rid() : virtual_geometry_raster_hardware.get_render_pipeline(RD::INVALID_ID, p_format);
+}
+
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_voxel_shader() {
+	MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+	auto *owner = SceneShaderForwardClustered::singleton;
+	if (virtual_geometry_voxel_version.is_null()) {
+		ShaderCompiler::IdentifierActions actions;
+		actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
+		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
+		HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> voxel_uniforms;
+		actions.uniforms = &voxel_uniforms;
+		ShaderCompiler::GeneratedCode vertex_code;
+		actions.entry_point_stages.erase("fragment");
+		Error error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, vertex_code);
+		ERR_FAIL_COND_V_MSG(error != OK || vertex_code.uniform_total_size != ubo_size || vertex_code.uniform_offsets != ubo_offsets || vertex_code.texture_uniforms.size() != texture_uniforms.size(), RID(), "Virtual geometry SDFGI vertex layout refused: " + path);
+		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
+		ShaderCompiler::GeneratedCode generated;
+		error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, generated);
+		ERR_FAIL_COND_V_MSG(error != OK || generated.uniform_total_size != ubo_size || generated.uniform_offsets != ubo_offsets || generated.texture_uniforms.size() != texture_uniforms.size(), RID(), "Virtual geometry SDFGI material layout refused: " + path);
+		generated.defines.push_back("#define VG_VOXEL_CAPTURE\n");
+		virtual_geometry_voxel_version = owner->virtual_geometry_raster_hw.version_create(false);
+		owner->virtual_geometry_raster_hw.version_set_code(virtual_geometry_voxel_version, generated.code, generated.uniforms,
+				vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
+		const RID program = owner->virtual_geometry_raster_hw.version_get_shader(virtual_geometry_voxel_version, 0);
+		ERR_FAIL_COND_V(program.is_null(), RID());
+		RD::PipelineRasterizationState raster;
+		raster.cull_mode = RD::POLYGON_CULL_DISABLED;
+		virtual_geometry_voxel_pipeline.setup(program, RD::RENDER_PRIMITIVE_TRIANGLES, raster, RD::PipelineMultisampleState(), RD::PipelineDepthStencilState(), RD::PipelineColorBlendState());
+	}
+	return owner->virtual_geometry_raster_hw.version_get_shader(virtual_geometry_voxel_version, 0);
+}
+
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_voxel_pipeline(RD::FramebufferFormatID p_format) {
+	return virtual_geometry_voxel_pipeline.get_render_pipeline(RD::INVALID_ID, p_format);
+}
+
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_shader(bool p_separate_specular, bool p_multiview) const {
+	if (virtual_geometry_composite_version.is_null()) {
+		return RID();
+	}
+	const uint16_t variant = ShaderVersion::SHADER_VERSION_COLOR_PASS * 2 + (p_separate_specular ? SHADER_COLOR_PASS_FLAG_SEPARATE_SPECULAR : 0) + (p_multiview ? SHADER_COLOR_PASS_FLAG_MULTIVIEW : 0);
+	return SceneShaderForwardClustered::singleton->shader.version_get_shader(virtual_geometry_composite_version, variant);
+}
+
+RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_composite_pipeline(RD::FramebufferFormatID p_format, bool p_separate_specular, const ShaderSpecialization &p_specialization, bool p_multiview, bool p_reflection) {
+	const uint32_t color_variant = uint32_t(p_separate_specular) | (uint32_t(p_multiview) << 1) | (uint32_t(p_reflection) << 2);
+	auto &pipeline = virtual_geometry_composite_pipelines[color_variant];
+	const auto &old = virtual_geometry_composite_specialization[color_variant];
+	if (!virtual_geometry_composite_initialized[color_variant] || old.packed_0 != p_specialization.packed_0 || old.packed_1 != p_specialization.packed_1) {
+		RID program = get_virtual_geometry_composite_shader(p_separate_specular, p_multiview);
+		ERR_FAIL_COND_V(program.is_null(), RID());
+		Vector<RD::PipelineSpecializationConstant> constants;
+		RD::PipelineSpecializationConstant value;
+		value.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT;
+		value.constant_id = 0;
+		value.int_value = p_specialization.packed_0;
+		constants.push_back(value);
+		value.constant_id = 1;
+		value.int_value = p_specialization.packed_1;
+		constants.push_back(value);
+		RD::PipelineRasterizationState raster;
+		raster.cull_mode = RD::POLYGON_CULL_DISABLED;
+		RD::PipelineDepthStencilState depth;
+		depth.enable_depth_test = true;
+		depth.depth_compare_operator = RD::COMPARE_OP_GREATER_OR_EQUAL;
+		RD::PipelineColorBlendState blend = RD::PipelineColorBlendState::create_disabled(p_reflection ? 1 : 3);
+		// A separate depth-tested pass resolves virtual geometry velocity.
+		if (!p_reflection) {
+			blend.attachments.write[2].write_r = false;
+			blend.attachments.write[2].write_g = false;
+			blend.attachments.write[2].write_b = false;
+			blend.attachments.write[2].write_a = false;
+		}
+		pipeline.setup(program, RD::RENDER_PRIMITIVE_TRIANGLES, raster, RD::PipelineMultisampleState(), depth, blend, 0, constants);
+		virtual_geometry_composite_specialization[color_variant] = p_specialization;
+		virtual_geometry_composite_initialized[color_variant] = true;
+	}
+	return pipeline.get_render_pipeline(RD::INVALID_ID, p_format);
+}
+
 SceneShaderForwardClustered::ShaderData::ShaderData() :
 		shader_list_element(this) {
 	pipeline_hash_map.set_creation_object_and_function(this, &ShaderData::_create_pipeline);
@@ -568,7 +813,18 @@ SceneShaderForwardClustered::ShaderData::ShaderData() :
 }
 
 SceneShaderForwardClustered::ShaderData::~ShaderData() {
+	_clear_virtual_geometry_raster();
 	pipeline_hash_map.clear_pipelines();
+	for (auto &pipeline : virtual_geometry_composite_pipelines) {
+		pipeline.clear();
+	}
+	if (virtual_geometry_composite_version.is_valid()) {
+		SceneShaderForwardClustered::singleton->shader.version_free(virtual_geometry_composite_version);
+	}
+	virtual_geometry_pipeline.free();
+	if (virtual_geometry_version.is_valid()) {
+		SceneShaderForwardClustered::singleton->virtual_geometry_shader.version_free(virtual_geometry_version);
+	}
 
 	if (version.is_valid()) {
 		ERR_FAIL_NULL(SceneShaderForwardClustered::singleton);
@@ -911,6 +1167,52 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.check_multiview_samplers = true;
 
 		compiler.initialize(actions);
+		actions.global_buffer_array_variable = "vg_global_uniform";
+		actions.global_buffer_array_function = true;
+		actions.compute_material_varyings = true;
+		actions.separate_texture_function_samplers = true;
+		actions.discard_function = "vg_discard";
+		actions.check_multiview_samplers = false;
+		actions.instance_uniform_index_variable = "vg_source_data(vg_source, 45u)";
+		actions.renames["INSTANCE_ID"] = "int(vg_source_data(vg_source, 44u))";
+		actions.renames["FRAGCOORD"] = "vg_fragcoord";
+		actions.renames["FRONT_FACING"] = "vg_front_facing";
+		actions.renames["TIME"] = "vg_time";
+		actions.renames["EXPOSURE"] = "vg_view.state.y";
+		actions.renames["VIEW_MATRIX"] = "vg_world_to_view";
+		actions.renames["INV_VIEW_MATRIX"] = "vg_camera";
+		actions.renames["INV_PROJECTION_MATRIX"] = "inverse_projection_matrix";
+		actions.renames["MAIN_CAM_INV_VIEW_MATRIX"] = "(vg_previous_evaluation ? vg_history_view.previous_inverse_view : vg_history_view.main_camera)";
+		actions.renames["VIEWPORT_SIZE"] = "vg_view.dimensions.xy";
+		actions.renames["SCREEN_UV"] = "(vg_fragcoord.xy / vg_view.dimensions.xy)";
+		actions.renames["IN_SHADOW_PASS"] = "((vg_view.flags.y & 1u) != 0u)";
+		actions.renames["OUTPUT_IS_SRGB"] = "false";
+		actions.renames["CLIP_SPACE_FAR"] = "0.0";
+		actions.renames["NODE_POSITION_VIEW"] = "modelview[3].xyz";
+		actions.renames["CAMERA_POSITION_WORLD"] = "vg_camera[3].xyz";
+		actions.renames["CAMERA_DIRECTION_WORLD"] = "vg_camera[2].xyz";
+		actions.renames["CAMERA_VISIBLE_LAYERS"] = "vg_view.flags.x";
+		actions.renames["IS_MULTIVIEW"] = "false";
+		actions.renames["VIEW_INDEX"] = "int(vg_view.eye_offset.w)";
+		actions.renames["EYE_OFFSET"] = "vg_view.eye_offset.xyz";
+		virtual_geometry_raster_compiler.initialize(actions);
+		for (const char *name : { "dFdx", "dFdy", "dFdxFine", "dFdyFine", "dFdxCoarse", "dFdyCoarse", "fwidth", "fwidthFine", "fwidthCoarse", "texture", "textureProj" }) {
+			String replacement = name;
+			if (replacement == "dFdx" || replacement == "dFdy") {
+				replacement += "Fine";
+			} else if (replacement == "fwidthFine") {
+				replacement = "fwidth";
+			}
+			actions.builtin_function_renames[name] = "vg_" + replacement;
+		}
+		virtual_geometry_compiler.initialize(actions);
+		Vector<String> modes;
+		modes.push_back("");
+		virtual_geometry_shader.initialize(modes);
+		modes.write[0] = "#define VG_RASTER_MATERIALS\n#define VG_PROGRAMMABLE\n#define VG_GLOBAL_RASTER\n";
+		virtual_geometry_raster_bin.initialize(modes);
+		virtual_geometry_raster_sw.initialize(modes);
+		virtual_geometry_raster_hw.initialize(modes);
 	}
 
 	{

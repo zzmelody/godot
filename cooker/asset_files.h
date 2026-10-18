@@ -16,6 +16,9 @@
 #include <filesystem>
 
 namespace CookerFiles {
+// Fragmented world assets retain complete per-entry streaming records.
+inline constexpr uint64_t MAX_MANIFEST_BYTES = INT64_MAX;
+
 // Only the shared package, a world package, or one direct module package owns
 // cooker/source/generated directories. Intermediate folders are not packages.
 inline String package_root_relative(const String &p_relative, const String &p_directory) {
@@ -91,7 +94,6 @@ inline bool is_resource(const String &p_path) {
 inline Error collect_render_payloads(const Variant &p_value, HashSet<ObjectID> &r_visited, HashSet<String> &r_files, bool p_pack, int p_depth = 0);
 
 inline Error collect(const String &p_path, HashSet<String> &r_files, bool p_pack = false, int p_depth = 0) {
-	ERR_FAIL_COND_V(p_depth > 64 || r_files.size() > 4096, ERR_PARAMETER_RANGE_ERROR);
 	Error error = check_path(p_path);
 	ERR_FAIL_COND_V(error != OK, error);
 	ERR_FAIL_COND_V_MSG(!is_resource(p_path), ERR_UNAVAILABLE, "Only cooked or declarative resource dependencies are supported: " + p_path);
@@ -139,7 +141,7 @@ inline Error collect(const String &p_path, HashSet<String> &r_files, bool p_pack
 }
 
 inline Error collect_render_payloads(const Variant &p_value, HashSet<ObjectID> &r_visited, HashSet<String> &r_files, bool p_pack, int p_depth) {
-	ERR_FAIL_COND_V(p_depth > 128 || r_visited.size() > 16384, ERR_PARAMETER_RANGE_ERROR);
+	ERR_FAIL_COND_V(p_depth > 128, ERR_PARAMETER_RANGE_ERROR);
 	if (p_value.get_type() == Variant::ARRAY) {
 		for (const Variant &value : Array(p_value)) {
 			Error error = collect_render_payloads(value, r_visited, r_files, p_pack, p_depth + 1);
@@ -193,7 +195,7 @@ inline Error collect_render_payloads(const Variant &p_value, HashSet<ObjectID> &
 // Directory roots are declared by Luau; enumeration only transports existing
 // cooked resources. It does not infer source art, import or generate content.
 inline Error collect_directory(const String &p_path, Array &r_roots, HashSet<String> &r_metadata, int &r_directories, int p_depth = 0) {
-	ERR_FAIL_COND_V(p_depth > 16 || ++r_directories > 1024, ERR_PARAMETER_RANGE_ERROR);
+	++r_directories;
 	ERR_FAIL_COND_V(!is_generated(p_path), ERR_UNAUTHORIZED);
 	Error error = check_path(p_path, false, false, false);
 	ERR_FAIL_COND_V(error != OK, error);
@@ -211,7 +213,10 @@ inline Error collect_directory(const String &p_path, Array &r_roots, HashSet<Str
 	Vector<String> children;
 	for (String name = directory->get_next(); !name.is_empty(); name = directory->get_next()) {
 		if (name == "." || name == "..") continue;
-		if (children.size() >= 4096 || directory->is_link(name)) { directory->list_dir_end(); return ERR_PARAMETER_RANGE_ERROR; }
+		if (directory->is_link(name)) {
+			directory->list_dir_end();
+			return ERR_UNAUTHORIZED;
+		}
 		children.push_back(name);
 	}
 	directory->list_dir_end();
@@ -226,10 +231,8 @@ inline Error collect_directory(const String &p_path, Array &r_roots, HashSet<Str
 		} else if (name == "asset.manifest.json") {
 			error = check_path(path);
 			ERR_FAIL_COND_V(error != OK, error);
-			ERR_FAIL_COND_V(FileAccess::get_file_as_bytes(path).size() > 1024 * 1024, ERR_PARAMETER_RANGE_ERROR);
 			r_metadata.insert(path);
 		}
-		ERR_FAIL_COND_V(r_roots.size() + r_metadata.size() > 4096, ERR_PARAMETER_RANGE_ERROR);
 	}
 	return OK;
 }
@@ -239,7 +242,6 @@ inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
 	ERR_FAIL_COND_V(p_job.has("directories") && p_job["directories"].get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
 	Array roots = Array(p_job.get("files", Array())).duplicate();
 	const Array directories = p_job.get("directories", Array());
-	ERR_FAIL_COND_V(roots.size() > 4096 || directories.size() > 32, ERR_PARAMETER_RANGE_ERROR);
 	HashSet<String> metadata;
 	int directory_count = 0;
 	for (const Variant &directory : directories) {

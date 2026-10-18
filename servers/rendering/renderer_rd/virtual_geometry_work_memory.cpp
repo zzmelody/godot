@@ -1,0 +1,80 @@
+#include "virtual_geometry_work_memory.h"
+
+#include "core/math/math_funcs.h"
+#include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
+
+namespace RendererRD {
+
+Error VirtualGeometryWorkMemory::ensure(RID &r_buffer, uint32_t &r_words, uint64_t p_words, bool p_indirect) {
+	if (p_words > UINT32_MAX / 4) {
+		WARN_PRINT_ONCE(vformat("Virtual geometry work buffer exceeds the device word range: words=%s.", p_words));
+		return ERR_OUT_OF_MEMORY;
+	}
+	if (r_words >= p_words && r_buffer.is_valid()) {
+		return OK;
+	}
+	// Large scene tables share capacity with selection, history and other views.
+	// Grow from the current allocation instead of doubling the new requirement.
+	uint64_t capacity = MAX(MAX(uint64_t(1), p_words), uint64_t(r_words) + r_words / 4);
+	capacity = (capacity + 15) & ~uint64_t(15);
+	if (capacity > UINT32_MAX / 4) {
+		capacity = MAX(uint64_t(1), p_words);
+	}
+	const uint32_t words = uint32_t(capacity);
+	const RID candidate = storage(words * 4, p_indirect ? RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT : 0);
+	if (candidate.is_null()) {
+		return ERR_OUT_OF_MEMORY;
+	}
+	free(r_buffer);
+	r_buffer = candidate;
+	r_words = words;
+	return OK;
+}
+
+RID VirtualGeometryWorkMemory::storage(uint32_t p_bytes, BitField<RD::StorageBufferUsage> p_usage) {
+	MeshStorage *storage = MeshStorage::get_singleton();
+	if (!storage->reserve_virtual_geometry_work(p_bytes)) {
+		return RID();
+	}
+	const RID buffer = RD::get_singleton()->storage_buffer_create(p_bytes, {}, p_usage);
+	if (buffer.is_null()) {
+		WARN_PRINT_ONCE(vformat("Virtual geometry device storage creation failed: bytes=%s.", p_bytes));
+		storage->retire_virtual_geometry_work(p_bytes);
+		return RID();
+	}
+	buffers.insert(buffer, p_bytes);
+	return buffer;
+}
+
+RID VirtualGeometryWorkMemory::uniform(uint32_t p_bytes) {
+	MeshStorage *storage = MeshStorage::get_singleton();
+	if (!storage->reserve_virtual_geometry_work(p_bytes)) {
+		return RID();
+	}
+	const RID buffer = RD::get_singleton()->uniform_buffer_create(p_bytes);
+	if (buffer.is_null()) {
+		storage->retire_virtual_geometry_work(p_bytes);
+		return RID();
+	}
+	buffers.insert(buffer, p_bytes);
+	return buffer;
+}
+
+void VirtualGeometryWorkMemory::free(RID p_buffer) {
+	if (p_buffer.is_null()) {
+		return;
+	}
+	const uint64_t *bytes = buffers.getptr(p_buffer);
+	ERR_FAIL_NULL(bytes);
+	RD::get_singleton()->free_rid(p_buffer);
+	MeshStorage::get_singleton()->retire_virtual_geometry_work(*bytes);
+	buffers.erase(p_buffer);
+}
+
+VirtualGeometryWorkMemory::~VirtualGeometryWorkMemory() {
+	while (!buffers.is_empty()) {
+		free(buffers.begin()->key);
+	}
+}
+
+} // namespace RendererRD

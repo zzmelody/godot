@@ -106,6 +106,45 @@ TEST_CASE("[RID] 'get_local_index'") {
 }
 
 #ifdef THREADS_ENABLED
+TEST_CASE("[RID_Owner] Growth preserves live handles beyond the former capacity") {
+	struct Growth {
+		RID_Owner<uint32_t, true> owner{ 256 };
+		RID stable;
+		std::atomic<bool> done{ false };
+		std::atomic<bool> intact{ true };
+	} growth;
+	growth.stable = growth.owner.make_rid(42);
+	Thread reader;
+	reader.start([](void *p_data) {
+		Growth &state = *static_cast<Growth *>(p_data);
+		while (!state.done.load(std::memory_order_relaxed)) {
+			const uint32_t *value = state.owner.get_or_null(state.stable);
+			if (value == nullptr || *value != 42) {
+				state.intact.store(false, std::memory_order_relaxed);
+				break;
+			}
+		}
+	},
+			&growth);
+	LocalVector<RID> handles;
+	for (uint32_t index = 0; index < 262145; ++index) {
+		handles.push_back(growth.owner.make_rid(index));
+	}
+	growth.done.store(true, std::memory_order_relaxed);
+	reader.wait_to_finish();
+	CHECK(growth.intact.load(std::memory_order_relaxed));
+	CHECK(growth.owner.get_rid_count() == handles.size() + 1);
+	for (uint32_t index = 0; index < handles.size(); ++index) {
+		const uint32_t *value = growth.owner.get_or_null(handles[index]);
+		REQUIRE(value != nullptr);
+		CHECK(*value == index);
+		growth.owner.free(handles[index]);
+	}
+	CHECK(*growth.owner.get_or_null(growth.stable) == 42);
+	growth.owner.free(growth.stable);
+	CHECK(growth.owner.get_rid_count() == 0);
+}
+
 // This case would let sanitizers realize data races.
 // Additionally, on purely weakly ordered architectures, it would detect synchronization issues
 // if RID_Alloc failed to impose proper memory ordering and the test's threads are distributed

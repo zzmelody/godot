@@ -3,10 +3,12 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "collision_support.h"
+#include "content_hash.h"
 #include "heightfield_support.h"
 #include "minimum_visual.h"
 #include "render_dependencies.h"
 #include "virtual_geometry_mesh.h"
+#include "virtual_geometry_validation.h"
 
 #include "core/io/json.h"
 #include "core/io/image.h"
@@ -65,17 +67,8 @@ constexpr int HANDLE_TAG = 17;
 constexpr int SOURCE_BYTES = 64 * 1024;
 
 struct Limits {
-	int memory_mb = 32;
+	int memory_mb = 128;
 	int time_ms = 0; // 0 = no execution deadline; a job may opt in with limits.time_ms.
-	int max_vertices = 500000;
-	// No default ceiling: memory_mb, max_vertices and output_mb bound the result.
-	// A job may still opt in with limits.max_instances.
-	int max_instances = std::numeric_limits<int>::max();
-	// Fine spatial batches retain one scene handle per nonempty cell.
-	// Keep a bounded handle count alongside the memory and output budgets.
-	int max_resources = 1024;
-	int input_mb = 256;
-	int output_mb = 64;
 };
 
 struct NodeDeleter {
@@ -90,7 +83,7 @@ struct Recipe {
 	std::string host_message;
 	bool memory_failed = false;
 	size_t allocated = 0, peak_memory = 0;
-	int vertices = 0, instances = 0;
+	uint64_t vertices = 0, instances = 0;
 	HashSet<ObjectID> accounted_meshes;
 	int effect_layers = 0, effect_particle_systems = 0, effect_particles = 0, effect_textures = 0;
 	int field_cells = 0, point_count = 0;
@@ -110,7 +103,7 @@ struct Recipe {
 	std::map<ObjectID, OwnedNode> part_roots;
 	std::map<ObjectID, size_t> part_handles;
 	using GeometryCacheKey = std::tuple<uint64_t, bool, double, int32_t, uint32_t, uint32_t, bool>;
-	std::map<GeometryCacheKey, ObjectID> geometry_cache;
+	std::map<GeometryCacheKey, Ref<Resource>> geometry_cache;
 	std::map<ObjectID, CookerVirtualGeometry::BuildOutput> geometry_builds;
 	uint64_t geometry_pending_bytes = 0;
 
@@ -232,6 +225,21 @@ struct Recipe {
 		}
 		lua_pop(L, 1); return value;
 	}
+	Color instance_data_field(int p_index, const char *p_name, Color p_default, bool &r_present) {
+		field(p_index, p_name);
+		r_present = !lua_isnil(L, -1);
+		Color value = p_default;
+		if (r_present) {
+			require(array(-1, 4) == 4, "instance data requires four finite components");
+			for (int component = 0; component < 4; ++component) {
+				lua_rawgeti(L, -1, component + 1);
+				value[component] = number(-1, -1e30, 1e30);
+				lua_pop(L, 1);
+			}
+		}
+		lua_pop(L, 1);
+		return value;
+	}
 	Color color(int p_index) {
 		int count = array(p_index, 4); require(count == 3 || count == 4, "color needs three or four components");
 		p_index = lua_absindex(L, p_index); Color value(1, 1, 1, 1);
@@ -300,26 +308,16 @@ struct Recipe {
 	}
 	int push_resource(const Ref<Resource> &p_resource) {
 		check_budget();
-		require(p_resource.is_valid() && resources.size() < size_t(limits.max_resources), "asset resource limit exceeded");
+		require(p_resource.is_valid(), "asset resource is invalid");
 		Ref<Mesh> mesh = p_resource;
-		if (mesh.is_valid() && !accounted_meshes.has(mesh->get_instance_id())) {
-			accounted_meshes.insert(mesh->get_instance_id());
-			if (Ref<VirtualGeometryMesh>(mesh).is_valid()) {
-				const auto built = geometry_builds.find(mesh->get_instance_id());
-				require(built != geometry_builds.end(), "virtual geometry source accounting is missing");
-			} else {
-				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
-					vertices += mesh->surface_get_array_len(surface);
-					require(vertices <= limits.max_vertices, "mesh vertex budget exceeded");
-				}
-			}
+		if (mesh.is_valid()) {
+			vertices += account_mesh(mesh);
 		}
 		Ref<PackedScene> packed = p_resource;
 		if (packed.is_valid()) {
 			OwnedNode root(packed->instantiate());
 			require(root != nullptr, "could not instantiate PackedScene input");
 			vertices += count_vertices(root.get());
-			require(vertices <= limits.max_vertices, "scene vertex budget exceeded");
 		}
 		size_t id = resources.size();
 		Ref<Image> image = p_resource;
@@ -335,21 +333,33 @@ struct Recipe {
 		*static_cast<size_t *>(lua_newuserdatatagged(L, sizeof(size_t), HANDLE_TAG)) = id;
 		return 1;
 	}
-	int count_vertices(Node *p_node) {
-		int count = 0;
-		MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node);
-		if (mesh_instance && mesh_instance->get_mesh().is_valid() && !accounted_meshes.has(mesh_instance->get_mesh()->get_instance_id())) {
-			Ref<Mesh> mesh = mesh_instance->get_mesh();
-			accounted_meshes.insert(mesh->get_instance_id());
-			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) count += mesh->surface_get_array_len(surface);
+	uint64_t account_mesh(const Ref<Mesh> &p_mesh) {
+		if (p_mesh.is_null() || accounted_meshes.has(p_mesh->get_instance_id())) { return 0; }
+		uint64_t count = 0;
+		const Ref<VirtualGeometryMesh> geometry = p_mesh;
+		if (geometry.is_valid()) {
+			require(geometry->has_geometry(), "virtual geometry input has no valid root");
+			// A published root has no CPU vertex arrays. Fresh builds already
+			// charged their ordinary source. Root/resource files use the input
+			// byte limit; borrowed page containers stay deferred. Operations that
+			// decode roots retain their separate vertex and temporary bounds.
+		} else {
+			for (int surface = 0; surface < p_mesh->get_surface_count(); ++surface) { count += p_mesh->surface_get_array_len(surface); }
 		}
-		MultiMeshInstance3D *multi_instance = Object::cast_to<MultiMeshInstance3D>(p_node);
-		if (multi_instance && multi_instance->get_multimesh().is_valid() && multi_instance->get_multimesh()->get_mesh().is_valid() && !accounted_meshes.has(multi_instance->get_multimesh()->get_mesh()->get_instance_id())) {
-			Ref<Mesh> mesh = multi_instance->get_multimesh()->get_mesh();
-			accounted_meshes.insert(mesh->get_instance_id());
-			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) count += mesh->surface_get_array_len(surface);
+		accounted_meshes.insert(p_mesh->get_instance_id());
+		return count;
+	}
+	uint64_t count_vertices(Node *p_node) {
+		uint64_t count = 0;
+		if (const auto *instance = Object::cast_to<MeshInstance3D>(p_node)) {
+			count += account_mesh(instance->get_mesh());
 		}
-		for (int i = 0; i < p_node->get_child_count(); ++i) count += count_vertices(p_node->get_child(i));
+		if (const auto *instance = Object::cast_to<MultiMeshInstance3D>(p_node); instance && instance->get_multimesh().is_valid()) {
+			count += account_mesh(instance->get_multimesh()->get_mesh());
+		}
+		for (int child = 0; child < p_node->get_child_count(); ++child) {
+			count += count_vertices(p_node->get_child(child));
+		}
 		return count;
 	}
 	static void collect_bounds(Node *p_node, const Transform3D &p_parent, AABB &r_bounds, bool &r_has_bounds) {
@@ -908,7 +918,6 @@ struct Recipe {
                   "collision simplification requires trimesh");
 		const Vector<Face3> triangles = mesh->get_faces();
 		s.require(!triangles.is_empty(), "collision requires complete triangle faces");
-		s.require(triangles.size() <= int64_t(s.limits.max_vertices) * 2, "collision triangle budget exceeded");
 		Vector<Vector3> faces;
 		faces.resize(triangles.size() * 3);
 		for (int index = 0; index < triangles.size(); ++index) {
@@ -1077,7 +1086,6 @@ struct Recipe {
 						options.texture_size >= 16 && options.texture_size <= 1024 &&
 						options.minimum_height >= 0 && options.minimum_height <= 100,
 				"minimum_visual options are outside the supported range");
-		s.require(Ref<VirtualGeometryMesh>(resource).is_null(), "minimum_visual requires the original ordinary resource");
 		CookerMinimum::Builder builder(options);
 		Ref<Resource> output = builder.Build(resource);
 		s.require(output.is_valid(),
@@ -1096,7 +1104,8 @@ struct Recipe {
 			resource = s.handle(1);
 		}
 		const Ref<Mesh> source = resource;
-		s.require(source.is_valid() && Ref<VirtualGeometryMesh>(source).is_null(), "virtual_geometry requires an ordinary source Mesh");
+		const Ref<PackedScene> source_scene = resource;
+		s.require((source.is_valid() && Ref<VirtualGeometryMesh>(source).is_null()) || source_scene.is_valid(), "virtual_geometry requires an ordinary source Mesh or PackedScene");
 		s.fields(2, { "preserve_area", "max_edge_length_factor", "position_precision", "normal_bits", "tangent_bits", "interpolate_uvs" });
 		CookerVirtualGeometry::Settings settings;
 		settings.dag.preserve_area = s.boolean_field(2, "preserve_area", false);
@@ -1114,17 +1123,34 @@ struct Recipe {
 		s.require(normal_bits == std::floor(normal_bits) && tangent_bits == std::floor(tangent_bits), "virtual geometry attribute precision must be integral");
 		settings.encoding.normal_bits = uint32_t(normal_bits);
 		settings.encoding.tangent_bits = uint32_t(tangent_bits);
-		const GeometryCacheKey key = std::make_tuple(uint64_t(source->get_instance_id()), settings.dag.preserve_area,
+		const GeometryCacheKey key = std::make_tuple(uint64_t(resource->get_instance_id()), settings.dag.preserve_area,
 				settings.dag.max_edge_length_factor, settings.encoding.position_precision, settings.encoding.normal_bits,
 				settings.encoding.tangent_bits, settings.interpolate_uvs);
 		const auto cached = s.geometry_cache.find(key);
 		if (cached != s.geometry_cache.end()) {
-			return s.push_resource(s.geometry_builds.at(cached->second).mesh);
+			return s.push_resource(cached->second);
 		}
-		s.require(s.resources.size() < size_t(s.limits.max_resources), "asset resource limit exceeded");
+		if (source_scene.is_valid()) {
+			settings.max_output_bytes = UINT64_MAX - s.geometry_pending_bytes;
+			s.require(settings.max_output_bytes > 0, "virtual geometry output budget exceeded");
+			Ref<Resource> prepared;
+			std::map<ObjectID, CookerVirtualGeometry::BuildOutput> builds;
+			Dictionary report;
+			String message;
+			const Error error = CookerVirtualGeometry::convert_imported_scene(source_scene, prepared, builds, report, message, &settings);
+			if (error != OK) {
+				s.host_message = message.utf8().get_data();
+				s.require(false, s.host_message.c_str());
+			}
+			for (auto &entry : builds) {
+				s.geometry_pending_bytes += entry.second.container.size() + uint64_t(int64_t(entry.second.report["root_bytes"]));
+				s.geometry_builds.emplace(entry.first, std::move(entry.second));
+			}
+			s.geometry_cache.emplace(key, prepared);
+			return s.push_resource(prepared);
+		}
 		const bool source_accounted = s.accounted_meshes.has(source->get_instance_id());
-		settings.max_source_vertices = uint32_t(source_accounted ? s.limits.max_vertices : s.limits.max_vertices - s.vertices);
-		settings.max_output_bytes = uint64_t(s.limits.output_mb) * 1024 * 1024 - s.geometry_pending_bytes;
+		settings.max_output_bytes = UINT64_MAX - s.geometry_pending_bytes;
 		s.require(settings.max_output_bytes > 0, "virtual geometry output budget exceeded");
 		CookerVirtualGeometry::BuildOutput built;
 		String message;
@@ -1141,7 +1167,7 @@ struct Recipe {
 		}
 		s.geometry_pending_bytes += built.container.size() + uint64_t(int64_t(built.report["root_bytes"]));
 		s.geometry_builds.emplace(id, std::move(built));
-		s.geometry_cache.emplace(key, id);
+		s.geometry_cache.emplace(key, mesh);
 		return s.push_resource(mesh);
 	}
 
@@ -1181,15 +1207,17 @@ struct Recipe {
 		auto &s = self(p_state); s.arity(1);
 		s.fields(1, {"vertices", "indices", "normals", "uvs"});
 		s.field(1, "vertices");
-		int count = s.array(-1, s.limits.max_vertices - s.vertices);
+		int count = s.array(-1, std::numeric_limits<int>::max());
 		s.require(count >= 3, "a mesh requires at least three vertices");
 		PackedVector3Array vertices; vertices.resize(count);
 		for (int i = 0; i < count; ++i) { lua_rawgeti(p_state, -1, i + 1); vertices.set(i, s.vector(-1)); lua_pop(p_state, 1); }
 		lua_pop(p_state, 1);
 		s.field(1, "indices");
-		int index_count = s.array(-1, 6 * s.limits.max_vertices);
+		const int max_indices = std::numeric_limits<int>::max();
+		int index_count = s.array(-1, max_indices);
 		s.require(index_count >= 3 && index_count % 3 == 0, "indices must contain complete triangles");
-		PackedInt32Array indices; indices.resize(index_count);
+		PackedInt32Array indices;
+		indices.resize(index_count);
 		for (int i = 0; i < index_count; ++i) {
 			lua_rawgeti(p_state, -1, i + 1); double index = s.number(-1, 1, count);
 			s.require(index == std::floor(index), "mesh indices must be 1-based integers");
@@ -1251,41 +1279,77 @@ struct Recipe {
 		return Transform3D(basis, position);
 	}
 	static int scene(lua_State *p_state) {
-		auto &s = self(p_state); s.arity(1);
-		int count = s.array(1, s.limits.max_instances - s.instances);
+		auto &s = self(p_state);
+		s.arity(1);
+		int count = s.array(1, std::numeric_limits<int>::max());
 		s.require(count > 0, "scene must contain at least one instance");
 		s.instances += count;
-		struct Batch { Ref<Mesh> mesh; Ref<Material> material; real_t cull_margin; Vector<Transform3D> transforms; Array resources; };
+		struct Batch {
+			Ref<Mesh> mesh;
+			Ref<Material> material;
+			real_t cull_margin;
+			Vector<Transform3D> transforms;
+			Array resources;
+			Vector<Color> colors, custom_data;
+			bool has_colors = false, has_custom_data = false;
+		};
 		std::vector<Batch> batches;
-		OwnedNode root(memnew(Node3D)); root->set_name("RecipeAsset");
+		OwnedNode root(memnew(Node3D));
+		root->set_name("RecipeAsset");
 		for (int i = 0; i < count; ++i) {
-			lua_rawgeti(p_state, 1, i + 1); int item = lua_absindex(p_state, -1);
-			s.fields(item, {"asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "keep", "lightmap", "cull_margin", "resource_id", "resource_kind", "resource_pose", "resource_collider", "resource_stage"});
-			s.field(item, "asset"); Ref<Resource> asset = s.handle(-1); lua_pop(p_state, 1);
-			s.field(item, "material"); Ref<Material> material;
-			if (!lua_isnil(p_state, -1)) { material = s.handle(-1); s.require(material.is_valid(), "material requires a Material handle"); }
+			lua_rawgeti(p_state, 1, i + 1);
+			int item = lua_absindex(p_state, -1);
+			s.fields(item, { "asset", "material", "position", "rotation", "scale", "basis", "name", "remove", "keep", "lightmap", "cull_margin", "color", "custom_data", "resource_id", "resource_kind", "resource_pose", "resource_collider", "resource_stage" });
+			s.field(item, "asset");
+			Ref<Resource> asset = s.handle(-1);
+			lua_pop(p_state, 1);
+			s.field(item, "material");
+			Ref<Material> material;
+			if (!lua_isnil(p_state, -1)) {
+				material = s.handle(-1);
+				s.require(material.is_valid(), "material requires a Material handle");
+			}
 			lua_pop(p_state, 1);
 			Transform3D transform = s.transform(item);
 			const real_t cull_margin = s.number_field(item, "cull_margin", 0, 0, 32);
+			bool has_color = false, has_custom_data = false;
+			const Color color = s.instance_data_field(item, "color", Color(1, 1, 1, 1), has_color);
+			const Color custom_data = s.instance_data_field(item, "custom_data", Color(0, 0, 0, 0), has_custom_data);
 			s.require(cull_margin >= 0 && cull_margin <= 32, "cull_margin must be in [0,32]");
 			Ref<Mesh> mesh = asset;
 			if (mesh.is_valid()) {
-				s.require(Ref<VirtualGeometryMesh>(mesh).is_null(), "virtual geometry scene installation requires GPU storage, which is not connected yet");
 				if (s.boolean_field(item, "lightmap", false)) {
+					s.require(!has_color && !has_custom_data, "lightmap MeshInstance entries cannot carry MultiMesh instance data");
+					s.require(Ref<VirtualGeometryMesh>(mesh).is_null(), "virtual geometry requires separately prepared lightmap geometry");
 					auto *node = memnew(MeshInstance3D);
 					node->set_name(s.string_field(item, "name", "Mesh" + itos(i)));
 					s.require(!node->get_name().is_empty(), "lightmap mesh requires a name");
-					node->set_mesh(mesh); node->set_material_override(material); node->set_transform(transform); node->set_extra_cull_margin(cull_margin);
+					node->set_mesh(mesh);
+					node->set_material_override(material);
+					node->set_transform(transform);
+					node->set_extra_cull_margin(cull_margin);
 					node->set_gi_mode(GeometryInstance3D::GI_MODE_STATIC);
-					root->add_child(node); node->set_owner(root.get());
-					lua_pop(p_state, 1); continue;
+					root->add_child(node);
+					node->set_owner(root.get());
+					lua_pop(p_state, 1);
+					continue;
 				}
-				s.field(item, "name"); s.require(lua_isnil(p_state, -1), "name is only valid for PackedScene instances"); lua_pop(p_state, 1);
-				s.field(item, "remove"); s.require(lua_isnil(p_state, -1), "remove is only valid for PackedScene instances"); lua_pop(p_state, 1);
-				s.field(item, "keep"); s.require(lua_isnil(p_state, -1), "keep is only valid for PackedScene instances"); lua_pop(p_state, 1);
+				s.field(item, "name");
+				s.require(lua_isnil(p_state, -1), "name is only valid for PackedScene instances");
+				lua_pop(p_state, 1);
+				s.field(item, "remove");
+				s.require(lua_isnil(p_state, -1), "remove is only valid for PackedScene instances");
+				lua_pop(p_state, 1);
+				s.field(item, "keep");
+				s.require(lua_isnil(p_state, -1), "keep is only valid for PackedScene instances");
+				lua_pop(p_state, 1);
 				size_t batch = 0;
-				while (batch < batches.size() && (batches[batch].mesh != mesh || batches[batch].material != material || batches[batch].cull_margin != cull_margin)) ++batch;
-				if (batch == batches.size()) batches.push_back({mesh, material, cull_margin, {}, {}});
+				while (batch < batches.size() && (batches[batch].mesh != mesh || batches[batch].material != material || batches[batch].cull_margin != cull_margin)) {
+					++batch;
+				}
+				if (batch == batches.size()) {
+					batches.push_back({ mesh, material, cull_margin, {}, {} });
+				}
 				const String identity = s.string_field(item, "resource_id", "");
 				if (!identity.is_empty()) {
 					s.require(identity.length() <= 96 && identity.is_valid_identifier(), "invalid resource_id");
@@ -1312,10 +1376,28 @@ struct Recipe {
 						transform.basis = Basis(Vector3(), Vector3(), Vector3());
 					}
 				}
-				batches[batch].transforms.push_back(transform);
+				auto &output = batches[batch];
+				if (has_color && !output.has_colors) {
+					s.require(output.colors.resize(output.transforms.size()) == OK, "instance color allocation failed");
+					output.colors.fill(Color(1, 1, 1, 1));
+					output.has_colors = true;
+				}
+				if (has_custom_data && !output.has_custom_data) {
+					s.require(output.custom_data.resize(output.transforms.size()) == OK, "instance custom data allocation failed");
+					output.custom_data.fill(Color(0, 0, 0, 0));
+					output.has_custom_data = true;
+				}
+				if (output.has_colors) {
+					output.colors.push_back(color);
+				}
+				if (output.has_custom_data) {
+					output.custom_data.push_back(custom_data);
+				}
+				output.transforms.push_back(transform);
 			} else {
 				Ref<PackedScene> packed = asset;
 				s.require(packed.is_valid(), "scene instances require Mesh or PackedScene handles");
+				s.require(!has_color && !has_custom_data, "PackedScene entries retain their own instance data");
 				s.require(material.is_null(), "PackedScene instances cannot use a material override");
 				s.require(cull_margin == 0, "PackedScene margins belong to their geometry nodes");
 				OwnedNode instance(packed->instantiate());
@@ -1327,7 +1409,9 @@ struct Recipe {
 					String name = s.string(-1);
 					s.require(!name.is_empty() && name.validate_node_name() == name, "invalid PackedScene instance name");
 					instance->set_name(name);
-				} else instance->set_name("Scene" + itos(i));
+				} else {
+					instance->set_name("Scene" + itos(i));
+				}
 				lua_pop(p_state, 1);
 				// Recipe-created PackedScenes have no external scene to instance.
 				// Own their descendants in the enclosing scene so nested spatial
@@ -1339,7 +1423,8 @@ struct Recipe {
 					localize = localize || remove_count > 0;
 					for (int remove_index = 0; remove_index < remove_count; ++remove_index) {
 						lua_rawgeti(p_state, -1, remove_index + 1);
-						String path = s.string(-1); lua_pop(p_state, 1);
+						String path = s.string(-1);
+						lua_pop(p_state, 1);
 						s.require(!path.is_empty() && !path.begins_with("/") && path.find("..") == -1, "invalid removal path");
 						Node *removed = instance->get_node_or_null(NodePath(path));
 						s.require(removed && removed != instance.get() && removed->get_parent(), "PackedScene removal path was not found");
@@ -1385,71 +1470,89 @@ struct Recipe {
 		}
 		for (size_t i = 0; i < batches.size(); ++i) {
 			auto &batch = batches[i];
-			Ref<MultiMesh> multi; multi.instantiate();
-			multi->set_transform_format(MultiMesh::TRANSFORM_3D); multi->set_mesh(batch.mesh);
+			Ref<MultiMesh> multi;
+			multi.instantiate();
+			multi->set_transform_format(MultiMesh::TRANSFORM_3D);
+			multi->set_use_colors(batch.has_colors);
+			multi->set_use_custom_data(batch.has_custom_data);
+			multi->set_mesh(batch.mesh);
 			multi->set_instance_count(batch.transforms.size());
-			for (int j = 0; j < batch.transforms.size(); ++j) multi->set_instance_transform(j, batch.transforms[j]);
+			for (int j = 0; j < batch.transforms.size(); ++j) {
+				multi->set_instance_transform(j, batch.transforms[j]);
+				if (batch.has_colors) {
+					multi->set_instance_color(j, batch.colors[j]);
+				}
+				if (batch.has_custom_data) {
+					multi->set_instance_custom_data(j, batch.custom_data[j]);
+				}
+			}
 			auto *node = memnew(MultiMeshInstance3D);
-			node->set_name("Batch" + itos(i)); node->set_multimesh(multi); node->set_material_override(batch.material); node->set_extra_cull_margin(batch.cull_margin);
-			if (!batch.resources.is_empty()) node->set_meta("veya_resources", batch.resources);
-			root->add_child(node); node->set_owner(root.get());
+			node->set_name("Batch" + itos(i));
+			node->set_multimesh(multi);
+			node->set_material_override(batch.material);
+			node->set_extra_cull_margin(batch.cull_margin);
+			if (!batch.resources.is_empty()) {
+				node->set_meta("veya_resources", batch.resources);
+			}
+			root->add_child(node);
+			node->set_owner(root.get());
 		}
 		int32_t next_scene_id = 1;
 		assign_scene_ids(root.get(), root.get(), next_scene_id);
-		Ref<PackedScene> scene; scene.instantiate();
+		Ref<PackedScene> scene;
+		scene.instantiate();
 		s.require(scene->pack(root.get()) == OK, "could not pack recipe scene");
 		return s.push_resource(scene);
 	}
 	static int resource_index(lua_State *p_state) {
 		auto &s = self(p_state); s.arity(1);
-		const int count = s.array(1, 100000);
-    PackedStringArray ids, kinds;
-    PackedFloat64Array values;
-    PackedByteArray blocking;
-    ids.resize(count);
-    kinds.resize(count);
-    values.resize(int64_t(count) * 18);
-    blocking.resize(count);
-    HashSet<String> identities;
-    for (int i = 0; i < count; ++i) {
-      lua_rawgeti(p_state, 1, i + 1);
-      const int row = lua_absindex(p_state, -1);
-      s.fields(row, {"id", "kind", "position", "basis", "size", "offset",
-                     "blocking"});
-      const String id = s.string_field(row, "id", "");
-      const String kind = s.string_field(row, "kind", "");
-      s.require(!id.is_empty() && id.length() <= 96 &&
-                    id.is_valid_identifier() && !identities.has(id),
-                "resource_index requires unique stable IDs");
-      s.require(
-          !kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(),
-          "resource_index requires an explicit kind");
-      identities.insert(id);
-      ids.set(i, id);
-      kinds.set(i, kind);
-      const Transform3D pose = s.transform(row);
-      const Vector3 size = s.vector_field(row, "size", Vector3(1, 1, 1));
-      const Vector3 offset = s.vector_field(row, "offset", Vector3());
-      s.require(pose.is_finite() &&
-                    Math::abs(pose.basis.determinant()) >= 1e-9 &&
-                    size.is_finite() && offset.is_finite() && size.x > 0 &&
-                    size.y > 0 && size.z > 0,
-                "resource_index requires a finite pose and positive collider "
-                "extents");
-      const Vector3 vectors[] = {pose.origin,
-                                 pose.basis.get_column(0),
-                                 pose.basis.get_column(1),
-                                 pose.basis.get_column(2),
-                                 size,
-                                 offset};
-      for (int vector = 0; vector < 6; ++vector) {
-        for (int axis = 0; axis < 3; ++axis) {
-          values.set(int64_t(i) * 18 + vector * 3 + axis,
-                     vectors[vector][axis]);
-        }
-      }
-      blocking.set(i, s.boolean_field(row, "blocking", false));
-      lua_pop(p_state, 1);
+		const int count = s.array(1, std::numeric_limits<int>::max());
+		PackedStringArray ids, kinds;
+		PackedFloat64Array values;
+		PackedByteArray blocking;
+		ids.resize(count);
+		kinds.resize(count);
+		values.resize(int64_t(count) * 18);
+		blocking.resize(count);
+		HashSet<String> identities;
+		for (int i = 0; i < count; ++i) {
+			lua_rawgeti(p_state, 1, i + 1);
+			const int row = lua_absindex(p_state, -1);
+			s.fields(row, { "id", "kind", "position", "basis", "size", "offset", "blocking" });
+			const String id = s.string_field(row, "id", "");
+			const String kind = s.string_field(row, "kind", "");
+			s.require(!id.is_empty() && id.length() <= 96 &&
+							id.is_valid_identifier() && !identities.has(id),
+					"resource_index requires unique stable IDs");
+			s.require(
+					!kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(),
+					"resource_index requires an explicit kind");
+			identities.insert(id);
+			ids.set(i, id);
+			kinds.set(i, kind);
+			const Transform3D pose = s.transform(row);
+			const Vector3 size = s.vector_field(row, "size", Vector3(1, 1, 1));
+			const Vector3 offset = s.vector_field(row, "offset", Vector3());
+			s.require(pose.is_finite() &&
+							Math::abs(pose.basis.determinant()) >= 1e-9 &&
+							size.is_finite() && offset.is_finite() && size.x > 0 &&
+							size.y > 0 && size.z > 0,
+					"resource_index requires a finite pose and positive collider "
+					"extents");
+			const Vector3 vectors[] = { pose.origin,
+				pose.basis.get_column(0),
+				pose.basis.get_column(1),
+				pose.basis.get_column(2),
+				size,
+				offset };
+			for (int vector = 0; vector < 6; ++vector) {
+				for (int axis = 0; axis < 3; ++axis) {
+					values.set(int64_t(i) * 18 + vector * 3 + axis,
+							vectors[vector][axis]);
+				}
+			}
+			blocking.set(i, s.boolean_field(row, "blocking", false));
+			lua_pop(p_state, 1);
     }
     Dictionary entries;
     entries["format"] = 1;
@@ -1644,7 +1747,6 @@ struct Recipe {
 		OwnedNode root(packed->instantiate());
 		s.require(root != nullptr, "could not instantiate PackedScene for child names");
 		const int count = root->get_child_count();
-		s.require(count <= 65536, "child_names exceeds 65536 children");
 		lua_createtable(p_state, count, 0);
 		for (int index = 0; index < count; ++index) {
 			const CharString name = String(root->get_child(index)->get_name()).utf8();
@@ -1661,7 +1763,6 @@ struct Recipe {
 		OwnedNode root(packed->instantiate());
 		s.require(root != nullptr, "could not instantiate PackedScene for children");
 		const int count = root->get_child_count();
-		s.require(count <= 4096, "children exceeds 4096 instances");
 		lua_createtable(p_state, count, 0);
 		int index = 0;
 		for (int i = 0; i < count; ++i) {
@@ -1684,29 +1785,59 @@ struct Recipe {
 		}
 		return 1;
 	}
-	struct Part { Ref<Mesh> mesh; Ref<Material> material; Transform3D transform; };
-	static void collect_parts(Node *p_node, const Transform3D &p_parent, std::vector<Part> &r_parts, int p_depth) {
+
+	struct Part {
+		Ref<Mesh> mesh;
+		Ref<Material> material;
+		Transform3D transform;
+		Color color = Color(1, 1, 1, 1), custom_data = Color(0, 0, 0, 0);
+		bool has_color = false, has_custom_data = false;
+	};
+	static bool collect_parts(Node *p_node, const Transform3D &p_parent, std::vector<Part> &r_parts, int p_depth) {
 		Transform3D transform = p_parent;
-		if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) transform = p_parent * node_3d->get_transform();
+		if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
+			transform = p_parent * node_3d->get_transform();
+		}
 		if (MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(p_node); mesh && mesh->get_mesh().is_valid()) {
 			Ref<Material> material = mesh->get_material_override();
-			if (material.is_null() && mesh->get_mesh()->get_surface_count() == 1) material = mesh->get_surface_override_material(0);
-			r_parts.push_back({mesh->get_mesh(), material, transform});
+			if (material.is_null() && mesh->get_mesh()->get_surface_count() == 1) {
+				material = mesh->get_surface_override_material(0);
+			}
+			r_parts.push_back({ mesh->get_mesh(), material, transform });
 		}
 		// Recipe-batched models expand to one part per MultiMesh instance.
 		if (MultiMeshInstance3D *multi = Object::cast_to<MultiMeshInstance3D>(p_node); multi && multi->get_multimesh().is_valid() && multi->get_multimesh()->get_mesh().is_valid()) {
 			const Ref<MultiMesh> batch = multi->get_multimesh();
-			for (int i = 0; i < batch->get_instance_count() && r_parts.size() <= 64; ++i)
-				r_parts.push_back({batch->get_mesh(), multi->get_material_override(), transform * batch->get_instance_transform(i)});
+			for (int i = 0; i < batch->get_instance_count(); ++i) {
+				Part part;
+				part.mesh = batch->get_mesh();
+				part.material = multi->get_material_override();
+				part.transform = transform * batch->get_instance_transform(i);
+				part.has_color = batch->is_using_colors();
+				part.has_custom_data = batch->is_using_custom_data();
+				if (part.has_color) {
+					part.color = batch->get_instance_color(i);
+				}
+				if (part.has_custom_data) {
+					part.custom_data = batch->get_instance_custom_data(i);
+				}
+				r_parts.push_back(part);
+			}
 		}
-		if (p_depth < 32 && r_parts.size() <= 64) for (int i = 0; i < p_node->get_child_count(); ++i) collect_parts(p_node->get_child(i), transform, r_parts, p_depth + 1);
+		for (int child = 0; child < p_node->get_child_count(); ++child) {
+			if (!collect_parts(p_node->get_child(child), transform, r_parts, p_depth + 1)) {
+				return false;
+			}
+		}
+		return true;
 	}
 	// MeshInstance3D descendants and MultiMesh instances of a PackedScene as
 	// {mesh,material,basis,position} in root space, so dense scatter can batch
 	// cooked models into MultiMesh. material is the node or single-surface
 	// override, else absent (the mesh's own surface materials apply).
 	static int parts(lua_State *p_state) {
-		auto &s = self(p_state); s.check_budget();
+		auto &s = self(p_state);
+		s.check_budget();
 		s.require(lua_gettop(p_state) == 1 || lua_gettop(p_state) == 2, "parts accepts a scene and optional direct child name");
 		Ref<PackedScene> packed = s.handle(1);
 		s.require(packed.is_valid(), "parts requires a PackedScene handle");
@@ -1718,14 +1849,17 @@ struct Recipe {
 			s.require(!child_name.is_empty() && child_name.length() <= 96 && !child_name.contains("/") && !child_name.contains(".."), "parts child must be a bounded direct child name");
 			auto found = s.part_roots.find(packed->get_instance_id());
 			if (found == s.part_roots.end()) {
-				s.require(s.part_roots.size() < 64, "parts scene cache exceeds 64 inputs");
 				found = s.part_roots.emplace(packed->get_instance_id(), OwnedNode(packed->instantiate())).first;
 			}
 			s.require(found->second != nullptr, "could not instantiate PackedScene for parts");
-			if (Node3D *node = Object::cast_to<Node3D>(found->second.get())) parent = node->get_transform();
+			if (Node3D *node = Object::cast_to<Node3D>(found->second.get())) {
+				parent = node->get_transform();
+			}
 			for (int child = 0; child < found->second->get_child_count(); ++child) {
 				Node *candidate = found->second->get_child(child);
-				if (String(candidate->get_name()) == child_name) root = candidate;
+				if (String(candidate->get_name()) == child_name) {
+					root = candidate;
+				}
 			}
 			s.require(root != nullptr, "parts direct child does not exist");
 		} else {
@@ -1734,14 +1868,14 @@ struct Recipe {
 			s.require(root != nullptr, "could not instantiate PackedScene for parts");
 		}
 		std::vector<Part> found;
-		collect_parts(root, parent, found, 0);
-		s.require(!found.empty() && found.size() <= 64, "parts requires 1..64 mesh instances");
+		s.require(collect_parts(root, parent, found, 0), "parts hierarchy or instance limit exceeded");
+		s.require(!found.empty() && found.size() <= size_t(std::numeric_limits<int>::max()), "parts requires a nonempty representable array");
 		lua_createtable(p_state, found.size(), 0);
 		for (size_t i = 0; i < found.size(); ++i) {
 			const Transform3D &transform = found[i].transform;
 			s.require(transform.basis.is_finite() && std::abs(transform.basis.determinant()) > 1e-12, "part transform must be invertible");
 			const Ref<Material> &material = found[i].material;
-			lua_createtable(p_state, 0, 4);
+			lua_createtable(p_state, 0, 6);
 			const auto push = [&s](const Ref<Resource> &resource) {
 				const auto cached = s.part_handles.find(resource->get_instance_id());
 				if (cached == s.part_handles.end()) {
@@ -1751,12 +1885,32 @@ struct Recipe {
 					*static_cast<size_t *>(lua_newuserdatatagged(s.L, sizeof(size_t), HANDLE_TAG)) = cached->second;
 				}
 			};
-			push(found[i].mesh); lua_setfield(p_state, -2, "mesh");
-			if (material.is_valid()) { push(material); lua_setfield(p_state, -2, "material"); }
-			s.push_vector(transform.origin); lua_setfield(p_state, -2, "position");
+			push(found[i].mesh);
+			lua_setfield(p_state, -2, "mesh");
+			if (material.is_valid()) {
+				push(material);
+				lua_setfield(p_state, -2, "material");
+			}
+			s.push_vector(transform.origin);
+			lua_setfield(p_state, -2, "position");
 			lua_createtable(p_state, 3, 0);
-			for (int c = 0; c < 3; ++c) { s.push_vector(transform.basis.get_column(c)); lua_rawseti(p_state, -2, c + 1); }
+			for (int c = 0; c < 3; ++c) {
+				s.push_vector(transform.basis.get_column(c));
+				lua_rawseti(p_state, -2, c + 1);
+			}
 			lua_setfield(p_state, -2, "basis");
+			for (int data = 0; data < 2; ++data) {
+				if (!(data == 0 ? found[i].has_color : found[i].has_custom_data)) {
+					continue;
+				}
+				const Color &value = data == 0 ? found[i].color : found[i].custom_data;
+				lua_createtable(p_state, 4, 0);
+				for (int component = 0; component < 4; ++component) {
+					lua_pushnumber(p_state, value[component]);
+					lua_rawseti(p_state, -2, component + 1);
+				}
+				lua_setfield(p_state, -2, data == 0 ? "color" : "custom_data");
+			}
 			lua_rawseti(p_state, -2, i + 1);
 		}
 		return 1;
@@ -1814,10 +1968,15 @@ struct Recipe {
 			// Only this compiler can produce VM input; external bytecode is never loaded.
 			bytecode = Luau::compile(p_source, options);
 			L = lua_newstate(allocate, this);
-			if (!L) { r_error = "cannot allocate recipe VM"; return false; }
+			if (!L) {
+				r_error = "cannot allocate recipe VM";
+				return false;
+			}
 			lua_callbacks(L)->userdata = this;
 			int status = lua_cpcall(L, setup, nullptr);
-			if (status == LUA_OK) status = luau_load(L, "=cooker_recipe", bytecode.data(), bytecode.size(), 0);
+			if (status == LUA_OK) {
+				status = luau_load(L, "=cooker_recipe", bytecode.data(), bytecode.size(), 0);
+			}
 			timed = limits.time_ms > 0;
 			if (timed) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.time_ms);
 			lua_callbacks(L)->interrupt = interrupt;
@@ -1827,11 +1986,17 @@ struct Recipe {
 				else result = handle(1);
 			}
 			const bool expired = timed && std::chrono::steady_clock::now() >= deadline;
-			if (status == LUA_OK && !fault && !memory_failed && !expired) return true;
-			if (memory_failed) r_error = "recipe memory limit exceeded";
-			else if (fault) r_error = fault;
-			else if (expired) r_error = "recipe execution budget exceeded";
-			else r_error = lua_type(L, -1) == LUA_TSTRING ? String::utf8(lua_tostring(L, -1)).left(1024) : String("recipe failed");
+			if (status == LUA_OK && !fault && !memory_failed && !expired) {
+				return true;
+			}
+			if (memory_failed) {
+				r_error = "recipe memory limit exceeded\n" + String::utf8(lua_debugtrace(L)).left(1024);
+			} else if (fault) {
+				r_error = fault;
+			} else if (expired) {
+				r_error = "recipe execution budget exceeded";
+			} else
+				r_error = lua_type(L, -1) == LUA_TSTRING ? String::utf8(lua_tostring(L, -1)).left(1024) : String("recipe failed");
 		} catch (const std::exception &error) { r_error = String::utf8(error.what()).left(1024); }
 		return false;
 	}
@@ -1846,7 +2011,7 @@ Error reject(Dictionary &r_result, const String &p_message, Error p_error = ERR_
 Dictionary capabilities() {
 	Dictionary result;
 	result["language"] = "Luau"; result["version"] = LUAU_VERSION; result["commit"] = LUAU_COMMIT;
-	result["api_version"] = 10;
+	result["api_version"] = 11;
 	result["operation"] = "run-recipe";
 	Array apis;
 	for (const char *name : { "resource_index", "primitive", "mesh", "collision", "minimum_visual", "virtual_geometry", "material", "procedural_texture", "effect", "atmosphere", "camera_attributes", "cloud_mask", "scene", "lightmap_scene", "field", "sample", "field_info", "points", "child_names", "children", "parts", "input", "bounds", "random", "parameters" }) {
@@ -1873,7 +2038,6 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	Recipe recipe;
 	for (const char *key : {"parameters", "inputs", "limits"}) if (p_job.has(key) && p_job[key].get_type() != Variant::DICTIONARY) return reject(r_result, String(key) + " must be an object");
 	recipe.parameters = p_job.get("parameters", Dictionary());
-	if (JSON::stringify(recipe.parameters).utf8().length() > SOURCE_BYTES) return reject(r_result, "parameters exceed 64 KiB");
 	Variant seed = p_job.get("seed", 1);
 	if ((seed.get_type() != Variant::INT && seed.get_type() != Variant::FLOAT) || !std::isfinite(double(seed)) || double(seed) < 0 || double(seed) > UINT32_MAX || double(seed) != std::floor(double(seed))) return reject(r_result, "seed must be a uint32");
 	recipe.random_state = uint32_t(int64_t(seed));
@@ -1884,11 +2048,6 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		String name = *key; int *target = nullptr;
 		if (name == "memory_mb") target = &recipe.limits.memory_mb;
 		else if (name == "time_ms") target = &recipe.limits.time_ms;
-		else if (name == "max_vertices") target = &recipe.limits.max_vertices;
-		else if (name == "max_instances") target = &recipe.limits.max_instances;
-		else if (name == "max_resources") target = &recipe.limits.max_resources;
-		else if (name == "input_mb") target = &recipe.limits.input_mb;
-		else if (name == "output_mb") target = &recipe.limits.output_mb;
 		if (!target) return reject(r_result, "unknown recipe limit: " + name);
 		Variant value = limits[*key];
 		const bool unbounded = target == &recipe.limits.time_ms; // Default is no deadline.
@@ -1896,8 +2055,6 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		*target = int(value);
 	}
 	Dictionary inputs = p_job.get("inputs", Dictionary());
-	// Byte (input_mb) and VM budgets still bound what the declared inputs load.
-	if (inputs.size() > 64) return reject(r_result, "at most 64 declared inputs are supported");
 	HashSet<String> inspected_inputs;
 	uint64_t input_bytes = 0;
 	for (const Variant *key = inputs.next(); key; key = inputs.next(key)) {
@@ -1912,9 +2069,13 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			inspected_inputs.insert(file);
 			Ref<FileAccess> input = FileAccess::open(file, FileAccess::READ);
 			if (input.is_null()) return reject(r_result, "cannot read input", ERR_FILE_CANT_READ);
-			input_bytes += input->get_length();
-			if (input_bytes > uint64_t(recipe.limits.input_mb) * 1024 * 1024) return reject(r_result, "input dependency bytes exceed recipe limit");
-			recipe.input_hashes[file] = FileAccess::get_sha256(file);
+			// The collector only adds .vgp through a validated geometry root.
+			// Keep its digest in the receipt, but do not charge the complete
+			// deferred container as a resource loaded by this recipe.
+			if (!file.ends_with(".vgp")) {
+				input_bytes += input->get_length();
+			}
+			recipe.input_hashes[file] = cooker_hash::HashFile(file);
 		}
 		Ref<Resource> resource = ResourceLoader::load(path);
 		Ref<Mesh> mesh = resource; Ref<Material> material = resource; Ref<PackedScene> scene = resource; Ref<Shader> shader = resource; Ref<Texture2D> texture = resource;
@@ -1938,9 +2099,10 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			inspected_inputs.insert(dependency);
 			Ref<FileAccess> input = FileAccess::open(dependency, FileAccess::READ);
 			if (input.is_null()) return reject(r_result, "cannot read input dependency", ERR_FILE_CANT_READ);
-			input_bytes += input->get_length();
-			if (input_bytes > uint64_t(recipe.limits.input_mb) * 1024 * 1024) return reject(r_result, "input dependency bytes exceed recipe limit");
-			recipe.input_hashes[dependency] = FileAccess::get_sha256(dependency);
+			if (!dependency.ends_with(".vgp")) {
+				input_bytes += input->get_length();
+			}
+			recipe.input_hashes[dependency] = cooker_hash::HashFile(dependency);
 		}
 		recipe.inputs[*key] = resource;
 	}
@@ -1961,9 +2123,18 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	// staging path stable so identical Luau inputs/seed produce identical bytes.
 	if (bool(p_job.get("external_render_resources", false))) {
 		Array render_outputs;
-		error = CookerRender::save(scene, output.get_base_dir(), render_outputs, uint64_t(recipe.limits.output_mb) * 1024 * 1024);
+		error = CookerRender::save(scene, output.get_base_dir(), render_outputs, UINT64_MAX, &recipe.geometry_builds);
 		if (error != OK) return reject(r_result, "cannot publish shared render resources", error);
 		r_result["render_outputs"] = render_outputs;
+	}
+	if (scene.is_valid() && !bool(p_job.get("external_render_resources", false))) {
+		Array containers;
+		error = CookerVirtualGeometry::publish_resource_containers(scene, recipe.geometry_builds, output,
+				UINT64_MAX, containers);
+		if (error != OK) {
+			return reject(r_result, "cannot publish scene virtual geometry containers", error);
+		}
+		r_result["geometry_outputs"] = containers;
 	}
 	String temporary = output.get_basename() + ".recipe-tmp." + output.get_extension();
 	// An interrupted earlier run may leave this staging file; the per-output
@@ -1972,7 +2143,9 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	error = ResourceSaver::save(recipe.result, temporary, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	if (error == OK) {
 		Ref<FileAccess> saved = FileAccess::open(temporary, FileAccess::READ);
-		if (saved.is_null() || saved->get_length() > uint64_t(recipe.limits.output_mb) * 1024 * 1024) error = ERR_OUT_OF_MEMORY;
+		if (saved.is_null() || saved->get_length() > UINT64_MAX) {
+			error = ERR_OUT_OF_MEMORY;
+		}
 		if (error == OK && Ref<VirtualGeometryMesh>(recipe.result).is_valid()) {
 			const auto built = recipe.geometry_builds.find(recipe.result->get_instance_id());
 			if (built == recipe.geometry_builds.end()) {
@@ -1980,7 +2153,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 			} else {
 				Array files;
 				error = CookerVirtualGeometry::publish_container(built->second, output, saved->get_length(),
-						uint64_t(recipe.limits.output_mb) * 1024 * 1024, files);
+						UINT64_MAX, files);
 				if (error == OK) {
 					r_result["geometry_outputs"] = files;
 					r_result["virtual_geometry"] = built->second.report;
@@ -1999,13 +2172,12 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	r_result["parameters"] = recipe.parameters; r_result["seed"] = seed;
 	Dictionary effective_limits;
 	effective_limits["memory_mb"] = recipe.limits.memory_mb; effective_limits["time_ms"] = recipe.limits.time_ms;
-	effective_limits["max_vertices"] = recipe.limits.max_vertices; effective_limits["max_instances"] = recipe.limits.max_instances;
-	effective_limits["max_resources"] = recipe.limits.max_resources; effective_limits["input_mb"] = recipe.limits.input_mb;
-	effective_limits["output_mb"] = recipe.limits.output_mb;
 	r_result["limits"] = effective_limits;
 	r_result["runtime"] = capabilities();
-	r_result["resources"] = int64_t(recipe.resources.size()); r_result["vertices"] = recipe.vertices;
-	r_result["instances"] = recipe.instances; r_result["vm_peak_bytes"] = int64_t(recipe.peak_memory);
+	r_result["resources"] = int64_t(recipe.resources.size());
+	r_result["vertices"] = int64_t(recipe.vertices);
+	r_result["instances"] = int64_t(recipe.instances);
+	r_result["vm_peak_bytes"] = int64_t(recipe.peak_memory);
 	Dictionary effect_stats;
 	effect_stats["layers"] = recipe.effect_layers; effect_stats["particle_systems"] = recipe.effect_particle_systems;
 	effect_stats["declared_particles"] = recipe.effect_particles; effect_stats["textures"] = recipe.effect_textures;

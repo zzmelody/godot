@@ -8,7 +8,7 @@ return {
         output = asset,
         seed = 42,
         parameters = {span = 8, width = 2.6, rise = 1.25, segments = 24},
-        limits = {time_ms = 1500, max_instances = 2000},
+        limits = {time_ms = 1500, },
         if_missing = true,
     },
     {name = "validate_bridge", operation = "validate-resource", source = asset, type = "PackedScene"},

@@ -183,6 +183,7 @@ public:
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const = 0;
 
 	virtual void material_set_render_priority(RID p_material, int priority) = 0;
+	virtual void material_set_max_vertex_displacement(RID p_material, float p_maximum) = 0;
 
 	virtual void material_set_next_pass(RID p_material, RID p_next_material) = 0;
 
@@ -192,6 +193,18 @@ public:
 
 	virtual RID mesh_create_from_surfaces(const Vector<RenderingServerTypes::SurfaceData> &p_surfaces, int p_blend_shape_count = 0) = 0;
 	virtual RID mesh_create() = 0;
+
+	virtual Error virtual_geometry_set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes) = 0;
+	virtual Error mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, const PackedByteArray &p_root, const TypedArray<RID> &p_materials) = 0;
+	virtual Error virtual_geometry_submit_pages(const PackedByteArray &p_records, const TypedArray<PackedByteArray> &p_payloads) = 0;
+	// Value snapshot only: no rendering-thread synchronization or GPU wait.
+	virtual PackedByteArray virtual_geometry_get_feedback(uint64_t p_after_sequence) const = 0;
+	virtual PackedByteArray virtual_geometry_get_requests(uint64_t p_after_sequence) const = 0;
+	virtual Error virtual_geometry_set_streaming_admission(const Callable &p_acquire, const Callable &p_received, const Callable &p_release) = 0;
+	virtual Dictionary virtual_geometry_get_streaming_statistics() const = 0;
+	virtual void virtual_geometry_shutdown_streaming() = 0;
+	virtual Error virtual_geometry_initialize_streaming() = 0;
+	virtual Error virtual_geometry_prepare_materials(const TypedArray<RID> &p_materials) = 0;
 
 	virtual void mesh_set_blend_shape_count(RID p_mesh, int p_blend_shape_count) = 0;
 
@@ -632,7 +645,6 @@ public:
 	virtual Dictionary sky_get_physical_source_status(RID p_sky) const = 0;
 	virtual Dictionary get_physical_sky_capabilities() const = 0;
 	virtual String get_sky_view_shader_source() const = 0;
-
 
 	virtual Ref<Image> sky_bake_panorama(RID p_sky, float p_energy, bool p_bake_irradiance, const Size2i &p_size) = 0;
 

@@ -38,6 +38,7 @@
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
+#include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/storage/variant_converters.h"
 
 using namespace RendererRD;
@@ -1248,6 +1249,26 @@ bool MaterialStorage::MaterialData::update_parameters_uniform_set(const HashMap<
 	return true;
 }
 
+RID MaterialStorage::MaterialData::get_parameters_uniform_set(RID p_shader, uint32_t p_set, bool p_use_linear_color, const Vector<ShaderCompiler::GeneratedCode::Texture> &p_textures) const {
+	LocalVector<RD::Uniform> uniforms;
+	if (uniform_buffer[p_use_linear_color].is_valid()) {
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 0, { uniform_buffer[p_use_linear_color] }));
+	}
+	uint32_t index = 0;
+	for (const auto &texture : p_textures) {
+		RD::Uniform uniform;
+		uniform.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		uniform.binding = 1 + index;
+		const uint32_t count = MAX(1, texture.array_size);
+		ERR_FAIL_COND_V(index + count > uint32_t(texture_cache.size()), RID());
+		for (uint32_t element = 0; element < count; ++element) {
+			uniform.append_id(texture_cache[index++]);
+		}
+		uniforms.push_back(uniform);
+	}
+	return uniforms.is_empty() ? RID() : UniformSetCacheRD::get_singleton()->get_cache_vec(p_shader, p_set, uniforms);
+}
+
 void MaterialStorage::MaterialData::set_as_used() {
 	for (int i = 0; i < render_target_cache.size(); i++) {
 		render_target_cache[i]->was_used = true;
@@ -1554,6 +1575,7 @@ int32_t MaterialStorage::_global_shader_uniform_allocate(uint32_t p_elements) {
 				continue; //if not valid, idx is in new position
 			}
 
+			++global_shader_uniforms.layout_version;
 			return idx;
 		} else {
 			idx += global_shader_uniforms.buffer_usage[idx].elements;
@@ -1835,6 +1857,7 @@ void MaterialStorage::global_shader_parameter_remove(const StringName &p_name) {
 
 	if (gv.buffer_index >= 0) {
 		global_shader_uniforms.buffer_usage[gv.buffer_index].elements = 0;
+		++global_shader_uniforms.layout_version;
 		global_shader_uniforms.must_update_buffer_materials = true;
 	} else {
 		global_shader_uniforms.must_update_texture_materials = true;
@@ -2024,6 +2047,10 @@ RID MaterialStorage::global_shader_uniforms_get_storage_buffer() const {
 	return global_shader_uniforms.buffer;
 }
 
+uint32_t MaterialStorage::global_shader_uniforms_get_storage_buffer_bytes() const {
+	return global_shader_uniforms.buffer_size * sizeof(GlobalShaderUniforms::Value);
+}
+
 int32_t MaterialStorage::global_shader_parameters_instance_allocate(RID p_instance) {
 	ERR_FAIL_COND_V(global_shader_uniforms.instance_buffer_pos.has(p_instance), -1);
 	int32_t pos = _global_shader_uniform_allocate(ShaderLanguage::MAX_INSTANCE_UNIFORM_INDICES);
@@ -2038,6 +2065,7 @@ void MaterialStorage::global_shader_parameters_instance_free(RID p_instance) {
 	int32_t pos = global_shader_uniforms.instance_buffer_pos[p_instance];
 	if (pos >= 0) {
 		global_shader_uniforms.buffer_usage[pos].elements = 0;
+		++global_shader_uniforms.layout_version;
 	}
 	global_shader_uniforms.instance_buffer_pos.erase(p_instance);
 }
@@ -2590,6 +2618,23 @@ void MaterialStorage::material_set_render_priority(RID p_material, int priority)
 		material->data->set_render_priority(priority);
 	}
 	material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+}
+
+void MaterialStorage::material_set_max_vertex_displacement(RID p_material, float p_maximum) {
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_maximum) || p_maximum < 0.0f, "Max vertex displacement must be finite and nonnegative.");
+	Material *material = material_owner.get_or_null(p_material);
+	ERR_FAIL_NULL(material);
+	if (material->max_vertex_displacement == p_maximum) {
+		return;
+	}
+	material->max_vertex_displacement = p_maximum;
+	material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+	material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_AABB);
+}
+
+float MaterialStorage::material_get_max_vertex_displacement(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	return material ? material->max_vertex_displacement : 0.0f;
 }
 
 bool MaterialStorage::material_is_animated(RID p_material) {

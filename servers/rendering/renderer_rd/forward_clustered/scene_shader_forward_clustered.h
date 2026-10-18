@@ -30,8 +30,14 @@
 
 #pragma once
 
+#include "servers/rendering/renderer_rd/pipeline_cache_rd.h"
+#include "servers/rendering/renderer_rd/pipeline_deferred_rd.h"
 #include "servers/rendering/renderer_rd/pipeline_hash_map_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_material.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_bin.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster_sw.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/rendering_server_types.h"
 
@@ -219,6 +225,24 @@ public:
 		PipelineHashMapRD<PipelineKey, ShaderData, void (ShaderData::*)(PipelineKey)> pipeline_hash_map;
 
 		RID version;
+		RID virtual_geometry_raster_versions[3];
+		PipelineDeferredRD virtual_geometry_raster_compute[2];
+		PipelineCacheRD virtual_geometry_raster_hardware;
+		RID virtual_geometry_voxel_version;
+		PipelineCacheRD virtual_geometry_voxel_pipeline;
+		RID get_virtual_geometry_voxel_shader();
+		RID get_virtual_geometry_voxel_pipeline(RD::FramebufferFormatID p_format);
+		void _clear_virtual_geometry_raster();
+		RID get_virtual_geometry_raster_shader(uint32_t p_mode) const;
+		RID get_virtual_geometry_raster_pipeline(uint32_t p_mode, RD::FramebufferFormatID p_format);
+		RID virtual_geometry_version;
+		RID virtual_geometry_composite_version;
+		PipelineCacheRD virtual_geometry_composite_pipelines[8];
+		bool virtual_geometry_composite_initialized[8] = {};
+		ShaderSpecialization virtual_geometry_composite_specialization[8] = {};
+		PipelineDeferredRD virtual_geometry_pipeline;
+		bool virtual_geometry_attempted = false;
+		String virtual_geometry_error;
 
 		static const uint32_t VERTEX_INPUT_MASKS_SIZE = ShaderVersion::SHADER_VERSION_COLOR_PASS * 2 + SHADER_COLOR_PASS_FLAG_COUNT;
 		std::atomic<uint64_t> vertex_input_masks[VERTEX_INPUT_MASKS_SIZE] = {};
@@ -256,6 +280,7 @@ public:
 
 		bool unshaded = false;
 		bool uses_vertex = false;
+		bool uses_vertex_id = false;
 		bool uses_position = false;
 		bool uses_sss = false;
 		bool uses_transmittance = false;
@@ -313,6 +338,10 @@ public:
 		uint64_t get_vertex_input_mask(PipelineVersion p_pipeline_version, uint32_t p_color_pass_flags, bool p_ubershader);
 		RD::PolygonCullMode get_cull_mode_from_cull_variant(CullVariant p_cull_variant);
 		bool is_valid() const;
+		RID get_virtual_geometry_shader(String &r_error);
+		RID get_virtual_geometry_pipeline() { return virtual_geometry_pipeline.get_rid(); }
+		RID get_virtual_geometry_composite_shader(bool p_separate_specular, bool p_multiview = false) const;
+		RID get_virtual_geometry_composite_pipeline(RD::FramebufferFormatID p_format, bool p_separate_specular, const ShaderSpecialization &p_specialization, bool p_multiview = false, bool p_reflection = false);
 
 		SelfList<ShaderData> shader_list_element;
 		ShaderData();
@@ -346,6 +375,12 @@ public:
 
 	SceneForwardClusteredShaderRD shader;
 	ShaderCompiler compiler;
+	VirtualGeometryMaterialShaderRD virtual_geometry_shader;
+	ShaderCompiler virtual_geometry_compiler;
+	ShaderCompiler virtual_geometry_raster_compiler;
+	VirtualGeometryRasterBinShaderRD virtual_geometry_raster_bin;
+	VirtualGeometryRasterSwShaderRD virtual_geometry_raster_sw;
+	VirtualGeometryRasterShaderRD virtual_geometry_raster_hw;
 	bool emulate_point_size = false;
 
 	RID default_shader;

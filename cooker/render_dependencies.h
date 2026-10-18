@@ -3,6 +3,7 @@
 #include "asset_files.h"
 #include "atomic_save.h"
 #include "output_lock.h"
+#include "virtual_geometry_mesh.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/resources/packed_scene.h"
@@ -13,7 +14,8 @@ namespace CookerRender {
 struct PathOrder {
  bool operator()(const Ref<Resource> &a, const Ref<Resource> &b) const { return a->get_path() < b->get_path(); }
 };
-inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Array &r_outputs, uint64_t p_limit) {
+inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Array &r_outputs, uint64_t p_limit,
+		const std::map<ObjectID, CookerVirtualGeometry::BuildOutput> *p_geometry_builds = nullptr) {
 	ERR_FAIL_COND_V(p_scene.is_null(), ERR_INVALID_PARAMETER);
 	Node *root = p_scene->instantiate();
 	ERR_FAIL_NULL_V(root, ERR_INVALID_DATA);
@@ -39,6 +41,14 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 			}
 		}
 		if (mesh.is_valid()) {
+			const Ref<VirtualGeometryMesh> geometry = mesh;
+			// Published standalone roots retain their material/container ownership.
+			// Dependent fragments borrow them instead of republishing their pages.
+			if (geometry.is_valid() && !geometry->is_built_in() && !geometry->get_path().is_empty() &&
+					CookerFiles::is_generated(geometry->get_path()) && FileAccess::exists(geometry->get_path()) &&
+					(p_geometry_builds == nullptr || p_geometry_builds->count(geometry->get_instance_id()) == 0)) {
+				continue;
+			}
 			resources[mesh->get_instance_id()] = mesh;
 			for (int i = 0; i < mesh->get_surface_count(); ++i) {
 				const Ref<Material> material = mesh->surface_get_material(i);
@@ -53,7 +63,6 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 		if (material.is_valid() && material->get_shader().is_valid()) shaders.push_back(material->get_shader());
 	}
 	for (const Ref<Shader> &shader : shaders) resources[shader->get_instance_id()] = shader;
-	ERR_FAIL_COND_V(resources.size() > 256, ERR_INVALID_DATA);
 	Vector<Ref<Resource>> ordered;
 	for (const KeyValue<ObjectID, Ref<Resource>> &entry : resources) ordered.push_back(entry.value);
 	ordered.sort_custom<PathOrder>();
@@ -61,6 +70,34 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 	Error error = DirAccess::make_dir_recursive_absolute(directory);
 	ERR_FAIL_COND_V(error != OK, error);
 	uint64_t total_bytes = 0;
+	HashSet<ObjectID> published_geometry;
+	HashSet<String> published_containers;
+	auto publish_geometry = [&](const Ref<Resource> &p_resource, const String &p_path) -> Error {
+		if (Ref<VirtualGeometryMesh>(p_resource).is_null() || published_geometry.has(p_resource->get_instance_id())) {
+			return OK;
+		}
+		if (total_bytes > p_limit) {
+			return ERR_OUT_OF_MEMORY;
+		}
+		Array containers;
+		const std::map<ObjectID, CookerVirtualGeometry::BuildOutput> empty;
+		const Error result = CookerVirtualGeometry::publish_resource_containers(p_resource,
+				p_geometry_builds != nullptr ? *p_geometry_builds : empty, p_path, p_limit - total_bytes, containers);
+		if (result != OK) {
+			return result;
+		}
+		for (const Variant &entry : containers) {
+			const Dictionary record = entry;
+			const String path = record["path"];
+			if (!published_containers.has(path)) {
+				published_containers.insert(path);
+				total_bytes += uint64_t(int64_t(record["bytes"]));
+				r_outputs.push_back(path);
+			}
+		}
+		published_geometry.insert(p_resource->get_instance_id());
+		return OK;
+	};
 	HashMap<String, Ref<Resource>> canonical;
 	HashMap<ObjectID, Ref<Resource>> aliases;
 	// Publish shaders, then materials, then meshes. Scenes can reuse the same
@@ -99,6 +136,8 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 				ERR_FAIL_COND_V(total_bytes > p_limit, ERR_OUT_OF_MEMORY);
 				file->close();
 				path = directory.path_join(FileAccess::get_md5(temporary) + ".res");
+				error = publish_geometry(resource, path);
+				ERR_FAIL_COND_V(error != OK, error);
 				if (FileAccess::exists(path)) {
 					if (FileAccess::get_sha256(path) != FileAccess::get_sha256(temporary)) {
 						CookerAtomicSave::discard_stale(temporary);
@@ -110,6 +149,8 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 					ERR_FAIL_COND_V(error != OK, error);
 				}
 			}
+			error = publish_geometry(resource, path);
+			ERR_FAIL_COND_V(error != OK, error);
 			if (canonical.has(path)) {
 				aliases[resource->get_instance_id()] = canonical[path];
 			} else {

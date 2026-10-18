@@ -18,6 +18,30 @@
 		<link title="Optimization using Servers">$DOCS_URL/tutorials/performance/using_servers.html</link>
 	</tutorials>
 	<methods>
+		<method name="virtual_geometry_prepare_materials">
+			<return type="int" enum="Error" />
+			<param index="0" name="materials" type="RID[]" />
+			<description>Prepares the supported virtual geometry material programs on the render thread. Null RIDs use the default material. Unsupported fragment or vertex behavior fails before a prepared scene is published. Vertex deformation requires a positive displacement bound.</description>
+		</method>
+		<method name="virtual_geometry_initialize_streaming">
+			<return type="int" enum="Error" />
+			<description>Acquires the process renderer capacity before a virtual geometry read batch starts. It is shared across resources and worlds. Call on the main thread. Capacity remains reserved through process shutdown.</description>
+		</method>
+		<method name="virtual_geometry_set_streaming_admission">
+			<return type="int" enum="Error" />
+			<param index="0" name="acquire" type="Callable" />
+			<param index="1" name="received" type="Callable" />
+			<param index="2" name="release" type="Callable" />
+			<description>Installs one main-thread process budget provider before geometry installation. Acquire receives kind (0 file read, 1 persistent capacity), owner, identity and bytes, and returns a positive lease or zero to defer. Received frees a completed read slot while retaining its byte charge. Release follows worker cancellation or an actual GPU outcome. Providers must outlive ordinary streaming; pending GPU/capacity charges remain held through process teardown.</description>
+		</method>
+		<method name="virtual_geometry_get_streaming_statistics" qualifiers="const">
+			<return type="Dictionary" />
+			<description>Returns main-thread queue, read, transfer, failure, eviction and capacity observations. These counters are not measured GPU time or driver allocation sizes.</description>
+		</method>
+		<method name="virtual_geometry_shutdown_streaming">
+			<return type="void" />
+			<description>Stops process streaming, joins owned file jobs and cancels geometry owners during shutdown. This is terminal for this RenderingServer instance. GPU charges are retained until teardown.</description>
+		</method>
 		<method name="area_light_create">
 			<return type="RID" />
 			<description>
@@ -2394,6 +2418,14 @@
 			<param index="2" name="value" type="Variant" />
 			<description>
 				Sets a material's parameter.
+			</description>
+		</method>
+		<method name="material_set_max_vertex_displacement">
+			<return type="void" />
+			<param index="0" name="material" type="RID" />
+			<param index="1" name="maximum" type="float" />
+			<description>
+				Sets the finite, nonnegative world-axis vertex displacement limit for a virtual geometry material. See [member Material.max_vertex_displacement].
 			</description>
 		</method>
 		<method name="material_set_render_priority">
@@ -4776,6 +4808,13 @@
 		<method name="get_atmosphere_shader_library" qualifiers="const">
 			<return type="String" />
 			<description>Returns the canonical GLSL medium, phase, transmittance and dual-light source functions shared by SkyView and native aerial perspective. Requires the eight-vec4 SkyView params layout and transmittance_lut/multiscatter_lut sampler names. Contains no version directive, resource declarations or main entry point.</description>
+		</method>
+		<method name="virtual_geometry_get_requests" qualifiers="const">
+			<return type="PackedByteArray" />
+			<param index="0" name="after_sequence" type="int" />
+			<description>
+				Returns the current bounded asynchronous virtual geometry page-demand snapshot. A single process resource owner acknowledges consumed observations with [param after_sequence]. The little-endian 32-byte header contains uint64 latest sequence, overflow-event count and invalid-result count, then uint32 record count and stride (32). Each record contains uint64 sequence, Mesh RID identity and generation, then uint32 page and float32 priority. Repeated reads preserve unacknowledged observations. Empty data indicates no published snapshot or an invalid future sequence. A full feedback queue delays detail and preserves resident coverage. This method does not read page files or wait for GPU completion.
+			</description>
 		</method>
 	</methods>
 	<members>

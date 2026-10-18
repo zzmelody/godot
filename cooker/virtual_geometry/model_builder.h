@@ -27,6 +27,7 @@ struct ModelBuildResult {
 	ModelBuildError error = ModelBuildError::OK;
 	uint32_t page = UINT32_MAX;
 	ModelCodecResult codec_result;
+	PageCodecResult page_result;
 };
 
 // Assemble already prepared geometry/pages/hierarchy from the same build.

@@ -587,7 +587,7 @@ private:
 
 	void _texture_changed(RID p_item);
 
-	static inline RID_PtrOwner<Item, true> items{ 65536, 1048576 };
+	static inline RID_PtrOwner<Item, true> items{ 65536 };
 	List<String> tag_stack;
 	HashSet<RID> hr_list;
 

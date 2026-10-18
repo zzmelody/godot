@@ -34,12 +34,20 @@
 #include "scene/main/node.h"
 
 class PackedScene;
+class VirtualGeometryMesh;
+class Material;
 
 class SceneState : public RefCounted {
 	GDCLASS(SceneState, RefCounted);
 
 	Vector<StringName> names;
 	Vector<Variant> variants;
+#ifndef _3D_DISABLED
+	Vector<Ref<VirtualGeometryMesh>> virtual_geometry_meshes;
+	Vector<Ref<Material>> virtual_geometry_materials;
+	bool virtual_geometry_overlay = false;
+	bool virtual_geometry_collected = false;
+#endif
 	Vector<NodePath> node_paths;
 	Vector<PackedInt32Array> id_paths;
 	mutable PackedInt32Array ids;
@@ -157,6 +165,7 @@ public:
 	String get_path() const;
 
 	void clear();
+	Error prepare_virtual_geometry();
 	Error copy_from(const Ref<SceneState> &p_scene_state);
 
 	bool can_instantiate() const;
@@ -268,6 +277,7 @@ public:
 	Error pack(Node *p_scene);
 
 	void clear();
+	Error prepare_virtual_geometry();
 
 	bool can_instantiate() const;
 	Node *instantiate(GenEditState p_edit_state = GEN_EDIT_STATE_DISABLED) const;

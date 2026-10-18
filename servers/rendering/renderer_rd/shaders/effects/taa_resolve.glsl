@@ -49,6 +49,7 @@ layout(rg16f, set = 0, binding = 2) uniform restrict readonly image2D velocity_b
 layout(rg16f, set = 0, binding = 3) uniform restrict readonly image2D last_velocity_buffer;
 layout(set = 0, binding = 4) uniform sampler2D history_buffer;
 layout(rgba16f, set = 0, binding = 5) uniform restrict writeonly image2D output_buffer;
+layout(set = 0, binding = 6) uniform sampler2D reactivity_buffer;
 
 layout(push_constant, std430) uniform Params {
 	vec2 resolution;
@@ -356,6 +357,8 @@ vec3 temporal_antialiasing(uvec2 pos_group_top_left, uvec2 pos_group, uvec2 pos_
 		diff = 1.0 - diff;
 		diff = diff * diff;
 		blend_factor = mix(0.0, blend_factor, diff);
+
+		blend_factor = max(blend_factor, textureLod(reactivity_buffer, uv, 0.0).r);
 
 		// Lerp/blend
 		color_resolved = mix(color_history, color_input, blend_factor);

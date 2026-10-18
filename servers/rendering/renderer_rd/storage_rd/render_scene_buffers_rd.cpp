@@ -32,6 +32,7 @@
 #include "render_scene_buffers_rd.compat.inc"
 
 #include "core/object/class_db.h"
+#include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/rendering_device_binds.h"
 #include "servers/rendering/rendering_server.h" // IWYU pragma: keep // Needed to bind RSE enums.
@@ -137,6 +138,10 @@ void RenderSceneBuffersRD::update_sizes(NamedTexture &p_named_texture) {
 void RenderSceneBuffersRD::free_named_texture(NamedTexture &p_named_texture) {
 	if (p_named_texture.texture.is_valid()) {
 		RD::get_singleton()->free_rid(p_named_texture.texture);
+	}
+	if (p_named_texture.virtual_geometry_bytes != 0) {
+		RendererRD::MeshStorage::get_singleton()->retire_virtual_geometry_work(p_named_texture.virtual_geometry_bytes);
+		p_named_texture.virtual_geometry_bytes = 0;
 	}
 	p_named_texture.texture = RID();
 	p_named_texture.slices.clear(); // slices should be freed automatically as dependents...
@@ -388,11 +393,31 @@ RID RenderSceneBuffersRD::create_texture_from_format(const StringName &p_context
 		return named_textures[key].texture;
 	}
 
+	uint64_t virtual_geometry_bytes = 0;
+	if (String(p_context).begins_with("virtual_geometry_")) {
+		// This context owns the explicitly single-layer material surfaces. Views
+		// and slices borrow the same textures and receive no second payload charge.
+		ERR_FAIL_COND_V(p_texture_format.array_layers != 1 || p_texture_format.depth != 1 || p_texture_format.mipmaps != 1 ||
+						p_texture_format.samples != RD::TEXTURE_SAMPLES_1 ||
+						(p_texture_format.format != RD::DATA_FORMAT_R32_UINT && p_texture_format.format != RD::DATA_FORMAT_R32_SFLOAT && p_texture_format.format != RD::DATA_FORMAT_R16G16_SFLOAT && p_texture_format.format != RD::DATA_FORMAT_R16G16B16A16_SFLOAT),
+				RID());
+		virtual_geometry_bytes = uint64_t(p_texture_format.width) * p_texture_format.height * (p_texture_format.format == RD::DATA_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4);
+		ERR_FAIL_COND_V(!RendererRD::MeshStorage::get_singleton()->reserve_virtual_geometry_work(virtual_geometry_bytes), RID());
+	}
+
 	// Add a new entry..
 	NamedTexture &named_texture = named_textures[key];
+	named_texture.virtual_geometry_bytes = virtual_geometry_bytes;
 	named_texture.format = p_texture_format;
 	named_texture.is_unique = p_unique;
 	named_texture.texture = RD::get_singleton()->texture_create(p_texture_format, p_view);
+	if (named_texture.texture.is_null()) {
+		if (virtual_geometry_bytes != 0) {
+			RendererRD::MeshStorage::get_singleton()->retire_virtual_geometry_work(virtual_geometry_bytes);
+		}
+		named_textures.erase(key);
+		return RID();
+	}
 
 	Array arr = { p_context, p_texture_name };
 	RD::get_singleton()->set_resource_name(named_texture.texture, String("RenderBuffer {0}/{1}").format(arr));

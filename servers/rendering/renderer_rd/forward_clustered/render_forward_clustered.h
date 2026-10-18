@@ -43,6 +43,8 @@
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/best_fit_normal.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/integrate_dfg.glsl.gen.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_rasterizer.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_selection.h"
 
 #ifdef METAL_ENABLED
 #include "servers/rendering/renderer_rd/effects/metal_fx.h"
@@ -105,6 +107,12 @@ public:
 	public:
 		ClusterBuilderRD *cluster_builder = nullptr;
 		RendererRD::GpuOcclusion *gpu_occlusion = nullptr;
+		RendererRD::VirtualGeometrySelection *virtual_geometry[MAX_RENDER_VIEWS] = {};
+		RendererRD::VirtualGeometryRasterizer *virtual_geometry_raster[MAX_RENDER_VIEWS] = {};
+		RendererRD::VirtualGeometryShading::ViewParameters virtual_geometry_views[MAX_RENDER_VIEWS];
+		uint64_t virtual_geometry_frame = 0;
+		float virtual_geometry_current_time = 0;
+		float virtual_geometry_previous_time = 0;
 		uint64_t gpu_occlusion_frames = 0;
 
 		struct SSEffectsData {
@@ -150,15 +158,16 @@ public:
 		RendererRD::FSR2Context *get_fsr2_context() const { return fsr2_context; }
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
-		bool ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect);
+		bool ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect, bool p_reactive);
 		RendererRD::MFXTemporalContext *get_mfx_temporal_context() const { return mfx_temporal_context; }
 #endif
 
 		RID get_color_only_fb();
-		RID get_color_pass_fb(uint32_t p_color_pass_flags);
-		RID get_depth_fb(DepthFrameBufferType p_type = DEPTH_FB);
+		RID get_color_pass_fb(uint32_t p_color_pass_flags, uint32_t p_layer = UINT32_MAX);
+		RID get_depth_fb(DepthFrameBufferType p_type = DEPTH_FB, uint32_t p_layer = UINT32_MAX);
 		RID get_specular_only_fb();
 		RID get_velocity_only_fb();
+		RID get_velocity_depth_fb(uint32_t p_layer = UINT32_MAX);
 
 		virtual void configure(RenderSceneBuffersRD *p_render_buffers) override;
 		virtual void free_data() override;
@@ -175,12 +184,13 @@ private:
 	virtual void setup_render_buffer_data(Ref<RenderSceneBuffersRD> p_render_buffers) override;
 
 	RID render_base_uniform_set;
+	LocalVector<RD::Uniform> render_base_uniforms;
 
 	uint64_t lightmap_texture_array_version = 0xFFFFFFFF;
 
 	void _update_render_base_uniform_set();
 	RID _setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index);
-	RID _setup_render_pass_uniform_set(RenderListType p_render_list, const RenderDataRD *p_render_data, RID p_radiance_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index, bool p_use_directional_shadow_atlas = false);
+	RID _setup_render_pass_uniform_set(RenderListType p_render_list, const RenderDataRD *p_render_data, RID p_radiance_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index, bool p_use_directional_shadow_atlas = false, RID p_shader = RID());
 
 	struct BestFitNormal {
 		BestFitNormalShaderRD shader;
@@ -433,6 +443,10 @@ private:
 		bool used_opaque_stencil = false;
 
 		struct ShadowPass {
+			LocalVector<RendererRD::VirtualGeometrySelection::Batch> virtual_geometry_batches;
+			RendererRD::VirtualGeometryShading::ViewParameters virtual_geometry_view;
+			Size2i virtual_geometry_size;
+			bool virtual_geometry_flip_y = false;
 			uint32_t element_from;
 			uint32_t element_count;
 			PassMode pass_mode;
@@ -487,6 +501,23 @@ private:
 	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false);
 	RendererRD::GpuOcclusion *active_gpu_occlusion = nullptr;
 	void _prepare_gpu_occlusion(RenderDataRD *p_render_data, PassMode p_depth_mode);
+	void _prepare_virtual_geometry(RenderDataRD *p_render_data);
+	Error virtual_geometry_prepare_materials(const TypedArray<RID> &p_materials) override;
+	Ref<RenderBufferDataForwardClustered> _virtual_geometry_data(const Ref<RenderSceneBuffersRD> &p_buffers);
+	bool _virtual_geometry_batch(RenderGeometryInstance *p_instance, RendererRD::VirtualGeometrySelection::Batch &r_batch) const;
+	RendererRD::VirtualGeometrySelection *virtual_geometry_aux_selection = nullptr;
+	RendererRD::VirtualGeometryRasterizer *virtual_geometry_aux_raster = nullptr;
+	RendererRD::VirtualGeometrySelection *virtual_geometry_sdfgi_selection = nullptr;
+	RendererRD::VirtualGeometryRasterizer *virtual_geometry_sdfgi_raster = nullptr;
+	struct VirtualGeometryColorWork {
+		RID program;
+		RID pipeline;
+		RID base;
+		RID pass;
+		RID surfaces;
+	};
+	LocalVector<VirtualGeometryColorWork> virtual_geometry_color_work;
+	Error _render_virtual_geometry_color(RenderDataRD *p_render_data, RID p_framebuffer, uint32_t p_color_flags, RID p_radiance, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer, const SceneShaderForwardClustered::ShaderSpecialization &p_specialization);
 
 	HashMap<Size2i, RID> sdfgi_framebuffer_size_cache;
 

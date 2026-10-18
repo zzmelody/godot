@@ -83,7 +83,7 @@ class RecipeTests(unittest.TestCase):
         report = json.loads(next(line for line in run.stdout.splitlines() if line.startswith('{')))
         self.assertEqual(report["script_languages"], 0)
         self.assertEqual(report["recipe_runtime"]["version"], "0.738")
-        self.assertEqual(report["recipe_runtime"]["api_version"], 10)
+        self.assertEqual(report["recipe_runtime"]["api_version"], 11)
         for name in ("field", "sample", "field_info", "points", "child_names", "children", "parts"):
             self.assertIn(name, report["recipe_runtime"]["apis"])
         self.assertIn("scene", report["recipe_runtime"]["apis"])
@@ -198,6 +198,45 @@ return {
             with self.subTest(code=code[:40]):
                 self.pipeline(code, success=False)
 
+    def test_virtual_geometry_material_displacement_publication(self):
+        raw = self.project / "assets/raw/material/bounded"
+        raw.mkdir(parents=True)
+        source = raw / "source.tres"
+        source.write_text('[gd_resource type="ShaderMaterial" load_steps=2 format=3]\n'
+                          '[sub_resource type="Shader" id="Shader"]\n'
+                          'code = "shader_type spatial; void vertex(){VERTEX.x+=0.1;}"\n'
+                          '[resource]\nshader = SubResource("Shader")\n', encoding="utf-8")
+        original = source.read_bytes()
+        output = "assets/runtime/material/bounded/material.res"
+        code = ('return {{operation="save-resource",source="res://assets/raw/material/bounded/source.tres",'
+                'output="res://' + output + '",type="ShaderMaterial",max_vertex_displacement=0.794}}')
+        result = self.pipeline(code)["steps"][0]
+        self.assertAlmostEqual(result["max_vertex_displacement"], 0.794, places=6)
+        saved = (self.project / output).read_bytes()
+        loaded = self.job({"operation": "validate-resource", "source": "res://" + output,
+                           "type": "ShaderMaterial"})
+        self.assertAlmostEqual(loaded["max_vertex_displacement"], 0.794, places=6)
+        self.assertTrue(self.pipeline(code)["steps"][0]["skipped"])
+        changed = self.pipeline(code.replace("=0.794", "=0.9"))["steps"][0]
+        self.assertAlmostEqual(changed["max_vertex_displacement"], 0.9, places=6)
+        self.assertNotEqual((self.project / output).read_bytes(), saved)
+        updated = (self.project / output).read_bytes()
+        self.pipeline(code.replace("=0.794", "=-1"), success=False)
+        self.assertEqual((self.project / output).read_bytes(), updated)
+        self.assertEqual(source.read_bytes(), original)
+        for index, value in enumerate(("-1", "math.huge", "0/0", '"0.5"', "true")):
+            rejected = f"assets/runtime/material/bounded/rejected-{index}.res"
+            self.pipeline(code.replace(output, rejected).replace("=0.794", "=" + value), success=False)
+            self.assertFalse((self.project / rejected).exists())
+        box = raw / "box.tres"
+        box.write_text('[gd_resource type="BoxMesh" format=3]\n[resource]\n')
+        self.pipeline(code.replace("source.tres", "box.tres").replace("ShaderMaterial", "BoxMesh")
+                      .replace(output, "assets/runtime/material/bounded/box.res"), success=False)
+        self.assertFalse((self.project / "assets/runtime/material/bounded/box.res").exists())
+        zero = self.pipeline(code.replace(output, "assets/runtime/material/bounded/zero.res")
+                             .replace("=0.794", "=0"))["steps"][0]
+        self.assertEqual(zero["max_vertex_displacement"], 0)
+
     def test_virtual_geometry_builds_root_and_content_addressed_container(self):
         result = self.recipe('''
 local source = cooker.primitive("box", {size={2,3,4}})
@@ -206,7 +245,7 @@ local second = cooker.virtual_geometry(source, {})
 local bounds = cooker.bounds(second)
 assert(bounds.max[1] >= 1 and bounds.min[1] <= -1)
 return second
-''', output="res://assets/runtime/model/vg/model.res", limits={"max_vertices": 24})
+''', output="res://assets/runtime/model/vg/model.res")
         self.assertEqual(result["type"], "VirtualGeometryMesh")
         self.assertEqual(result["virtual_geometry_builds"], 1)
         report = result["virtual_geometry"]
@@ -234,6 +273,25 @@ return second
         self.assertEqual(container.stat().st_mtime_ns, timestamp)
         self.assertEqual(len(list(container.parent.glob("*.vgp"))), 1)
         self.assertEqual(result["vertices"], repeated["vertices"])
+
+    def test_minimum_visual_retains_virtual_geometry_and_publishes_its_container(self):
+        original = self.recipe('''return cooker.virtual_geometry(
+ cooker.primitive("sphere",{radius=2,height=4}),{})''',
+                               output="res://assets/runtime/model/source/model.res")
+        source = self.project / original["output"].removeprefix("res://")
+        source_bytes = source.read_bytes()
+        minimum = self.recipe('''return cooker.minimum_visual("visual",{
+ triangle_ratio=.1,max_texture_size=128})''',
+                              inputs={"visual": original["output"]},
+                              output="res://assets/runtime/model/minimum/model.res")
+        self.assertEqual(minimum["type"], "VirtualGeometryMesh")
+        self.assertEqual(source.read_bytes(), source_bytes)
+        containers = minimum["geometry_outputs"]
+        self.assertEqual(len(containers), 1)
+        container = self.project / containers[0]["path"].removeprefix("res://")
+        original_container = self.project / original["geometry_outputs"][0]["path"].removeprefix("res://")
+        self.assertEqual(container.parent, (self.project / "assets/runtime/model/minimum"))
+        self.assertEqual(container.read_bytes(), original_container.read_bytes())
 
     def test_virtual_geometry_publication_and_packed_range_reads(self):
         if REFERENCE is None:
@@ -1527,7 +1585,7 @@ assert(not pcall(function() math.sin = nil end))
             with self.subTest(code=code):
                 self.recipe('pcall(function() ' + code + ' end); ' + BOX, success=False)
 
-    def test_host_resource_and_geometry_limits(self):
+    def test_removed_capacity_options_and_unlimited_instances(self):
         self.recipe('cooker.material({}); ' + BOX, limits={"max_resources": 1}, success=False)
         self.recipe(limits={"max_vertices": 3}, success=False)
         self.recipe('local b=cooker.primitive("box",{}); return cooker.scene({{asset=b},{asset=b}})',
@@ -1577,7 +1635,7 @@ assert(not pcall(function() math.sin = nil end))
         self.job({"operation": "run-recipe", "source": "res://replacement.luau", "output": output}, False)
         self.assertEqual(target.read_bytes(), before)
 
-    def test_output_size_failure_removes_only_its_temporary_file(self):
+    def test_large_output_keeps_its_input_unchanged(self):
         directory = self.project / "content/worlds/fixture/generated"
         directory.mkdir(parents=True)
         name = base64.b64encode(random.Random(42).randbytes(1400000)).decode()
@@ -1585,7 +1643,7 @@ assert(not pcall(function() math.sin = nil end))
         asset.write_text('[gd_resource type="StandardMaterial3D" format=3]\n[resource]\nresource_name="' + name + '"\n')
         digest = hashlib.sha256(asset.read_bytes()).hexdigest()
         self.recipe('return cooker.input("large")', inputs={"large": "res://content/worlds/fixture/generated/large.tres"},
-                    limits={"output_mb": 1}, success=False)
+                    success=True)
         self.assertEqual(hashlib.sha256(asset.read_bytes()).hexdigest(), digest)
 
     def test_symlink_input_escape_is_rejected(self):

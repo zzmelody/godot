@@ -8,7 +8,6 @@
 #include "core/os/os.h"
 
 namespace CookerCache {
-inline constexpr int MAX_MANIFEST_FILES = 2048;
 inline bool force_rebuild = false;
 struct Receipt { String path, output, fingerprint; Dictionary dependencies, auxiliary_outputs; };
 // Materials, shaders, shader includes and textures reached *through* another
@@ -38,42 +37,77 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 			Error error=CookerFiles::collect_directory(path,roots,metadata,directories);ERR_FAIL_COND_V(error!=OK,error);
 			for(const String &entry:metadata)result[entry]=FileAccess::get_sha256(entry);
 			for(const Variant &entry:roots) {error=dependencies(entry,result,depth+1);ERR_FAIL_COND_V(error!=OK,error);}
-			ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);
 			return OK;
 		}
-		if(!FileAccess::exists(path))return OK;
-		Error error=CookerFiles::check_path(path);ERR_FAIL_COND_V(error!=OK,error);
+		if (!FileAccess::exists(path)) {
+			return OK;
+		}
+		Error error = CookerFiles::check_path(path);
+		ERR_FAIL_COND_V(error != OK, error);
+		if (result.has(path) && String(result[path]) != IDENTITY) {
+			return OK;
+		}
 		HashSet<String> closure;
-		if(path.ends_with(".res") || path.ends_with(".scn")) {error=CookerFiles::collect(path,closure);ERR_FAIL_COND_V(error!=OK,error);}
-		else if (path.get_extension().to_lower()=="usd" || path.get_extension().to_lower()=="usda" || path.get_extension().to_lower()=="usdc") {error=CookerUsd::dependencies(path,closure);ERR_FAIL_COND_V(error!=OK,error);}
-		else closure.insert(path);
-		for(const String &source:closure) {
+		// Strong resource dependencies already had their closure validated in
+		// this immutable job. New roots still validate their own page binding.
+		if (path.ends_with(".res") || path.ends_with(".scn")) {
+			for (const Variant *key = result.next(); key; key = result.next(key)) {
+				const String known = *key;
+				if (String(result[*key]) != IDENTITY && (known.ends_with(".res") || known.ends_with(".scn"))) {
+					closure.insert(known);
+				}
+			}
+		}
+		if (path.ends_with(".res") || path.ends_with(".scn")) {
+			error = CookerFiles::collect(path, closure);
+			ERR_FAIL_COND_V(error != OK, error);
+		} else if (path.get_extension().to_lower() == "usd" || path.get_extension().to_lower() == "usda" || path.get_extension().to_lower() == "usdc") {
+			error = CookerUsd::dependencies(path, closure);
+			ERR_FAIL_COND_V(error != OK, error);
+		} else {
+			closure.insert(path);
+		}
+		for (const String &source : closure) {
+			if (result.has(source) && String(result[source]) != IDENTITY) {
+				continue;
+			}
 			// A declared input is always hashed by content. Its transitive
 			// surface resources are only referenced by path in the output.
-			if(source!=path && pass_through(source)) {if(!result.has(source))result[source]=IDENTITY;}
-			else if (CookerFiles::is_generated(source) && source.get_file() != "asset.manifest.json" && !source.ends_with(".cook.json")) result[source] = "md5:" + FileAccess::get_md5(source);
-			else result[source] = "sha256:" + FileAccess::get_sha256(source);
+			if (source != path && pass_through(source)) {
+				if (!result.has(source)) {
+					result[source] = IDENTITY;
+				}
+			} else if (CookerFiles::is_generated(source) && source.get_file() != "asset.manifest.json" && !source.ends_with(".cook.json")) {
+				result[source] = "md5:" + FileAccess::get_md5(source);
+			} else {
+				result[source] = "sha256:" + FileAccess::get_sha256(source);
+			}
 		}
-		ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);
-	} else if(value.get_type()==Variant::ARRAY) {
-		const Array values=value;ERR_FAIL_COND_V(values.size()>16384,ERR_OUT_OF_MEMORY);
-		for(const Variant &entry:values) {const Error error=dependencies(entry,result,depth+1);ERR_FAIL_COND_V(error!=OK,error);}
-	} else if(value.get_type()==Variant::DICTIONARY) {
-		const Dictionary values=value;ERR_FAIL_COND_V(values.size()>16384,ERR_OUT_OF_MEMORY);
+	} else if (value.get_type() == Variant::ARRAY) {
+		const Array values = value;
+		for (const Variant &entry : values) {
+			const Error error = dependencies(entry, result, depth + 1);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
+	} else if (value.get_type() == Variant::DICTIONARY) {
+		const Dictionary values = value;
 		for(const Variant *key=values.next();key;key=values.next(key)) {const Error error=dependencies(values[*key],result,depth+1,*key);ERR_FAIL_COND_V(error!=OK,error);}
 	}
 	return OK;
 }
-inline Error read(const String &path,Dictionary &out, uint64_t maximum_bytes = 1024 * 1024) {
+inline Error read(const String &path, Dictionary &out, uint64_t maximum_bytes = INT64_MAX) {
 	Ref<FileAccess> file=FileAccess::open(path,FileAccess::READ);
 	ERR_FAIL_COND_V(file.is_null() || file->get_length()>maximum_bytes,ERR_INVALID_DATA);
 	const Variant value=JSON::parse_string(file->get_as_text());ERR_FAIL_COND_V(value.get_type()!=Variant::DICTIONARY,ERR_INVALID_DATA);
 	out=value;return OK;
 }
 inline Error validate_manifest_files(const String &path) {
-	Dictionary manifest;Error error=read(path,manifest, 16 * 1024 * 1024);ERR_FAIL_COND_V(error!=OK,error);
-	ERR_FAIL_COND_V(int64_t(manifest.get("schema_version", 0)) != 2 || String(manifest.get("hash_algorithm", "")) != "md5" || manifest.get("files",Variant()).get_type()!=Variant::ARRAY,ERR_INVALID_DATA);
-	const Array files=manifest["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>MAX_MANIFEST_FILES,ERR_INVALID_DATA);
+	Dictionary manifest;
+	Error error = read(path, manifest, CookerFiles::MAX_MANIFEST_BYTES);
+	ERR_FAIL_COND_V(error != OK, error);
+	ERR_FAIL_COND_V(int64_t(manifest.get("schema_version", 0)) != 2 || String(manifest.get("hash_algorithm", "")) != "md5" || manifest.get("files", Variant()).get_type() != Variant::ARRAY, ERR_INVALID_DATA);
+	const Array files = manifest["files"];
+	ERR_FAIL_COND_V(files.is_empty(), ERR_INVALID_DATA);
 	const String base=path.get_base_dir();HashSet<String> seen;
 	for(const Variant &value:files) {
 		ERR_FAIL_COND_V(value.get_type()!=Variant::DICTIONARY,ERR_INVALID_DATA);
@@ -108,7 +142,8 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 	ERR_FAIL_COND_V(error!=OK,error);
 	if(String(job.get("operation",""))=="asset-manifest") {
 		ERR_FAIL_COND_V(job.get("files",Variant()).get_type()!=Variant::ARRAY,ERR_INVALID_PARAMETER);
-		const Array files=job["files"];ERR_FAIL_COND_V(files.is_empty() || files.size()>MAX_MANIFEST_FILES,ERR_INVALID_PARAMETER);
+		const Array files = job["files"];
+		ERR_FAIL_COND_V(files.is_empty(), ERR_INVALID_PARAMETER);
 		for(const Variant &entry:files) {
 			ERR_FAIL_COND_V(entry.get_type()!=Variant::STRING,ERR_INVALID_PARAMETER);
 			const String relative=entry;ERR_FAIL_COND_V(relative.is_empty() || relative.is_absolute_path() || relative.contains(":"),ERR_INVALID_PARAMETER);
@@ -153,7 +188,16 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 		ERR_FAIL_COND_V(prior_auxiliary.size() > 256, ERR_INVALID_DATA);
 		for (const Variant *key = prior_auxiliary.next(); key; key = prior_auxiliary.next(key)) {
 			const String path = *key;
-			ERR_FAIL_COND_V(!path.begins_with(output.get_base_dir().path_join("render-resources") + "/") || path.get_extension() != "res", ERR_INVALID_DATA);
+			error = CookerFiles::check_path(path, true);
+			ERR_FAIL_COND_V(error != OK || !path.begins_with(output.get_base_dir().path_join("render-resources") + "/"), ERR_INVALID_DATA);
+			if (path.get_extension() != "res") {
+				// The current scene producer also owns its content-addressed page
+				// containers. They retain the same exact-byte auxiliary integrity
+				// check below; arbitrary paths or payload extensions are refused.
+				const String digest = prior_auxiliary.get(path, "");
+				ERR_FAIL_COND_V(digest.length() != 64 || digest != digest.to_lower() || !digest.is_valid_hex_number(false) ||
+						path.get_file() != "geometry--" + digest + ".vgp", ERR_INVALID_DATA);
+			}
 			receipt.auxiliary_outputs[path] = "";
 		}
 	}

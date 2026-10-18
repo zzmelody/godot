@@ -35,6 +35,10 @@
 class CameraAttributes;
 class Mesh;
 
+namespace CookerVirtualGeometry {
+class BakeMeshCache;
+}
+
 class VoxelGIData : public Resource {
 	GDCLASS(VoxelGIData, Resource);
 
@@ -128,7 +132,7 @@ private:
 		Transform3D local_xform;
 	};
 
-	void _find_meshes(Node *p_at_node, List<PlotMesh> &plot_meshes);
+	bool _find_meshes(Node *p_at_node, List<PlotMesh> &plot_meshes, CookerVirtualGeometry::BakeMeshCache &p_geometry);
 	void _debug_bake();
 
 	float _get_camera_exposure_normalization();

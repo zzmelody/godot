@@ -30,6 +30,8 @@
 
 #include "mesh_storage.h"
 
+#include "material_storage.h"
+
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
@@ -220,6 +222,46 @@ bool MeshStorage::free(RID p_rid) {
 
 /* MESH API */
 
+Error MeshStorage::virtual_geometry_set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes) {
+	return virtual_geometry.set_budget(p_pool_bytes, p_metadata_bytes, p_work_bytes);
+}
+
+Error MeshStorage::mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials) {
+	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
+	if (mesh == nullptr || mesh->surface_count != 0 || mesh->blend_shape_count != 0) {
+		return ERR_INVALID_PARAMETER;
+	}
+	for (int index = 0; index < p_materials.size(); ++index) {
+		const RID material = p_materials[index];
+		if (material.is_valid() && !MaterialStorage::get_singleton()->owns_material(material)) {
+			return ERR_INVALID_PARAMETER;
+		}
+	}
+	AABB bounds;
+	const Error error = virtual_geometry.register_mesh(p_mesh, p_generation, p_root, p_materials, bounds);
+	if (error == OK) {
+		mesh->aabb = bounds;
+		mesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MESH);
+	}
+	return error;
+}
+
+Error MeshStorage::virtual_geometry_submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads) {
+	return virtual_geometry.submit_pages(p_records, p_payloads);
+}
+
+Vector<uint8_t> MeshStorage::virtual_geometry_get_feedback(uint64_t p_after_sequence) const {
+	return virtual_geometry.get_feedback(p_after_sequence);
+}
+
+Vector<uint8_t> MeshStorage::virtual_geometry_get_requests(uint64_t p_after_sequence) const {
+	return virtual_geometry.get_requests(p_after_sequence);
+}
+
+void MeshStorage::update_virtual_geometry() {
+	virtual_geometry.update();
+}
+
 RID MeshStorage::mesh_allocate() {
 	return mesh_owner.allocate_rid();
 }
@@ -249,6 +291,7 @@ void MeshStorage::mesh_free(RID p_rid) {
 }
 
 void MeshStorage::mesh_set_blend_shape_count(RID p_mesh, int p_blend_shape_count) {
+	ERR_FAIL_COND(virtual_geometry.has(p_mesh) && p_blend_shape_count != 0);
 	ERR_FAIL_COND(p_blend_shape_count < 0);
 
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
@@ -261,6 +304,7 @@ void MeshStorage::mesh_set_blend_shape_count(RID p_mesh, int p_blend_shape_count
 
 /// Returns stride
 void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::SurfaceData &p_surface) {
+	ERR_FAIL_COND(virtual_geometry.has(p_mesh));
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL(mesh);
 
@@ -623,6 +667,12 @@ void RendererRD::MeshStorage::mesh_surface_update_index_region(RID p_mesh, int p
 void MeshStorage::mesh_surface_set_material(RID p_mesh, int p_surface, RID p_material) {
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL(mesh);
+	if (virtual_geometry.has(p_mesh)) {
+		ERR_FAIL_COND(p_material.is_valid() && !MaterialStorage::get_singleton()->owns_material(p_material));
+		ERR_FAIL_COND(virtual_geometry.set_material(p_mesh, uint32_t(p_surface), p_material) != OK);
+		mesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+		return;
+	}
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_surface, mesh->surface_count);
 	mesh->surfaces[p_surface]->material = p_material;
 
@@ -633,6 +683,11 @@ void MeshStorage::mesh_surface_set_material(RID p_mesh, int p_surface, RID p_mat
 RID MeshStorage::mesh_surface_get_material(RID p_mesh, int p_surface) const {
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL_V(mesh, RID());
+	if (virtual_geometry.has(p_mesh)) {
+		const auto materials = virtual_geometry.get_materials(p_mesh);
+		ERR_FAIL_UNSIGNED_INDEX_V(uint32_t(p_surface), materials.rids.size(), RID());
+		return materials.rids[p_surface];
+	}
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_surface, mesh->surface_count, RID());
 
 	return mesh->surfaces[p_surface]->material;
@@ -862,6 +917,7 @@ void MeshStorage::mesh_set_shadow_mesh(RID p_mesh, RID p_shadow_mesh) {
 }
 
 void MeshStorage::mesh_clear(RID p_mesh) {
+	virtual_geometry.release_mesh(p_mesh);
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL(mesh);
 

@@ -76,6 +76,10 @@
 		<link title="2D Role Playing Game (RPG) Demo">https://godotengine.org/asset-library/asset/2729</link>
 	</tutorials>
 	<methods>
+		<method name="prepare_virtual_geometry">
+			<return type="int" enum="Error" />
+			<description>Prepares virtual geometry referenced by decoded Mesh, MultiMesh and nested scene values without instantiating nodes. Call on the main thread. Returns [constant ERR_BUSY] until complete roots are published, [constant OK] when prepared, or an explicit error. Published dependency records remain the loading authority.</description>
+		</method>
 		<method name="can_instantiate" qualifiers="const">
 			<return type="bool" />
 			<description>

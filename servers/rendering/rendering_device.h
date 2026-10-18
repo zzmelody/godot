@@ -1819,6 +1819,8 @@ private:
 		// Signaled by the command buffer submission. Must wait on this fence before beginning command recording for the frame.
 		RDD::FenceID fence;
 		bool fence_signaled = false;
+		uint64_t submission_serial = 0;
+		uint64_t resources_retired_serial = 0;
 
 		// Semaphores the frame must wait on before executing the command buffer.
 		LocalVector<RDD::SemaphoreID> semaphores_to_wait_on;
@@ -1856,6 +1858,8 @@ private:
 	int frame = 0;
 	TightLocalVector<Frame> frames;
 	uint64_t frames_drawn = 0;
+	uint64_t next_submission_serial = 1;
+	uint64_t completed_submission_serial = 0;
 
 	// Whenever logic/physics request a graphics operation (not just deleting a resource) that requires
 	// us to flush all graphics commands, we must set frames_pending_resources_for_processing = frames.size().
@@ -1958,6 +1962,18 @@ public:
 	DriverWorkarounds get_driver_workarounds() const;
 
 	uint64_t get_frames_drawn() const { return frames_drawn; }
+	// Internal render-thread completion boundary. Unlike frames_drawn, these
+	// serials identify command submissions and advance only after a real fence.
+	uint64_t get_recording_submission_serial() const { return frames[frame].submission_serial; }
+	uint64_t get_completed_submission_serial() const { return completed_submission_serial; }
+	// Conservative contiguous prefix for deferred driver-resource destruction.
+	uint64_t get_retired_resource_serial() const {
+		uint64_t retired = UINT64_MAX;
+		for (const Frame &recorded_frame : frames) {
+			retired = MIN(retired, recorded_frame.resources_retired_serial);
+		}
+		return retired == UINT64_MAX ? 0 : retired;
+	}
 
 	bool is_composite_alpha_supported() const;
 

@@ -30,6 +30,8 @@
 
 #include "rendering_shader_container_metal.h"
 
+#include "spirv_msl_atomic.h"
+
 #include "core/io/file_access.h"
 #include "core/io/marshalls.h"
 #include "core/os/os.h"
@@ -263,6 +265,13 @@ MetalDeviceProfile::MinimumRequirements RenderingShaderContainerMetal::inspect_s
 			const uint32_t instruction = *words;
 			const uint16_t word_count = instruction >> 16;
 			spv::Op opcode = static_cast<spv::Op>(instruction & 0xFFFF);
+			if (opcode == spv::OpCapability && words[1] == spv::CapabilityInt64Atomics) {
+				const auto family = device_profile->platform == MetalDeviceProfile::Platform::macOS ? MetalDeviceProfile::GPU::Apple8 : MetalDeviceProfile::GPU::Apple9;
+				if (reqs.gpu < family) {
+					reqs.gpu = family;
+				}
+				reqs.msl_version = MAX(reqs.msl_version, MSL_VERSION_24);
+			}
 			if (opcode == spv::OpImageTexelPointer) {
 				atomic_image_ids.insert(words[3]);
 			}
@@ -662,7 +671,7 @@ bool RenderingShaderContainerMetal::_set_code_from_spirv(const ReflectShader &p_
 			ERR_FAIL_V_MSG(false, "Failed to parse IR at stage " + String(RDC::SHADER_STAGE_NAMES[stage]) + ": " + e.what());
 		}
 
-		CompilerMSL compiler(std::move(parser.get_parsed_ir()));
+		CompilerMSLAtomic compiler(std::move(parser.get_parsed_ir()));
 		compiler.set_msl_options(msl_options);
 		compiler.set_common_options(options);
 

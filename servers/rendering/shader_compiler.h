@@ -94,6 +94,11 @@ public:
 
 	struct DefaultIdentifierActions {
 		HashMap<StringName, String> renames;
+		// Call-node lowering keeps sampler conversion and type checking intact.
+		HashMap<StringName, String> builtin_function_renames;
+		bool separate_texture_function_samplers = false;
+		bool compute_material_varyings = false;
+		String discard_function;
 		HashMap<StringName, String> render_mode_defines;
 		HashMap<StringName, String> usage_defines;
 		HashMap<StringName, String> custom_samplers;
@@ -103,6 +108,7 @@ public:
 		int texture_layout_set = 0;
 		String base_uniform_string;
 		String global_buffer_array_variable;
+		bool global_buffer_array_function = false;
 		String instance_uniform_index_variable;
 		uint32_t base_varying_index = 0;
 		bool apply_luminance_multiplier = false;

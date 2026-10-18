@@ -660,8 +660,8 @@ ModelCodecResult decode_geometry_model_fixups(const GeometryModelRoot &p_root, u
 	}
 }
 
-ModelCodecResult decode_geometry_model_page(const GeometryModelRoot &p_root, uint32_t p_page,
-		const uint8_t *p_bytes, size_t p_size, GeometryPage &r_page, HierarchyPage &r_chunk) {
+ModelCodecResult validate_geometry_model_page_layout(const GeometryModelRoot &p_root, uint32_t p_page,
+		const uint8_t *p_bytes, size_t p_size, HierarchyPage &r_chunk) {
 	if (p_page >= p_root.directory.pages.size() || p_bytes == nullptr) {
 		return { ModelCodecError::INVALID_PAGE, p_page };
 	}
@@ -670,10 +670,10 @@ ModelCodecResult decode_geometry_model_page(const GeometryModelRoot &p_root, uin
 		return { ModelCodecError::INVALID_LENGTH, p_page };
 	}
 	try {
-		GeometryPage page;
 		HierarchyPage chunk;
-		if (decode_geometry_page(p_bytes, location.fixup_offset, page).error != PageCodecError::OK || page.root != (p_page < p_root.hierarchy.root_pages) ||
-				page.clusters.size() != p_root.hierarchy.pages[p_page].clusters || read32(p_bytes, 20) != location.gpu_bytes) {
+		if (validate_geometry_page_layout(p_bytes, location.fixup_offset).error != PageCodecError::OK ||
+				read32(p_bytes, 8) != (p_page < p_root.hierarchy.root_pages ? PAGE_FLAG_ROOT : 0) ||
+				read32(p_bytes, 12) != p_root.hierarchy.pages[p_page].clusters || read32(p_bytes, 20) != location.gpu_bytes) {
 			return { ModelCodecError::INVALID_PAGE, p_page };
 		}
 		const auto fixed = decode_geometry_model_fixups(p_root, p_page, p_bytes + location.fixup_offset, location.fixup_bytes, chunk);
@@ -685,22 +685,31 @@ ModelCodecResult decode_geometry_model_page(const GeometryModelRoot &p_root, uin
 			const auto &part = p_root.hierarchy.parts[id];
 			const auto &branch = p_root.hierarchy.nodes[part.node].children[part.child];
 			for (uint32_t local = part.cluster_start; local < part.cluster_start + part.cluster_count; ++local) {
-				const auto &cluster = page.clusters[local];
-				if (cluster.cluster >= p_root.cluster_count || cluster.group != part.group ||
-						cluster.positions.precision != p_root.position_precision || cluster.position_error != p_root.position_error || !same_format(cluster.attributes.layout.format, p_root.attributes)) {
+				const uint8_t *record = p_bytes + GEOMETRY_PAGE_HEADER_BYTES + size_t(local) * GEOMETRY_PAGE_CLUSTER_BYTES;
+				const auto word = [&](uint32_t p_word) { return read32(record, size_t(p_word) * 4); };
+				const uint32_t generating_group = word(2);
+				ClusterAttributeFormat format;
+				format.normal_bits = word(33);
+				format.tangent_bits = word(34);
+				format.has_tangents = (word(35) & 1) != 0;
+				format.has_colors = (word(35) & 2) != 0;
+				format.lossless_uvs = (word(35) & 4) != 0;
+				format.uv_sets = word(36);
+				if (word(0) >= p_root.cluster_count || word(1) != part.group ||
+						word(24) != uint32_t(p_root.position_precision) || word(17) != float_word(p_root.position_error) || !same_format(format, p_root.attributes)) {
 					return { ModelCodecError::INVALID_PAGE, p_page };
 				}
 				uint32_t flags = CLUSTER_FLAG_ROOT_LEAF | CLUSTER_FLAG_STREAMING_LEAF;
 				if (streaming_range(p_root.groups[part.group], p_root.hierarchy.root_pages).second == 0) {
 					flags |= CLUSTER_FLAG_ROOT_GROUP;
 				}
-				if (cluster.generating_group == UINT32_MAX) {
+				if (generating_group == UINT32_MAX) {
 					flags |= CLUSTER_FLAG_FULL_LEAF;
 				} else {
-					if (cluster.generating_group >= cluster.group || cluster.generating_group >= p_root.groups.size()) {
+					if (generating_group >= part.group || generating_group >= p_root.groups.size()) {
 						return { ModelCodecError::INVALID_PAGE, p_page };
 					}
-					auto range = streaming_range(p_root.groups[cluster.generating_group], p_root.hierarchy.root_pages);
+					auto range = streaming_range(p_root.groups[generating_group], p_root.hierarchy.root_pages);
 					if (range.second == 0) {
 						flags &= ~CLUSTER_FLAG_ROOT_LEAF;
 					}
@@ -711,22 +720,44 @@ ModelCodecResult decode_geometry_model_page(const GeometryModelRoot &p_root, uin
 						flags &= ~CLUSTER_FLAG_STREAMING_LEAF;
 					}
 				}
-				if (cluster.flags != flags || std::any_of(cluster.material_palette.begin(), cluster.material_palette.end(), [&](uint32_t p_slot) { return p_slot >= p_root.materials.size(); })) {
+				if (word(7) != flags) {
 					return { ModelCodecError::INVALID_PAGE, p_page };
 				}
+				for (uint32_t material = 0; material < word(6); ++material) {
+					if (read32(p_bytes, word(68) + size_t(material) * 4) >= p_root.materials.size()) {
+						return { ModelCodecError::INVALID_PAGE, p_page };
+					}
+				}
 				for (uint32_t axis = 0; axis < 3; ++axis) {
-					if (cluster.lower[axis] < branch.lower[axis] || cluster.upper[axis] > branch.upper[axis]) {
+					const float lower = word_float(word(18 + axis));
+					const float upper = word_float(word(21 + axis));
+					if (!std::isfinite(lower) || !std::isfinite(upper) || lower > upper || lower < branch.lower[axis] || upper > branch.upper[axis]) {
 						return { ModelCodecError::INVALID_PAGE, p_page };
 					}
 				}
 			}
 		}
-		r_page = std::move(page);
 		r_chunk = std::move(chunk);
 		return {};
 	} catch (const std::bad_alloc &) {
 		return { ModelCodecError::MEMORY };
 	}
+}
+
+ModelCodecResult decode_geometry_model_page(const GeometryModelRoot &p_root, uint32_t p_page,
+		const uint8_t *p_bytes, size_t p_size, GeometryPage &r_page, HierarchyPage &r_chunk) {
+	HierarchyPage chunk;
+	const auto checked = validate_geometry_model_page_layout(p_root, p_page, p_bytes, p_size, chunk);
+	if (checked.error != ModelCodecError::OK) {
+		return checked;
+	}
+	GeometryPage page;
+	if (decode_geometry_page(p_bytes, p_root.directory.pages[p_page].fixup_offset, page).error != PageCodecError::OK) {
+		return { ModelCodecError::INVALID_PAGE, p_page };
+	}
+	r_page = std::move(page);
+	r_chunk = std::move(chunk);
+	return {};
 }
 
 } // namespace VirtualGeometry

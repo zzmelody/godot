@@ -191,7 +191,7 @@ PositionCodecError quantize_cluster_positions(const std::vector<std::array<float
 					return PositionCodecError::NON_FINITE;
 				}
 				const float scaled = std::ldexp(position, p_precision);
-				const double rounded = std::floor(static_cast<double>(scaled + 0.5f));
+				const double rounded = std::floor(static_cast<double>(scaled) + 0.5);
 				if (!std::isfinite(rounded) || rounded < INT32_MIN || rounded > INT32_MAX) {
 					return PositionCodecError::COORDINATE_RANGE;
 				}

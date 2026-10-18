@@ -37,6 +37,7 @@
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 
 #include <MetalFX/MetalFX.hpp>
+#include <objc/runtime.h>
 
 using namespace RendererRD;
 
@@ -129,6 +130,21 @@ MFXTemporalContext::~MFXTemporalContext() {
 MFXTemporalEffect::MFXTemporalEffect() {}
 MFXTemporalEffect::~MFXTemporalEffect() {}
 
+MFXTemporalEffect::CallbackArgs::CallbackArgs(MFXTemporalEffect *p_owner, RDD::TextureID p_src,
+		RDD::TextureID p_depth, RDD::TextureID p_motion, RDD::TextureID p_exposure, RDD::TextureID p_reactive,
+		Vector2 p_jitter_offset, RDD::TextureID p_dst, const MFXTemporalContext &p_ctx, bool p_reset) :
+		owner(p_owner), scaler(p_ctx.scaler), src(p_src), depth(p_depth), motion(p_motion), exposure(p_exposure),
+		reactive(p_reactive), jitter_offset(p_jitter_offset), dst(p_dst), reset(p_reset) {
+	// A later frame can replace the context before this queued callback runs.
+	scaler->retain();
+}
+
+void MFXTemporalEffect::CallbackArgs::free(CallbackArgs **p_args) {
+	(*p_args)->scaler->release();
+	(*p_args)->owner->args_allocator.free(*p_args);
+	*p_args = nullptr;
+}
+
 MFXTemporalContext *MFXTemporalEffect::create_context(CreateParams p_params) const {
 	DEV_ASSERT(RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_TEMPORAL));
 
@@ -151,7 +167,14 @@ MFXTemporalContext *MFXTemporalEffect::create_context(CreateParams p_params) con
 	desc->setOutputTextureFormat((MTL::PixelFormat)pf.getMTLPixelFormat(p_params.output_format));
 
 	MFXTemporalContext *context = memnew(MFXTemporalContext);
+	context->reactive_requested = p_params.reactive_format != RDD::DATA_FORMAT_MAX;
+	context->reactive_enabled = context->reactive_requested && desc->respondsToSelector(sel_registerName("setReactiveMaskTextureEnabled:"));
+	if (context->reactive_enabled) {
+		desc->setReactiveMaskTextureEnabled(true);
+		desc->setReactiveMaskTextureFormat((MTL::PixelFormat)pf.getMTLPixelFormat(p_params.reactive_format));
+	}
 	context->scaler = desc->newTemporalScaler(dev);
+	ERR_FAIL_NULL_V_MSG(context->scaler, context, "MetalFX temporal scaler creation failed.");
 	context->scaler->setMotionVectorScaleX(p_params.motion_vector_scale.x);
 	context->scaler->setMotionVectorScaleY(p_params.motion_vector_scale.y);
 	context->scaler->setDepthReversed(true); // Godot uses reverse Z per https://github.com/godotengine/godot/pull/88328
@@ -160,22 +183,34 @@ MFXTemporalContext *MFXTemporalEffect::create_context(CreateParams p_params) con
 }
 
 void MFXTemporalEffect::process(RendererRD::MFXTemporalContext *p_ctx, RendererRD::MFXTemporalEffect::Params p_params) {
+	ERR_FAIL_NULL(p_ctx);
+	ERR_FAIL_NULL(p_ctx->scaler);
+	ERR_FAIL_COND(p_ctx->reactive_enabled && !p_params.reactive.is_valid());
 	CallbackArgs *userdata = args_allocator.alloc(
 			this,
 			RDD::TextureID(RD::get_singleton()->get_driver_resource(RDC::DRIVER_RESOURCE_TEXTURE, p_params.src)),
 			RDD::TextureID(RD::get_singleton()->get_driver_resource(RDC::DRIVER_RESOURCE_TEXTURE, p_params.depth)),
 			RDD::TextureID(RD::get_singleton()->get_driver_resource(RDC::DRIVER_RESOURCE_TEXTURE, p_params.motion)),
 			p_params.exposure.is_valid() ? RDD::TextureID(RD::get_singleton()->get_driver_resource(RDC::DRIVER_RESOURCE_TEXTURE, p_params.exposure)) : RDD::TextureID(),
+			p_ctx->reactive_enabled ? RDD::TextureID(RD::get_singleton()->get_driver_resource(RDC::DRIVER_RESOURCE_TEXTURE, p_params.reactive)) : RDD::TextureID(),
 			p_params.jitter_offset,
 			RDD::TextureID(RD::get_singleton()->get_driver_resource(RDC::DRIVER_RESOURCE_TEXTURE, p_params.dst)),
 			*p_ctx,
-			p_params.reset);
-	RD::CallbackResource res[3] = {
+			p_params.reset || (p_ctx->reactive_requested && !p_ctx->reactive_enabled));
+	RD::CallbackResource res[6] = {
 		{ .rid = p_params.src, .usage = RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE },
 		{ .rid = p_params.depth, .usage = RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE },
 		{ .rid = p_params.dst, .usage = RD::CALLBACK_RESOURCE_USAGE_STORAGE_IMAGE_READ_WRITE },
+		{ .rid = p_params.motion, .usage = RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE },
 	};
-	RD::get_singleton()->driver_callback_add((RDD::DriverCallback)MFXTemporalEffect::callback, userdata, VectorView<RD::CallbackResource>(res, 3));
+	uint32_t resource_count = 4;
+	if (p_params.exposure.is_valid()) {
+		res[resource_count++] = { .rid = p_params.exposure, .usage = RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE };
+	}
+	if (p_ctx->reactive_enabled) {
+		res[resource_count++] = { .rid = p_params.reactive, .usage = RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE };
+	}
+	RD::get_singleton()->driver_callback_add((RDD::DriverCallback)MFXTemporalEffect::callback, userdata, VectorView<RD::CallbackResource>(res, resource_count));
 }
 
 void MFXTemporalEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, CallbackArgs *p_userdata) {
@@ -194,6 +229,9 @@ void MFXTemporalEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_b
 	scaler->setColorTexture(src_texture);
 	scaler->setDepthTexture(depth);
 	scaler->setMotionTexture(motion);
+	if (p_userdata->reactive.id != 0) {
+		scaler->setReactiveMaskTexture(reinterpret_cast<MTL::Texture *>(p_userdata->reactive.id));
+	}
 	scaler->setExposureTexture(exposure);
 	scaler->setJitterOffsetX(p_userdata->jitter_offset.x);
 	scaler->setJitterOffsetY(p_userdata->jitter_offset.y);

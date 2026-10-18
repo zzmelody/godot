@@ -106,7 +106,7 @@ PageBuildResult flush_page(GeometryPage &r_page, uint64_t p_limit, GeometryPageS
 	}
 	PageLocation location;
 	location.container_offset = r_pages.container.size();
-	location.disk_bytes = sizes.disk_bytes;
+	location.disk_bytes = static_cast<uint32_t>(bytes.size());
 	location.gpu_bytes = sizes.gpu_bytes;
 	location.flags = r_page.root ? PAGE_FLAG_ROOT : 0;
 	r_pages.directory.pages.push_back(location);

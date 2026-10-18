@@ -8,6 +8,8 @@ namespace CookerVirtualGeometry {
 // Publication-only validation. Reads one page block at a time, checks the
 // content-addressed container and the root/page contract, and runs the CPU
 // transcode oracle. Ordinary resource loading never calls this function.
+// Main thread only. A process-owned bounded digest cache reuses the full check
+// for identical actual root/container bytes; it never skips hashing those bytes.
 Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p_resource_path);
 
 // Conservative CPU metadata reservation, excluding materials and GPU pages.

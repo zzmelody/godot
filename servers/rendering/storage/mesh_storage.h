@@ -33,6 +33,8 @@
 #include "core/math/color.h"
 #include "core/math/transform_2d.h"
 #include "core/templates/local_vector.h"
+#include "core/templates/span.h"
+#include "core/variant/typed_array.h"
 #include "servers/rendering/rendering_server_enums.h"
 #include "servers/rendering/rendering_server_types.h"
 #include "servers/rendering/storage/utilities.h"
@@ -46,6 +48,31 @@ public:
 	virtual RID mesh_allocate() = 0;
 	virtual void mesh_initialize(RID p_rid) = 0;
 	virtual void mesh_free(RID p_rid) = 0;
+
+	virtual Error virtual_geometry_set_budget(uint64_t p_pool_bytes, uint64_t p_metadata_bytes, uint64_t p_work_bytes) { return ERR_UNAVAILABLE; }
+	virtual Error mesh_set_virtual_geometry(RID p_mesh, uint64_t p_generation, const Vector<uint8_t> &p_root, const TypedArray<RID> &p_materials) { return ERR_UNAVAILABLE; }
+	virtual Error virtual_geometry_submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads) { return ERR_UNAVAILABLE; }
+	virtual Vector<uint8_t> virtual_geometry_get_feedback(uint64_t p_after_sequence) const { return {}; }
+	virtual Vector<uint8_t> virtual_geometry_get_requests(uint64_t p_after_sequence) const { return {}; }
+	struct VirtualGeometryMaterials {
+		// Render-thread borrow. Asset replacement or destruction invalidates it.
+		Span<RID> rids;
+		Span<uint32_t> identities;
+		RID resolve(uint32_t p_slot, const Vector<RID> &p_overrides, RID p_override, RID p_default = RID()) const {
+			ERR_FAIL_INDEX_V(p_slot, rids.size(), p_default);
+			ERR_FAIL_INDEX_V(p_slot, identities.size(), p_default);
+			if (p_override.is_valid()) {
+				return p_override;
+			}
+			// Mesh exposes compact resource surfaces. Original source identities
+			// remain model metadata, never indices for runtime override arrays.
+			if (p_slot < uint32_t(p_overrides.size()) && p_overrides[p_slot].is_valid()) {
+				return p_overrides[p_slot];
+			}
+			return rids[p_slot].is_valid() ? rids[p_slot] : p_default;
+		}
+	};
+	virtual VirtualGeometryMaterials mesh_get_virtual_geometry_materials(RID p_mesh) const { return {}; }
 
 	virtual void mesh_set_blend_shape_count(RID p_mesh, int p_blend_shape_count) = 0;
 

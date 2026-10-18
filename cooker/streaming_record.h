@@ -67,215 +67,224 @@ struct Measure {
 	uint64_t nodes = 0, geometry_bytes = 0, texture_bytes = 0;
 	uint64_t instances = 0, particle_systems = 0, declared_particles = 0;
 	HashSet<ObjectID> resources;
+	const HashSet<ObjectID> *validated_resources = nullptr;
 	String path;
 	Array costs;
 	HashMap<String, HashSet<String>> page_containers;
 };
 
-inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
-	ERR_FAIL_COND_V(depth >= 32, ERR_INVALID_DATA);
-	if (value.get_type() == Variant::OBJECT) {
-		Ref<Resource> resource = value;
-		if (resource.is_null() || result.resources.has(resource->get_instance_id())) {
-			return OK;
-		}
-		ERR_FAIL_COND_V(result.resources.size() >= 65536, ERR_INVALID_DATA);
-		result.resources.insert(resource->get_instance_id());
-		uint64_t geometry_bytes = 0, texture_bytes = 0;
-		Ref<Mesh> mesh = resource;
-		const Ref<VirtualGeometryMesh> virtual_mesh = resource;
-		if (virtual_mesh.is_valid()) {
-			const String owner = resource->get_path().get_slice("::", 0);
-			ERR_FAIL_COND_V(owner.is_empty(), ERR_INVALID_DATA);
-			const Error error = CookerVirtualGeometry::validate_container(virtual_mesh, owner);
-			ERR_FAIL_COND_V(error != OK, error);
-			result.page_containers[owner].insert(owner.get_base_dir().path_join(virtual_mesh->get_container_file()));
-			geometry_bytes = CookerVirtualGeometry::metadata_bytes(virtual_mesh) +
-					uint64_t(virtual_mesh->get_model().hierarchy.root_pages) * VirtualGeometry::ROOT_PAGE_GPU_CAPACITY;
-		} else if (mesh.is_valid()) {
-			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
-				geometry_bytes +=
-						uint64_t(mesh->surface_get_array_len(surface)) * 128 +
-						uint64_t(mesh->surface_get_array_index_len(surface)) * 8;
+inline Error MeasureValue(const Variant &p_value, Measure &result, int) {
+	Vector<Variant> pending;
+	HashSet<const void *> containers;
+	Vector<Variant> retained_containers;
+	pending.push_back(p_value);
+	while (!pending.is_empty()) {
+		const Variant value = pending[pending.size() - 1];
+		pending.resize(pending.size() - 1);
+		if (value.get_type() == Variant::OBJECT) {
+			Ref<Resource> resource = value;
+			if (resource.is_null() || result.resources.has(resource->get_instance_id())) {
+				continue;
 			}
-		}
-		if (mesh.is_valid() && virtual_mesh.is_null()) {
-			geometry_bytes += 1024;
-		}
-		Ref<Texture2D> texture = resource;
-		if (texture.is_valid()) {
-			texture_bytes = uint64_t(texture->get_width()) *
-					uint64_t(texture->get_height()) * 16 / 3;
-		}
-		Ref<TextureLayered> layered = resource;
-		if (layered.is_valid()) {
-			texture_bytes = uint64_t(layered->get_width()) *
-					uint64_t(layered->get_height()) *
-					uint64_t(layered->get_layers()) * 16 * 4 / 3;
-		}
-		Ref<Animation> animation = resource;
-		if (animation.is_valid()) {
-			geometry_bytes = 1024;
-			for (int i = 0; i < animation->get_track_count(); ++i) {
-				ERR_FAIL_COND_V(animation->track_get_key_count(i) > 1000000, ERR_INVALID_DATA);
-				geometry_bytes += uint64_t(animation->track_get_key_count(i)) * 96 + 512;
-			}
-		}
-		Ref<Shape3D> shape = resource;
-		if (shape.is_valid()) {
-			geometry_bytes = 1024;
-		}
-		Ref<ConcavePolygonShape3D> concave = resource;
-		Ref<ConvexPolygonShape3D> convex = resource;
-    Ref<HeightMapShape3D> heightfield = resource;
-		if (concave.is_valid()) {
-      const PackedVector3Array faces = concave->get_faces();
-      ERR_FAIL_COND_V(faces.is_empty() || faces.size() % 3 != 0,
-                      ERR_INVALID_DATA);
-      for (const Vector3& vertex : faces) {
-        ERR_FAIL_COND_V(!vertex.is_finite(), ERR_INVALID_DATA);
-      }
-      geometry_bytes = uint64_t(faces.size()) * 64 + 1024;
-    } else if (heightfield.is_valid()) {
-      const Vector<real_t> data = heightfield->get_map_data();
-      const int width = heightfield->get_map_width();
-      ERR_FAIL_COND_V(width < 4 || width != heightfield->get_map_depth() ||
-                          data.size() != width * width, ERR_INVALID_DATA);
-      for (real_t value : data) {
-        ERR_FAIL_COND_V(!Math::is_finite(value), ERR_INVALID_DATA);
-      }
-      // Conservative data/backend accounting, not measured physics memory.
-      geometry_bytes = uint64_t(data.size()) * 16 + 1024;
-    } else if (convex.is_valid()) {
-			geometry_bytes = uint64_t(convex->get_points().size()) * 64 + 1024;
-		}
-		Ref<LightmapGIData> lightmap = resource;
-		if (lightmap.is_valid()) {
-			const Dictionary probes = lightmap->get("probe_data");
-			const PackedVector3Array points = probes.get("points", PackedVector3Array());
-			const PackedColorArray sh = probes.get("sh", PackedColorArray());
-			const PackedInt32Array tetrahedra = probes.get("tetrahedra", PackedInt32Array());
-			const PackedInt32Array bsp = probes.get("bsp", PackedInt32Array());
-			geometry_bytes = 1024 + uint64_t(points.size()) * 16 + uint64_t(sh.size()) * 16 +
-					uint64_t(tetrahedra.size()) * 4 + uint64_t(bsp.size()) * 4;
-		}
-		Ref<MultiMesh> multi = resource;
-		if (multi.is_valid()) {
-			geometry_bytes = uint64_t(multi->get_instance_count()) * 80 + 1024;
-		}
-		if (resource->has_meta("veya_resource_index_bytes")) {
-			const int64_t bytes = resource->get_meta("veya_resource_index_bytes");
-			ERR_FAIL_COND_V(bytes < 0 || bytes > 51200000, ERR_INVALID_DATA);
-			geometry_bytes += uint64_t(bytes);
-      const Variant encoded =
-          resource->get_meta("veya_resource_index", Variant());
-      ERR_FAIL_COND_V(encoded.get_type() != Variant::DICTIONARY,
-                      ERR_INVALID_DATA);
-      const Dictionary block = encoded;
-      ERR_FAIL_COND_V(int64_t(block.get("format", 0)) != 1 ||
-                          block.get("ids", Variant()).get_type() !=
-                              Variant::PACKED_STRING_ARRAY ||
-                          block.get("kinds", Variant()).get_type() !=
-                              Variant::PACKED_STRING_ARRAY ||
-                          block.get("values", Variant()).get_type() !=
-                              Variant::PACKED_FLOAT64_ARRAY ||
-                          block.get("blocking", Variant()).get_type() !=
-                              Variant::PACKED_BYTE_ARRAY,
-                      ERR_INVALID_DATA);
-      const PackedStringArray ids = block["ids"], kinds = block["kinds"];
-      const PackedFloat64Array values = block["values"];
-      const PackedByteArray blocking = block["blocking"];
-      ERR_FAIL_COND_V(ids.size() > 100000 || kinds.size() != ids.size() ||
-                          blocking.size() != ids.size() ||
-                          values.size() != ids.size() * 18,
-                      ERR_INVALID_DATA);
-      HashSet<String> identities;
-      for (int64_t row = 0; row < ids.size(); ++row) {
-        ERR_FAIL_COND_V(
-            ids[row].is_empty() || ids[row].length() > 96 ||
-                !ids[row].is_valid_identifier() || identities.has(ids[row]) ||
-                kinds[row].is_empty() || kinds[row].length() > 48 ||
-                !kinds[row].is_valid_identifier() || blocking[row] > 1,
-            ERR_INVALID_DATA);
-        identities.insert(ids[row]);
-        Vector3 vectors[6];
-        for (int vector = 0; vector < 6; ++vector) {
-          for (int axis = 0; axis < 3; ++axis) {
-            vectors[vector][axis] = values[row * 18 + vector * 3 + axis];
-          }
-          ERR_FAIL_COND_V(!vectors[vector].is_finite(), ERR_INVALID_DATA);
-        }
-        ERR_FAIL_COND_V(
-            Math::abs(Basis(vectors[1], vectors[2], vectors[3]).determinant()) <
-                    1e-9 ||
-                vectors[4].x <= 0 || vectors[4].y <= 0 || vectors[4].z <= 0,
-            ERR_INVALID_DATA);
-      }
-    }
-		result.geometry_bytes += geometry_bytes;
-		result.texture_bytes += texture_bytes;
-		if (geometry_bytes || texture_bytes) {
-			Dictionary cost;
-			const String identity = resource->get_path().is_empty()
-					? result.path + "#embedded"
-					: resource->get_path();
-			cost["identity"] = ReferencePath(result.path, identity);
-			cost["geometry_bytes"] = int64_t(geometry_bytes);
-			cost["texture_bytes"] = int64_t(texture_bytes);
-			result.costs.push_back(cost);
-		}
-		Ref<Shader> shader = resource;
-		if (shader.is_valid()) {
-			List<StringName> names;
-			shader->get_default_texture_parameter_list(&names);
-			for (const auto &name : names) {
-				for (int index = 0; index < 32; ++index) {
-					const Ref<Texture> texture =
-							shader->get_default_texture_parameter(name, index);
-					if (texture.is_null()) {
-						break;
-					}
-					const auto error = MeasureValue(texture, result, depth + 1);
+			result.resources.insert(resource->get_instance_id());
+			uint64_t geometry_bytes = 0, texture_bytes = 0;
+			Ref<Mesh> mesh = resource;
+			const Ref<VirtualGeometryMesh> virtual_mesh = resource;
+			if (virtual_mesh.is_valid()) {
+				const String owner = resource->get_path().get_slice("::", 0);
+				ERR_FAIL_COND_V(owner.is_empty(), ERR_INVALID_DATA);
+				if (result.validated_resources == nullptr || !result.validated_resources->has(resource->get_instance_id())) {
+					const Error error = CookerVirtualGeometry::validate_container(virtual_mesh, owner);
 					ERR_FAIL_COND_V(error != OK, error);
 				}
-			}
-		}
-		if (mesh.is_valid()) {
-			for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
-				const Error material_error = MeasureValue(mesh->surface_get_material(surface), result, depth + 1);
-				ERR_FAIL_COND_V(material_error != OK, material_error);
-			}
-		}
-		List<PropertyInfo> properties;
-		resource->get_property_list(&properties);
-		for (const auto &property : properties) {
-			if ((property.usage & PROPERTY_USAGE_STORAGE) &&
-					(property.type == Variant::OBJECT || property.type == Variant::ARRAY || property.type == Variant::DICTIONARY)) {
-				if ((mesh.is_valid() && property.name == "_surfaces") ||
-						((texture.is_valid() || layered.is_valid()) &&
-								(property.name == "image" || property.name == "images"))) {
-					continue;
+				result.page_containers[owner].insert(owner.get_base_dir().path_join(virtual_mesh->get_container_file()));
+				geometry_bytes = CookerVirtualGeometry::metadata_bytes(virtual_mesh) +
+						uint64_t(virtual_mesh->get_model().hierarchy.root_pages) * VirtualGeometry::ROOT_PAGE_GPU_CAPACITY;
+			} else if (mesh.is_valid()) {
+				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
+					geometry_bytes +=
+							uint64_t(mesh->surface_get_array_len(surface)) * 128 +
+							uint64_t(mesh->surface_get_array_index_len(surface)) * 8;
 				}
-				const auto error = MeasureValue(resource->get(property.name), result,
-						depth + 1);
-				ERR_FAIL_COND_V(error != OK, error);
 			}
-		}
-	} else if (value.get_type() == Variant::ARRAY) {
-		const Array values = value;
-		// PackedScene storage arrays grow with the number of spatial batches.
-		// Keep them bounded without rejecting valid, finely clustered scenes.
-		ERR_FAIL_COND_V(values.size() > 262144, ERR_INVALID_DATA);
-		for (const Variant &child : values) {
-			const auto error = MeasureValue(child, result, depth + 1);
-			ERR_FAIL_COND_V(error != OK, error);
-		}
-	} else if (value.get_type() == Variant::DICTIONARY) {
-		const Dictionary values = value;
-		ERR_FAIL_COND_V(values.size() > 16384, ERR_INVALID_DATA);
-		for (const Variant *key = values.next(); key; key = values.next(key)) {
-			const auto error = MeasureValue(values[*key], result, depth + 1);
-			ERR_FAIL_COND_V(error != OK, error);
+			if (mesh.is_valid() && virtual_mesh.is_null()) {
+				geometry_bytes += 1024;
+			}
+			Ref<Texture2D> texture = resource;
+			if (texture.is_valid()) {
+				texture_bytes = uint64_t(texture->get_width()) *
+						uint64_t(texture->get_height()) * 16 / 3;
+			}
+			Ref<TextureLayered> layered = resource;
+			if (layered.is_valid()) {
+				texture_bytes = uint64_t(layered->get_width()) *
+						uint64_t(layered->get_height()) *
+						uint64_t(layered->get_layers()) * 16 * 4 / 3;
+			}
+			Ref<Animation> animation = resource;
+			if (animation.is_valid()) {
+				geometry_bytes = 1024;
+				for (int i = 0; i < animation->get_track_count(); ++i) {
+					geometry_bytes += uint64_t(animation->track_get_key_count(i)) * 96 + 512;
+				}
+			}
+			Ref<Shape3D> shape = resource;
+			if (shape.is_valid()) {
+				geometry_bytes = 1024;
+			}
+			Ref<ConcavePolygonShape3D> concave = resource;
+			Ref<ConvexPolygonShape3D> convex = resource;
+			Ref<HeightMapShape3D> heightfield = resource;
+			if (concave.is_valid()) {
+				const PackedVector3Array faces = concave->get_faces();
+				ERR_FAIL_COND_V(faces.is_empty() || faces.size() % 3 != 0,
+						ERR_INVALID_DATA);
+				for (const Vector3 &vertex : faces) {
+					ERR_FAIL_COND_V(!vertex.is_finite(), ERR_INVALID_DATA);
+				}
+				geometry_bytes = uint64_t(faces.size()) * 64 + 1024;
+			} else if (heightfield.is_valid()) {
+				const Vector<real_t> data = heightfield->get_map_data();
+				const int width = heightfield->get_map_width();
+				ERR_FAIL_COND_V(width < 4 || width != heightfield->get_map_depth() ||
+								data.size() != width * width,
+						ERR_INVALID_DATA);
+				for (real_t value : data) {
+					ERR_FAIL_COND_V(!Math::is_finite(value), ERR_INVALID_DATA);
+				}
+				// Conservative data/backend accounting, not measured physics memory.
+				geometry_bytes = uint64_t(data.size()) * 16 + 1024;
+			} else if (convex.is_valid()) {
+				geometry_bytes = uint64_t(convex->get_points().size()) * 64 + 1024;
+			}
+			Ref<LightmapGIData> lightmap = resource;
+			if (lightmap.is_valid()) {
+				const Dictionary probes = lightmap->get("probe_data");
+				const PackedVector3Array points = probes.get("points", PackedVector3Array());
+				const PackedColorArray sh = probes.get("sh", PackedColorArray());
+				const PackedInt32Array tetrahedra = probes.get("tetrahedra", PackedInt32Array());
+				const PackedInt32Array bsp = probes.get("bsp", PackedInt32Array());
+				geometry_bytes = 1024 + uint64_t(points.size()) * 16 + uint64_t(sh.size()) * 16 +
+						uint64_t(tetrahedra.size()) * 4 + uint64_t(bsp.size()) * 4;
+			}
+			Ref<MultiMesh> multi = resource;
+			if (multi.is_valid()) {
+				geometry_bytes = uint64_t(multi->get_instance_count()) * 80 + 1024;
+			}
+			if (resource->has_meta("veya_resource_index_bytes")) {
+				const int64_t bytes = resource->get_meta("veya_resource_index_bytes");
+				ERR_FAIL_COND_V(bytes < 0, ERR_INVALID_DATA);
+				geometry_bytes += uint64_t(bytes);
+				const Variant encoded =
+						resource->get_meta("veya_resource_index", Variant());
+				ERR_FAIL_COND_V(encoded.get_type() != Variant::DICTIONARY,
+						ERR_INVALID_DATA);
+				const Dictionary block = encoded;
+				ERR_FAIL_COND_V(int64_t(block.get("format", 0)) != 1 ||
+								block.get("ids", Variant()).get_type() !=
+										Variant::PACKED_STRING_ARRAY ||
+								block.get("kinds", Variant()).get_type() !=
+										Variant::PACKED_STRING_ARRAY ||
+								block.get("values", Variant()).get_type() !=
+										Variant::PACKED_FLOAT64_ARRAY ||
+								block.get("blocking", Variant()).get_type() !=
+										Variant::PACKED_BYTE_ARRAY,
+						ERR_INVALID_DATA);
+				const PackedStringArray ids = block["ids"], kinds = block["kinds"];
+				const PackedFloat64Array values = block["values"];
+				const PackedByteArray blocking = block["blocking"];
+				ERR_FAIL_COND_V(kinds.size() != ids.size() ||
+								blocking.size() != ids.size() ||
+								values.size() != ids.size() * 18,
+						ERR_INVALID_DATA);
+				HashSet<String> identities;
+				for (int64_t row = 0; row < ids.size(); ++row) {
+					ERR_FAIL_COND_V(
+							ids[row].is_empty() || ids[row].length() > 96 ||
+									!ids[row].is_valid_identifier() || identities.has(ids[row]) ||
+									kinds[row].is_empty() || kinds[row].length() > 48 ||
+									!kinds[row].is_valid_identifier() || blocking[row] > 1,
+							ERR_INVALID_DATA);
+					identities.insert(ids[row]);
+					Vector3 vectors[6];
+					for (int vector = 0; vector < 6; ++vector) {
+						for (int axis = 0; axis < 3; ++axis) {
+							vectors[vector][axis] = values[row * 18 + vector * 3 + axis];
+						}
+						ERR_FAIL_COND_V(!vectors[vector].is_finite(), ERR_INVALID_DATA);
+					}
+					ERR_FAIL_COND_V(
+							Math::abs(Basis(vectors[1], vectors[2], vectors[3]).determinant()) <
+											1e-9 ||
+									vectors[4].x <= 0 || vectors[4].y <= 0 || vectors[4].z <= 0,
+							ERR_INVALID_DATA);
+				}
+			}
+			result.geometry_bytes += geometry_bytes;
+			result.texture_bytes += texture_bytes;
+			if (geometry_bytes || texture_bytes) {
+				Dictionary cost;
+				const String identity = resource->get_path().is_empty()
+						? result.path + "#embedded"
+						: resource->get_path();
+				cost["identity"] = ReferencePath(result.path, identity);
+				cost["geometry_bytes"] = int64_t(geometry_bytes);
+				cost["texture_bytes"] = int64_t(texture_bytes);
+				result.costs.push_back(cost);
+			}
+			Ref<Shader> shader = resource;
+			if (shader.is_valid()) {
+				List<StringName> names;
+				shader->get_default_texture_parameter_list(&names);
+				for (const auto &name : names) {
+					for (int index = 0; index < 32; ++index) {
+						const Ref<Texture> texture =
+								shader->get_default_texture_parameter(name, index);
+						if (texture.is_null()) {
+							break;
+						}
+						pending.push_back(texture);
+					}
+				}
+			}
+			if (mesh.is_valid()) {
+				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
+					pending.push_back(mesh->surface_get_material(surface));
+				}
+			}
+			List<PropertyInfo> properties;
+			resource->get_property_list(&properties);
+			for (const auto &property : properties) {
+				if ((property.usage & PROPERTY_USAGE_STORAGE) &&
+						(property.type == Variant::OBJECT || property.type == Variant::ARRAY || property.type == Variant::DICTIONARY)) {
+					if ((mesh.is_valid() && property.name == "_surfaces") ||
+							((texture.is_valid() || layered.is_valid()) &&
+									(property.name == "image" || property.name == "images"))) {
+						continue;
+					}
+					pending.push_back(resource->get(property.name));
+				}
+			}
+		} else if (value.get_type() == Variant::ARRAY) {
+			const Array values = value;
+			if (containers.has(values.id())) {
+				continue;
+			}
+			containers.insert(values.id());
+			retained_containers.push_back(value);
+			for (const Variant &child : values) {
+				pending.push_back(child);
+			}
+		} else if (value.get_type() == Variant::DICTIONARY) {
+			const Dictionary values = value;
+			if (containers.has(values.id())) {
+				continue;
+			}
+			containers.insert(values.id());
+			retained_containers.push_back(value);
+			for (const Variant *key = values.next(); key; key = values.next(key)) {
+				pending.push_back(values[*key]);
+			}
 		}
 	}
 	return OK;
@@ -283,8 +292,8 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 
 inline Error MeasureTree(Node *node, const Transform3D &parent,
 		Measure &result, int depth = 0) {
-	ERR_FAIL_COND_V(!node || depth >= 64 || ++result.nodes > 100000,
-			ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(!node, ERR_INVALID_DATA);
+	++result.nodes;
 	result.effect_valid = result.effect_valid &&
 			(node->is_class("Node3D") || node->is_class("GPUParticles3D") ||
 					node->is_class("MeshInstance3D") || node->is_class("MultiMeshInstance3D") ||
@@ -311,9 +320,7 @@ inline Error MeasureTree(Node *node, const Transform3D &parent,
 	if (const auto *multi = Object::cast_to<MultiMeshInstance3D>(node);
 			multi && multi->get_multimesh().is_valid()) {
 		const Ref<MultiMesh> batch = multi->get_multimesh();
-		ERR_FAIL_COND_V(batch->get_mesh().is_null() ||
-						batch->get_instance_count() > 100000,
-				ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(batch->get_mesh().is_null(), ERR_INVALID_DATA);
 		const AABB box = batch->get_mesh()->get_aabb();
 		result.instances += batch->get_instance_count();
 		const PackedFloat32Array buffer = batch->get("buffer");
@@ -631,14 +638,17 @@ inline Error Record(const String &path, Dictionary &output,
         if (const auto* spatial = Object::cast_to<Node3D>(root)) {
           parent = spatial->get_transform();
         }
-        const Transform3D pose = parent * child->get_transform();
-        Measure placement;
-        error = MeasureTree(child, parent, placement);
-        if (error != OK || !placement.geometry) {
-					layout_valid = false;
-					layouts.clear();
-					break;
-				}
+		const Transform3D pose = parent * child->get_transform();
+		Measure placement;
+		// The parent record already validated these retained, immutable Resources.
+		// Placement bounds and costs still use an independent measurement.
+		placement.validated_resources = &measure.resources;
+		error = MeasureTree(child, parent, placement);
+		if (error != OK || !placement.geometry) {
+			layout_valid = false;
+			layouts.clear();
+			break;
+		}
 				Dictionary entry;
 				entry["name"] = String(child->get_name());
 				entry["resource"] = ReferencePath(path, child->get_scene_file_path());
@@ -680,7 +690,6 @@ inline Error Record(const String &path, Dictionary &output,
 		if (visited.has(current)) {
 			continue;
 		}
-		ERR_FAIL_COND_V(visited.size() >= 65536, ERR_INVALID_DATA);
 		visited.insert(current);
 		Dictionary dependency;
 		dependency["path"] = ReferencePath(path, current);

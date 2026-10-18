@@ -351,6 +351,7 @@ public:
 	FUNC2RC(Variant, material_get_param, RID, const StringName &)
 
 	FUNC2(material_set_render_priority, RID, int)
+	FUNC2(material_set_max_vertex_displacement, RID, float)
 	FUNC2(material_set_next_pass, RID, RID)
 
 	/* MESH API */
@@ -359,6 +360,30 @@ public:
 #undef ServerName
 #undef server_name
 
+#define ServerName RendererMeshStorage
+#define server_name RSG::mesh_storage
+
+	FUNC3R(Error, virtual_geometry_set_budget, uint64_t, uint64_t, uint64_t)
+	FUNC4R(Error, mesh_set_virtual_geometry, RID, uint64_t, const PackedByteArray &, const TypedArray<RID> &)
+	FUNC2R(Error, virtual_geometry_submit_pages, const PackedByteArray &, const TypedArray<PackedByteArray> &)
+	PackedByteArray virtual_geometry_get_feedback(uint64_t p_after_sequence) const override {
+		return RSG::mesh_storage->virtual_geometry_get_feedback(p_after_sequence);
+	}
+	PackedByteArray virtual_geometry_get_requests(uint64_t p_after_sequence) const override {
+		return RSG::mesh_storage->virtual_geometry_get_requests(p_after_sequence);
+	}
+	Error virtual_geometry_set_streaming_admission(const Callable &p_acquire, const Callable &p_received, const Callable &p_release) override;
+	Dictionary virtual_geometry_get_streaming_statistics() const override;
+	void virtual_geometry_shutdown_streaming() override;
+	Error virtual_geometry_initialize_streaming() override;
+
+#undef ServerName
+#undef server_name
+#define ServerName RenderingMethod
+#define server_name RSG::scene
+	FUNC1R(Error, virtual_geometry_prepare_materials, const TypedArray<RID> &)
+#undef ServerName
+#undef server_name
 #define ServerName RendererMeshStorage
 #define server_name RSG::mesh_storage
 

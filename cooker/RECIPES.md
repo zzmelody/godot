@@ -1,9 +1,26 @@
-# Cooker Luau recipe API v9
+# Cooker Luau recipe API v11
+
+`virtual_geometry(asset, options)` accepts an ordinary static triangle Mesh or
+a PackedScene. Mesh input returns VirtualGeometryMesh; scene input returns a
+PackedScene with each unique static source Mesh converted once. Scene transforms,
+material overrides and MultiMesh placements remain intact. Explicit scene builds
+do not use the automatic import triangle threshold. Skinned, blend-shape,
+non-triangle and overlay geometry refuse the complete output. Options are
+`preserve_area=false`, `max_edge_length_factor=0`, automatic `position_precision`,
+`normal_bits=8`, `tangent_bits=7` and `interpolate_uvs=true`. Source vertices count
+once against the recipe's vertex limit; all encoded roots and containers share
+its output byte limit. The cache belongs to one recipe and keys source identity
+and settings. Publication writes content-addressed `.vgp` containers alongside
+the `.res` mesh or `.scn` scene. Collision uses an independent ordinary source.
+
+Mesh entries in `scene` may provide four finite `color` and `custom_data`
+components, exposed as MultiMesh COLOR and INSTANCE_CUSTOM. Missing values are
+white and zero respectively. Channels allocate only when used. `parts` preserves
+these authored values along with all transform columns. Part count and scene depth have no policy ceiling; array representation and the recipe VM allocator still apply.
 
 `run-recipe` accepts `external_render_resources=true` for static fragments.
 The host saves Shader, Material and Mesh resources under the output's
-`render-resources/` directory. Scene and render output sizes remain bounded by
-`limits.output_mb`. Use `include_render_dependencies=true` in the owning
+`render-resources/` directory. Scene and render output sizes have no policy byte ceiling. Use `include_render_dependencies=true` in the owning
 asset-manifest step. Recipe-created resources without a source path use a fixed
 private staging path and the MD5 of saved bytes as their final filename. No
 ObjectID enters a persistent identity. The scene keeps its original transforms
@@ -137,7 +154,7 @@ asset, not game-world placement, an AI model call or a generated picture.
   "seed": 42,
   "parameters": {"span": 8, "segments": 24},
   "inputs": {},
-  "limits": {"time_ms": 1500, "max_instances": 2000}
+  "limits": {"time_ms": 1500}
 }
 ```
 
@@ -195,9 +212,9 @@ mutated. Configuration fields are read raw, never through `__index` metamethods.
 
 | `children(scene)` | Top-level Node3D children of a PackedScene handle (<= 4096): `{name,position,basis={x,y,z columns},min,max}` in root space; bounds include the child's transformed meshes and MultiMeshes. |
 | `parts(scene, child?)` | 1..64 MeshInstance3D descendants and MultiMesh instances as `{mesh,material,position,basis}` in root space. An optional direct child name selects one subtree. The recipe retains at most 64 selected scene roots and reuses mesh/material handles. Missing children and paths are rejected. |
-| `resource_index(rows)` | Up to 100000 unique resource candidates. Each row declares `id`, `kind`, complete `position`/`basis`, collider `size`/`offset` and `blocking`. IDs are stable identifiers of at most 96 characters. The returned Resource holds a format-1 typed block (`PackedStringArray` IDs/kinds, `PackedFloat64Array` position/basis/size/offset, and `PackedByteArray` blocking), plus an explicit memory estimate. All 18 numeric values per row are finite; the basis is nondegenerate and collider sizes are positive. Regenerate previous Array/Dictionary records offline; the game does not convert them. |
+| `resource_index(rows)` | Unique resource candidates without a policy row-count ceiling. Each row declares `id`, `kind`, complete `position`/`basis`, collider `size`/`offset` and `blocking`. IDs are stable identifiers of at most 96 characters. The returned Resource holds a format-1 typed block (`PackedStringArray` IDs/kinds, `PackedFloat64Array` position/basis/size/offset, and `PackedByteArray` blocking), plus an explicit memory estimate. All 18 numeric values per row are finite; the basis is nondegenerate and collider sizes are positive. Regenerate previous Array/Dictionary records offline; the game does not convert them. |
 
-A job declares at most 64 `inputs` (v6; previously 32), still bounded by `input_mb`.
+A job may declare all required compiled inputs. Dependency types, paths and digests remain validated.
 
 Fields and point sets are data resources for later recipes and the Veya host;
 they are never rendered. A recipe input `Image` is admitted only when it carries
@@ -276,22 +293,13 @@ resolution and use a continuous 900-second drift cycle, matching TIME rollover.
 
 ## Limits and publication
 
-Job limits may only **lower** these positive integer defaults. `time_ms` has no
-default deadline (v6, 2026-10-04); a job may set one (1..86,400,000 ms):
-
-| Key | Default |
-| --- | --- |
-| `memory_mb` | 32 MiB VM allocator memory |
-| `time_ms` | none (opt-in execution deadline) |
-| `max_resources` | 256 handles |
-| `input_mb` | 256 MiB declared input dependency bytes |
-| `max_vertices` | 500000 mesh vertices across requested handles |
-| `max_instances` | none (opt-in cap on scene instance declarations) |
-| `output_mb` | 64 MiB serialized output |
-
-Index arrays are limited to `6 * max_vertices`. Repeated input requests consume
-handle/vertex budget again. The vertex budget is not an expanded draw-vertex
-budget: repeated instances use MultiMesh.
+Recipe capacity has no policy ceiling. Vertices, instances, resource handles,
+input files and output bytes retain accounting. The removed keys `max_vertices`,
+`max_instances`, `max_resources`, `input_mb` and `output_mb` are rejected as
+unknown fields. Current jobs declare only VM allocator memory (`memory_mb`,
+128 MiB by default, reducible) and an optional execution deadline (`time_ms`,
+1..86,400,000 ms). Individual arrays retain their signed index representation.
+Shared meshes are counted once; repeated instances use MultiMesh.
 
 Only base/table/string/math/bit32/utf8 are opened. No os/io/debug/coroutine/require,
 network, dynamic code loading, environment manipulation, print, GC controls or
@@ -301,8 +309,8 @@ memory and execution faults are sticky, even through pcall/xpcall. A broken VM
 is never resumed or allowed to publish an asset.
 
 The single result is serialized to a new temporary file beside its destination,
-checked against the output byte limit, then renamed to the immutable final path.
-Serialization/size failures remove only that task's temporary file. Scripts cannot
+then renamed to the immutable final path.
+Serialization failures remove only that task's temporary file. Scripts cannot
 publish intermediate files. Empty output directories may remain after failure.
 
 This is **not an OS sandbox or a total process resource guarantee**. Compilation,
@@ -333,7 +341,7 @@ Streaming bounds use actual transformed Mesh and MultiMesh geometry. They includ
 
 ## Bounded static fragments (recipe API 8)
 
-`child_names(scene)` returns at most 65536 direct child names. It does not
+`child_names(scene)` returns all direct child names. It does not
 calculate geometric bounds. Luau chooses a fragment's names and passes
 `keep={...}` to a PackedScene entry of `scene()`. The list contains 1..128
 unique direct child names. Missing names, paths, duplicates and empty lists

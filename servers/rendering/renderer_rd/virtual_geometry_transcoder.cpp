@@ -44,10 +44,15 @@ Error VirtualGeometryTranscoder::record(RID p_source, RID p_destination, const V
 	const RD::ComputeListID commands = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(commands, pipeline_rid);
 	RD::get_singleton()->compute_list_bind_uniform_set(commands, uniforms, 0);
-	for (const Page &page : p_pages) {
-		const uint32_t parameters[4] = { page.source_byte / 4, page.destination_byte / 4, page.clusters, page.gpu_bytes };
-		RD::get_singleton()->compute_list_set_push_constant(commands, parameters, sizeof(parameters));
-		RD::get_singleton()->compute_list_dispatch(commands, page.clusters, 1, 1);
+	for (uint32_t phase = 0; phase < 2; ++phase) {
+		if (phase != 0) {
+			RD::get_singleton()->compute_list_add_barrier(commands);
+		}
+		for (const Page &page : p_pages) {
+			const uint32_t parameters[5] = { page.source_byte / 4, page.destination_byte / 4, page.clusters, page.gpu_bytes, phase };
+			RD::get_singleton()->compute_list_set_push_constant(commands, parameters, sizeof(parameters));
+			RD::get_singleton()->compute_list_dispatch(commands, page.clusters, 1, 1);
+		}
 	}
 	RD::get_singleton()->compute_list_end();
 	return OK;

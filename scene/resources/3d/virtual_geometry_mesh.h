@@ -6,7 +6,8 @@
 
 // A serialized geometry root and material slots, with a separately paged
 // container. No detailed geometry is expanded by the ordinary Mesh array API.
-// GPU storage/installation is not connected yet; get_rid() refuses explicitly.
+// get_rid() registers metadata and queues mandatory roots. Detail reads follow
+// GPU demand. The host can wait for is_render_ready() before scene publication.
 class VirtualGeometryMesh : public Mesh {
 	GDCLASS(VirtualGeometryMesh, Mesh);
 
@@ -16,6 +17,11 @@ class VirtualGeometryMesh : public Mesh {
 	String container_file;
 	uint64_t container_bytes = 0;
 	AABB bounds;
+	mutable RID mesh;
+	mutable bool streamed = false;
+	Error _install(const PackedByteArray &p_root, const VirtualGeometry::GeometryModelRoot &p_model,
+			const Vector<Ref<Material>> &p_materials, const String &p_file, RID &r_mesh) const;
+	void _release_mesh();
 
 protected:
 	static void _bind_methods();
@@ -48,6 +54,10 @@ public:
 	void set_blend_shape_name(int p_index, const StringName &p_name) override;
 	AABB get_aabb() const override;
 	RID get_rid() const override;
+	bool is_render_ready() const;
+	Error get_streaming_error() const;
+	Error prepare_virtual_geometry() const;
+	~VirtualGeometryMesh();
 };
 
 #endif // VIRTUAL_GEOMETRY_MESH_H

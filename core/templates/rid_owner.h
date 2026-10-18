@@ -94,13 +94,68 @@ class RID_Alloc : public RID_AllocBase {
 		T data;
 		uint32_t validator;
 	};
-	Chunk **chunks = nullptr;
-	uint32_t **free_list_chunks = nullptr;
+	// Published directory pages never move. Readers borrow them after observing
+	// max_alloc; the allocator mutex serializes page creation and free-list writes.
+	template <typename E>
+	class ChunkTable {
+		static constexpr uint32_t PAGE_BITS = 11;
+		static constexpr uint32_t PAGE_SIZE = 1u << PAGE_BITS;
+		static constexpr uint32_t PAGE_MASK = PAGE_SIZE - 1;
+		static constexpr uint32_t ROOT_SIZE = 1u << (32 - PAGE_BITS * 2);
+		struct Leaf {
+			E *values[PAGE_SIZE] = {};
+		};
+		struct Branch {
+			Leaf *leaves[PAGE_SIZE] = {};
+		};
+		Branch **roots = nullptr;
+
+	public:
+		void ensure(uint32_t p_index) {
+			if (roots == nullptr) {
+				roots = memnew_arr(Branch *, ROOT_SIZE);
+				for (uint32_t i = 0; i < ROOT_SIZE; ++i) {
+					roots[i] = nullptr;
+				}
+			}
+			Branch *&branch = roots[p_index >> (PAGE_BITS * 2)];
+			if (branch == nullptr) {
+				branch = memnew(Branch);
+			}
+			Leaf *&leaf = branch->leaves[(p_index >> PAGE_BITS) & PAGE_MASK];
+			if (leaf == nullptr) {
+				leaf = memnew(Leaf);
+			}
+		}
+
+		_FORCE_INLINE_ E *&operator[](uint32_t p_index) const {
+			return roots[p_index >> (PAGE_BITS * 2)]->leaves[(p_index >> PAGE_BITS) & PAGE_MASK]->values[p_index & PAGE_MASK];
+		}
+
+		~ChunkTable() {
+			if (roots == nullptr) {
+				return;
+			}
+			for (uint32_t i = 0; i < ROOT_SIZE; ++i) {
+				if (roots[i] == nullptr) {
+					continue;
+				}
+				for (uint32_t j = 0; j < PAGE_SIZE; ++j) {
+					if (roots[i]->leaves[j] != nullptr) {
+						memdelete(roots[i]->leaves[j]);
+					}
+				}
+				memdelete(roots[i]);
+			}
+			memdelete_arr(roots);
+		}
+	};
+	ChunkTable<Chunk> chunks;
+	ChunkTable<uint32_t> free_list_chunks;
 
 	uint32_t elements_in_chunk;
 	uint32_t max_alloc = 0;
 	uint32_t alloc_count = 0;
-	uint32_t chunk_limit = 0;
 
 	const char *description = nullptr;
 
@@ -114,24 +169,16 @@ class RID_Alloc : public RID_AllocBase {
 		if (alloc_count == max_alloc) {
 			//allocate a new chunk
 			uint32_t chunk_count = alloc_count == 0 ? 0 : (max_alloc / elements_in_chunk);
-			if (THREAD_SAFE && chunk_count == chunk_limit) {
-				mutex.unlock();
-				if (description != nullptr) {
-					ERR_FAIL_V_MSG(RID(), vformat("Element limit for RID of type '%s' reached.", String(description)));
-				} else {
-					ERR_FAIL_V_MSG(RID(), "Element limit reached.");
+			if (elements_in_chunk > UINT32_MAX - max_alloc) {
+				if constexpr (THREAD_SAFE) {
+					mutex.unlock();
 				}
+				ERR_FAIL_V_MSG(RID(), "RID index representation exhausted.");
 			}
 
-			//grow chunks
-			if constexpr (!THREAD_SAFE) {
-				chunks = (Chunk **)memrealloc(chunks, sizeof(Chunk *) * (chunk_count + 1));
-			}
+			chunks.ensure(chunk_count);
 			chunks[chunk_count] = (Chunk *)memalloc(sizeof(Chunk) * elements_in_chunk); //but don't initialize
-			//grow free lists
-			if constexpr (!THREAD_SAFE) {
-				free_list_chunks = (uint32_t **)memrealloc(free_list_chunks, sizeof(uint32_t *) * (chunk_count + 1));
-			}
+			free_list_chunks.ensure(chunk_count);
 			free_list_chunks[chunk_count] = (uint32_t *)memalloc(sizeof(uint32_t) * elements_in_chunk);
 
 			//initialize
@@ -143,7 +190,7 @@ class RID_Alloc : public RID_AllocBase {
 
 			if constexpr (THREAD_SAFE) {
 				// Store atomically to avoid data race with the load in get_or_null().
-				((std::atomic<uint32_t> *)&max_alloc)->store(max_alloc + elements_in_chunk, std::memory_order_relaxed);
+				((std::atomic<uint32_t> *)&max_alloc)->store(max_alloc + elements_in_chunk, std::memory_order_release);
 			} else {
 				max_alloc += elements_in_chunk;
 			}
@@ -201,7 +248,7 @@ public:
 		uint32_t idx = uint32_t(id & 0xFFFFFFFF);
 		uint32_t ma;
 		if constexpr (THREAD_SAFE) { // Read atomically to avoid data race with the store in _allocate_rid().
-			ma = ((std::atomic<uint32_t> *)&max_alloc)->load(std::memory_order_relaxed);
+			ma = ((std::atomic<uint32_t> *)&max_alloc)->load(std::memory_order_acquire);
 		} else {
 			ma = max_alloc;
 		}
@@ -411,14 +458,8 @@ public:
 		description = p_description;
 	}
 
-	RID_Alloc(uint32_t p_target_chunk_byte_size = 65536, uint32_t p_maximum_number_of_elements = 262144) {
+	RID_Alloc(uint32_t p_target_chunk_byte_size = 65536) {
 		elements_in_chunk = sizeof(T) > p_target_chunk_byte_size ? 1 : (p_target_chunk_byte_size / sizeof(T));
-		if constexpr (THREAD_SAFE) {
-			chunk_limit = (p_maximum_number_of_elements / elements_in_chunk) + 1;
-			chunks = (Chunk **)memalloc(sizeof(Chunk *) * chunk_limit);
-			free_list_chunks = (uint32_t **)memalloc(sizeof(uint32_t *) * chunk_limit);
-			SYNC_RELEASE;
-		}
 	}
 
 	~RID_Alloc() {
@@ -447,10 +488,6 @@ public:
 			memfree(free_list_chunks[i]);
 		}
 
-		if (chunks) {
-			memfree(chunks);
-			memfree(free_list_chunks);
-		}
 	}
 };
 
@@ -509,8 +546,8 @@ public:
 		alloc.set_description(p_description);
 	}
 
-	RID_PtrOwner(uint32_t p_target_chunk_byte_size = 65536, uint32_t p_maximum_number_of_elements = 262144) :
-			alloc(p_target_chunk_byte_size, p_maximum_number_of_elements) {}
+	RID_PtrOwner(uint32_t p_target_chunk_byte_size = 65536) :
+			alloc(p_target_chunk_byte_size) {}
 };
 
 template <typename T, bool THREAD_SAFE = false>
@@ -563,6 +600,6 @@ public:
 	void set_description(const char *p_description) {
 		alloc.set_description(p_description);
 	}
-	RID_Owner(uint32_t p_target_chunk_byte_size = 65536, uint32_t p_maximum_number_of_elements = 262144) :
-			alloc(p_target_chunk_byte_size, p_maximum_number_of_elements) {}
+	RID_Owner(uint32_t p_target_chunk_byte_size = 65536) :
+			alloc(p_target_chunk_byte_size) {}
 };

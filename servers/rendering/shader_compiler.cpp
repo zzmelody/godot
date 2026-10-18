@@ -382,64 +382,68 @@ void ShaderCompiler::_dump_function_deps(const SL::ShaderNode *p_node, const Str
 	}
 }
 
-static String _get_global_shader_uniform_from_type_and_index(const String &p_buffer, const String &p_index, ShaderLanguage::DataType p_type) {
+static String _get_global_shader_uniform_from_type_and_index(const String &p_buffer, const String &p_index, ShaderLanguage::DataType p_type, bool p_function) {
+	const auto load = [&](const String &p_offset) {
+		return p_buffer + (p_function ? "(" : "[") + p_offset + (p_function ? ")" : "]");
+	};
+	const String value = load(p_index);
 	switch (p_type) {
 		case ShaderLanguage::TYPE_BOOL: {
-			return "bool(floatBitsToUint(" + p_buffer + "[" + p_index + "].x))";
+			return "bool(floatBitsToUint(" + value + ".x))";
 		}
 		case ShaderLanguage::TYPE_BVEC2: {
-			return "bvec2(floatBitsToUint(" + p_buffer + "[" + p_index + "].xy))";
+			return "bvec2(floatBitsToUint(" + value + ".xy))";
 		}
 		case ShaderLanguage::TYPE_BVEC3: {
-			return "bvec3(floatBitsToUint(" + p_buffer + "[" + p_index + "].xyz))";
+			return "bvec3(floatBitsToUint(" + value + ".xyz))";
 		}
 		case ShaderLanguage::TYPE_BVEC4: {
-			return "bvec4(floatBitsToUint(" + p_buffer + "[" + p_index + "].xyzw))";
+			return "bvec4(floatBitsToUint(" + value + ".xyzw))";
 		}
 		case ShaderLanguage::TYPE_INT: {
-			return "floatBitsToInt(" + p_buffer + "[" + p_index + "].x)";
+			return "floatBitsToInt(" + value + ".x)";
 		}
 		case ShaderLanguage::TYPE_IVEC2: {
-			return "floatBitsToInt(" + p_buffer + "[" + p_index + "].xy)";
+			return "floatBitsToInt(" + value + ".xy)";
 		}
 		case ShaderLanguage::TYPE_IVEC3: {
-			return "floatBitsToInt(" + p_buffer + "[" + p_index + "].xyz)";
+			return "floatBitsToInt(" + value + ".xyz)";
 		}
 		case ShaderLanguage::TYPE_IVEC4: {
-			return "floatBitsToInt(" + p_buffer + "[" + p_index + "].xyzw)";
+			return "floatBitsToInt(" + value + ".xyzw)";
 		}
 		case ShaderLanguage::TYPE_UINT: {
-			return "floatBitsToUint(" + p_buffer + "[" + p_index + "].x)";
+			return "floatBitsToUint(" + value + ".x)";
 		}
 		case ShaderLanguage::TYPE_UVEC2: {
-			return "floatBitsToUint(" + p_buffer + "[" + p_index + "].xy)";
+			return "floatBitsToUint(" + value + ".xy)";
 		}
 		case ShaderLanguage::TYPE_UVEC3: {
-			return "floatBitsToUint(" + p_buffer + "[" + p_index + "].xyz)";
+			return "floatBitsToUint(" + value + ".xyz)";
 		}
 		case ShaderLanguage::TYPE_UVEC4: {
-			return "floatBitsToUint(" + p_buffer + "[" + p_index + "].xyzw)";
+			return "floatBitsToUint(" + value + ".xyzw)";
 		}
 		case ShaderLanguage::TYPE_FLOAT: {
-			return "(" + p_buffer + "[" + p_index + "].x)";
+			return "(" + value + ".x)";
 		}
 		case ShaderLanguage::TYPE_VEC2: {
-			return "(" + p_buffer + "[" + p_index + "].xy)";
+			return "(" + value + ".xy)";
 		}
 		case ShaderLanguage::TYPE_VEC3: {
-			return "(" + p_buffer + "[" + p_index + "].xyz)";
+			return "(" + value + ".xyz)";
 		}
 		case ShaderLanguage::TYPE_VEC4: {
-			return "(" + p_buffer + "[" + p_index + "].xyzw)";
+			return "(" + value + ".xyzw)";
 		}
 		case ShaderLanguage::TYPE_MAT2: {
-			return "mat2(" + p_buffer + "[" + p_index + "].xy," + p_buffer + "[" + p_index + "+1u].xy)";
+			return "mat2(" + value + ".xy," + load(p_index + "+1u") + ".xy)";
 		}
 		case ShaderLanguage::TYPE_MAT3: {
-			return "mat3(" + p_buffer + "[" + p_index + "].xyz," + p_buffer + "[" + p_index + "+1u].xyz," + p_buffer + "[" + p_index + "+2u].xyz)";
+			return "mat3(" + value + ".xyz," + load(p_index + "+1u") + ".xyz," + load(p_index + "+2u") + ".xyz)";
 		}
 		case ShaderLanguage::TYPE_MAT4: {
-			return "mat4(" + p_buffer + "[" + p_index + "].xyzw," + p_buffer + "[" + p_index + "+1u].xyzw," + p_buffer + "[" + p_index + "+2u].xyzw," + p_buffer + "[" + p_index + "+3u].xyzw)";
+			return "mat4(" + value + ".xyzw," + load(p_index + "+1u") + ".xyzw," + load(p_index + "+2u") + ".xyzw," + load(p_index + "+3u") + ".xyzw)";
 		}
 		default: {
 			ERR_FAIL_V("void");
@@ -693,10 +697,36 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 			}
 
 			varying_names.sort_custom<StringName::AlphCompare>(); //ensure order is deterministic so the same shader is always produced
+			String compute_fields;
+			String compute_interpolation;
 
 			for (int k = 0; k < varying_names.size(); k++) {
 				const StringName &varying_name = varying_names[k];
 				const SL::ShaderNode::Varying &varying = pnode->varyings[varying_name];
+				if (p_default_actions.compute_material_varyings) {
+					const String name = _mkid(varying_name);
+					compute_fields += _typestr(varying.type) + " " + name;
+					if (varying.array_size > 0) {
+						compute_fields += "[" + itos(varying.array_size) + "]";
+					}
+					compute_fields += ";\n";
+					if (varying.stage != SL::ShaderNode::Varying::STAGE_FRAGMENT) {
+						String member = name;
+						if (varying.array_size > 0) {
+							compute_interpolation += "for (int vg_i=0; vg_i<" + itos(varying.array_size) + "; ++vg_i) {\n";
+							member += "[vg_i]";
+						}
+						compute_interpolation += "vg_varyings." + member + " = vg_corners[0]." + member;
+						if (varying.interpolation != SL::INTERPOLATION_FLAT) {
+							compute_interpolation += " * b.x + vg_corners[1]." + member + " * b.y + vg_corners[2]." + member + " * b.z";
+						}
+						compute_interpolation += ";\n";
+						if (varying.array_size > 0) {
+							compute_interpolation += "}\n";
+						}
+					}
+					continue;
+				}
 
 				if (varying.stage == SL::ShaderNode::Varying::STAGE_FRAGMENT) {
 					var_frag_to_light.push_back(Pair<StringName, SL::ShaderNode::Varying>(varying_name, varying));
@@ -732,6 +762,13 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				index += inc;
 			}
 
+			if (p_default_actions.compute_material_varyings) {
+				if (compute_fields.is_empty()) {
+					compute_fields = "float unused;\n";
+				}
+				r_gen_code.stage_globals[STAGE_COMPUTE] += "struct VGCustomVaryings {\n" + compute_fields + "};\nVGCustomVaryings vg_varyings;\nVGCustomVaryings vg_corners[3];\n";
+				r_gen_code.code["virtual_geometry_varyings"] = compute_interpolation;
+			}
 			if (var_frag_to_light.size() > 0) {
 				String gcode = "\n\nstruct {\n";
 				for (const Pair<StringName, SL::ShaderNode::Varying> &E : var_frag_to_light) {
@@ -973,11 +1010,11 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
 							code = actions.base_uniform_string + _mkid(vnode->name); //texture, use as is
 							//global variable, this means the code points to an index to the global table
-							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type);
+							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
 							//instance variable, index it as such
 							code = "(" + p_default_actions.instance_uniform_index_variable + "+" + itos(u.instance_index) + "u)";
-							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type);
+							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else {
 							//regular uniform, index from UBO
 							code = actions.base_uniform_string + _mkid(vnode->name);
@@ -985,7 +1022,9 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					}
 
 				} else {
-					if (use_fragment_varying) {
+					if (p_default_actions.compute_material_varyings && !vnode->is_local && shader->varyings.has(vnode->name)) {
+						code = "vg_varyings.";
+					} else if (use_fragment_varying) {
 						code = "frag_to_light.";
 					}
 					code += _mkid(vnode->name); //its something else (local var most likely) use as is
@@ -1082,18 +1121,20 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
 							code = actions.base_uniform_string + _mkid(anode->name); //texture, use as is
 							//global variable, this means the code points to an index to the global table
-							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type);
+							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
 							//instance variable, index it as such
 							code = "(" + p_default_actions.instance_uniform_index_variable + "+" + itos(u.instance_index) + "u)";
-							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type);
+							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else {
 							//regular uniform, index from UBO
 							code = actions.base_uniform_string + _mkid(anode->name);
 						}
 					}
 				} else {
-					if (use_fragment_varying) {
+					if (p_default_actions.compute_material_varyings && !anode->is_local && shader->varyings.has(anode->name)) {
+						code = "vg_varyings.";
+					} else if (use_fragment_varying) {
 						code = "frag_to_light.";
 					}
 					code += _mkid(anode->name);
@@ -1219,7 +1260,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						}
 
 						if (is_internal_func) {
-							code += vnode->name;
+							code += p_default_actions.builtin_function_renames.has(vnode->name) ? p_default_actions.builtin_function_renames[vnode->name] : String(vnode->name);
 							is_texture_func = texture_functions.has(vnode->name);
 							texture_func_no_uv = (vnode->name == "textureSize" || vnode->name == "textureQueryLevels");
 							texture_func_returns_data = texture_func_no_uv || vnode->name == "textureQueryLod";
@@ -1370,7 +1411,11 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 									data_type_name = ShaderLanguage::get_datatype_name(onode->arguments[i]->get_datatype());
 								}
 
-								code += data_type_name + "(" + node_code + ", " + sampler_name + ")";
+								if (p_default_actions.separate_texture_function_samplers && p_default_actions.builtin_function_renames.has(vnode->name)) {
+									code += node_code + ", " + sampler_name;
+								} else {
+									code += data_type_name + "(" + node_code + ", " + sampler_name + ")";
+								}
 							} else if (correct_texture_uniform && RS::get_singleton()->is_low_end()) {
 								// Texture function on low end hardware (i.e. OpenGL).
 
@@ -1502,7 +1547,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					used_flag_pointers.insert("DISCARD");
 				}
 
-				code = "discard;";
+				code = p_default_actions.discard_function.is_empty() ? "discard;" : p_default_actions.discard_function + "();";
 			} else if (cfnode->flow_op == SL::FLOW_OP_CONTINUE) {
 				code = "continue;";
 			} else if (cfnode->flow_op == SL::FLOW_OP_BREAK) {

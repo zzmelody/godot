@@ -1015,7 +1015,7 @@ public:
 
 	uint32_t thread_cull_threshold = 200;
 
-	mutable RID_Owner<Instance, true> instance_owner{ 65536, 4194304 };
+	mutable RID_Owner<Instance, true> instance_owner{ 65536 };
 
 	uint32_t geometry_instance_pair_mask = 0; // used in traditional forward, unnecessary on clustered
 
@@ -1073,6 +1073,7 @@ public:
 	virtual Variant instance_geometry_get_shader_parameter_default_value(RID p_instance, const StringName &p_parameter) const;
 
 	virtual void mesh_generate_pipelines(RID p_mesh, bool p_background_compilation);
+	Error virtual_geometry_prepare_materials(const TypedArray<RID> &p_materials) override { return scene_render->virtual_geometry_prepare_materials(p_materials); }
 	virtual uint32_t get_pipeline_compilations(RSE::PipelineSource p_source);
 
 	_FORCE_INLINE_ void _update_instance(Instance *p_instance) const;

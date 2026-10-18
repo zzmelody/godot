@@ -9,7 +9,7 @@ namespace VirtualGeometry {
 
 constexpr uint32_t MODEL_ROOT_MAGIC = 0x524d4756; // VGMR
 constexpr uint32_t MODEL_FIXUP_MAGIC = 0x58464756; // VGFX
-constexpr uint32_t MODEL_FORMAT_VERSION = 1;
+constexpr uint32_t MODEL_FORMAT_VERSION = 2;
 constexpr uint32_t MODEL_ROOT_HEADER_BYTES = 208;
 constexpr uint32_t MODEL_NODE_BYTES = 256;
 constexpr uint32_t MODEL_PART_BYTES = 32;
@@ -76,6 +76,12 @@ ModelCodecResult decode_geometry_model_fixups(const GeometryModelRoot &p_root, u
 		const uint8_t *p_bytes, size_t p_size, HierarchyPage &r_chunk);
 
 // One demanded container block = disk geometry followed by its fixup chunk.
+// Runtime installation check: canonical byte ranges, strip metadata, model
+// identity and fixups, without expanding positions, attributes or triangles.
+// Borrows immutable publication-admitted content; this is not asset admission.
+ModelCodecResult validate_geometry_model_page_layout(const GeometryModelRoot &p_root, uint32_t p_page,
+		const uint8_t *p_bytes, size_t p_size, HierarchyPage &r_chunk);
+
 // Checks metadata identity, material slots, attributes, static flags and part
 // membership. No I/O, hashing, runtime admission or GPU installation occurs.
 ModelCodecResult decode_geometry_model_page(const GeometryModelRoot &p_root, uint32_t p_page,

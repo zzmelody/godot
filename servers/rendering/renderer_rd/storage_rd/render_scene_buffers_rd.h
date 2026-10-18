@@ -168,6 +168,7 @@ private:
 
 		// Our texture objects, slices are lazy (i.e. only created when requested).
 		RID texture;
+		uint64_t virtual_geometry_bytes = 0;
 		mutable HashMap<NTSliceKey, RID, NTSliceKey> slices;
 		Vector<Size2i> sizes;
 	};

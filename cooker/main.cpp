@@ -11,7 +11,9 @@
 #include "core/io/json.h"
 #include "pipeline_cache.h"
 #include "atomic_save.h"
+#include "render_dependencies.h"
 #include "output_lock.h"
+#include <cfloat>
 #include <memory>
 #include "stage_source.h"
 #include "usd_import.h"
@@ -59,6 +61,7 @@
 #include "servers/rendering/dummy/rasterizer_dummy.h"
 #include "servers/rendering/rendering_server_default.h"
 #include "cooker/asset_files.h"
+#include "cooker/virtual_geometry_mesh.h"
 #include "cooker/pipeline.h"
 #include "cooker/recipe.h"
 #include "cooker/streaming_record.h"
@@ -344,29 +347,43 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	if (bool(p_job.get("include_render_dependencies", false))) {
 		HashSet<String> visited;
 		Vector<String> pending;
-		for (const Variant &file : declared) pending.push_back(base.path_join(String(file)));
+		for (const Variant &file : declared) {
+			pending.push_back(base.path_join(String(file)));
+		}
 		Vector<String> extras;
+		HashSet<String> extra_paths;
 		while (!pending.is_empty()) {
-			const String path = pending[pending.size() - 1]; pending.resize(pending.size() - 1);
-			if (visited.has(path)) continue;
-			ERR_FAIL_COND_V(visited.size() >= CookerCache::MAX_MANIFEST_FILES, ERR_INVALID_DATA);
+			const String path = pending[pending.size() - 1];
+			pending.resize(pending.size() - 1);
+			if (visited.has(path)) {
+				continue;
+			}
 			visited.insert(path);
 			List<String> dependencies;
 			ResourceLoader::get_dependencies(path, &dependencies);
 			for (const String &reference : dependencies) {
 				String dependency = reference;
-				if (dependency.is_relative_path()) dependency = path.get_base_dir().path_join(dependency);
+				if (dependency.is_relative_path()) {
+					dependency = path.get_base_dir().path_join(dependency);
+				}
 				dependency = dependency.simplify_path();
-				if (!dependency.begins_with(base.path_join("render-resources") + "/")) continue;
+				if (!dependency.begins_with(base.path_join("render-resources") + "/")) {
+					continue;
+				}
 				ERR_FAIL_COND_V(dependency.get_extension() != "res", ERR_INVALID_DATA);
-				if (!extras.has(dependency)) extras.push_back(dependency);
-				pending.push_back(dependency);
+				if (!extra_paths.has(dependency)) {
+					extra_paths.insert(dependency);
+					extras.push_back(dependency);
+					pending.push_back(dependency);
+				}
 			}
 		}
 		extras.sort();
-		for (const String &path : extras) declared.push_back(path.substr(base.length() + 1));
+		for (const String &path : extras) {
+			declared.push_back(path.substr(base.length() + 1));
+		}
 	}
-	ERR_FAIL_COND_V(declared.is_empty() || declared.size() > CookerCache::MAX_MANIFEST_FILES, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(declared.is_empty(), ERR_INVALID_PARAMETER);
 	Array records;
 	HashMap<String, String> resource_digests;
 	HashSet<String> seen;
@@ -404,7 +421,6 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 				if (container.begins_with(base + "/")) {
 					const String relative_container = container.substr(base.length() + 1);
 					if (!declared.has(relative_container)) {
-						ERR_FAIL_COND_V(declared.size() >= CookerCache::MAX_MANIFEST_FILES, ERR_PARAMETER_RANGE_ERROR);
 						declared.push_back(relative_container);
 					}
 				}
@@ -446,7 +462,10 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(base));
 	ERR_FAIL_COND_V(error != OK, error);
-	error = CookerAtomicSave::save_text(JSON::stringify(manifest) + "\n", output);
+	const String manifest_text = JSON::stringify(manifest) + "\n";
+	ERR_FAIL_COND_V_MSG(uint64_t(manifest_text.utf8().length()) > CookerFiles::MAX_MANIFEST_BYTES,
+			ERR_PARAMETER_RANGE_ERROR, "Asset manifest exceeds the supported byte range.");
+	error = CookerAtomicSave::save_text(manifest_text, output);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["sha256"] = FileAccess::get_sha256(output);
@@ -858,11 +877,41 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		}
 		Ref<Resource> imported = ResourceLoader::load(imported_path, type, ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
 		ERR_FAIL_COND_V(imported.is_null() || error != OK, ERR_INVALID_DATA);
-		error = CookerAtomicSave::save_resource(imported, imported_path,
-				ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
-		ERR_FAIL_COND_V(error != OK, error);
+		std::map<ObjectID, CookerVirtualGeometry::BuildOutput> geometry_builds;
+		Dictionary geometry_report;
+		String geometry_message;
+		Ref<Resource> prepared;
+		error = CookerVirtualGeometry::convert_imported_scene(imported, prepared, geometry_builds, geometry_report, geometry_message);
+		ERR_FAIL_COND_V_MSG(error != OK, error, geometry_message);
+		imported = prepared;
+		r_result["virtual_geometry"] = geometry_report;
+		if (!geometry_builds.empty()) {
+			CookerTextures::Builder textures;
+			Variant normalized = imported;
+			error = textures.Normalize(normalized);
+			ERR_FAIL_COND_V(error != OK, error);
+			Array render_outputs;
+			const Ref<PackedScene> scene = imported;
+			error = CookerRender::save(scene, published_path.get_base_dir(), render_outputs, UINT64_MAX, &geometry_builds);
+			ERR_FAIL_COND_V(error != OK, error);
+			r_result["render_outputs"] = render_outputs;
+			// Save beside the final path so external relative references survive
+			// publication out of the importer's private staging directory.
+			error = CookerAtomicSave::save_resource(imported, published_path, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+			ERR_FAIL_COND_V(error != OK, error);
+			CookerAtomicSave::discard_stale(imported_path);
+		} else {
+			Array geometry_outputs;
+			error = CookerVirtualGeometry::publish_resource_containers(imported, geometry_builds, published_path, UINT64_MAX, geometry_outputs);
+			ERR_FAIL_COND_V(error != OK, error);
+			r_result["geometry_outputs"] = geometry_outputs;
+			error = CookerAtomicSave::save_resource(imported, imported_path,
+					ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS | ResourceSaver::FLAG_BUNDLE_RESOURCES);
+			ERR_FAIL_COND_V(error != OK, error);
+			error = CookerAtomicSave::publish(imported_path, published_path);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
 		r_result["max_texture_dimension"] = maximum_texture_dimension;
-		error = CookerAtomicSave::publish(imported_path, published_path);
 		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(staging_dir));
 		ERR_FAIL_COND_V(error != OK, error);
 		r_result["output"] = published_path;
@@ -877,6 +926,18 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		Ref<Resource> resource = ResourceLoader::load(path, "", ResourceFormatLoader::CACHE_MODE_IGNORE, &error);
 		ERR_FAIL_COND_V(resource.is_null(), error == OK ? ERR_INVALID_DATA : error);
 		ERR_FAIL_COND_V(!expected.is_empty() && !resource->is_class(expected), ERR_INVALID_DATA);
+		const Ref<Material> bounded_material = resource;
+		if (job.has("max_vertex_displacement")) {
+			ERR_FAIL_COND_V(operation != "save-resource" || bounded_material.is_null(), ERR_INVALID_PARAMETER);
+			const Variant bound = job["max_vertex_displacement"];
+			ERR_FAIL_COND_V(bound.get_type() != Variant::INT && bound.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
+			const double maximum = bound;
+			ERR_FAIL_COND_V(!Math::is_finite(maximum) || maximum < 0.0 || maximum > double(FLT_MAX), ERR_INVALID_PARAMETER);
+			bounded_material->set_max_vertex_displacement(float(maximum));
+		}
+		if (bounded_material.is_valid()) {
+			r_result["max_vertex_displacement"] = bounded_material->get_max_vertex_displacement();
+		}
 		r_result["type"] = resource->get_class();
 		Ref<Mesh> mesh_resource = resource;
 		const Ref<VirtualGeometryMesh> virtual_mesh = resource;
@@ -1128,7 +1189,7 @@ Error execute_pipeline(Dictionary &r_result) {
 		error = execute_job(job, job_result);
 		if (error == OK && bool(verification)) {
 			const Array render_outputs = job_result.get("render_outputs", Array());
-			if (bool(job.get("external_render_resources", false))) {
+			if (bool(job.get("external_render_resources", false)) || job_result.has("render_outputs")) {
 				// A rebuilt fragment owns its newly emitted render closure. Old
 				// content-addressed paths can disappear or become unreferenced;
 				// retaining them makes receipt publication hash obsolete files.
