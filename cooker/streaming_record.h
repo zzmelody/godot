@@ -63,15 +63,16 @@ inline Array VectorValue(const Vector3 &value) {
 }
 
 struct Measure {
-	AABB bounds, collision_bounds;
-	bool geometry = false, collision = false, effect_valid = true;
-	uint64_t nodes = 0, geometry_bytes = 0, texture_bytes = 0;
-	uint64_t instances = 0, particle_systems = 0, declared_particles = 0;
-	HashSet<ObjectID> resources;
-	const HashSet<ObjectID> *validated_resources = nullptr;
-	String path;
-	Array costs;
-	HashMap<String, HashSet<String>> page_containers;
+  AABB bounds, collision_bounds;
+  bool geometry = false, collision = false, effect_valid = true;
+  uint64_t nodes = 0, geometry_bytes = 0, texture_bytes = 0;
+  uint64_t instances = 0, particle_systems = 0, declared_particles = 0;
+  HashSet<ObjectID> resources;
+  const HashSet<ObjectID>* validated_resources = nullptr;
+  Vector<Ref<Resource>>* retained_dependencies = nullptr;
+  String path;
+  Array costs;
+  HashMap<String, HashSet<String>> page_containers;
 };
 
 inline Error MeasureValue(const Variant &p_value, Measure &result, int) {
@@ -88,12 +89,16 @@ inline Error MeasureValue(const Variant &p_value, Measure &result, int) {
 				continue;
 			}
 			result.resources.insert(resource->get_instance_id());
-			uint64_t geometry_bytes = 0, texture_bytes = 0;
-			Ref<Mesh> mesh = resource;
-			const Ref<VirtualGeometryMesh> virtual_mesh = resource;
-			if (virtual_mesh.is_valid()) {
-				const String owner = resource->get_path().get_slice("::", 0);
-				ERR_FAIL_COND_V(owner.is_empty(), ERR_INVALID_DATA);
+      if (result.retained_dependencies && !resource->is_built_in() &&
+          resource->get_path() != result.path) {
+        result.retained_dependencies->push_back(resource);
+      }
+      uint64_t geometry_bytes = 0, texture_bytes = 0;
+      Ref<Mesh> mesh = resource;
+      const Ref<VirtualGeometryMesh> virtual_mesh = resource;
+      if (virtual_mesh.is_valid()) {
+        const String owner = resource->get_path().get_slice("::", 0);
+        ERR_FAIL_COND_V(owner.is_empty(), ERR_INVALID_DATA);
 				if (result.validated_resources == nullptr || !result.validated_resources->has(resource->get_instance_id())) {
 					const Error error = CookerVirtualGeometry::validate_container(virtual_mesh, owner);
 					ERR_FAIL_COND_V(error != OK, error);
@@ -101,14 +106,14 @@ inline Error MeasureValue(const Variant &p_value, Measure &result, int) {
 				result.page_containers[owner].insert(owner.get_base_dir().path_join(virtual_mesh->get_container_file()));
 				geometry_bytes = CookerVirtualGeometry::metadata_bytes(virtual_mesh) +
 						uint64_t(virtual_mesh->get_model().hierarchy.root_pages) * VirtualGeometry::ROOT_PAGE_GPU_CAPACITY;
-			} else if (mesh.is_valid()) {
-				for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
+      } else if (mesh.is_valid()) {
+        for (int surface = 0; surface < mesh->get_surface_count(); ++surface) {
 					geometry_bytes +=
 							uint64_t(mesh->surface_get_array_len(surface)) * 128 +
 							uint64_t(mesh->surface_get_array_index_len(surface)) * 8;
 				}
-			}
-			if (mesh.is_valid() && virtual_mesh.is_null()) {
+      }
+      if (mesh.is_valid() && virtual_mesh.is_null()) {
 				geometry_bytes += 1024;
 			}
 			Ref<Texture2D> texture = resource;
@@ -594,22 +599,20 @@ inline Error CheckSupport(Node* root, const String& path,
 
 inline Error Record(const String& path, Dictionary& output,
                     HashMap<String, String>& digests,
-                    Vector<Ref<Resource>>* retained_roots = nullptr) {
+                    Vector<Ref<Resource>>* retained_dependencies = nullptr) {
   Error error = OK;
   const Ref<Resource> resource = ResourceLoader::load(
       path, "", ResourceFormatLoader::CACHE_MODE_REUSE, &error);
   ERR_FAIL_COND_V(resource.is_null() || error != OK, ERR_INVALID_DATA);
-  if (retained_roots) {
-    retained_roots->push_back(resource);
-  }
   Measure measure;
   measure.path = path;
+  measure.retained_dependencies = retained_dependencies;
   error = MeasureValue(resource, measure, 0);
   ERR_FAIL_COND_V(error != OK, error);
   Ref<Mesh> mesh = resource;
   if (mesh.is_valid()) {
     measure.bounds = mesh->get_aabb();
-		measure.geometry = true;
+    measure.geometry = true;
   }
   if (Ref<HeightMapShape3D> heightfield = resource; heightfield.is_valid()) {
     const double half = (heightfield->get_map_width() - 1) * 0.5;
