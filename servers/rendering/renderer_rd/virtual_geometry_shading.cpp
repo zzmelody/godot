@@ -128,10 +128,12 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	const uint64_t total_words = materials_word + material_map.size();
 	Error error = ensure_words(memory, scene_buffer, scene_words, total_words);
 	if (error != OK) {
+		WARN_PRINT_ONCE(vformat("Virtual geometry scene table refused: batches=%s instances=%s references=%s words=%s depth_only=%s.", p_sources.size(), instances, visible, total_words, depth_only));
 		return error;
 	}
 	error = ensure_words(memory, previous_sources, previous_source_words, MAX(uint64_t(1), instances) * 24);
 	if (error != OK) {
+		WARN_PRINT_ONCE(vformat("Virtual geometry previous-source table refused: batches=%s instances=%s words=%s depth_only=%s.", p_sources.size(), instances, MAX(uint64_t(1), instances) * 24, depth_only));
 		return error;
 	}
 	const uint32_t header[4] = { 4, uint32_t(references_word), uint32_t(materials_word), uint32_t(materials.size()) };

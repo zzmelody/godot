@@ -7,6 +7,7 @@ namespace RendererRD {
 
 Error VirtualGeometryWorkMemory::ensure(RID &r_buffer, uint32_t &r_words, uint64_t p_words, bool p_indirect) {
 	if (p_words > UINT32_MAX / 4) {
+		WARN_PRINT_ONCE(vformat("Virtual geometry work buffer exceeds the device word range: words=%s.", p_words));
 		return ERR_OUT_OF_MEMORY;
 	}
 	if (r_words >= p_words && r_buffer.is_valid()) {
@@ -33,6 +34,7 @@ RID VirtualGeometryWorkMemory::storage(uint32_t p_bytes, BitField<RD::StorageBuf
 	}
 	const RID buffer = RD::get_singleton()->storage_buffer_create(p_bytes, {}, p_usage);
 	if (buffer.is_null()) {
+		WARN_PRINT_ONCE(vformat("Virtual geometry device storage creation failed: bytes=%s.", p_bytes));
 		storage->retire_virtual_geometry_work(p_bytes);
 		return RID();
 	}

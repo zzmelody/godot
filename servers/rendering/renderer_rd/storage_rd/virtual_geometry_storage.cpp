@@ -455,6 +455,7 @@ Error VirtualGeometryStorage::set_budget(uint64_t p_pool_bytes, uint64_t p_metad
 
 bool VirtualGeometryStorage::reserve_view_work(uint64_t p_bytes) {
 	if (p_bytes == 0 || p_bytes > work_budget - work_reserved) {
+		WARN_PRINT_ONCE(vformat("Virtual geometry work capacity refused: requested=%s reserved=%s budget=%s bytes.", p_bytes, work_reserved, work_budget));
 		return false;
 	}
 	work_reserved += p_bytes;

@@ -64,6 +64,7 @@ void VirtualGeometrySelection::begin(const Transform3D &p_camera, const Projecti
 Error VirtualGeometrySelection::record(bool p_root_only) {
 	uint64_t roots_total = 0;
 	uint64_t extra_total = 0;
+	uint64_t instances_total = 0;
 	for (const Batch &batch : batches) {
 		if (batch.count == 0) {
 			continue;
@@ -73,6 +74,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		const uint64_t desired = p_root_only ? roots : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(batch.count) * batch.geometry.clusters);
 		ERR_FAIL_COND_V(desired < roots, ERR_INVALID_DATA);
 		roots_total += roots;
+		instances_total += batch.count;
 		extra_total += desired - roots;
 	}
 	// Reserve complete roots first. The view shares the remaining fine-output
@@ -84,6 +86,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		const uint64_t extra = extra_total > extra_capacity ? (desired - roots) * extra_capacity / extra_total : desired - roots;
 		const Error error = _record(batch, uint32_t(roots + extra), p_root_only);
 		if (error != OK) {
+			WARN_PRINT_ONCE(vformat("Virtual geometry selection view refused: batches=%s instances=%s roots=%s batch_index=%s batch_instances=%s selected_capacity=%s retained_bytes=%s root_only=%s.", batches.size(), instances_total, roots_total, used, batch.count, roots + extra, get_buffer_bytes(), p_root_only));
 			used = 0;
 			return error;
 		}
@@ -274,9 +277,9 @@ void VirtualGeometrySelection::use_root_coverage() {
 uint64_t VirtualGeometrySelection::get_buffer_bytes() const {
 	uint64_t bytes = 0;
 	for (const Result &result : results) {
-		bytes += uint64_t(result.words) * 4 + 268;
+		bytes += (result.work.is_valid() ? uint64_t(result.words) * 4 : 0) + (result.parameters.is_valid() ? 256 : 0) + (result.dispatch.is_valid() ? 12 : 0);
 	}
-	return bytes + uint64_t(scratch_words) * 4 + (dummy_transforms.is_valid() ? 48 : 0);
+	return bytes + (scratch.is_valid() ? uint64_t(scratch_words) * 4 : 0) + (dummy_transforms.is_valid() ? 48 : 0);
 }
 
 } // namespace RendererRD
