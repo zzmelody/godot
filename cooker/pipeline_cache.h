@@ -41,25 +41,61 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 			ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);
 			return OK;
 		}
-		if(!FileAccess::exists(path))return OK;
-		Error error=CookerFiles::check_path(path);ERR_FAIL_COND_V(error!=OK,error);
+		if (!FileAccess::exists(path)) {
+			return OK;
+		}
+		Error error = CookerFiles::check_path(path);
+		ERR_FAIL_COND_V(error != OK, error);
+		if (result.has(path) && String(result[path]) != IDENTITY) {
+			return OK;
+		}
 		HashSet<String> closure;
-		if(path.ends_with(".res") || path.ends_with(".scn")) {error=CookerFiles::collect(path,closure);ERR_FAIL_COND_V(error!=OK,error);}
-		else if (path.get_extension().to_lower()=="usd" || path.get_extension().to_lower()=="usda" || path.get_extension().to_lower()=="usdc") {error=CookerUsd::dependencies(path,closure);ERR_FAIL_COND_V(error!=OK,error);}
-		else closure.insert(path);
-		for(const String &source:closure) {
+		// Strong resource dependencies already had their closure validated in
+		// this immutable job. New roots still validate their own page binding.
+		if (path.ends_with(".res") || path.ends_with(".scn")) {
+			for (const Variant *key = result.next(); key; key = result.next(key)) {
+				const String known = *key;
+				if (String(result[*key]) != IDENTITY && (known.ends_with(".res") || known.ends_with(".scn"))) {
+					closure.insert(known);
+				}
+			}
+		}
+		if (path.ends_with(".res") || path.ends_with(".scn")) {
+			error = CookerFiles::collect(path, closure);
+			ERR_FAIL_COND_V(error != OK, error);
+		} else if (path.get_extension().to_lower() == "usd" || path.get_extension().to_lower() == "usda" || path.get_extension().to_lower() == "usdc") {
+			error = CookerUsd::dependencies(path, closure);
+			ERR_FAIL_COND_V(error != OK, error);
+		} else {
+			closure.insert(path);
+		}
+		for (const String &source : closure) {
+			if (result.has(source) && String(result[source]) != IDENTITY) {
+				continue;
+			}
 			// A declared input is always hashed by content. Its transitive
 			// surface resources are only referenced by path in the output.
-			if(source!=path && pass_through(source)) {if(!result.has(source))result[source]=IDENTITY;}
-			else if (CookerFiles::is_generated(source) && source.get_file() != "asset.manifest.json" && !source.ends_with(".cook.json")) result[source] = "md5:" + FileAccess::get_md5(source);
-			else result[source] = "sha256:" + FileAccess::get_sha256(source);
+			if (source != path && pass_through(source)) {
+				if (!result.has(source)) {
+					result[source] = IDENTITY;
+				}
+			} else if (CookerFiles::is_generated(source) && source.get_file() != "asset.manifest.json" && !source.ends_with(".cook.json")) {
+				result[source] = "md5:" + FileAccess::get_md5(source);
+			} else {
+				result[source] = "sha256:" + FileAccess::get_sha256(source);
+			}
 		}
-		ERR_FAIL_COND_V(result.size()>4096,ERR_OUT_OF_MEMORY);
-	} else if(value.get_type()==Variant::ARRAY) {
-		const Array values=value;ERR_FAIL_COND_V(values.size()>16384,ERR_OUT_OF_MEMORY);
-		for(const Variant &entry:values) {const Error error=dependencies(entry,result,depth+1);ERR_FAIL_COND_V(error!=OK,error);}
-	} else if(value.get_type()==Variant::DICTIONARY) {
-		const Dictionary values=value;ERR_FAIL_COND_V(values.size()>16384,ERR_OUT_OF_MEMORY);
+		ERR_FAIL_COND_V(result.size() > 4096, ERR_OUT_OF_MEMORY);
+	} else if (value.get_type() == Variant::ARRAY) {
+		const Array values = value;
+		ERR_FAIL_COND_V(values.size() > 16384, ERR_OUT_OF_MEMORY);
+		for (const Variant &entry : values) {
+			const Error error = dependencies(entry, result, depth + 1);
+			ERR_FAIL_COND_V(error != OK, error);
+		}
+	} else if (value.get_type() == Variant::DICTIONARY) {
+		const Dictionary values = value;
+		ERR_FAIL_COND_V(values.size() > 16384, ERR_OUT_OF_MEMORY);
 		for(const Variant *key=values.next();key;key=values.next(key)) {const Error error=dependencies(values[*key],result,depth+1,*key);ERR_FAIL_COND_V(error!=OK,error);}
 	}
 	return OK;
