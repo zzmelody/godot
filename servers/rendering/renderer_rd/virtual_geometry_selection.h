@@ -55,9 +55,10 @@ public:
 	};
 
 	void begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size, uint32_t p_shadow_flags = 0, float p_shadow_far = 0);
+	void add_batch(const Batch &p_batch) { batches.push_back(p_batch); }
 	// SDFGI captures the complete resident root proxy without requesting fine
 	// pages; its dirty regions do not track ordinary page-residency changes.
-	Error record(const Batch &p_batch, bool p_root_only = false);
+	Error record(bool p_root_only = false);
 	void use_root_coverage();
 	Span<Result> get_results() const { return Span<Result>(results.ptr(), used); }
 	uint64_t get_buffer_bytes() const;
@@ -65,6 +66,7 @@ public:
 
 private:
 	VirtualGeometryWorkMemory memory;
+	Error _record(const Batch &p_batch, uint32_t p_cluster_capacity, bool p_root_only);
 	static constexpr uint32_t MAX_WORK_ITEMS = 1048576;
 	VirtualGeometrySelectShaderRD shader;
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
@@ -79,6 +81,7 @@ private:
 	uint32_t scratch_words = 0;
 	RID dummy_transforms;
 	LocalVector<Result> results;
+	LocalVector<Batch> batches;
 	uint32_t used = 0;
 	Transform3D camera_inverse;
 	Projection projection;

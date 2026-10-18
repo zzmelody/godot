@@ -43,6 +43,7 @@ VirtualGeometrySelection::~VirtualGeometrySelection() {
 
 void VirtualGeometrySelection::begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size, uint32_t p_shadow_flags, float p_shadow_far) {
 	used = 0;
+	batches.clear();
 	camera_inverse = p_camera.affine_inverse();
 	Projection correction;
 	correction.set_depth_correction(p_flip_y);
@@ -60,7 +61,37 @@ void VirtualGeometrySelection::begin(const Transform3D &p_camera, const Projecti
 	}
 }
 
-Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
+Error VirtualGeometrySelection::record(bool p_root_only) {
+	uint64_t roots_total = 0;
+	uint64_t extra_total = 0;
+	for (const Batch &batch : batches) {
+		if (batch.count == 0) {
+			continue;
+		}
+		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
+		ERR_FAIL_COND_V(roots == 0 || roots > MAX_WORK_ITEMS || batch.count > MAX_WORK_ITEMS, ERR_OUT_OF_MEMORY);
+		const uint64_t desired = p_root_only ? roots : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(batch.count) * batch.geometry.clusters);
+		ERR_FAIL_COND_V(desired < roots, ERR_INVALID_DATA);
+		roots_total += roots;
+		extra_total += desired - roots;
+	}
+	// Reserve complete roots first. The view shares the remaining fine-output
+	// capacity instead of reserving a full maximum for every source batch.
+	const uint64_t extra_capacity = roots_total < MAX_WORK_ITEMS ? MAX_WORK_ITEMS - roots_total : 0;
+	for (const Batch &batch : batches) {
+		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
+		const uint64_t desired = p_root_only ? roots : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(batch.count) * batch.geometry.clusters);
+		const uint64_t extra = extra_total > extra_capacity ? (desired - roots) * extra_capacity / extra_total : desired - roots;
+		const Error error = _record(batch, uint32_t(roots + extra), p_root_only);
+		if (error != OK) {
+			used = 0;
+			return error;
+		}
+	}
+	return OK;
+}
+
+Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster_capacity, bool p_root_only) {
 	if (p_batch.count == 0) {
 		return OK;
 	}
@@ -74,7 +105,7 @@ Error VirtualGeometrySelection::record(const Batch &p_batch, bool p_root_only) {
 	const uint64_t roots = uint64_t(p_batch.count) * p_batch.geometry.root_clusters;
 	ERR_FAIL_COND_V(roots == 0 || roots > MAX_WORK_ITEMS || p_batch.count > MAX_WORK_ITEMS, ERR_OUT_OF_MEMORY);
 	const uint32_t nodes = p_root_only ? 0 : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.nodes);
-	const uint32_t clusters = p_root_only ? uint32_t(roots) : MIN(uint64_t(MAX_WORK_ITEMS), uint64_t(p_batch.count) * p_batch.geometry.clusters);
+	const uint32_t clusters = p_cluster_capacity;
 	const uint32_t requests = p_root_only ? 0 : MIN(uint64_t(65536), uint64_t(p_batch.count) * p_batch.geometry.pages);
 	const uint32_t words = 16 + p_batch.count * 16 + clusters * 2 + roots * 2;
 	const uint32_t work_words = 16 + p_batch.count * 16 + nodes * 4 + clusters * 4 + roots * 2 + requests * 2 + 128 * 2;

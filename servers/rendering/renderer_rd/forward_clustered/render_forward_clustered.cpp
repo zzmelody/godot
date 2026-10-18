@@ -1897,8 +1897,13 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 				selection = memnew(RendererRD::VirtualGeometrySelection);
 				selection->begin(camera, projection, scene->flip_y, buffers->get_internal_size());
 			}
-			const Error error = selection->record(batch);
-			ERR_CONTINUE_MSG(error != OK, "Virtual geometry selection refused a complete source batch: " + itos(error));
+			selection->add_batch(batch);
+		}
+		if (selection) {
+			const Error error = selection->record();
+			if (error != OK) {
+				ERR_PRINT("Virtual geometry selection refused a complete view: " + itos(error));
+			}
 		}
 		if (!selection || (selection->get_results().is_empty() && !raster)) {
 			continue;
@@ -3470,14 +3475,13 @@ void RenderForwardClustered::_render_shadow_end() {
 			const Projection projection = correction.inverse() * view.projection;
 			virtual_geometry_aux_selection->begin(view.camera, projection, shadow_pass.virtual_geometry_flip_y,
 					shadow_pass.virtual_geometry_size, view.shadow_flags & ~1u, view.shadow_far);
-			bool valid = true;
 			for (const auto &batch : shadow_pass.virtual_geometry_batches) {
-				const Error error = virtual_geometry_aux_selection->record(batch);
-				if (error != OK) {
-					ERR_PRINT("Virtual geometry shadow selection refused: " + itos(error));
-					valid = false;
-					break;
-				}
+				virtual_geometry_aux_selection->add_batch(batch);
+			}
+			const Error selection_error = virtual_geometry_aux_selection->record();
+			const bool valid = selection_error == OK;
+			if (!valid) {
+				ERR_PRINT("Virtual geometry shadow selection refused: " + itos(selection_error));
 			}
 			if (valid) {
 				Error error = virtual_geometry_aux_raster->record_shadow(shadow_pass.virtual_geometry_size, view,
@@ -3774,15 +3778,12 @@ void RenderForwardClustered::_render_sdfgi(Ref<RenderSceneBuffersRD> p_render_bu
 		_render_list_with_draw_list(&render_list_params, E->value);
 		if (!virtual_batches.is_empty()) {
 			virtual_geometry_aux_selection->begin(scene_data.cam_transform, scene_data.cam_projection, scene_data.flip_y, fb_size);
-			Error error = OK;
 			for (const auto &batch : virtual_batches) {
 				// SDFGI uses the stable complete root proxy. Page residency changes
 				// cannot leave a dirty region waiting for a later camera recapture.
-				error = virtual_geometry_aux_selection->record(batch, true);
-				if (error != OK) {
-					break;
-				}
+				virtual_geometry_aux_selection->add_batch(batch);
 			}
+			Error error = virtual_geometry_aux_selection->record(true);
 			if (error == OK) {
 				RendererRD::VirtualGeometryShading::ViewParameters view;
 				Projection correction;
