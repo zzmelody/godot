@@ -16,6 +16,9 @@
 #include <filesystem>
 
 namespace CookerFiles {
+// Fragmented world assets retain complete per-entry streaming records.
+inline constexpr uint64_t MAX_MANIFEST_BYTES = 128ULL * 1024 * 1024;
+
 // Only the shared package, a world package, or one direct module package owns
 // cooker/source/generated directories. Intermediate folders are not packages.
 inline String package_root_relative(const String &p_relative, const String &p_directory) {

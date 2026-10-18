@@ -449,7 +449,10 @@ Error write_asset_manifest(const Dictionary &p_job, Dictionary &r_result) {
 	}
 	error = DirAccess::make_dir_recursive_absolute(settings->globalize_path(base));
 	ERR_FAIL_COND_V(error != OK, error);
-	error = CookerAtomicSave::save_text(JSON::stringify(manifest) + "\n", output);
+	const String manifest_text = JSON::stringify(manifest) + "\n";
+	ERR_FAIL_COND_V_MSG(uint64_t(manifest_text.utf8().length()) > CookerFiles::MAX_MANIFEST_BYTES,
+			ERR_PARAMETER_RANGE_ERROR, "Asset manifest exceeds the supported byte range.");
+	error = CookerAtomicSave::save_text(manifest_text, output);
 	ERR_FAIL_COND_V(error != OK, error);
 	r_result["output"] = output;
 	r_result["sha256"] = FileAccess::get_sha256(output);
