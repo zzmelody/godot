@@ -80,7 +80,8 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 		if (resource.is_null() || result.resources.has(resource->get_instance_id())) {
 			return OK;
 		}
-		ERR_FAIL_COND_V(result.resources.size() >= 65536, ERR_INVALID_DATA);
+		// Match the published admission record's 100,000 cost-entry bound.
+		ERR_FAIL_COND_V(result.resources.size() >= 100000, ERR_INVALID_DATA);
 		result.resources.insert(resource->get_instance_id());
 		uint64_t geometry_bytes = 0, texture_bytes = 0;
 		Ref<Mesh> mesh = resource;
