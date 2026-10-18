@@ -195,11 +195,10 @@ void visit_node(uint id) {
 void select_cluster(uint instance, uint reference, bool root_only) {
 	uint record = (reference >> 8u) * 8192u + 8u + (reference & 255u) * 72u;
 	uint flags = geometry.data[record + 7u];
+	if (root_only && (flags & 9u) != 9u) { return; }
 	mat4 transform = instance_transform(instance);
 	if (!in_frustum(geom3(record + 18u), geom3(record + 21u), transform)) { return; }
-	if (root_only) {
-		if ((flags & 9u) != 9u) { return; }
-	} else {
+	if (!root_only) {
 		float edge = projected_edge(instance, geom4(record + 12u), transform);
 		float error_scale = params.lod.y * uintBitsToFloat(work.data[instance_base() + instance * 16u + 12u]);
 		if (edge <= error_scale * uintBitsToFloat(geometry.data[record + 16u]) && (flags & 2u) == 0u) { return; }

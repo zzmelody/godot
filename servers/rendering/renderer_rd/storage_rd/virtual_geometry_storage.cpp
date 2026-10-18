@@ -537,9 +537,17 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	asset->bindings.clusters = asset->root.cluster_count;
 	asset->bindings.root_pages = asset->root.hierarchy.root_pages;
 	asset->bindings.pages = asset->root.hierarchy.pages.size();
-	for (uint32_t page = 0; page < asset->bindings.root_pages; ++page) {
-		asset->bindings.root_clusters += asset->root.hierarchy.pages[page].clusters;
-	}
+	// The root was validated as a bounded tree before registration.
+	const auto depth = [&](auto &&self, uint32_t node) -> uint32_t {
+		uint32_t result = 1;
+		for (const auto &child : asset->root.hierarchy.nodes[node].children) {
+			if (child.node != UINT32_MAX) {
+				result = MAX(result, 1 + self(self, child.node));
+			}
+		}
+		return result;
+	};
+	asset->bindings.hierarchy_depth = depth(depth, 0);
 	asset->committed.resize(asset->root.hierarchy.pages.size(), 0);
 	asset->physical_slots.resize(asset->root.hierarchy.pages.size(), UINT32_MAX);
 	asset->dependency_users.resize(asset->root.hierarchy.pages.size(), 0);
@@ -803,6 +811,13 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 		if (VirtualGeometry::validate_geometry_model_page_layout(asset->root, page, bytes.ptr(), bytes.size(), candidate->fixups).error != VirtualGeometry::ModelCodecError::OK) {
 			refusal = ERR_INVALID_DATA;
 			break;
+		}
+		if (page < asset->root.hierarchy.root_pages) {
+			const uint32_t mask = VirtualGeometry::CLUSTER_FLAG_ROOT_LEAF | VirtualGeometry::CLUSTER_FLAG_ROOT_GROUP;
+			for (uint32_t cluster = 0; cluster < asset->root.hierarchy.pages[page].clusters; ++cluster) {
+				const uint32_t offset = VirtualGeometry::GEOMETRY_PAGE_HEADER_BYTES + cluster * VirtualGeometry::GEOMETRY_PAGE_CLUSTER_BYTES + 28;
+				candidate->root_clusters += (decode_uint32(bytes.ptr() + offset) & mask) == mask;
+			}
 		}
 		for (uint32_t dependency : _dependencies(candidate)) {
 			Page **target = asset->pages.getptr(dependency);
@@ -1147,6 +1162,7 @@ void VirtualGeometryStorage::update() {
 		publishing.remove_at_unordered(index);
 		page->state = Page::RESIDENT;
 		if (page->index < page->asset->root.hierarchy.root_pages) {
+			page->asset->bindings.root_clusters += page->root_clusters;
 			++page->asset->roots_published;
 		}
 		_outcome(page, PAGE_RESIDENT, OK);

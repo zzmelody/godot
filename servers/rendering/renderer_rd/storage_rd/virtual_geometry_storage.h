@@ -32,6 +32,7 @@ public:
 		uint32_t parts_word = 0;
 		uint32_t groups_word = 0;
 		uint32_t nodes = 0;
+		uint32_t hierarchy_depth = 0;
 		uint32_t clusters = 0;
 		uint32_t root_pages = 0;
 		uint32_t root_clusters = 0;
@@ -57,6 +58,7 @@ private:
 		uint64_t work = 0;
 		uint32_t slot = UINT32_MAX;
 		uint32_t units = 0;
+		uint32_t root_clusters = 0;
 		RID source;
 		Vector<uint8_t> bytes;
 		VirtualGeometry::HierarchyPage fixups;

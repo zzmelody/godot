@@ -221,7 +221,7 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 	};
 	dispatch(0, 0, p_batch.count);
 	if (!p_root_only) {
-		for (uint32_t depth = 0; depth <= VirtualGeometry::MAX_HIERARCHY_DEPTH; ++depth) {
+		for (uint32_t depth = 0; depth < p_batch.geometry.hierarchy_depth; ++depth) {
 			dispatch(1, depth, 1);
 			dispatch(2, depth, 0, true);
 		}
@@ -229,7 +229,7 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 		dispatch(4, 0, 0, true);
 	}
 	dispatch(5, 0, p_batch.count * p_batch.geometry.root_pages);
-	dispatch(p_root_only ? 7 : 6, VirtualGeometry::MAX_HIERARCHY_DEPTH, 1);
+	dispatch(p_root_only ? 7 : 6, p_root_only ? 0 : p_batch.geometry.hierarchy_depth - 1, 1);
 	dispatch(8, 0, 1);
 	rd->compute_list_bind_compute_pipeline(list, compact);
 	rd->compute_list_bind_uniform_set(list, compact_uniforms, 0);
