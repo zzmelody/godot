@@ -1991,10 +1991,18 @@ struct Recipe {
 			// Only this compiler can produce VM input; external bytecode is never loaded.
 			bytecode = Luau::compile(p_source, options);
 			L = lua_newstate(allocate, this);
-			if (!L) { r_error = "cannot allocate recipe VM"; return false; }
+			if (!L) {
+				r_error = "cannot allocate recipe VM";
+				return false;
+			}
+			// Batch recipes release temporary tables while retaining native assets.
+			// Start the next cycle at live-heap size, within the fixed VM ceiling.
+			lua_gc(L, LUA_GCSETGOAL, 100);
 			lua_callbacks(L)->userdata = this;
 			int status = lua_cpcall(L, setup, nullptr);
-			if (status == LUA_OK) status = luau_load(L, "=cooker_recipe", bytecode.data(), bytecode.size(), 0);
+			if (status == LUA_OK) {
+				status = luau_load(L, "=cooker_recipe", bytecode.data(), bytecode.size(), 0);
+			}
 			timed = limits.time_ms > 0;
 			if (timed) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.time_ms);
 			lua_callbacks(L)->interrupt = interrupt;
@@ -2004,11 +2012,17 @@ struct Recipe {
 				else result = handle(1);
 			}
 			const bool expired = timed && std::chrono::steady_clock::now() >= deadline;
-			if (status == LUA_OK && !fault && !memory_failed && !expired) return true;
-			if (memory_failed) r_error = "recipe memory limit exceeded";
-			else if (fault) r_error = fault;
-			else if (expired) r_error = "recipe execution budget exceeded";
-			else r_error = lua_type(L, -1) == LUA_TSTRING ? String::utf8(lua_tostring(L, -1)).left(1024) : String("recipe failed");
+			if (status == LUA_OK && !fault && !memory_failed && !expired) {
+				return true;
+			}
+			if (memory_failed) {
+				r_error = "recipe memory limit exceeded\n" + String::utf8(lua_debugtrace(L)).left(1024);
+			} else if (fault) {
+				r_error = fault;
+			} else if (expired) {
+				r_error = "recipe execution budget exceeded";
+			} else
+				r_error = lua_type(L, -1) == LUA_TSTRING ? String::utf8(lua_tostring(L, -1)).left(1024) : String("recipe failed");
 		} catch (const std::exception &error) { r_error = String::utf8(error.what()).left(1024); }
 		return false;
 	}
