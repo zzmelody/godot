@@ -78,6 +78,7 @@ private:
 		uint32_t map = 0;
 		uint32_t visible_base = 0;
 		uint32_t material_slots = 0;
+		uint32_t batch_word = 0;
 		RID uniforms;
 	};
 	struct ScanLevel {

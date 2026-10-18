@@ -53,7 +53,7 @@ bool vg_cluster_visible(uvec2 reference) {
 	vec3 lower = uintBitsToFloat(uvec3(geometry.data[record + 18u], geometry.data[record + 19u], geometry.data[record + 20u]));
 	vec3 upper = uintBitsToFloat(uvec3(geometry.data[record + 21u], geometry.data[record + 22u], geometry.data[record + 23u]));
 	mat4 world = vg_source_matrix(reference.x, 0u);
-	float displacement = uintBitsToFloat(scene.data[vg_source_word(reference.x) + 48u]);
+	float displacement = uintBitsToFloat(vg_source_data(reference.x, 48u));
 	vec3 world_min = vec3(3.402823e38), world_max = vec3(-3.402823e38);
 	for (uint corner = 0u; corner < 8u; ++corner) {
 		vec3 point = mix(lower, upper, bvec3((corner & 1u) != 0u, (corner & 2u) != 0u, (corner & 4u) != 0u));
@@ -121,18 +121,17 @@ void main() {
 	uint record = vg_record(reference.y);
 	uint count = geometry.data[record + 6u];
 	uint pipeline = 0xffffffffu;
-	if (count == 0u || count > 64u || reference.x >= (scene.data[1] - scene.data[0]) / 64u) {
+	if (count == 0u || count > 64u || reference.x >= (scene.data[1] - scene.data[0]) / 48u) {
 		atomicOr(status.data[0], 4u);
 		return; // Same admitted reference and condition for the complete group.
 	}
 	if (lane < count) {
 		uint palette = (reference.y >> 8u) * 8192u + (geometry.data[record + 68u] >> 2u);
 		uint slot = geometry.data[palette + lane];
-		uint source = vg_source_word(reference.x);
-		if (slot >= scene.data[source + 52u]) {
+		if (slot >= vg_source_data(reference.x, 52u)) {
 			atomicOr(status.data[0], 4u);
 		} else {
-			uint material = scene.data[scene.data[2] + scene.data[source + 47u] + slot];
+			uint material = scene.data[scene.data[2] + vg_source_data(reference.x, 47u) + slot];
 			if (material >= scene.data[3]) {
 				atomicOr(status.data[0], 4u);
 			} else {

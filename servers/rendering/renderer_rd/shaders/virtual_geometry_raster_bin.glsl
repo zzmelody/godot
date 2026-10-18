@@ -76,7 +76,7 @@ void main() {
 		}
 		vec4 sphere = uintBitsToFloat(uvec4(geometry.data[record + 12u], geometry.data[record + 13u], geometry.data[record + 14u], geometry.data[record + 15u]));
 #ifdef VG_GLOBAL_RASTER
-		float scale = uintBitsToFloat(scene.data[vg_source_word(selected.x) + 50u]);
+		float scale = uintBitsToFloat(vg_source_data(selected.x, 50u));
 #else
 		float scale = uintBitsToFloat(work.data[instance_base() + selected.x * 16u + 13u]);
 #endif

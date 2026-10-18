@@ -209,6 +209,9 @@ void select_cluster(uint instance, uint reference, bool root_only) {
 		uint base = (root_only ? root_base() : fine_base()) + index * 2u;
 		work.data[base] = instance;
 		work.data[base + 1u] = reference;
+		// Keep independent marks for the fine and mandatory-root cuts. A later
+		// root fallback must not expose an uninitialized material source.
+		atomicOr(work.data[instance_base() + instance * 16u + 15u], root_only ? 1u : 2u);
 	} else { atomicOr(work.data[4], root_only ? 8u : 2u); }
 }
 

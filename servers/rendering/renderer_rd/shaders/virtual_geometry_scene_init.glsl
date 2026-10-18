@@ -42,10 +42,13 @@ layout(push_constant, std430) uniform SourceParameters {
 	uint work_word;
 	vec4 lightmap_uv_scale;
 	uvec4 identity;
+	uint batch_word;
 } source_info;
 
 void vg_initialize_source(uint instance) {
 	if (instance >= params.source.x || (work.data[source_info.work_word + 4u] & 16u) != 0u) { return; }
+	uint selected_cut = (work.data[source_info.work_word + 4u] & 3u) != 0u ? 1u : 2u;
+	if ((work.data[source_info.work_word + 16u + instance * 16u + 15u] & selected_cut) == 0u) { return; }
 	mat4 local = mat4(1.0);
 	vec4 color = vec4(1.0);
 	vec4 custom = vec4(0.0);
@@ -85,24 +88,10 @@ void vg_initialize_source(uint instance) {
 		scene.data[output_word + 36u + channel] = floatBitsToUint(color[channel]);
 		scene.data[output_word + 40u + channel] = floatBitsToUint(custom[channel]);
 	}
-	scene.data[output_word + 44u] = instance;
-	scene.data[output_word + 45u] = source_info.shader_uniforms;
-	scene.data[output_word + 46u] = source_info.layers;
-	scene.data[output_word + 47u] = source_info.material_map;
-	scene.data[output_word + 48u] = params.offsets.w;
-	scene.data[output_word + 49u] = work.data[source_info.work_word + 16u + instance * 16u + 12u];
-	scene.data[output_word + 50u] = work.data[source_info.work_word + 16u + instance * 16u + 13u];
-	scene.data[output_word + 51u] = 0u;
-	scene.data[output_word + 52u] = source_info.material_slots;
-	scene.data[output_word + 53u] = source_info.render_flags;
-	scene.data[output_word + 54u] = source_info.gi_offset;
-	scene.data[output_word + 55u] = 0u;
-	for (uint channel = 0u; channel < 4u; ++channel) {
-		scene.data[output_word + 56u + channel] = floatBitsToUint(source_info.lightmap_uv_scale[channel]);
-	}
-	for (uint reserved = 60u; reserved < 64u; ++reserved) {
-		scene.data[output_word + reserved] = source_info.identity[reserved - 60u];
-	}
+	scene.data[output_word + 44u] = source_info.batch_word;
+	scene.data[output_word + 45u] = instance;
+	scene.data[output_word + 46u] = work.data[source_info.work_word + 16u + instance * 16u + 12u];
+	scene.data[output_word + 47u] = work.data[source_info.work_word + 16u + instance * 16u + 13u];
 	if (previous_batch.info.y == 0u) {
 		return;
 	}
@@ -122,6 +111,21 @@ void vg_initialize_source(uint instance) {
 
 void main() {
 	uint index = (gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u) * 64u + gl_LocalInvocationIndex;
+	if (index == 0u) {
+		uint word = source_info.batch_word;
+		for (uint field = 0u; field < 20u; ++field) { scene.data[word + field] = 0u; }
+		scene.data[word + 1u] = source_info.shader_uniforms;
+		scene.data[word + 2u] = source_info.layers;
+		scene.data[word + 3u] = source_info.material_map;
+		scene.data[word + 4u] = params.offsets.w;
+		scene.data[word + 8u] = source_info.material_slots;
+		scene.data[word + 9u] = source_info.render_flags;
+		scene.data[word + 10u] = source_info.gi_offset;
+		for (uint channel = 0u; channel < 4u; ++channel) {
+			scene.data[word + 12u + channel] = floatBitsToUint(source_info.lightmap_uv_scale[channel]);
+			scene.data[word + 16u + channel] = source_info.identity[channel];
+		}
+	}
 	vg_initialize_source(index);
 	if (index < source_info.visible_capacity) {
 		uint word = scene.data[1] + (source_info.visible_base + index) * 2u;

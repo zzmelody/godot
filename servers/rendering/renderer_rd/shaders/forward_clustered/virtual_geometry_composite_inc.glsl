@@ -37,10 +37,10 @@ InstanceData vg_instance(uint source) {
 	value.compressed_aabb_size_pad = vec3(0.0);
 	value.material_feedback_index = 0xffffffffu;
 	value.uv_scale = vec4(1.0);
-	value.flags = scene.data[vg_source_word(source) + 53u];
-	value.instance_uniforms_ofs = scene.data[vg_source_word(source) + 45u];
-	value.gi_offset = scene.data[vg_source_word(source) + 54u];
-	value.layer_mask = scene.data[vg_source_word(source) + 46u];
+	value.flags = vg_source_data(source, 53u);
+	value.instance_uniforms_ofs = vg_source_data(source, 45u);
+	value.gi_offset = vg_source_data(source, 54u);
+	value.layer_mask = vg_source_data(source, 46u);
 	value.prev_transform = value.transform;
 	value.lightmap_uv_scale = vg_source_vector(source, 56u);
 #ifdef USE_DOUBLE_PRECISION

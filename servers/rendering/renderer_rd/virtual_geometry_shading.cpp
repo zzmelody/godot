@@ -102,7 +102,7 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 			material_map.push_back(index);
 		}
 	}
-	const uint64_t references_word = 4 + instances * 64;
+	const uint64_t references_word = 4 + instances * 48;
 	for (uint32_t index = 0; index < materials.size(); ++index) {
 		const RID material = materials[index];
 		const auto mode = storage->material_get_cull_mode(material);
@@ -131,7 +131,8 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		RD::get_singleton()->buffer_update(raster_material_buffer, 0, raster_material_data.size() * 4, raster_material_data.ptr());
 	}
 	const uint64_t materials_word = references_word + visible * 2;
-	const uint64_t total_words = materials_word + material_map.size();
+	const uint64_t batches_word = materials_word + material_map.size();
+	const uint64_t total_words = batches_word + uint64_t(p_sources.size()) * 20;
 	Error error = ensure_words(memory, scene_buffer, scene_words, total_words);
 	if (error != OK) {
 		WARN_PRINT_ONCE(vformat("Virtual geometry scene table refused: batches=%s instances=%s references=%s words=%s depth_only=%s.", p_sources.size(), instances, visible, total_words, depth_only));
@@ -224,6 +225,7 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	}
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
+		sources[index].batch_word = uint32_t(batches_word + uint64_t(index) * 20);
 		RID previous_buffer = empty_history_parameters;
 		if (record_history) {
 			if (previous_parameters[index].is_null()) {
@@ -288,7 +290,7 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 	rd->compute_list_bind_compute_pipeline(list, init_pipeline.get_rid());
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
-		uint32_t push[20] = { sources[index].first, sources[index].map, uint32_t(source.batch.has_color), uint32_t(source.batch.has_custom), uint32_t(source.batch.shader_uniforms_offset), source.batch.layer_mask,
+		uint32_t push[21] = { sources[index].first, sources[index].map, uint32_t(source.batch.has_color), uint32_t(source.batch.has_custom), uint32_t(source.batch.shader_uniforms_offset), source.batch.layer_mask,
 			sources[index].visible_base, source.selected_capacity, sources[index].material_slots, source.batch.render_flags, source.batch.gi_offset, source.work_word };
 		const Rect2 &uv = source.batch.lightmap_uv_scale;
 		const float lightmap_uv[4] = { uv.position.x, uv.position.y, uv.size.x, uv.size.y };
@@ -297,6 +299,7 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 		push[17] = uint32_t(source.batch.source.get_id() >> 32);
 		push[18] = uint32_t(source.batch.mesh.get_id());
 		push[19] = uint32_t(source.batch.mesh.get_id() >> 32);
+		push[20] = sources[index].batch_word;
 		rd->compute_list_bind_uniform_set(list, sources[index].uniforms, 0);
 		rd->compute_list_set_push_constant(list, push, sizeof(push));
 		dispatch_items(list, MAX(source.batch.count, source.selected_capacity), 64);

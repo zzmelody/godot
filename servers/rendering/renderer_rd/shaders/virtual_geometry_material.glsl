@@ -103,9 +103,8 @@ void main() {
 	if (vg_history_view.state.y != 0.0) {
 		vec2 velocity = vg_motion(payload, surface);
 		imageStore(vg_velocity, pixel, vec4(velocity, 0.0, 0.0));
-		uint identity_word = vg_source_word(vg_source) + 60u;
-		uvec2 source_id = uvec2(scene.data[identity_word], scene.data[identity_word + 1u]);
-		uvec2 mesh_id = uvec2(scene.data[identity_word + 2u], scene.data[identity_word + 3u]);
+		uvec2 source_id = uvec2(vg_source_data(vg_source, 60u), vg_source_data(vg_source, 61u));
+		uvec2 mesh_id = uvec2(vg_source_data(vg_source, 62u), vg_source_data(vg_source, 63u));
 		// Temporal tags are hashes, never object or asset authority.
 		uvec2 tag = (source_id ^ (mesh_id.yx * uvec2(0x9e3779b9u, 0x85ebca6bu))) * uvec2(0xc2b2ae35u, 0x27d4eb2fu);
 		uvec2 reference = vg_visible_reference((payload >> 7u) - 1u);
@@ -113,7 +112,7 @@ void main() {
 		// model's logical cluster identity survives relocation and distinguishes
 		// replacement geometry even when its physical address is identical.
 		uint cluster = geometry.data[vg_record(reference.y)];
-		uvec4 key = uvec4(tag, scene.data[vg_source_word(vg_source) + 44u], cluster);
+		uvec4 key = uvec4(tag, vg_source_data(vg_source, 44u), cluster);
 		uint index = point.y * uint(vg_view.dimensions.x) + point.x;
 		current_keys.data[index] = key;
 		vec2 previous_point = vec2(point) + 0.5 + velocity * vg_view.dimensions.xy + (vg_history_view.state.zw - vg_view.dimensions.zw) * 0.5 * vg_view.dimensions.xy;

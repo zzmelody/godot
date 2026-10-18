@@ -19,8 +19,7 @@ float projected_edge(uint instance, vec4 sphere, mat4 transform) {
 	}
 	vec3 center = (transform * vec4(sphere.xyz, 1.0)).xyz;
 #ifdef VG_GLOBAL_RASTER
-	uint source_word = vg_source_word(instance);
-	float radius = sphere.w * uintBitsToFloat(scene.data[source_word + 50u]) + uintBitsToFloat(scene.data[source_word + 48u]) * 1.7320509;
+	float radius = sphere.w * uintBitsToFloat(vg_source_data(instance, 50u)) + uintBitsToFloat(vg_source_data(instance, 48u)) * 1.7320509;
 #else
 	float radius = sphere.w * uintBitsToFloat(work.data[instance_base() + instance * 16u + 13u]) + uintBitsToFloat(params.offsets.w) * 1.7320509;
 #endif

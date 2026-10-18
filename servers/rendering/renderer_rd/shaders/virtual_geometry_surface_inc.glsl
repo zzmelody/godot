@@ -140,7 +140,7 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 		return false;
 	}
 	candidate.tangent = normalize(world_tangent);
-	float orientation = uintBitsToFloat(scene.data[vg_source_word(visible.x) + 35u]);
+	float orientation = uintBitsToFloat(vg_source_data(visible.x, 35u));
 	candidate.binormal = cross(candidate.normal, candidate.tangent) * handedness * orientation;
 	candidate.source = visible.x;
 	candidate.local_position = v[0].position * b.x + v[1].position * b.y + v[2].position * b.z;

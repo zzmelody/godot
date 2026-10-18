@@ -79,13 +79,13 @@ void main() {
 	vec4 surface = texelFetch(surface_normal, pixel, 0);
 	normal_roughness = vec4(encode24(normalize(surface.xyz), fitting_table, fitting_sampler) * 0.5 + 0.5, surface.w * (127.0 / 255.0));
 	uint source = vg_visible_reference((visible.x >> 7u) - 1u).x;
-	uint flags = scene.data[vg_source_word(source) + 53u];
+	uint flags = vg_source_data(source, 53u);
 	if ((flags & (1u << 3u)) != 0u) {
 		normal_roughness.w = 1.0 - normal_roughness.w;
 	}
 #endif
 #ifdef VG_VOXEL_GI
-	uint probes = scene.data[vg_source_word(source) + 54u];
+	uint probes = vg_source_data(source, 54u);
 	voxel_gi = (flags & (1u << 10u)) != 0u ? uvec2(probes & 0xffu, (probes >> 16u) & 0xffu) : uvec2(0xffu);
 #endif
 }

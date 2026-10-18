@@ -8,7 +8,7 @@
 #include "core/io/image.h"
 #include "core/object/script_language.h"
 #include "lod_silhouette.h"
-#include "virtual_geometry_minimum.h"
+#include "scene/resources/3d/virtual_geometry_mesh.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/skeleton_3d.h"
@@ -419,17 +419,29 @@ class Builder {
     }
     const Ref<VirtualGeometryMesh> virtual_source = source;
     if (virtual_source.is_valid()) {
-      Ref<ArrayMesh> root_mesh;
-      std::vector<uint32_t> slots;
-      if (CookerVirtualGeometry::minimum_root_mesh(virtual_source, root_mesh,
-                                                   slots) != OK) {
+      // Minimum textures do not require a second, ordinary geometry path.
+      // Keep the published hierarchy and let each view select its own cut.
+      Dictionary data = virtual_source->get_geometry_data();
+      Array materials = data["materials"];
+      for (int slot = 0; slot < materials.size(); ++slot) {
+        const Ref<Material> original = materials[slot];
+        const Ref<Material> minimum = MaterialValue(original);
+        if (original.is_valid() && minimum.is_null()) {
+          return Ref<Mesh>();
+        }
+        materials[slot] = minimum;
+      }
+      data["materials"] = materials;
+      Ref<VirtualGeometryMesh> minimum;
+      minimum.instantiate();
+      if (minimum->set_geometry_data(data) != OK) {
         return Ref<Mesh>();
       }
-      const Ref<Mesh> minimum = MeshValue(root_mesh);
-      if (minimum.is_null()) {
-        return Ref<Mesh>();
-      }
-      source_material_slots_.emplace(id, std::move(slots));
+      // The unpublished built-in path records container provenance until the
+      // normal publication step copies it beside the new standalone root.
+      // Do not register this temporary identity in ResourceCache.
+      minimum->set_path_cache(virtual_source->get_path().get_slice("::", 0) +
+          "::minimum_geometry");
       meshes_.emplace(id, minimum);
       return minimum;
     }
@@ -602,17 +614,12 @@ class Builder {
           memdelete(copy);
           return false;
         }
-        const auto slots =
-            source_material_slots_.find(mesh->get_mesh()->get_instance_id());
         for (int surface = 0; surface < copy->get_mesh()->get_surface_count();
              ++surface) {
-          const int source_surface = slots == source_material_slots_.end()
-                                         ? surface
-                                         : slots->second[surface];
           copy->set_surface_override_material(
               surface, MaterialValue(mesh->get_surface_override_material(
-                           source_surface)));
-          if (mesh->get_surface_override_material(source_surface).is_valid() &&
+                           surface)));
+          if (mesh->get_surface_override_material(surface).is_valid() &&
               copy->get_surface_override_material(surface).is_null()) {
             memdelete(copy);
             return false;
@@ -664,7 +671,6 @@ class Builder {
   Options options_;
   size_t nodes_ = 0, instances_ = 0;
   std::map<ObjectID, Ref<Mesh>> meshes_;
-  std::map<ObjectID, std::vector<uint32_t>> source_material_slots_;
   std::map<ObjectID, Ref<Material>> materials_;
   std::map<ObjectID, Ref<Shader>> shaders_;
   std::map<ObjectID, Ref<Texture2D>> textures_;

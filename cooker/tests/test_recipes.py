@@ -274,6 +274,25 @@ return second
         self.assertEqual(len(list(container.parent.glob("*.vgp"))), 1)
         self.assertEqual(result["vertices"], repeated["vertices"])
 
+    def test_minimum_visual_retains_virtual_geometry_and_publishes_its_container(self):
+        original = self.recipe('''return cooker.virtual_geometry(
+ cooker.primitive("sphere",{radius=2,height=4}),{})''',
+                               output="res://assets/runtime/model/source/model.res")
+        source = self.project / original["output"].removeprefix("res://")
+        source_bytes = source.read_bytes()
+        minimum = self.recipe('''return cooker.minimum_visual("visual",{
+ triangle_ratio=.1,max_texture_size=128})''',
+                              inputs={"visual": original["output"]},
+                              output="res://assets/runtime/model/minimum/model.res")
+        self.assertEqual(minimum["type"], "VirtualGeometryMesh")
+        self.assertEqual(source.read_bytes(), source_bytes)
+        containers = minimum["geometry_outputs"]
+        self.assertEqual(len(containers), 1)
+        container = self.project / containers[0]["path"].removeprefix("res://")
+        original_container = self.project / original["geometry_outputs"][0]["path"].removeprefix("res://")
+        self.assertEqual(container.parent, (self.project / "assets/runtime/model/minimum"))
+        self.assertEqual(container.read_bytes(), original_container.read_bytes())
+
     def test_virtual_geometry_publication_and_packed_range_reads(self):
         if REFERENCE is None:
             self.skipTest("packed range reads need the matching private editor")
