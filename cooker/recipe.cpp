@@ -66,7 +66,7 @@ constexpr int HANDLE_TAG = 17;
 constexpr int SOURCE_BYTES = 64 * 1024;
 
 struct Limits {
-	int memory_mb = 64;
+	int memory_mb = 128;
 	int time_ms = 0; // 0 = no execution deadline; a job may opt in with limits.time_ms.
 	int max_vertices = 500000;
 	// No default ceiling: memory_mb, max_vertices and output_mb bound the result.
