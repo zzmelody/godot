@@ -1173,8 +1173,8 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.separate_texture_function_samplers = true;
 		actions.discard_function = "vg_discard";
 		actions.check_multiview_samplers = false;
-		actions.instance_uniform_index_variable = "scene.data[vg_source_word(vg_source) + 45u]";
-		actions.renames["INSTANCE_ID"] = "int(scene.data[vg_source_word(vg_source) + 44u])";
+		actions.instance_uniform_index_variable = "vg_source_data(vg_source, 45u)";
+		actions.renames["INSTANCE_ID"] = "int(vg_source_data(vg_source, 44u))";
 		actions.renames["FRAGCOORD"] = "vg_fragcoord";
 		actions.renames["FRONT_FACING"] = "vg_front_facing";
 		actions.renames["TIME"] = "vg_time";
