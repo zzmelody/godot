@@ -49,6 +49,9 @@ public:
 		RID work;
 		RID parameters;
 		RID dispatch;
+		RID selection_uniforms;
+		RID dispatch_uniforms;
+		RID compact_uniforms;
 		uint32_t words = 0;
 		uint32_t selected_capacity = 0;
 		uint32_t root_capacity = 0;

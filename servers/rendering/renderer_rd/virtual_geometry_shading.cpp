@@ -26,6 +26,11 @@ void dispatch_items(RD::ComputeListID p_list, uint32_t p_items, uint32_t p_threa
 } // namespace
 
 VirtualGeometryShading::~VirtualGeometryShading() {
+	for (const SourceBinding &binding : source_bindings) {
+		if (RD::get_singleton()->uniform_set_is_valid(binding.uniforms)) {
+			RD::get_singleton()->free_rid(binding.uniforms);
+		}
+	}
 	for (RID snapshot : global_history) {
 		if (snapshot.is_valid()) {
 			memory.free(snapshot);
@@ -196,6 +201,9 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	if (previous_parameters.size() < p_sources.size()) {
 		previous_parameters.resize(p_sources.size());
 	}
+	if (source_bindings.size() < p_sources.size()) {
+		source_bindings.resize(p_sources.size());
+	}
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
 		if (previous_parameters[index].is_null()) {
@@ -210,12 +218,27 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		MaterialStorage::store_transform(source.batch.previous_model, previous.model);
 		previous.info[0] = source.batch.previous_transform_offset;
 		rd->buffer_update(previous_parameters[index], 0, sizeof(previous), &previous);
-		sources[index].uniforms = cache->get_cache(init_shader.version_get_shader(init_version, 0), 0,
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { source.batch.stride != 0 ? source.batch.transforms : dummy_transforms }),
+		SourceBinding &binding = source_bindings[index];
+		const RID transforms = source.batch.stride != 0 ? source.batch.transforms : dummy_transforms;
+		if (binding.transforms != transforms || binding.parameters != source.parameters || binding.work != source.work) {
+			if (rd->uniform_set_is_valid(binding.uniforms)) {
+				rd->free_rid(binding.uniforms);
+			}
+		}
+		if (!rd->uniform_set_is_valid(binding.uniforms)) {
+			const Vector<RD::Uniform> uniforms = {
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { transforms }),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { source.parameters }), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { source.work }),
 				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }),
 				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }),
-				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 27, { previous_parameters[index] }));
+				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 27, { previous_parameters[index] })
+			};
+			binding.uniforms = rd->uniform_set_create(uniforms, init_shader.version_get_shader(init_version, 0), 0);
+			binding.transforms = transforms;
+			binding.parameters = source.parameters;
+			binding.work = source.work;
+		}
+		sources[index].uniforms = binding.uniforms;
 		ERR_FAIL_COND_V(sources[index].uniforms.is_null(), ERR_CANT_CREATE);
 	}
 	if (!materials.is_empty() && !depth_only) {

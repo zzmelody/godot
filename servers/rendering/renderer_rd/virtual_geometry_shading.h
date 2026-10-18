@@ -107,6 +107,13 @@ private:
 	RID previous_sources;
 	uint32_t previous_source_words = 0;
 	LocalVector<RID> previous_parameters;
+	struct SourceBinding {
+		RID uniforms;
+		RID transforms;
+		RID parameters;
+		RID work;
+	};
+	LocalVector<SourceBinding> source_bindings;
 	RID view_status;
 	LocalVector<RasterMaterialWork> raster_work;
 	RID raster_material_buffer;

@@ -3,7 +3,6 @@
 
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
-#include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/utilities.h"
 
@@ -11,6 +10,11 @@ namespace RendererRD {
 
 VirtualGeometrySelection::~VirtualGeometrySelection() {
 	for (const Result &result : results) {
+		for (RID uniforms : { result.selection_uniforms, result.dispatch_uniforms, result.compact_uniforms }) {
+			if (RD::get_singleton()->uniform_set_is_valid(uniforms)) {
+				RD::get_singleton()->free_rid(uniforms);
+			}
+		}
 		if (result.work.is_valid()) {
 			memory.free(result.work);
 		}
@@ -186,30 +190,50 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 	memcpy(&parameters.offsets[3], &p_batch.max_vertex_displacement, sizeof(float));
 	rd->buffer_update(result.parameters, 0, sizeof(parameters), &parameters);
 	rd->buffer_clear(scratch, 0, 64);
-	const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,
+	// Result slots change source identity as views and SDFGI regions change.
+	// Own one current binding per slot instead of retaining every combination
+	// of live source buffers in the renderer-wide uniform cache.
+	const RID transforms = p_batch.stride != 0 ? p_batch.transforms : dummy_transforms;
+	const RID previous_transforms = result.batch.stride != 0 ? result.batch.transforms : dummy_transforms;
+	if (result.batch.geometry.metadata != p_batch.geometry.metadata || result.batch.geometry.geometry != p_batch.geometry.geometry || previous_transforms != transforms) {
+		if (rd->uniform_set_is_valid(result.selection_uniforms)) {
+			rd->free_rid(result.selection_uniforms);
+		}
+	}
+	if (!rd->uniform_set_is_valid(result.selection_uniforms)) {
+		const Vector<RD::Uniform> uniforms = {
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { p_batch.geometry.metadata }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_batch.geometry.geometry }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { p_batch.stride != 0 ? p_batch.transforms : dummy_transforms }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { transforms }),
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }));
-	ERR_FAIL_COND_V(uniforms.is_null(), ERR_CANT_CREATE);
-	const RID dispatch_uniforms = UniformSetCacheRD::get_singleton()->get_cache(dispatch_program, 0,
-			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { result.dispatch }));
-	ERR_FAIL_COND_V(dispatch_uniforms.is_null(), ERR_CANT_CREATE);
-	const RID compact_uniforms = UniformSetCacheRD::get_singleton()->get_cache(compact_program, 0,
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch })
+		};
+		result.selection_uniforms = rd->uniform_set_create(uniforms, program, 0);
+	}
+	if (!rd->uniform_set_is_valid(result.dispatch_uniforms)) {
+		const Vector<RD::Uniform> uniforms = {
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result.work }));
-	ERR_FAIL_COND_V(compact_uniforms.is_null(), ERR_CANT_CREATE);
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { result.dispatch })
+		};
+		result.dispatch_uniforms = rd->uniform_set_create(uniforms, dispatch_program, 0);
+	}
+	if (!rd->uniform_set_is_valid(result.compact_uniforms)) {
+		const Vector<RD::Uniform> uniforms = {
+			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result.work })
+		};
+		result.compact_uniforms = rd->uniform_set_create(uniforms, compact_program, 0);
+	}
+	ERR_FAIL_COND_V(result.selection_uniforms.is_null() || result.dispatch_uniforms.is_null() || result.compact_uniforms.is_null(), ERR_CANT_CREATE);
 	rd->draw_command_begin_label("Virtual Geometry Selection");
 	RENDER_TIMESTAMP(p_batch.stride == 0 ? "Virtual Geometry Mesh Begin" : "Virtual Geometry MultiMesh Begin");
 	const RD::ComputeListID list = rd->compute_list_begin();
 	auto dispatch = [&](uint32_t p_mode, uint32_t p_round, uint32_t p_count, bool p_indirect = false) {
 		const bool preparing = p_mode == 1 || p_mode == 3 || p_mode == 8;
 		rd->compute_list_bind_compute_pipeline(list, preparing ? prepare : compute);
-		rd->compute_list_bind_uniform_set(list, preparing ? dispatch_uniforms : uniforms, 0);
+		rd->compute_list_bind_uniform_set(list, preparing ? result.dispatch_uniforms : result.selection_uniforms, 0);
 		const uint32_t phase[2] = { p_mode, p_round };
 		rd->compute_list_set_push_constant(list, phase, sizeof(phase));
 		if (p_indirect) {
@@ -232,7 +256,7 @@ Error VirtualGeometrySelection::_record(const Batch &p_batch, uint32_t p_cluster
 	dispatch(p_root_only ? 7 : 6, p_root_only ? 0 : p_batch.geometry.hierarchy_depth - 1, 1);
 	dispatch(8, 0, 1);
 	rd->compute_list_bind_compute_pipeline(list, compact);
-	rd->compute_list_bind_uniform_set(list, compact_uniforms, 0);
+	rd->compute_list_bind_uniform_set(list, result.compact_uniforms, 0);
 	const uint32_t root_only = 0;
 	rd->compute_list_set_push_constant(list, &root_only, sizeof(root_only));
 	rd->compute_list_dispatch_indirect(list, result.dispatch, 0);
@@ -256,13 +280,20 @@ void VirtualGeometrySelection::use_root_coverage() {
 	const RID program = compact_shader.version_get_shader(compact_version, 0);
 	for (uint32_t index = 0; index < used; ++index) {
 		Result &result = results[index];
-		const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,
+		// A later batch can grow the shared scratch and invalidate this binding.
+		// Root-only compaction reads the retained result, not scratch contents.
+		if (!rd->uniform_set_is_valid(result.compact_uniforms)) {
+			const Vector<RD::Uniform> uniforms = {
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { result.parameters }),
 				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result.work }));
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result.work })
+			};
+			result.compact_uniforms = rd->uniform_set_create(uniforms, program, 0);
+		}
+		ERR_FAIL_COND(!rd->uniform_set_is_valid(result.compact_uniforms));
 		const RD::ComputeListID list = rd->compute_list_begin();
 		rd->compute_list_bind_compute_pipeline(list, compact_pipeline.get_rid());
-		rd->compute_list_bind_uniform_set(list, uniforms, 0);
+		rd->compute_list_bind_uniform_set(list, result.compact_uniforms, 0);
 		const uint32_t root_only = 1;
 		rd->compute_list_set_push_constant(list, &root_only, sizeof(root_only));
 		rd->compute_list_dispatch(list, 1, 1, 1);
