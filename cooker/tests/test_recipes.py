@@ -274,6 +274,47 @@ return second
         self.assertEqual(len(list(container.parent.glob("*.vgp"))), 1)
         self.assertEqual(result["vertices"], repeated["vertices"])
 
+    def test_shared_geometry_batch_digests_and_corruption_between_batches(self):
+        source = self.recipe('''return cooker.virtual_geometry(
+    cooker.primitive("box", { size = { 2, 3, 4 } }), {}
+)''', output="res://assets/runtime/model/shared/model.res")
+        container_path = source["geometry_outputs"][0]["path"]
+        container = self.project / container_path.removeprefix("res://")
+        original = container.read_bytes()
+        sha256 = hashlib.sha256(original).hexdigest()
+        md5 = hashlib.md5(original).hexdigest()
+        (self.project / "fragment.luau").write_text('''return cooker.scene({
+    { asset = cooker.input("mesh") },
+})''')
+        pipeline = '''local steps = {}
+for index = 0, 2 do
+    table.insert(steps, {
+        name = "part-" .. index,
+        operation = "run-recipe",
+        source = "res://fragment.luau",
+        inputs = { mesh = "''' + source["output"] + '''" },
+        external_render_resources = true,
+        output = "res://assets/runtime/world/fragments/part-" .. index .. ".scn",
+    })
+end
+return steps'''
+        first = self.pipeline(pipeline)["steps"]
+        self.assertEqual(len(first), 3)
+        for report in first:
+            self.assertEqual(report["input_sha256"][container_path], sha256)
+            receipt_path = self.project / (report["output"].removeprefix("res://") + ".cook.json")
+            receipt = json.loads(receipt_path.read_text())
+            self.assertEqual(receipt["dependencies"][container_path], "md5:" + md5)
+        self.assertTrue(all(step["skipped"] for step in self.pipeline(pipeline)["steps"]))
+        # A completed batch releases its read pins. Same-length corruption with
+        # the original timestamp must fail in the next batch, before publication.
+        timestamp = container.stat()
+        container.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+        os.utime(container, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+        self.pipeline(pipeline, success=False)
+        container.write_bytes(original)
+        self.assertTrue(all(step["skipped"] for step in self.pipeline(pipeline)["steps"]))
+
     def test_minimum_visual_retains_virtual_geometry_and_publishes_its_container(self):
         original = self.recipe('''return cooker.virtual_geometry(
  cooker.primitive("sphere",{radius=2,height=4}),{})''',

@@ -453,7 +453,10 @@ Error publish_container(const BuildOutput &p_output, const String &p_resource_pa
 		return ERR_CANT_CREATE;
 	}
 	const String expected_hash = String::hex_encode_buffer(hash, sizeof(hash));
-	if (CookerAtomicSave::occupied(path)) {
+	// Page containers are immutable content, even when a stale scene receipt
+	// marks its auxiliary files replaceable. Reuse identical bytes rather than
+	// replacing a container held by this or another reader's lifetime lease.
+	if (FileAccess::exists(path)) {
 		if (cooker_hash::HashFile(path) != expected_hash) {
 			return ERR_ALREADY_EXISTS;
 		}

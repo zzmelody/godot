@@ -18,13 +18,16 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 	const String path = p_resource_path.get_base_dir().path_join(p_mesh->get_container_file());
 	Error error = CookerFiles::check_path(path);
 	ERR_FAIL_COND_V(error != OK, error);
+	String digest;
+	error = cooker_hash::PinGeometryFile(path, digest);
+	ERR_FAIL_COND_V(error != OK, error);
+	const bool pinned = !digest.is_empty();
 	const Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ, &error);
 	ERR_FAIL_COND_V(file.is_null(), error == OK ? ERR_FILE_CANT_READ : error);
 	ERR_FAIL_COND_V(file->get_length() != p_mesh->get_container_bytes(), ERR_INVALID_DATA);
 	// A bounded snapshot ties the cache key to the exact bytes being validated,
 	// even if another process atomically replaces the source path during a job.
 	Vector<uint8_t> snapshot;
-	String digest;
 	auto hash_open_file = [&](String &r_digest) -> Error {
 		if (file->get_length() != p_mesh->get_container_bytes()) {
 			return ERR_FILE_CORRUPT;
@@ -53,14 +56,14 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 		r_digest = String::hex_encode_buffer(bytes.data(), bytes.size());
 		return OK;
 	};
-	if (file->get_length() <= 16 * 1024 * 1024) {
+	if (!pinned && file->get_length() <= 16 * 1024 * 1024) {
 		snapshot = file->get_buffer(file->get_length());
 		ERR_FAIL_COND_V(uint64_t(snapshot.size()) != p_mesh->get_container_bytes(), ERR_FILE_CANT_READ);
 		std::array<uint8_t, 32> hash;
 		cooker_hash::Sha256 container_hash;
 		ERR_FAIL_COND_V(container_hash.Start() != OK || container_hash.Update(snapshot.ptr(), snapshot.size()) != OK || container_hash.Finish(hash.data()) != OK, FAILED);
 		digest = String::hex_encode_buffer(hash.data(), hash.size());
-	} else {
+	} else if (!pinned) {
 		// Keep the same open file through hashing and page validation. A path
 		// reopened for hashing could refer to a concurrent atomic replacement.
 		error = hash_open_file(digest);
@@ -69,8 +72,8 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 	ERR_FAIL_COND_V(digest.length() != 64, ERR_INVALID_DATA);
 	ERR_FAIL_COND_V(p_mesh->get_container_file().begins_with("geometry--") && p_mesh->get_container_file() != "geometry--" + digest + ".vgp", ERR_INVALID_DATA);
 	// A pipeline can publish hundreds of fragments of the same immutable Mesh.
-	// Hash actual bytes on every call, but decode/transcode an identical pair only
-	// once. The cache owns value digests; it never retains a Resource or file.
+	// A batch hashes pinned Windows containers once. Other inputs still hash
+	// actual bytes on every call. Decode/transcode is keyed by root + container.
 	std::array<uint8_t, 96> validation_key = {};
 	for (uint32_t index = 0; index < 64; ++index) {
 		validation_key[index] = static_cast<uint8_t>(digest[index]);
@@ -101,7 +104,7 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 		std::vector<uint8_t> gpu;
 		ERR_FAIL_COND_V(vg::transcode_geometry_page_cpu(page_bytes, location.fixup_offset, gpu).error != vg::PageCodecError::OK || gpu.size() != location.gpu_bytes, ERR_INVALID_DATA);
 	}
-	if (snapshot.is_empty()) {
+	if (!pinned && snapshot.is_empty()) {
 		String checked_digest;
 		error = hash_open_file(checked_digest);
 		ERR_FAIL_COND_V(error != OK, error);

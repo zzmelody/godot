@@ -2,6 +2,7 @@
 #pragma once
 
 #include "atomic_save.h"
+#include "content_hash.h"
 #include "virtual_geometry_validation.h"
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
@@ -306,7 +307,7 @@ inline Error pack(const Dictionary &p_job, Dictionary &r_result) {
 		if (error != OK) {
 			break;
 		}
-		hashes[path] = FileAccess::get_sha256(path);
+		hashes[path] = cooker_hash::HashFile(path);
 	}
 	if (error == OK) {
 		error = packer->flush();

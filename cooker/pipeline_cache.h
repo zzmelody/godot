@@ -2,6 +2,7 @@
 #pragma once
 #include "asset_files.h"
 #include "atomic_save.h"
+#include "content_hash.h"
 #include "stage_source.h"
 #include "usd_import.h"
 #include "core/io/json.h"
@@ -78,9 +79,9 @@ inline Error dependencies(const Variant &value,Dictionary &result,int depth=0,co
 					result[source] = IDENTITY;
 				}
 			} else if (CookerFiles::is_generated(source) && source.get_file() != "asset.manifest.json" && !source.ends_with(".cook.json")) {
-				result[source] = "md5:" + FileAccess::get_md5(source);
+				result[source] = "md5:" + cooker_hash::Md5File(source);
 			} else {
-				result[source] = "sha256:" + FileAccess::get_sha256(source);
+				result[source] = "sha256:" + cooker_hash::HashFile(source);
 			}
 		}
 	} else if (value.get_type() == Variant::ARRAY) {
@@ -119,7 +120,7 @@ inline Error validate_manifest_files(const String &path) {
 		ERR_FAIL_COND_V(extension != "scn" && extension != "res" && extension != "vgp" && !CookerSource::is_payload(resource), ERR_INVALID_DATA);
 		error=CookerFiles::check_path(resource);ERR_FAIL_COND_V(error!=OK || !resource.begins_with(base+"/"),ERR_INVALID_DATA);
 		const Ref<FileAccess> file=FileAccess::open(resource,FileAccess::READ);
-		ERR_FAIL_COND_V_MSG(file.is_null() || int64_t(record.get("bytes",-1))!=int64_t(file->get_length()) || digest.length()!=32 || digest != digest.to_lower() || !digest.is_valid_hex_number(false) || digest!=FileAccess::get_md5(resource),ERR_INVALID_DATA,"Cached manifest resource changed; choose a new immutable revision: "+resource);
+		ERR_FAIL_COND_V_MSG(file.is_null() || int64_t(record.get("bytes",-1))!=int64_t(file->get_length()) || digest.length()!=32 || digest != digest.to_lower() || !digest.is_valid_hex_number(false) || digest!=cooker_hash::Md5File(resource),ERR_INVALID_DATA,"Cached manifest resource changed; choose a new immutable revision: "+resource);
 		seen.insert(relative);
 	}
 	return OK;
@@ -208,7 +209,7 @@ inline Error prepare(const Dictionary &job,const String &output,Receipt &receipt
 		// A newly declared support output is not part of the old receipt. Never
 		// reuse its unverified bytes; regenerate it with the verified parent.
 		if (!prior_auxiliary.has(path)) { missing_auxiliary = true; continue; }
-		ERR_FAIL_COND_V_MSG(String(prior_auxiliary.get(path, "")) != FileAccess::get_sha256(path), ERR_INVALID_DATA, "Cook cache support integrity failed: " + path);
+		ERR_FAIL_COND_V_MSG(String(prior_auxiliary.get(path, "")) != cooker_hash::HashFile(path), ERR_INVALID_DATA, "Cook cache support integrity failed: " + path);
 	}
 	if(force_rebuild || missing_auxiliary || String(prior.get("request_sha256",""))!=receipt.fingerprint) {
 		// Keep the stale output and receipt published: concurrent Cookers that
@@ -244,7 +245,7 @@ inline Error commit(const Receipt &receipt) {
 	CookerAtomicSave::replaceable.erase(receipt.output);
 	Dictionary auxiliary;
 	for (const Variant *key = receipt.auxiliary_outputs.next(); key; key = receipt.auxiliary_outputs.next(key)) {
-		const String hash = FileAccess::get_sha256(*key); ERR_FAIL_COND_V(hash.length() != 64, ERR_FILE_CORRUPT);
+		const String hash = cooker_hash::HashFile(*key); ERR_FAIL_COND_V(hash.length() != 64, ERR_FILE_CORRUPT);
 		auxiliary[*key] = hash;
 		CookerAtomicSave::replaceable.erase(*key);
 	}

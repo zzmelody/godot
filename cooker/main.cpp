@@ -10,6 +10,7 @@
 #include "core/io/file_access_pack.h"
 #include "core/io/json.h"
 #include "pipeline_cache.h"
+#include "content_hash.h"
 #include "atomic_save.h"
 #include "render_dependencies.h"
 #include "output_lock.h"
@@ -1055,6 +1056,7 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 }
 
 Error execute_job_file(Dictionary &r_result) {
+	cooker_hash::Batch content_hash_batch;
 	Dictionary job;
 	Error error = read_job(job);
 	ERR_FAIL_COND_V(error != OK, error);
@@ -1088,6 +1090,7 @@ Error execute_pipeline(Dictionary &r_result) {
 		r_result["message"] = "Pipeline declarations changed after scheduling.";
 		return ERR_BUSY;
 	}
+	cooker_hash::Batch content_hash_batch;
 	Array reports;
   if (!selected_steps.is_empty()) {
     HashSet<String> found;

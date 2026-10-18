@@ -2,6 +2,7 @@
 /*<<----- VEYA_COOKER: Value-only admission profile with conservative runtime accounting. */
 
 #include "character_actions.h"
+#include "content_hash.h"
 #include "virtual_geometry_validation.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
@@ -405,7 +406,7 @@ inline String Digest(const String &path, HashMap<String, String> &digests) {
 	if (const String *cached = digests.getptr(key)) {
 		return *cached;
 	}
-	const String actual = FileAccess::get_md5(key);
+	const String actual = cooker_hash::Md5File(key);
 	digests.insert(key, actual);
 	return actual;
 }

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 
 #include "core/crypto/crypto_core.h"
 #include "core/io/file_access.h"
@@ -13,8 +14,11 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+// The Windows SDK types must be declared before BCrypt's declarations.
+// clang-format off
 #include <windows.h>
 #include <bcrypt.h>
+// clang-format on
 #ifdef ERROR
 #undef ERROR
 #endif
@@ -22,8 +26,7 @@
 
 namespace cooker_hash {
 
-// Hash the actual bytes on every call. This only changes the implementation
-// of SHA-256; it introduces no file-identity or timestamp validation cache.
+// Streaming SHA-256 for bytes that have not already been hashed in this batch.
 class Sha256 {
  public:
   Sha256() = default;
@@ -43,7 +46,7 @@ class Sha256 {
       BCRYPT_ALG_HANDLE handle = nullptr;
       Provider() {
         if (BCryptOpenAlgorithmProvider(&handle, BCRYPT_SHA256_ALGORITHM,
-                                       nullptr, 0) < 0) {
+                                        nullptr, 0) < 0) {
           handle = nullptr;
         }
       }
@@ -58,9 +61,8 @@ class Sha256 {
       BCryptDestroyHash(native_);
       native_ = nullptr;
     }
-    if (provider.handle &&
-        BCryptCreateHash(provider.handle, &native_, nullptr, 0, nullptr, 0,
-                         0) >= 0) {
+    if (provider.handle && BCryptCreateHash(provider.handle, &native_, nullptr,
+                                            0, nullptr, 0, 0) >= 0) {
       return OK;
     }
     native_ = nullptr;
@@ -102,26 +104,30 @@ class Sha256 {
 #endif
 };
 
-inline String HashFile(const String& path) {
-  const Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
-  ERR_FAIL_COND_V(file.is_null(), String());
-  const uint64_t length = file->get_length();
-  Sha256 hash;
-  ERR_FAIL_COND_V(hash.Start() != OK, String());
-  std::array<uint8_t, 65536> block;
-  uint64_t remaining = length;
-  while (remaining) {
-    const uint32_t count = static_cast<uint32_t>(
-        MIN(remaining, static_cast<uint64_t>(block.size())));
-    ERR_FAIL_COND_V(file->get_buffer(block.data(), count) != count ||
-                        hash.Update(block.data(), count) != OK,
-                    String());
-    remaining -= count;
-  }
-  ERR_FAIL_COND_V(file->get_length() != length, String());
-  std::array<uint8_t, 32> digest;
-  ERR_FAIL_COND_V(hash.Finish(digest.data()) != OK, String());
-  return String::hex_encode_buffer(digest.data(), digest.size());
-}
+// One main-thread CLI pipeline/job owns the cache. Windows entries keep a read
+// handle that denies writes/deletion until this scope ends. No resources or
+// container payloads are retained. Other platforms keep exact-byte hashing.
+class Batch {
+ public:
+  Batch();
+  ~Batch();
+  Batch(const Batch&) = delete;
+  Batch& operator=(const Batch&) = delete;
+
+ private:
+  struct State;
+  std::unique_ptr<State> state_;
+  Batch* previous_ = nullptr;
+  static thread_local Batch* current_;
+
+  friend Error PinGeometryFile(const String&, String&);
+  friend String Md5File(const String&);
+};
+
+// Returns a digest only when this batch can keep the .vgp bytes immutable.
+// Otherwise returns OK with an empty digest; validation hashes its open file.
+Error PinGeometryFile(const String& path, String& digest);
+String HashFile(const String& path);
+String Md5File(const String& path);
 
 }  // namespace cooker_hash
