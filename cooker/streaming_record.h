@@ -67,6 +67,7 @@ struct Measure {
 	uint64_t nodes = 0, geometry_bytes = 0, texture_bytes = 0;
 	uint64_t instances = 0, particle_systems = 0, declared_particles = 0;
 	HashSet<ObjectID> resources;
+	const HashSet<ObjectID> *validated_resources = nullptr;
 	String path;
 	Array costs;
 	HashMap<String, HashSet<String>> page_containers;
@@ -87,8 +88,10 @@ inline Error MeasureValue(const Variant &value, Measure &result, int depth) {
 		if (virtual_mesh.is_valid()) {
 			const String owner = resource->get_path().get_slice("::", 0);
 			ERR_FAIL_COND_V(owner.is_empty(), ERR_INVALID_DATA);
-			const Error error = CookerVirtualGeometry::validate_container(virtual_mesh, owner);
-			ERR_FAIL_COND_V(error != OK, error);
+			if (result.validated_resources == nullptr || !result.validated_resources->has(resource->get_instance_id())) {
+				const Error error = CookerVirtualGeometry::validate_container(virtual_mesh, owner);
+				ERR_FAIL_COND_V(error != OK, error);
+			}
 			result.page_containers[owner].insert(owner.get_base_dir().path_join(virtual_mesh->get_container_file()));
 			geometry_bytes = CookerVirtualGeometry::metadata_bytes(virtual_mesh) +
 					uint64_t(virtual_mesh->get_model().hierarchy.root_pages) * VirtualGeometry::ROOT_PAGE_GPU_CAPACITY;
@@ -631,14 +634,17 @@ inline Error Record(const String &path, Dictionary &output,
         if (const auto* spatial = Object::cast_to<Node3D>(root)) {
           parent = spatial->get_transform();
         }
-        const Transform3D pose = parent * child->get_transform();
-        Measure placement;
-        error = MeasureTree(child, parent, placement);
-        if (error != OK || !placement.geometry) {
-					layout_valid = false;
-					layouts.clear();
-					break;
-				}
+		const Transform3D pose = parent * child->get_transform();
+		Measure placement;
+		// The parent record already validated these retained, immutable Resources.
+		// Placement bounds and costs still use an independent measurement.
+		placement.validated_resources = &measure.resources;
+		error = MeasureTree(child, parent, placement);
+		if (error != OK || !placement.geometry) {
+			layout_valid = false;
+			layouts.clear();
+			break;
+		}
 				Dictionary entry;
 				entry["name"] = String(child->get_name());
 				entry["resource"] = ReferencePath(path, child->get_scene_file_path());
