@@ -2189,10 +2189,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	enum {
 		SCALE_NONE,
 		SCALE_FSR2,
+		SCALE_EXTERNAL,
 		SCALE_MFX,
 	} scale_type = SCALE_NONE;
 
 	switch (rb->get_scaling_3d_mode()) {
+		case RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL:
+			scale_type = SCALE_EXTERNAL;
+			break;
 		case RSE::VIEWPORT_SCALING_3D_MODE_FSR2:
 			scale_type = SCALE_FSR2;
 			break;
@@ -2996,7 +3000,35 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 	}
 	if (rb_data.is_valid() && (using_upscaling || using_taa)) {
-		if (scale_type == SCALE_FSR2) {
+		if (scale_type == SCALE_EXTERNAL) {
+			ExternalTemporalUpscaler *upscaler = rb->get_external_temporal();
+			CRASH_COND_MSG(!upscaler, "External temporal context missing after configuration.");
+			rb->ensure_upscaled();
+			VeyaTemporalFrame frame = {};
+			frame.images[0].rid = rb->get_internal_texture().get_id();
+			frame.images[1].rid = rb->get_depth_texture().get_id();
+			frame.images[2].rid = rb->get_velocity_buffer(false).get_id();
+			frame.images[5].rid = rb->get_upscaled_texture().get_id();
+			Vector2 jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+			frame.jitter_x = jitter.x;
+			frame.jitter_y = jitter.y;
+			frame.near_meters = p_render_data->scene_data->z_near;
+			frame.far_meters = p_render_data->scene_data->z_far;
+			const Projection &projection = p_render_data->scene_data->cam_projection;
+			frame.vertical_fov_radians = Math::deg_to_rad(projection.get_fovy(projection.get_fov(), 1.0 / projection.get_aspect()));
+			frame.delta_seconds = MAX(float(time_step), 0.000001f);
+			frame.sharpness = CLAMP(rb->get_fsr_sharpness(), 0.0f, 1.0f);
+			Projection correction;
+			correction.set_depth_correction(true, true, false);
+			const Projection reprojection = (correction * p_render_data->scene_data->prev_cam_projection) *
+					p_render_data->scene_data->prev_cam_transform.affine_inverse() * p_render_data->scene_data->cam_transform *
+					(correction * p_render_data->scene_data->cam_projection).inverse();
+			RendererRD::MaterialStorage::store_camera(reprojection, frame.reprojection);
+			RD::get_singleton()->draw_command_begin_label("FSR 3.1 Vulkan");
+			RENDER_TIMESTAMP("FSR3");
+			CRASH_COND_MSG(upscaler->process(frame) != OK, "FSR3 graph scheduling failed.");
+			RD::get_singleton()->draw_command_end_label();
+		} else if (scale_type == SCALE_FSR2) {
 			rb_data->ensure_fsr2(fsr2_effect);
 
 			RID exposure;

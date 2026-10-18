@@ -154,7 +154,7 @@ void RenderSceneBuffersRD::update_samplers() {
 		// Use negative mipmap LOD bias when TAA or FSR2 is enabled to compensate for loss of sharpness.
 		// This restores sharpness in still images to be roughly at the same level as without TAA,
 		// but moving scenes will still be blurrier.
-		computed_mipmap_bias -= 0.5;
+		computed_mipmap_bias -= scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL ? 1.0 : 0.5;
 	}
 
 	if (screen_space_aa == RSE::VIEWPORT_SCREEN_SPACE_AA_FXAA) {
@@ -169,6 +169,10 @@ void RenderSceneBuffersRD::update_samplers() {
 }
 
 void RenderSceneBuffersRD::cleanup() {
+	if (external_temporal) {
+		external_temporal->retire();
+		external_temporal = nullptr;
+	}
 	// Free our data buffers (but don't destroy them)
 	for (KeyValue<StringName, Ref<RenderBufferCustomDataRD>> &E : data_buffers) {
 		E.value->free_data();
@@ -220,10 +224,20 @@ void RenderSceneBuffersRD::configure(const RenderSceneBuffersConfiguration *p_co
 
 	vrs_mode = texture_storage->render_target_get_vrs_mode(render_target);
 
-	update_samplers();
-
 	// cleanout any old buffers we had.
 	cleanup();
+
+	if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_EXTERNAL_TEMPORAL) {
+		if (view_count == 1 && msaa_3d == RSE::VIEWPORT_MSAA_DISABLED) {
+			external_temporal = ExternalTemporalUpscaler::create(internal_size, target_size);
+		}
+		if (!external_temporal) {
+			WARN_PRINT("External temporal configuration rejected before camera jitter; using bilinear for this configuration.");
+			scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
+			use_taa = false;
+		}
+	}
+	update_samplers();
 
 	// Create our color buffer.
 	const bool resolve_target = msaa_3d != RSE::VIEWPORT_MSAA_DISABLED;

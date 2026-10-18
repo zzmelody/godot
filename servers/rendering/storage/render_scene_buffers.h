@@ -108,6 +108,8 @@ public:
 	virtual ~RenderSceneBuffers() {}
 
 	virtual void configure(const RenderSceneBuffersConfiguration *p_config) = 0;
+	virtual bool get_external_temporal_jitter(Vector2 &r_jitter) { return false; }
+	virtual void reset_external_temporal_history() {}
 
 	// for those settings that are unlikely to require buffers to be recreated, we'll add setters
 	virtual void set_fsr_sharpness(float p_fsr_sharpness) = 0;

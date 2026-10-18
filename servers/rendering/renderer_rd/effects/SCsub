@@ -6,6 +6,8 @@ import methods
 Import("env")
 
 env_effects = env.Clone()
+if env["vulkan"]:
+    env_effects.Prepend(CPPPATH=["#thirdparty/vulkan/include", "#thirdparty/volk"])
 
 # metal-cpp headers for Metal FX
 if env["metal"]:
