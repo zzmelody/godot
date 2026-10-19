@@ -52,6 +52,8 @@ void RendererMeshStorage::multimesh_allocate_data(RID p_multimesh, int p_instanc
 		mmi->_use_colors = p_use_colors;
 		mmi->_use_custom_data = p_use_custom_data;
 		mmi->_num_instances = p_instances;
+		mmi->initial_buffer_valid = false;
+		mmi->indirect = p_use_indirect;
 
 		mmi->_vf_size_xform = p_transform_format == RSE::MULTIMESH_TRANSFORM_2D ? 8 : 12;
 		mmi->_vf_size_color = p_use_colors ? 4 : 0;
@@ -111,6 +113,9 @@ void RendererMeshStorage::multimesh_instance_set_transform(RID p_multimesh, int 
 		return;
 	}
 
+	if (mmi) {
+		mmi->initial_buffer_valid = false;
+	}
 	_multimesh_instance_set_transform(p_multimesh, p_index, p_transform);
 }
 
@@ -146,6 +151,9 @@ void RendererMeshStorage::multimesh_instance_set_transform_2d(RID p_multimesh, i
 		return;
 	}
 
+	if (mmi) {
+		mmi->initial_buffer_valid = false;
+	}
 	_multimesh_instance_set_transform_2d(p_multimesh, p_index, p_transform);
 }
 
@@ -173,6 +181,9 @@ void RendererMeshStorage::multimesh_instance_set_color(RID p_multimesh, int p_in
 		return;
 	}
 
+	if (mmi) {
+		mmi->initial_buffer_valid = false;
+	}
 	_multimesh_instance_set_color(p_multimesh, p_index, p_color);
 }
 
@@ -200,6 +211,9 @@ void RendererMeshStorage::multimesh_instance_set_custom_data(RID p_multimesh, in
 		return;
 	}
 
+	if (mmi) {
+		mmi->initial_buffer_valid = false;
+	}
 	_multimesh_instance_set_custom_data(p_multimesh, p_index, p_color);
 }
 
@@ -249,6 +263,12 @@ void RendererMeshStorage::multimesh_set_buffer(RID p_multimesh, const Vector<flo
 	}
 
 	_multimesh_set_buffer(p_multimesh, p_buffer);
+	if (mmi && !mmi->indirect && !mmi->buffer_exposed && p_buffer.size() == mmi->_data_curr.size()) {
+		// Resource loading already owns these bytes. Keep the COW snapshot in
+		// existing interpolation storage until the first scene-tree admission.
+		mmi->_data_curr = p_buffer;
+		mmi->initial_buffer_valid = true;
+	}
 }
 
 RID RendererMeshStorage::multimesh_get_command_buffer_rd_rid(RID p_multimesh) const {
@@ -256,6 +276,12 @@ RID RendererMeshStorage::multimesh_get_command_buffer_rd_rid(RID p_multimesh) co
 }
 
 RID RendererMeshStorage::multimesh_get_buffer_rd_rid(RID p_multimesh) const {
+	MultiMeshInterpolator *mmi = _multimesh_get_interpolator(p_multimesh);
+	if (mmi) {
+		// The exposed RD buffer can be written outside the CPU setters.
+		mmi->initial_buffer_valid = false;
+		mmi->buffer_exposed = true;
+	}
 	return _multimesh_get_buffer_rd_rid(p_multimesh);
 }
 
@@ -273,6 +299,7 @@ void RendererMeshStorage::multimesh_set_buffer_interpolated(RID p_multimesh, con
 		// Even if this flag hasn't been set - just calling this function suggests interpolation is desired.
 		mmi->_data_prev = p_buffer_prev;
 		mmi->_data_curr = p_buffer;
+		mmi->initial_buffer_valid = false;
 		_multimesh_add_to_interpolation_lists(p_multimesh, *mmi);
 
 #if defined(DEBUG_ENABLED) && defined(TOOLS_ENABLED)
@@ -296,10 +323,13 @@ void RendererMeshStorage::multimesh_set_physics_interpolated(RID p_multimesh, bo
 		// we want to get the current buffer data from the backend,
 		// and reset all the instances.
 		if (p_interpolated) {
-			mmi->_data_curr = _multimesh_get_buffer(p_multimesh);
+			if (!mmi->initial_buffer_valid) {
+				mmi->_data_curr = _multimesh_get_buffer(p_multimesh);
+			}
 			mmi->_data_prev = mmi->_data_curr;
 			mmi->_data_interpolated = mmi->_data_curr;
 		}
+		mmi->initial_buffer_valid = false;
 	}
 }
 

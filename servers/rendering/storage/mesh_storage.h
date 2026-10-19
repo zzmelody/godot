@@ -142,6 +142,10 @@ public:
 		// Quality determines whether to use lerp or slerp etc.
 		int quality = 0;
 		bool interpolated = false;
+		// A complete CPU upload can seed interpolation without stalling the GPU.
+		bool initial_buffer_valid = false;
+		bool indirect = false;
+		bool buffer_exposed = false;
 		bool on_interpolate_update_list = false;
 		bool on_transform_update_list = false;
 
