@@ -43,6 +43,8 @@ struct PartitionResult {
 // lower bound (a small final graph may need two smaller ranges).
 // Input and previous output survive refusal. Concurrent calls are supported;
 // only METIS's global random/signal state is serialized.
+// Offline METIS uses int64 working arithmetic; CSR identities and individual
+// input costs retain int32 storage. Total weights and cuts need not fit int32.
 PartitionResult partition_strict(const PartitionGraph &p_graph, uint32_t p_target_min_size, uint32_t p_max_size, GraphPartition &r_partition);
 
 } // namespace VirtualGeometry

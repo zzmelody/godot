@@ -322,7 +322,7 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 		const auto dag_result = vg::build_cluster_dag(input, p_settings.dag, dag, &run_dag_groups);
 		const uint64_t dag_build_usec = OS::get_singleton()->get_ticks_usec() - dag_started;
 		if (dag_result.error != vg::DagBuildError::OK) {
-			return refuse(r_message, vformat("virtual_geometry DAG refused: error=%d group=%d simplification=%d", int(dag_result.error), dag_result.group, int(dag_result.simplification_result.error)));
+			return refuse(r_message, vformat("virtual_geometry DAG refused: error=%d group=%d leaf=%d topology=%d partition=%d simplification=%d source_triangles=%d", int(dag_result.error), dag_result.group, int(dag_result.leaf_result.error), int(dag_result.leaf_result.topology_error), int(dag_result.leaf_result.partition_result.error), int(dag_result.simplification_result.error), input.mesh.indices.size() / 3));
 		}
 		vg::EncodableGeometry geometry;
 		const auto encoded = vg::prepare_cluster_encoding(dag, p_settings.encoding, geometry);

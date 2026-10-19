@@ -13,7 +13,7 @@
 namespace VirtualGeometry {
 namespace {
 
-static_assert(std::is_same<idx_t, int32_t>::value, "Geometry uses METIS's 32-bit index ABI.");
+static_assert(std::is_same<idx_t, int64_t>::value, "Offline partition weights and cuts require METIS's 64-bit ABI.");
 static_assert(std::is_same<real_t, float>::value, "Geometry uses METIS's float32 ABI.");
 std::mutex metis_mutex;
 
@@ -27,17 +27,12 @@ bool validate_graph(const PartitionGraph &p_graph) {
 			return false;
 		}
 	}
-	int64_t total_cost = 0;
 	for (size_t vertex = 0; vertex < count; ++vertex) {
 		const int32_t begin = p_graph.offsets[vertex];
 		const int32_t end = p_graph.offsets[vertex + 1];
 		for (int32_t edge = begin; edge < end; ++edge) {
 			const int32_t neighbor = p_graph.neighbors[edge];
 			if (neighbor < 0 || static_cast<size_t>(neighbor) >= count || static_cast<size_t>(neighbor) == vertex || p_graph.costs[edge] <= 0 || (edge != begin && neighbor <= p_graph.neighbors[edge - 1])) {
-				return false;
-			}
-			total_cost += p_graph.costs[edge];
-			if (total_cost > INT32_MAX) {
 				return false;
 			}
 		}
@@ -72,6 +67,11 @@ PartitionResult bisect(PendingGraph &p_node, uint32_t p_min_size, uint32_t p_max
 	idx_t cut = 0;
 	idx_t options[METIS_NOPTIONS];
 	std::vector<idx_t> labels(count);
+	// Storage identities retain their published widths. METIS owns wide
+	// working copies because coarsened edge sums and cuts can exceed int32.
+	std::vector<idx_t> offsets(p_node.graph.offsets.begin(), p_node.graph.offsets.end());
+	std::vector<idx_t> neighbors(p_node.graph.neighbors.begin(), p_node.graph.neighbors.end());
+	std::vector<idx_t> costs(p_node.graph.costs.begin(), p_node.graph.costs.end());
 	int status = 0;
 	{
 		// GKlib's RNG and signal registration are process-global, even though its
@@ -84,8 +84,8 @@ PartitionResult bisect(PendingGraph &p_node, uint32_t p_min_size, uint32_t p_max
 		options[METIS_OPTION_ONDISK] = 0;
 		options[METIS_OPTION_UFACTOR] = (target_parts >= 128 || p_max_size / p_min_size > 1) ? 200 : 1;
 		status = METIS_PartGraphRecursive(&count, &constraints,
-				p_node.graph.offsets.data(), p_node.graph.neighbors.data(),
-				nullptr, nullptr, p_node.graph.costs.data(), &parts, weights,
+				offsets.data(), neighbors.data(),
+				nullptr, nullptr, costs.data(), &parts, weights,
 				nullptr, options, &cut, labels.data());
 	}
 	if (status != METIS_OK) {

@@ -50,7 +50,7 @@ metis_lock = json.loads((metis_root / "sources.json").read_text())
 metis_env = env.Clone()
 metis_env.disable_warnings()
 metis_env.Append(CPPPATH=[str(metis_root / name) for name in ("include", "libmetis", "gklib")])
-metis_env.Append(CPPDEFINES=["USE_GKRAND", "USE_GKREGEX", "NDEBUG", "NDEBUG2"])
+metis_env.Append(CPPDEFINES=["USE_GKRAND", "USE_GKREGEX", "NDEBUG", "NDEBUG2", ("IDXTYPEWIDTH", 64)])
 if env.msvc:
     metis_env.Append(CPPDEFINES=["WIN32", "_CRT_SECURE_NO_WARNINGS", ("__thread", "__declspec(thread)")])
 else:
@@ -60,6 +60,7 @@ metis_sources += [str(metis_root / "gklib" / name) for name in metis_lock["gklib
 metis_library = metis_env.add_library("#cooker/metis", metis_sources)
 geometry_env = recipe_env.Clone()
 geometry_env.Append(CPPPATH=[str(metis_root / "include")])
+geometry_env.Append(CPPDEFINES=[("IDXTYPEWIDTH", 64)])
 geometry_library = geometry_env.add_library("#cooker/virtual_geometry", [
     "#cooker/virtual_geometry/graph_partitioner.cpp",
     "#cooker/virtual_geometry/graph_locality.cpp",

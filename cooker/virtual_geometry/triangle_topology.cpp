@@ -151,7 +151,7 @@ TopologyError build_adjacency(const TriangleMeshInput &p_input, TriangleTopology
 		}
 		adjacency_count += 2 * static_cast<uint64_t>(split - begin) * (end - split);
 		// Reject before materializing a potentially quadratic nonmanifold bucket.
-		if (adjacency_count > INT32_MAX / GEOMETRY_COST) {
+		if (adjacency_count > INT32_MAX) {
 			return TopologyError::INDEX_LIMIT;
 		}
 		for (size_t edge = begin; edge < end; ++edge) {
@@ -225,12 +225,12 @@ TopologyError build_graph(const TriangleMeshInput &p_input, TriangleTopology &r_
 	for (uint32_t index = 0; index < count; ++index) {
 		inverse[r_topology.graph_to_triangle[index]] = index;
 	}
-	const uint64_t total_cost = static_cast<uint64_t>(r_topology.adjacent_edges.size()) * GEOMETRY_COST + static_cast<uint64_t>(links.size()) * 2;
-	if (total_cost > INT32_MAX) {
+	const uint64_t arc_count = r_topology.adjacent_edges.size() + static_cast<uint64_t>(links.size()) * 2;
+	if (arc_count > INT32_MAX) {
 		return TopologyError::INDEX_LIMIT;
 	}
 	std::vector<Arc> arcs;
-	arcs.reserve(r_topology.adjacent_edges.size() + links.size() * 2);
+	arcs.reserve(arc_count);
 	for (uint32_t corner = 0; corner < p_input.indices.size(); ++corner) {
 		for (uint32_t edge = r_topology.edge_offsets[corner]; edge < r_topology.edge_offsets[corner + 1]; ++edge) {
 			arcs.push_back({ inverse[corner / 3], inverse[r_topology.adjacent_edges[edge] / 3], GEOMETRY_COST });

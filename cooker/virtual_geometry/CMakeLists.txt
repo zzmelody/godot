@@ -19,7 +19,8 @@ endforeach()
 add_library(veya_metis STATIC ${VEYA_METIS_SOURCES})
 target_include_directories(veya_metis SYSTEM PUBLIC "${VEYA_METIS_DIR}/include"
     PRIVATE "${VEYA_METIS_DIR}/libmetis" "${VEYA_METIS_DIR}/gklib")
-target_compile_definitions(veya_metis PRIVATE USE_GKRAND USE_GKREGEX NDEBUG NDEBUG2)
+target_compile_definitions(veya_metis PUBLIC IDXTYPEWIDTH=64
+    PRIVATE USE_GKRAND USE_GKREGEX NDEBUG NDEBUG2)
 if(MSVC)
     target_compile_definitions(veya_metis PRIVATE WIN32 _CRT_SECURE_NO_WARNINGS "__thread=__declspec(thread)")
     target_compile_options(veya_metis PRIVATE /w)

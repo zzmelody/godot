@@ -140,7 +140,6 @@ DagBuildResult partition_level(const GeometryDag &p_dag, const std::vector<uint3
 		}
 	}
 	std::vector<std::map<uint32_t, uint64_t>> shared(count);
-	uint64_t directed_matches = 0;
 	for (const auto &entry : owners) {
 		const auto opposite = owners.find({ entry.first.second, entry.first.first });
 		if (opposite == owners.end()) {
@@ -150,10 +149,6 @@ DagBuildResult partition_level(const GeometryDag &p_dag, const std::vector<uint3
 			for (const auto &second : opposite->second) {
 				if (first.first != second.first) {
 					const uint64_t matches = static_cast<uint64_t>(first.second) * second.second;
-					directed_matches += matches;
-					if (directed_matches > INT32_MAX) {
-						return { DagBuildError::LIMIT };
-					}
 					shared[first.first][second.first] += matches;
 				}
 			}
@@ -200,11 +195,9 @@ DagBuildResult partition_level(const GeometryDag &p_dag, const std::vector<uint3
 	}
 	PartitionGraph graph;
 	graph.offsets.push_back(0);
-	uint64_t cost = 0;
 	for (const auto &row : rows) {
 		for (const auto &neighbor : row) {
-			cost += neighbor.second;
-			if (cost > INT32_MAX) {
+			if (neighbor.second > INT32_MAX || graph.neighbors.size() >= INT32_MAX) {
 				return { DagBuildError::LIMIT };
 			}
 			graph.neighbors.push_back(static_cast<int32_t>(neighbor.first));
