@@ -70,6 +70,7 @@
 #include "platform/register_platform_apis.h"
 
 #include <cfloat>
+#include <cmath>
 #include <memory>
 /*<<----- VEYA_COOKER: headless standard skeleton retarget jobs and processors. */
 #include "cooker/retarget.h"
@@ -132,6 +133,60 @@ Error read_job(Dictionary &r_job) {
 	ERR_FAIL_COND_V_MSG(error != OK, error, json->get_error_message());
 	ERR_FAIL_COND_V(json->get_data().get_type() != Variant::DICTIONARY, ERR_INVALID_DATA);
 	r_job = json->get_data();
+	return OK;
+}
+
+Error ProcessVirtualGeometryMesh(const Dictionary &p_job, const Ref<VirtualGeometryMesh> &p_source,
+		const String &p_output, Dictionary &r_result) {
+	ERR_FAIL_COND_V_MSG(bool(p_job.get("lightmap_uv", false)) || !String(p_job.get("collision_output", "")).is_empty(),
+			ERR_UNAVAILABLE, "Virtual geometry processing requires separately prepared lightmap or collision source geometry.");
+	if (p_job.has("base_lod")) {
+		const Variant requested = p_job["base_lod"];
+		ERR_FAIL_COND_V(requested.get_type() != Variant::INT && requested.get_type() != Variant::FLOAT, ERR_INVALID_PARAMETER);
+		const double level = static_cast<double>(requested);
+		ERR_FAIL_COND_V(!std::isfinite(level) || level < 0 || level > 8 || level != std::floor(level), ERR_INVALID_PARAMETER);
+		ERR_FAIL_COND_V_MSG(level != 0, ERR_UNAVAILABLE, "Virtual geometry selects detail through its hierarchy; base_lod requires original source geometry.");
+	}
+	// A material edit owns a new root while retaining the encoded topology.
+	// Keep its container origin private instead of replacing the cached input.
+	Ref<VirtualGeometryMesh> result = p_source->duplicate();
+	ERR_FAIL_COND_V(result.is_null(), ERR_CANT_CREATE);
+	result->set_path_cache(p_source->get_path().is_empty() ? String(p_job["source"]) : p_source->get_path());
+	if (p_job.has("material_overrides")) {
+		ERR_FAIL_COND_V(p_job["material_overrides"].get_type() != Variant::DICTIONARY, ERR_INVALID_PARAMETER);
+		const Dictionary overrides = p_job["material_overrides"];
+		for (const Variant &key : overrides.keys()) {
+			ERR_FAIL_COND_V(key.get_type() != Variant::STRING || overrides[key].get_type() != Variant::STRING, ERR_INVALID_PARAMETER);
+			const String name = key, path = overrides[key];
+			HashSet<String> dependencies;
+			const Error collected = CookerFiles::collect(path, dependencies);
+			ERR_FAIL_COND_V(collected != OK, collected);
+			const Ref<Material> material = ResourceLoader::load(path);
+			ERR_FAIL_COND_V(material.is_null(), ERR_INVALID_DATA);
+			bool matched = false;
+			for (int surface = 0; surface < result->get_surface_count(); ++surface) {
+				const Ref<Material> original = result->surface_get_material(surface);
+				if (name == itos(surface) || (original.is_valid() && name == original->get_name())) {
+					result->surface_set_material(surface, material);
+					matched = true;
+				}
+			}
+			ERR_FAIL_COND_V_MSG(!matched, ERR_INVALID_PARAMETER, "Mesh material override did not match a surface: " + name);
+		}
+	}
+	Error error = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(p_output.get_base_dir()));
+	ERR_FAIL_COND_V(error != OK, error);
+	Array containers;
+	error = CookerVirtualGeometry::publish_resource_containers(result, {}, p_output, UINT64_MAX, containers);
+	ERR_FAIL_COND_V(error != OK, error);
+	error = CookerAtomicSave::save_resource(result, p_output, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
+	ERR_FAIL_COND_V(error != OK, error);
+	r_result["output"] = p_output;
+	r_result["type"] = result->get_class();
+	r_result["geometry_outputs"] = containers;
+	r_result["cluster_count"] = result->get_model().cluster_count;
+	r_result["page_count"] = static_cast<int64_t>(result->get_model().directory.pages.size());
+	r_result["root_page_count"] = result->get_model().hierarchy.root_pages;
 	return OK;
 }
 
@@ -587,6 +642,10 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			memdelete(root);
 		}
 		ERR_FAIL_COND_V(source_mesh.is_null(), ERR_INVALID_DATA);
+		const Ref<VirtualGeometryMesh> virtual_mesh = source_mesh;
+		if (virtual_mesh.is_valid()) {
+			return ProcessVirtualGeometryMesh(job, virtual_mesh, output, r_result);
+		}
 		Ref<ImporterMesh> mesh = ImporterMesh::from_mesh(source_mesh);
 		ERR_FAIL_COND_V(mesh.is_null(), ERR_INVALID_DATA);
 		mesh->optimize_indices();
@@ -721,6 +780,8 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			ERR_FAIL_COND_V(error != OK, error);
 			Ref<Mesh> source_mesh = ResourceLoader::load(source);
 			ERR_FAIL_COND_V(source_mesh.is_null(), ERR_INVALID_DATA);
+			ERR_FAIL_COND_V_MSG(Ref<VirtualGeometryMesh>(source_mesh).is_valid(), ERR_UNAVAILABLE,
+					"Virtual geometry navigation requires separately prepared collision source geometry.");
 			for (int surface = 0; surface < source_mesh->get_surface_count(); ++surface) {
 				ERR_FAIL_COND_V(source_mesh->surface_get_primitive_type(surface) != Mesh::PRIMITIVE_TRIANGLES, ERR_INVALID_DATA);
 				Array arrays = source_mesh->surface_get_arrays(surface);

@@ -462,9 +462,11 @@ return steps'''
         (self.project / "inspect_source.gd").write_text('''extends SceneTree
 func _initialize():
 \tvar scene_root := Node3D.new()
+\tscene_root.name = "InspectionScene"
 \tvar geometry := load("res://assets/runtime/model/inspection/model.res")
 \tfor index in 2:
 \t\tvar instance := MeshInstance3D.new()
+\t\tinstance.name = "Mesh" + str(index)
 \t\tinstance.mesh = geometry
 \t\tinstance.position.x = index * 4
 \t\tscene_root.add_child(instance)
@@ -506,6 +508,58 @@ func _initialize():
                             "type": "VirtualGeometryMesh"})
         self.assertGreater(checked["cluster_count"], 0)
         self.assertGreater(checked["root_page_count"], 0)
+
+    def test_virtual_geometry_material_processing_preserves_root(self):
+        if REFERENCE is None:
+            self.skipTest("material slot inspection needs the matching private editor")
+        source = self.recipe('return cooker.virtual_geometry(cooker.primitive("box", { size = { 2, 3, 4 } }), {})',
+                             output="res://assets/runtime/model/original/model.res")
+        material = self.project / "assets/runtime/material/red/red.tres"
+        material.parent.mkdir(parents=True)
+        material.write_text('[gd_resource type="StandardMaterial3D" format=3]\n[resource]\nalbedo_color=Color(1,0,0,1)\n')
+        source_path = self.project / source["output"].removeprefix("res://")
+        before = source_path.read_bytes()
+        job = {"operation": "process-mesh", "source": source["output"],
+               "material_overrides": {"0": "res://assets/runtime/material/red/red.tres"},
+               "output": "res://assets/runtime/model/processed/model.res"}
+        processed = self.job(job)
+        self.assertEqual(processed["type"], "VirtualGeometryMesh")
+        self.assertGreater(processed["cluster_count"], 0)
+        self.assertEqual(len(processed["geometry_outputs"]), 1)
+        self.assertEqual(processed["geometry_outputs"][0]["sha256"], source["geometry_outputs"][0]["sha256"])
+        self.assertNotIn("vertices", processed)
+        self.assertEqual(source_path.read_bytes(), before)
+        (self.project / "inspect_material.gd").write_text('''extends SceneTree
+func _initialize():
+\tvar mesh := load("res://assets/runtime/model/processed/model.res")
+\tvar material: StandardMaterial3D = mesh.surface_get_material(0)
+\tassert(material != null)
+\tassert(material.albedo_color == Color(1, 0, 0, 1))
+\tquit()
+''')
+        inspected = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                    "--script", "res://inspect_material.gd"], capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace", timeout=20)
+        self.assertEqual(inspected.returncode, 0, inspected.stdout + inspected.stderr)
+        self.assertNotIn("ERROR:", inspected.stdout + inspected.stderr)
+        output = self.project / job["output"].removeprefix("res://")
+        saved = output.read_bytes()
+        for unsupported in ({"lightmap_uv": True}, {"base_lod": 1},
+                            {"collision_output": "res://assets/runtime/model/processed/collision.scn"}):
+            refused = self.job({**job, **unsupported}, success=False)
+            self.assertEqual(refused["error"], 2)  # ERR_UNAVAILABLE: a source representation is required.
+            self.assertEqual(output.read_bytes(), saved)
+        for path in source_path.parent.iterdir():
+            path.unlink()
+        self.job({"operation": "validate-resource", "source": job["output"], "type": "VirtualGeometryMesh"})
+
+    def test_virtual_geometry_navigation_requires_collision_source(self):
+        source = self.recipe('return cooker.virtual_geometry(cooker.primitive("box", { size = { 2, 3, 4 } }), {})',
+                             output="res://assets/runtime/model/navigation-source/model.res")
+        refused = self.job({"operation": "bake-navigation", "source": source["output"],
+                            "output": "res://assets/runtime/world/navigation/navigation.res"}, success=False)
+        self.assertEqual(refused["error"], 2)  # ERR_UNAVAILABLE, without expanding virtual mesh arrays.
+        self.assertFalse((self.project / "assets/runtime/world/navigation/navigation.res").exists())
 
     def test_virtual_geometry_publication_and_packed_range_reads(self):
         if REFERENCE is None:
