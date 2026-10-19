@@ -436,7 +436,7 @@ return steps'''
 
     def test_minimum_visual_retains_virtual_geometry_and_publishes_its_container(self):
         original = self.recipe('''return cooker.virtual_geometry(
- cooker.primitive("sphere",{radius=2,height=4}),{})''',
+ cooker.primitive("box",{size={2,4,2}}),{})''',
                                output="res://assets/runtime/model/source/model.res")
         source = self.project / original["output"].removeprefix("res://")
         source_bytes = source.read_bytes()
@@ -452,6 +452,60 @@ return steps'''
         original_container = self.project / original["geometry_outputs"][0]["path"].removeprefix("res://")
         self.assertEqual(container.parent, (self.project / "assets/runtime/model/minimum"))
         self.assertEqual(container.read_bytes(), original_container.read_bytes())
+
+    def test_virtual_geometry_scene_inspection_uses_root_metadata(self):
+        if REFERENCE is None:
+            self.skipTest("MeshInstance scene fixtures need the matching private editor")
+        built = self.recipe('return cooker.virtual_geometry(cooker.primitive("box", { size = { 2, 3, 4 } }), {})',
+                            output="res://assets/runtime/model/inspection/model.res")
+        root = self.job({"operation": "validate-resource", "source": built["output"]})
+        (self.project / "inspect_source.gd").write_text('''extends SceneTree
+func _initialize():
+\tvar scene_root := Node3D.new()
+\tvar geometry := load("res://assets/runtime/model/inspection/model.res")
+\tfor index in 2:
+\t\tvar instance := MeshInstance3D.new()
+\t\tinstance.mesh = geometry
+\t\tinstance.position.x = index * 4
+\t\tscene_root.add_child(instance)
+\t\tinstance.owner = scene_root
+\tvar scene := PackedScene.new()
+\tassert(scene.pack(scene_root) == OK)
+\tassert(ResourceSaver.save(scene, "res://assets/runtime/model/inspection/scene.scn") == OK)
+\tscene_root.free()
+\tquit()
+''')
+        made = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                               "--script", "res://inspect_source.gd"], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=20)
+        self.assertEqual(made.returncode, 0, made.stdout + made.stderr)
+        self.assertNotIn("ERROR:", made.stdout + made.stderr)
+        inspected = self.job({"operation": "validate-resource", "source": "res://assets/runtime/model/inspection/scene.scn",
+                              "type": "PackedScene"})
+        self.assertEqual(inspected["mesh_count"], 2)
+        self.assertEqual(inspected["virtual_geometry_mesh_count"], 2)
+        self.assertEqual(inspected["cluster_count"], root["cluster_count"] * 2)
+        self.assertEqual(inspected["page_count"], root["page_count"] * 2)
+        self.assertEqual(inspected["root_page_count"], root["root_page_count"] * 2)
+        self.assertNotIn("vertex_count", inspected)
+
+    def test_borrowed_virtual_geometry_root_publishes_its_container(self):
+        built = self.recipe('return cooker.virtual_geometry(cooker.primitive("box", { size = { 2, 3, 4 } }), {})',
+                            output="res://assets/runtime/model/original/model.res")
+        copied = self.recipe('return cooker.input("mesh")', inputs={"mesh": built["output"]},
+                             output="res://assets/runtime/model/copied/model.res")
+        self.assertEqual(copied["virtual_geometry_builds"], 0)
+        self.assertEqual(len(copied["geometry_outputs"]), 1)
+        original_container = self.project / built["geometry_outputs"][0]["path"].removeprefix("res://")
+        copied_container = self.project / copied["geometry_outputs"][0]["path"].removeprefix("res://")
+        self.assertNotEqual(original_container.parent, copied_container.parent)
+        self.assertEqual(original_container.read_bytes(), copied_container.read_bytes())
+        for path in original_container.parent.iterdir():
+            path.unlink()
+        checked = self.job({"operation": "validate-resource", "source": copied["output"],
+                            "type": "VirtualGeometryMesh"})
+        self.assertGreater(checked["cluster_count"], 0)
+        self.assertGreater(checked["root_page_count"], 0)
 
     def test_virtual_geometry_publication_and_packed_range_reads(self):
         if REFERENCE is None:

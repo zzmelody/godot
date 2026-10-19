@@ -142,6 +142,18 @@ void inspect_node(Node *p_node, Dictionary &r_result) {
 		Ref<Mesh> mesh = instance->get_mesh();
 		r_result["mesh_count"] = int64_t(r_result.get("mesh_count", 0)) + 1;
 		r_result["surface_count"] = int64_t(r_result.get("surface_count", 0)) + mesh->get_surface_count();
+		const Ref<VirtualGeometryMesh> virtual_mesh = mesh;
+		if (virtual_mesh.is_valid()) {
+			const auto &model = virtual_mesh->get_model();
+			r_result["virtual_geometry_mesh_count"] =
+					static_cast<int64_t>(r_result.get("virtual_geometry_mesh_count", 0)) + 1;
+			r_result["cluster_count"] =
+					static_cast<int64_t>(r_result.get("cluster_count", 0)) + model.cluster_count;
+			r_result["page_count"] = static_cast<int64_t>(r_result.get("page_count", 0)) +
+					static_cast<int64_t>(model.directory.pages.size());
+			r_result["root_page_count"] =
+					static_cast<int64_t>(r_result.get("root_page_count", 0)) + model.hierarchy.root_pages;
+		}
 		for (int i = 0; i < mesh->get_surface_count(); i++) {
 			Ref<BaseMaterial3D> material = mesh->surface_get_material(i);
 			if (material.is_valid()) {
@@ -154,10 +166,12 @@ void inspect_node(Node *p_node, Dictionary &r_result) {
 					}
 				}
 			}
-			Array arrays = mesh->surface_get_arrays(i);
-			if (arrays.size() == Mesh::ARRAY_MAX) {
-				PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
-				r_result["vertex_count"] = int64_t(r_result.get("vertex_count", 0)) + vertices.size();
+			if (virtual_mesh.is_null()) {
+				Array arrays = mesh->surface_get_arrays(i);
+				if (arrays.size() == Mesh::ARRAY_MAX) {
+					PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+					r_result["vertex_count"] = int64_t(r_result.get("vertex_count", 0)) + vertices.size();
+				}
 			}
 		}
 	}

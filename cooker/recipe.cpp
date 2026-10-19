@@ -2162,12 +2162,12 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		if (error != OK) return reject(r_result, "cannot publish shared render resources", error);
 		r_result["render_outputs"] = render_outputs;
 	}
-	if (scene.is_valid() && !bool(p_job.get("external_render_resources", false))) {
+	if (!bool(p_job.get("external_render_resources", false))) {
 		Array containers;
-		error = CookerVirtualGeometry::publish_resource_containers(scene, recipe.geometry_builds, output,
+		error = CookerVirtualGeometry::publish_resource_containers(recipe.result, recipe.geometry_builds, output,
 				UINT64_MAX, containers);
 		if (error != OK) {
-			return reject(r_result, "cannot publish scene virtual geometry containers", error);
+			return reject(r_result, "cannot publish virtual geometry containers", error);
 		}
 		r_result["geometry_outputs"] = containers;
 	}
@@ -2183,16 +2183,8 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 		}
 		if (error == OK && Ref<VirtualGeometryMesh>(recipe.result).is_valid()) {
 			const auto built = recipe.geometry_builds.find(recipe.result->get_instance_id());
-			if (built == recipe.geometry_builds.end()) {
-				error = ERR_INVALID_DATA;
-			} else {
-				Array files;
-				error = CookerVirtualGeometry::publish_container(built->second, output, saved->get_length(),
-						UINT64_MAX, files);
-				if (error == OK) {
-					r_result["geometry_outputs"] = files;
-					r_result["virtual_geometry"] = built->second.report;
-				}
+			if (built != recipe.geometry_builds.end()) {
+				r_result["virtual_geometry"] = built->second.report;
 			}
 		}
 	}
