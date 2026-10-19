@@ -40,6 +40,9 @@ using namespace RendererSceneRenderImplementation;
 
 void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	//compile
+	// Background pipelines borrow this shader's version and render state.
+	// Join them before changing either, including the empty/error code paths.
+	pipeline_hash_map.clear_pipelines();
 	_clear_virtual_geometry_raster();
 	for (uint32_t color_variant = 0; color_variant < 2; ++color_variant) {
 		virtual_geometry_composite_pipelines[color_variant].clear();
@@ -254,8 +257,6 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	ubo_size = gen_code.uniform_total_size;
 	ubo_offsets = gen_code.uniform_offsets;
 	texture_uniforms = gen_code.texture_uniforms;
-
-	pipeline_hash_map.clear_pipelines();
 
 	// If any form of Alpha Antialiasing is enabled, set the blend mode to alpha to coverage.
 	if (alpha_antialiasing_mode != ALPHA_ANTIALIASING_OFF) {
@@ -580,7 +581,6 @@ bool SceneShaderForwardClustered::ShaderData::is_valid() const {
 }
 
 RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String &r_error) {
-	MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
 	auto *owner = SceneShaderForwardClustered::singleton;
 	if (!virtual_geometry_attempted) {
 		virtual_geometry_attempted = true;
@@ -600,7 +600,13 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 			ShaderCompiler::GeneratedCode generated;
 			HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> generated_uniforms;
 			actions.uniforms = &generated_uniforms;
-			Error error = owner->virtual_geometry_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, generated);
+			Error error;
+			{
+				// Resource loading also needs this lock. Never hold it while
+				// ShaderRD waits for work on the shared worker pool.
+				MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+				error = owner->virtual_geometry_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, generated);
+			}
 			if (error != OK || generated.uniform_total_size != ubo_size || generated.uniform_offsets != ubo_offsets || generated.texture_uniforms.size() != texture_uniforms.size()) {
 				virtual_geometry_error = "Virtual geometry material compilation or shared parameter layout failed: " + path;
 			} else if (generated.code.has("light")) {
@@ -629,7 +635,11 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 					HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> vertex_uniforms;
 					vertex_actions.uniforms = &vertex_uniforms;
 					ShaderCompiler::GeneratedCode vertex_code;
-					Error vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &vertex_actions, path, vertex_code);
+					Error vertex_error;
+					{
+						MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+						vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &vertex_actions, path, vertex_code);
+					}
 					ShaderCompiler::GeneratedCode fragment_code;
 					if (vertex_error == OK && masked) {
 						ShaderCompiler::IdentifierActions fragment_actions;
@@ -637,7 +647,10 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 						fragment_actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
 						HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> fragment_uniforms;
 						fragment_actions.uniforms = &fragment_uniforms;
-						vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &fragment_actions, path, fragment_code);
+						{
+							MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+							vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &fragment_actions, path, fragment_code);
+						}
 						if (vertex_error == OK && (fragment_code.uniform_total_size != ubo_size || fragment_code.uniform_offsets != ubo_offsets || fragment_code.texture_uniforms.size() != texture_uniforms.size())) {
 							vertex_error = ERR_INVALID_DATA;
 						}
@@ -729,7 +742,6 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_raster_pipelin
 }
 
 RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_voxel_shader() {
-	MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
 	auto *owner = SceneShaderForwardClustered::singleton;
 	if (virtual_geometry_voxel_version.is_null()) {
 		ShaderCompiler::IdentifierActions actions;
@@ -739,11 +751,18 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_voxel_shader()
 		actions.uniforms = &voxel_uniforms;
 		ShaderCompiler::GeneratedCode vertex_code;
 		actions.entry_point_stages.erase("fragment");
-		Error error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, vertex_code);
+		Error error;
+		{
+			MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+			error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, vertex_code);
+		}
 		ERR_FAIL_COND_V_MSG(error != OK || vertex_code.uniform_total_size != ubo_size || vertex_code.uniform_offsets != ubo_offsets || vertex_code.texture_uniforms.size() != texture_uniforms.size(), RID(), "Virtual geometry SDFGI vertex layout refused: " + path);
 		actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
 		ShaderCompiler::GeneratedCode generated;
-		error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, generated);
+		{
+			MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+			error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &actions, path, generated);
+		}
 		ERR_FAIL_COND_V_MSG(error != OK || generated.uniform_total_size != ubo_size || generated.uniform_offsets != ubo_offsets || generated.texture_uniforms.size() != texture_uniforms.size(), RID(), "Virtual geometry SDFGI material layout refused: " + path);
 		generated.defines.push_back("#define VG_VOXEL_CAPTURE\n");
 		virtual_geometry_voxel_version = owner->virtual_geometry_raster_hw.version_create(false);
