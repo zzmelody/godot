@@ -281,6 +281,9 @@ Error VirtualGeometryMesh::prepare_virtual_geometry() const {
 	if (mesh.is_null()) {
 		const Error error = _install(root_data, model, materials, container_file, mesh);
 		if (error != OK) {
+			if (error != ERR_BUSY) {
+				ERR_PRINT(vformat("Virtual geometry root installation failed: %s (error %d).", get_path(), int(error)));
+			}
 			return error;
 		}
 		const_cast<VirtualGeometryMesh *>(this)->emit_changed();
@@ -294,10 +297,16 @@ Error VirtualGeometryMesh::prepare_virtual_geometry() const {
 	}
 	const Error material_error = RS::get_singleton()->virtual_geometry_prepare_materials(material_rids);
 	if (material_error != OK) {
+		if (material_error != ERR_BUSY) {
+			ERR_PRINT(vformat("Virtual geometry material preparation failed: %s (error %d).", get_path(), int(material_error)));
+		}
 		return material_error;
 	}
 	bool ready = false;
 	const Error error = VirtualGeometryStreaming::get_singleton()->get_status(mesh, ready);
+	if (error != OK && error != ERR_BUSY) {
+		ERR_PRINT(vformat("Virtual geometry root readiness failed: %s (error %d).", get_path(), int(error)));
+	}
 	return error != OK ? error : ready ? OK
 									   : ERR_BUSY;
 }

@@ -166,9 +166,59 @@ void MeshStorage::_multimesh_allocate_data(RID p_multimesh, int p_instances, RSE
 	// MultiMesh starts with an empty 2D allocation before deserializing transform_format.
 	ERR_FAIL_COND(p_instances > 0 && p_transform_format != RSE::MULTIMESH_TRANSFORM_3D);
 	multimesh->instance_count = p_instances;
+	multimesh->use_colors = p_use_colors;
+	multimesh->use_custom_data = p_use_custom_data;
 	multimesh->stride = 12 + (p_use_colors ? 4 : 0) + (p_use_custom_data ? 4 : 0);
 	multimesh->buffer.resize(int64_t(p_instances) * multimesh->stride);
 	multimesh->buffer.fill(0.0f);
+	if (p_use_colors) {
+		float *data = multimesh->buffer.ptrw();
+		for (int instance = 0; instance < p_instances; ++instance) {
+			for (int channel = 0; channel < 4; ++channel) {
+				data[int64_t(instance) * multimesh->stride + 12 + channel] = 1;
+			}
+		}
+	}
+}
+
+void MeshStorage::_multimesh_instance_set_color(RID p_multimesh, int p_index, const Color &p_color) {
+	DummyMultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL(multimesh);
+	ERR_FAIL_INDEX(p_index, multimesh->instance_count);
+	ERR_FAIL_COND(!multimesh->use_colors);
+	float *data = multimesh->buffer.ptrw() + int64_t(p_index) * multimesh->stride + 12;
+	for (int channel = 0; channel < 4; ++channel) {
+		data[channel] = p_color[channel];
+	}
+}
+
+Color MeshStorage::_multimesh_instance_get_color(RID p_multimesh, int p_index) const {
+	DummyMultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL_V(multimesh, Color());
+	ERR_FAIL_INDEX_V(p_index, multimesh->instance_count, Color());
+	ERR_FAIL_COND_V(!multimesh->use_colors, Color());
+	const float *data = multimesh->buffer.ptr() + int64_t(p_index) * multimesh->stride + 12;
+	return Color(data[0], data[1], data[2], data[3]);
+}
+
+void MeshStorage::_multimesh_instance_set_custom_data(RID p_multimesh, int p_index, const Color &p_color) {
+	DummyMultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL(multimesh);
+	ERR_FAIL_INDEX(p_index, multimesh->instance_count);
+	ERR_FAIL_COND(!multimesh->use_custom_data);
+	float *data = multimesh->buffer.ptrw() + int64_t(p_index) * multimesh->stride + 12 + (multimesh->use_colors ? 4 : 0);
+	for (int channel = 0; channel < 4; ++channel) {
+		data[channel] = p_color[channel];
+	}
+}
+
+Color MeshStorage::_multimesh_instance_get_custom_data(RID p_multimesh, int p_index) const {
+	DummyMultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL_V(multimesh, Color());
+	ERR_FAIL_INDEX_V(p_index, multimesh->instance_count, Color());
+	ERR_FAIL_COND_V(!multimesh->use_custom_data, Color());
+	const float *data = multimesh->buffer.ptr() + int64_t(p_index) * multimesh->stride + 12 + (multimesh->use_colors ? 4 : 0);
+	return Color(data[0], data[1], data[2], data[3]);
 }
 
 void MeshStorage::_multimesh_instance_set_transform(RID p_multimesh, int p_index, const Transform3D &p_transform) {

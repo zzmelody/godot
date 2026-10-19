@@ -36,6 +36,7 @@ public:
 	Error record_reactivity(RID p_depth, RID p_scene_reactivity, bool p_combine_scene);
 	Error record_depth(RID p_framebuffer, DepthMode p_mode, RID p_fitting_table, const Rect2i &p_region);
 	RID get_visibility() const { return ready ? visibility : RID(); }
+	void clear_view() { ready = false; shading.clear_view(); }
 	uint64_t get_buffer_bytes() const;
 	const VirtualGeometryShading &get_shading() const { return shading; }
 	VirtualGeometryShading &get_shading() { return shading; }

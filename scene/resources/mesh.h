@@ -33,6 +33,7 @@
 #include "core/io/resource.h"
 #include "core/math/face3.h"
 #include "core/math/triangle_mesh.h"
+#include "core/os/mutex.h"
 #include "core/variant/typed_array.h"
 #include "scene/resources/material.h"
 #include "servers/rendering/rendering_server_enums.h"
@@ -321,13 +322,17 @@ private:
 		bool is_2d = false;
 	};
 	Vector<Surface> surfaces;
+	// Protect RID publication, independently of resource surface mutation.
+	mutable Mutex mesh_mutex;
 	mutable RID mesh;
 	AABB aabb;
 	BlendShapeMode blend_shape_mode = BLEND_SHAPE_MODE_RELATIVE;
 	Vector<StringName> blend_shapes;
 	AABB custom_aabb;
 
-	_FORCE_INLINE_ void _create_if_empty() const;
+	RID _get_mesh() const;
+	RID _publish_mesh(RID p_candidate) const;
+	RID _create_if_empty() const;
 	void _recompute_aabb();
 
 protected:

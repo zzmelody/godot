@@ -4268,19 +4268,9 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			int new_mat_count = RSG::mesh_storage->mesh_get_surface_count(p_instance->base);
 			const auto bindings = RSG::mesh_storage->mesh_get_virtual_geometry_materials(p_instance->base);
 			if (!bindings.rids.is_empty()) {
-				// Virtual material identities need no physical mesh surfaces. Retain
-				// only explicitly set overrides that still belong to this model.
-				for (uint32_t index = 0; index < uint32_t(p_instance->materials.size()); ++index) {
-					bool present = false;
-					for (uint32_t identity : bindings.identities) {
-						present |= identity == index;
-					}
-					if (present && p_instance->materials[index].is_valid()) {
-						new_mat_count = index + 1;
-					} else {
-						p_instance->materials.write[index] = RID();
-					}
-				}
+				// Runtime surfaces use the compact material table. Serialized source
+				// identities do not index an instance's surface overrides.
+				new_mat_count = bindings.rids.size();
 			}
 			p_instance->materials.resize(new_mat_count);
 

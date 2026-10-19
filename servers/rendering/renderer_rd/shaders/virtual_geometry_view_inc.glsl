@@ -1,12 +1,22 @@
 // Shared selection/raster view math. Requires params, work and instance_base().
+#ifndef VG_GLOBAL_RASTER
+uint vg_view_word(uint word) {
+#ifdef VG_SELECTION_BATCH_PARAMETERS
+	return VG_SELECTION_WORK(word);
+#else
+	return work.data[word];
+#endif
+}
+#endif
+
 mat4 instance_transform(uint instance) {
 #ifdef VG_GLOBAL_RASTER
 	return vg_source_matrix(instance, 12u);
 #else
 	uint base = instance_base() + instance * 16u;
-	return transpose(mat4(uintBitsToFloat(uvec4(work.data[base], work.data[base + 1u], work.data[base + 2u], work.data[base + 3u])),
-			uintBitsToFloat(uvec4(work.data[base + 4u], work.data[base + 5u], work.data[base + 6u], work.data[base + 7u])),
-			uintBitsToFloat(uvec4(work.data[base + 8u], work.data[base + 9u], work.data[base + 10u], work.data[base + 11u])), vec4(0.0, 0.0, 0.0, 1.0)));
+	return transpose(mat4(uintBitsToFloat(uvec4(vg_view_word(base), vg_view_word(base + 1u), vg_view_word(base + 2u), vg_view_word(base + 3u))),
+			uintBitsToFloat(uvec4(vg_view_word(base + 4u), vg_view_word(base + 5u), vg_view_word(base + 6u), vg_view_word(base + 7u))),
+			uintBitsToFloat(uvec4(vg_view_word(base + 8u), vg_view_word(base + 9u), vg_view_word(base + 10u), vg_view_word(base + 11u))), vec4(0.0, 0.0, 0.0, 1.0)));
 #endif
 }
 
@@ -21,7 +31,12 @@ float projected_edge(uint instance, vec4 sphere, mat4 transform) {
 #ifdef VG_GLOBAL_RASTER
 	float radius = sphere.w * uintBitsToFloat(vg_source_data(instance, 50u)) + uintBitsToFloat(vg_source_data(instance, 48u)) * 1.7320509;
 #else
-	float radius = sphere.w * uintBitsToFloat(work.data[instance_base() + instance * 16u + 13u]) + uintBitsToFloat(params.offsets.w) * 1.7320509;
+	float radius = sphere.w * uintBitsToFloat(vg_view_word(instance_base() + instance * 16u + 13u)) +
+#ifdef VG_SELECTION_BATCH_PARAMETERS
+			uintBitsToFloat(VG_SELECTION_INPUT.offsets.w) * 1.7320509;
+#else
+			uintBitsToFloat(params.offsets.w) * 1.7320509;
+#endif
 #endif
 	if ((flags & 4u) != 0u) {
 		// On the admitted hemisphere, the paraboloid derivative is bounded by

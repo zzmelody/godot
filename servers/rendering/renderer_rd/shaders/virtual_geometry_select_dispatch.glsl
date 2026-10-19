@@ -5,26 +5,29 @@
 #VERSION_DEFINES
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-// Same 256-byte parameter block as selection. Only the limits vector is read.
-layout(set = 0, binding = 3, std140) uniform Parameters { uvec4 data[16]; } params;
+layout(set = 0, binding = 3, std140) uniform Parameters {
+	mat4 model;
+	mat4 world_to_view;
+	mat4 projection;
+	vec4 lod;
+	uvec4 source;
+	uvec4 limits;
+	uvec4 offsets;
+} params;
 layout(set = 0, binding = 4, std430) buffer Work { uint data[]; } work;
-layout(set = 0, binding = 5, std430) writeonly buffer Dispatch { uint groups[3]; } dispatch;
-layout(push_constant, std430) uniform Phase { uint mode; uint round; } phase;
-
+layout(set = 0, binding = 5, std430) writeonly buffer Dispatch { uint groups[]; } dispatch;
+layout(push_constant, std430) uniform Phase { uint batch; uint mode; uint round; } phase;
 void main() {
 	if (gl_GlobalInvocationID.x != 0u) { return; }
 	uint count;
 	if (phase.mode == 1u) {
 		uint parity = phase.round & 1u;
 		work.data[1u - parity] = 0u;
-		count = min(work.data[parity], params.data[14].x);
-	} else if (phase.mode == 8u) {
-		count = max(params.data[13].x * 16u, min(work.data[7], params.data[14].y) * 2u);
-	} else if (phase.mode == 9u) {
-		if (work.data[1u - (phase.round & 1u)] != 0u) { work.data[4] |= 1u; }
-		count = (work.data[4] & 3u) != 0u ? params.data[13].x * params.data[13].w : 0u;
+		count = min(work.data[parity], params.limits.x);
+	} else if (phase.mode == 11u) {
+		count = min(work.data[1u - (phase.round & 1u)], params.limits.x);
 	} else {
-		count = min(work.data[2], params.data[14].y);
+		count = min(work.data[2u], params.limits.y);
 	}
 	uint groups = max(1u, (count + 63u) / 64u);
 	dispatch.groups[0] = min(groups, 65535u);

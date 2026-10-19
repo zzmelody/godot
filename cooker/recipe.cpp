@@ -10,6 +10,7 @@
 #include "lua.h"
 #include "lualib.h"
 #include "minimum_visual.h"
+#include "virtual_geometry_minimum.h"
 #include "render_dependencies.h"
 #include "shared_inputs.h"
 #include "virtual_geometry_mesh.h"
@@ -977,7 +978,7 @@ struct Recipe {
 				{ "triangle_ratio", "max_texture_size", "minimum_height", "lock_border",
 						"max_error", "preserve_heightfields", "compress_color_textures",
 						"lod_triangle_ratios", "lod_screen_errors", "lod_minimum_coverage",
-						"lod_coverage_scale", "preserve_materials", "lod_root_surfaces" });
+						"lod_coverage_scale", "preserve_materials", "lod_root_surfaces", "combine_virtual_geometry_roots" });
 		CookerMinimum::Options options;
 		s.field(2, "lod_triangle_ratios");
 		if (!lua_isnil(p_state, -1)) {
@@ -1087,6 +1088,15 @@ struct Recipe {
 						options.texture_size >= 16 && options.texture_size <= 1024 &&
 						options.minimum_height >= 0 && options.minimum_height <= 100,
 				"minimum_visual options are outside the supported range");
+		if (s.boolean_field(2, "combine_virtual_geometry_roots", false)) {
+			const Ref<PackedScene> source_scene = resource;
+			s.require(source_scene.is_valid() && options.triangle_ratio == 1,
+					"combined virtual roots require one static asset scene and triangle_ratio=1");
+			Ref<PackedScene> roots;
+			const Error error = CookerVirtualGeometry::minimum_asset_roots(source_scene, roots);
+			s.require(error == OK, "combined virtual roots require compatible static asset coordinates without resource-field metadata");
+			resource = roots;
+		}
 		CookerMinimum::Builder builder(options);
 		Ref<Resource> output = builder.Build(resource);
 		s.require(output.is_valid(),
@@ -1420,7 +1430,7 @@ struct Recipe {
 				bool localize = packed->get_path().is_empty();
 				s.field(item, "remove");
 				if (!lua_isnil(p_state, -1)) {
-					int remove_count = s.array(-1, 128);
+					const int remove_count = s.array(-1, std::numeric_limits<int>::max());
 					localize = localize || remove_count > 0;
 					for (int remove_index = 0; remove_index < remove_count; ++remove_index) {
 						lua_rawgeti(p_state, -1, remove_index + 1);
@@ -1436,7 +1446,7 @@ struct Recipe {
 				lua_pop(p_state, 1);
 				s.field(item, "keep");
 				if (!lua_isnil(p_state, -1)) {
-					const int keep_count = s.array(-1, 128);
+					const int keep_count = s.array(-1, std::numeric_limits<int>::max());
 					s.require(keep_count > 0, "keep requires at least one child");
 					HashSet<StringName> keep;
 					for (int keep_index = 0; keep_index < keep_count; ++keep_index) {

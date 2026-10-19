@@ -16,6 +16,9 @@ if env["veya_cooker"]:
 else:
     env_main.add_source_files(env.main_sources, "*.cpp")
     if env_main.editor_build and not env_main["disable_3d"]:
+        if env.msvc and env.get("veya_bin_dir", ""):
+            # Keep private editor crash addresses resolvable without a full PDB.
+            env.Append(LINKFLAGS=["/MAP:${TARGET.base}.map"])
         # These offline helpers catch allocation failures before returning to
         # Godot. Keep exception unwinding local to their translation units.
         geometry_tools = env_main.Clone()
@@ -25,7 +28,7 @@ else:
             geometry_tools.Append(CPPDEFINES=[("_HAS_EXCEPTIONS", 1)], CXXFLAGS=["/EHsc"])
         else:
             geometry_tools.Append(CXXFLAGS=["-fexceptions"])
-        geometry_tools.add_source_files(env.main_sources, ["#cooker/content_hash.cpp", "#cooker/virtual_geometry_validation.cpp", "#cooker/virtual_geometry_minimum.cpp"])
+        geometry_tools.add_source_files(env.main_sources, ["#cooker/content_hash.cpp", "#cooker/minimum_batching.cpp", "#cooker/virtual_geometry_validation.cpp", "#cooker/virtual_geometry_minimum.cpp"])
 # /*>>----- VEYA_COOKER */
 
 if env["steamapi"] and env.editor_build:

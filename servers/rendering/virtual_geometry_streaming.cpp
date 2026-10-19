@@ -251,6 +251,7 @@ void VirtualGeometryStreaming::_delete_if_finished(Asset *p_asset) {
 void VirtualGeometryStreaming::_fail_roots(Asset *p_asset, Error p_error) {
 	if (p_asset->error == OK) {
 		p_asset->error = p_error == OK ? FAILED : p_error;
+		ERR_PRINT(vformat("Virtual geometry mandatory roots failed: %s (error %d).", p_asset->container, int(p_asset->error)));
 		// A partial mandatory root set cannot be published. Cancel all accepted
 		// uploads while keeping the Mesh RID valid for its scene/resource owner.
 		RS::get_singleton()->mesh_clear(p_asset->mesh);

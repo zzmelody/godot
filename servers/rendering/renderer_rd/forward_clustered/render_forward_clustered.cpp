@@ -1908,6 +1908,10 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		if (!selection || (selection->get_results().is_empty() && !raster)) {
 			continue;
 		}
+		if (selection->get_results().is_empty()) {
+			raster->clear_view();
+			continue;
+		}
 		if (!raster) {
 			raster = memnew(RendererRD::VirtualGeometryRasterizer);
 		}
@@ -2533,7 +2537,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool debug_voxelgis = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_ALBEDO || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_LIGHTING || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_EMISSION;
 	bool debug_sdfgi_probes = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SDFGI_PROBES;
 	const Ref<RenderBufferDataForwardClustered> vg_data = _virtual_geometry_data(rb);
-	const bool has_virtual_geometry = vg_data->virtual_geometry[0] && !vg_data->virtual_geometry[0]->get_results().is_empty();
+	bool has_virtual_geometry = vg_data->virtual_geometry[0] && !vg_data->virtual_geometry[0]->get_results().is_empty();
 	bool force_depth_pre_pass = scene_state.used_opaque_stencil || has_virtual_geometry;
 	bool depth_pre_pass = (force_depth_pre_pass || bool(GLOBAL_GET_CACHED(bool, "rendering/driver/depth_prepass/enable"))) && depth_framebuffer.is_valid();
 
@@ -2561,7 +2565,17 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 						error = vg_data->virtual_geometry_raster[eye]->record(rb, view, vg_data->virtual_geometry[eye]->get_results(), scene_shader.default_material);
 					}
 				}
-				ERR_FAIL_COND_MSG(error != OK, "Virtual geometry prediction refused: " + itos(error));
+				if (error != OK) {
+					ERR_PRINT("Virtual geometry view refused: " + itos(error));
+					for (uint32_t rejected_eye = 0; rejected_eye < rb->get_view_count(); ++rejected_eye) {
+						if (vg_data->virtual_geometry_raster[rejected_eye]) {
+							vg_data->virtual_geometry_raster[rejected_eye]->clear_view();
+						}
+					}
+					vg_data->virtual_geometry_frame = 0;
+					has_virtual_geometry = false;
+					break; // Finish ordinary rendering and compositor callbacks.
+				}
 			}
 		}
 		if (active_gpu_occlusion) {

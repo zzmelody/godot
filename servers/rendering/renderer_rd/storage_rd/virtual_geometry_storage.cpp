@@ -35,6 +35,13 @@ VirtualGeometryStorage::~VirtualGeometryStorage() {
 		if (slot.buffer.is_valid()) {
 			RD::get_singleton()->free_rid(slot.buffer);
 		}
+		if (slot.page_state.is_valid()) {
+			RD::get_singleton()->free_rid(slot.page_state);
+		}
+	}
+	request_finalize_pipeline.free();
+	if (request_finalize_version.is_valid()) {
+		request_finalize_shader.version_free(request_finalize_version);
 	}
 	request_pipeline.free();
 	if (request_version.is_valid()) {
@@ -144,13 +151,24 @@ void VirtualGeometryStorage::_consume_requests() {
 		}
 	}
 	for (RequestSlot &slot : request_slots) {
+		// The preceding render boundary has recorded every color, shadow and
+		// secondary view. Seal only now, after all sources could append.
+		if (slot.mesh.is_valid() && slot.readback.is_null() && slot.epoch < request_epoch) {
+			if (_seal_requests(slot) != OK) {
+				WARN_PRINT_ONCE("Virtual geometry aggregated request readback is delayed.");
+			}
+		}
 		if (slot.readback.is_null() || !slot.readback->ready) {
 			continue;
 		}
 		const Vector<uint8_t> bytes = slot.readback->bytes;
 		slot.readback.unref();
-		Asset *const *found = assets.getptr(slot.mesh);
-		if (found == nullptr || (*found)->generation != slot.generation) {
+		const RID mesh = slot.mesh;
+		const uint64_t generation = slot.generation;
+		slot.mesh = RID();
+		slot.generation = 0;
+		Asset *const *found = assets.getptr(mesh);
+		if (found == nullptr || (*found)->generation != generation) {
 			continue;
 		}
 		if (bytes.size() != REQUEST_BUFFER_BYTES) {
@@ -158,23 +176,27 @@ void VirtualGeometryStorage::_consume_requests() {
 			continue;
 		}
 		const uint8_t *data = bytes.ptr();
-		const uint32_t count = decode_uint32(data);
-		request_overflow += decode_uint32(data + 4) != 0u ? 1u : 0u;
-		if (count > REQUEST_CAPACITY || (decode_uint32(data + 8) & 16u) != 0u) {
+		const uint32_t missing = decode_uint32(data);
+		const uint32_t hits = decode_uint32(data + 4);
+		const uint32_t missing_capacity = REQUEST_CAPACITY * 3 / 4;
+		request_overflow += decode_uint32(data + 8) != 0u ? 1u : 0u;
+		if (missing > missing_capacity || hits > REQUEST_CAPACITY - missing_capacity) {
 			++request_invalid;
 			continue;
 		}
-		for (uint32_t index = 0; index < count; ++index) {
-			const uint32_t page = decode_uint32(data + 16 + index * 8);
-			const uint32_t priority = decode_uint32(data + 20 + index * 8);
+		if ((decode_uint32(data + 12) & 48u) != 0u) {
+			++request_invalid; // A bad source must not discard other sources.
+		}
+		for (uint32_t index = 0; index < missing + hits; ++index) {
+			const uint32_t entry = index < missing ? index : missing_capacity + index - missing;
+			const uint32_t page = decode_uint32(data + 16 + entry * 8);
+			const uint32_t priority = decode_uint32(data + 20 + entry * 8);
 			float value;
 			memcpy(&value, &priority, sizeof(value));
 			if (page >= (*found)->root.directory.pages.size() || !Math::is_finite(value) || (value < 0.0f && value != -1.0f)) {
 				++request_invalid;
 				continue;
 			}
-			// A read/upload already owns this demand, or the page became resident
-			// while this view's asynchronous copy was in flight.
 			if ((value != -1.0f && (*found)->pages.has(page)) || (value == -1.0f && !(*found)->pages.has(page))) {
 				continue;
 			}
@@ -182,15 +204,27 @@ void VirtualGeometryStorage::_consume_requests() {
 				++request_overflow;
 				continue;
 			}
-			requests.push_back({ ++request_sequence, slot.mesh.get_id(), slot.generation, page, priority });
+			requests.push_back({ ++request_sequence, mesh.get_id(), generation, page, priority });
 		}
 	}
 	if (assets.is_empty()) {
+		if (diagnostics_buffer.is_valid() && diagnostics_readback.is_null()) {
+			RD::get_singleton()->free_rid(diagnostics_buffer);
+			freed_buffers.push_back({ RD::get_singleton()->get_recording_submission_serial(), DIAGNOSTIC_WORK_BYTES, false, false });
+			diagnostics_buffer = RID();
+			reported_diagnostics[0] = 0;
+			reported_diagnostics[1] = 0;
+		}
 		for (RequestSlot &slot : request_slots) {
-			if (slot.readback.is_null() && slot.buffer.is_valid()) {
+			if (slot.readback.is_null() && slot.mesh.is_null() && slot.buffer.is_valid()) {
 				RD::get_singleton()->free_rid(slot.buffer);
+				if (slot.page_state.is_valid()) {
+					RD::get_singleton()->free_rid(slot.page_state);
+				}
 				freed_buffers.push_back({ RD::get_singleton()->get_recording_submission_serial(), slot.charge, false, false });
 				slot.buffer = RID();
+				slot.page_state = RID();
+				slot.page_capacity = 0;
 				slot.charge = 0;
 			}
 		}
@@ -253,97 +287,148 @@ Vector<uint8_t> VirtualGeometryStorage::get_requests(uint64_t p_after_sequence) 
 	return value;
 }
 
-Error VirtualGeometryStorage::record_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity) {
+Error VirtualGeometryStorage::_seal_requests(RequestSlot &p_slot) {
+	RD *rd = RD::get_singleton();
+	if (request_finalize_version.is_null()) {
+		Vector<String> modes = { "" };
+		request_finalize_shader.initialize(modes);
+		request_finalize_version = request_finalize_shader.version_create();
+		const RID program = request_finalize_shader.version_get_shader(request_finalize_version, 0);
+		ERR_FAIL_COND_V(program.is_null(), ERR_CANT_CREATE);
+		request_finalize_pipeline.create_compute_pipeline(program);
+	}
+	ERR_FAIL_COND_V(request_finalize_pipeline.get_rid().is_null(), ERR_CANT_CREATE);
+	const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(request_finalize_shader.version_get_shader(request_finalize_version, 0), 0,
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_slot.buffer }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { p_slot.page_state }));
+	ERR_FAIL_COND_V(uniforms.is_null(), ERR_CANT_CREATE);
+	const uint32_t push[3] = { REQUEST_CAPACITY, REQUEST_CAPACITY * 3 / 4, p_slot.pages };
+	const RD::ComputeListID list = rd->compute_list_begin();
+	rd->compute_list_bind_compute_pipeline(list, request_finalize_pipeline.get_rid());
+	rd->compute_list_bind_uniform_set(list, uniforms, 0);
+	rd->compute_list_set_push_constant(list, push, sizeof(push));
+	rd->compute_list_dispatch(list, (REQUEST_CAPACITY + 63) / 64, 1, 1);
+	rd->compute_list_end();
+	p_slot.readback.instantiate();
+	Ref<RefCounted> keep_alive = p_slot.readback;
+	const Error error = rd->buffer_get_data_async(p_slot.buffer,
+			callable_mp(p_slot.readback.ptr(), &RequestReadback::complete).bind(keep_alive), 0, REQUEST_BUFFER_BYTES);
+	if (error != OK) {
+		p_slot.readback.unref();
+	}
+	return error;
+}
+
+Error VirtualGeometryStorage::record_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity, uint32_t p_header_word) {
 	Asset *const *found = assets.getptr(p_mesh);
 	ERR_FAIL_COND_V(found == nullptr || (*found)->generation != p_generation || p_capacity == 0, ERR_INVALID_PARAMETER);
+	Asset *asset = *found;
 	if (requests.size() == MAX_REQUESTS) {
-		(*found)->request_waiter.remove_from_list();
-		return OK;
+		asset->request_waiter.remove_from_list();
+		++request_overflow;
+		return ERR_BUSY;
 	}
 	RequestSlot *available = nullptr;
+	bool appending = false;
 	for (RequestSlot &slot : request_slots) {
-		if (slot.readback.is_valid()) {
-			if (slot.mesh == p_mesh && slot.generation == p_generation) {
-				return OK; // One pending view per shared asset is sufficient.
+		if (slot.mesh == p_mesh && slot.generation == p_generation) {
+			if (slot.readback.is_null() && slot.epoch == request_epoch) {
+				available = &slot;
+				appending = true;
+				break;
 			}
-		} else if (available == nullptr) {
+			return ERR_BUSY;
+		}
+		if (slot.mesh.is_null() && slot.readback.is_null() && available == nullptr) {
 			available = &slot;
 		}
 	}
-	Asset *asset = *found;
-	asset->request_seen_epoch = request_epoch;
-	if (!asset->request_waiter.in_list()) {
-		request_waiters.add_last(&asset->request_waiter);
-	}
-	while (request_waiters.first() && request_waiters.first()->self()->request_seen_epoch + 1 < request_epoch) {
-		request_waiters.first()->remove_from_list();
-	}
-	if (request_waiters.first() != &asset->request_waiter) {
-		return ERR_BUSY;
-	}
-	if (available == nullptr) {
-		return ERR_BUSY;
+	if (!appending) {
+		asset->request_seen_epoch = request_epoch;
+		if (!asset->request_waiter.in_list()) {
+			request_waiters.add_last(&asset->request_waiter);
+		}
+		while (request_waiters.first() && request_waiters.first()->self()->request_seen_epoch + 1 < request_epoch) {
+			request_waiters.first()->remove_from_list();
+		}
+		if (request_waiters.first() != &asset->request_waiter || available == nullptr) {
+			return ERR_BUSY;
+		}
 	}
 	RD *rd = RD::get_singleton();
 	if (request_version.is_null()) {
 		Vector<String> modes = { "" };
 		request_shader.initialize(modes);
 		request_version = request_shader.version_create();
-		RID program = request_shader.version_get_shader(request_version, 0);
+		const RID program = request_shader.version_get_shader(request_version, 0);
 		ERR_FAIL_COND_V(program.is_null(), ERR_CANT_CREATE);
 		request_pipeline.create_compute_pipeline(program);
 	}
 	ERR_FAIL_COND_V(request_pipeline.get_rid().is_null(), ERR_CANT_CREATE);
-	if (available->buffer.is_null()) {
-		// Reserve output, returned bytes and aligned download payload together.
-		// Backend allocator granularity is separate from these byte capacities.
-		const uint64_t charge = ((REQUEST_BUFFER_BYTES + 31u) & ~31u) * 3u + sizeof(RequestReadback);
-		if (charge > _available(work_budget, work_reserved)) {
+	if (!appending) {
+		const uint32_t pages = asset->root.directory.pages.size();
+		const uint64_t state_bytes = uint64_t(pages) * 8;
+		ERR_FAIL_COND_V(state_bytes == 0 || state_bytes > UINT32_MAX, ERR_OUT_OF_MEMORY);
+		const uint64_t output_charge = ((REQUEST_BUFFER_BYTES + 31u) & ~31u) * 3u + sizeof(RequestReadback);
+		const uint64_t required = (available->buffer.is_null() ? output_charge : 0) + (available->page_capacity < pages ? state_bytes : 0);
+		if (required > _available(work_budget, work_reserved)) {
 			++request_overflow;
 			return ERR_BUSY;
 		}
-		available->buffer = rd->storage_buffer_create(REQUEST_BUFFER_BYTES);
-		ERR_FAIL_COND_V(available->buffer.is_null(), ERR_CANT_CREATE);
-		work_reserved += charge;
-		available->charge = charge;
+		if (available->buffer.is_null()) {
+			available->buffer = rd->storage_buffer_create(REQUEST_BUFFER_BYTES);
+			ERR_FAIL_COND_V(available->buffer.is_null(), ERR_CANT_CREATE);
+			available->charge += output_charge;
+			work_reserved += output_charge;
+		}
+		if (available->page_capacity < pages) {
+			const RID candidate = rd->storage_buffer_create(uint32_t(state_bytes));
+			ERR_FAIL_COND_V(candidate.is_null(), ERR_CANT_CREATE);
+			if (available->page_state.is_valid()) {
+				rd->free_rid(available->page_state);
+				const uint64_t previous_bytes = uint64_t(available->page_capacity) * 8;
+				freed_buffers.push_back({ rd->get_recording_submission_serial(), previous_bytes, false, false });
+				available->charge -= previous_bytes;
+			}
+			available->page_state = candidate;
+			available->page_capacity = pages;
+			available->charge += state_bytes;
+			work_reserved += state_bytes;
+		}
+		available->pages = pages;
+		rd->buffer_clear(available->buffer, 0, REQUEST_BUFFER_BYTES);
+		rd->buffer_clear(available->page_state, 0, uint32_t(state_bytes));
 	}
-	RID program = request_shader.version_get_shader(request_version, 0);
-	RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,
+	const RID program = request_shader.version_get_shader(request_version, 0);
+	const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0,
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { p_work }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { available->buffer }));
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { available->buffer }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { available->page_state }));
 	ERR_FAIL_COND_V(uniforms.is_null(), ERR_CANT_CREATE);
-	const uint32_t push[3] = { p_word, p_capacity, REQUEST_CAPACITY };
+	const uint32_t push[5] = { p_word, p_capacity, REQUEST_CAPACITY, p_header_word, available->pages };
 	const RD::ComputeListID list = rd->compute_list_begin();
 	rd->compute_list_bind_compute_pipeline(list, request_pipeline.get_rid());
 	rd->compute_list_bind_uniform_set(list, uniforms, 0);
 	rd->compute_list_set_push_constant(list, push, sizeof(push));
-	rd->compute_list_dispatch(list, (REQUEST_CAPACITY + 63) / 64, 1, 1);
+	rd->compute_list_dispatch(list, (MAX(p_capacity, 128u) + 63) / 64, 1, 1);
 	rd->compute_list_end();
 	available->mesh = p_mesh;
 	available->generation = p_generation;
+	available->epoch = request_epoch;
 	asset->request_waiter.remove_from_list();
-	available->readback.instantiate();
-	Ref<RefCounted> keep_alive = available->readback;
-	const Error error = rd->buffer_get_data_async(available->buffer,
-			callable_mp(available->readback.ptr(), &RequestReadback::complete).bind(keep_alive), 0, REQUEST_BUFFER_BYTES);
-	if (error != OK) {
-		available->readback.unref();
-		++request_invalid;
-	}
-	return error;
+	return OK;
 }
 
 Error VirtualGeometryStorage::record_diagnostics(RID p_view_status, RID p_material_status) {
 	ERR_FAIL_COND_V(p_view_status.is_null() || p_material_status.is_null(), ERR_INVALID_PARAMETER);
 	RD *rd = RD::get_singleton();
 	if (diagnostics_buffer.is_null()) {
-		const uint64_t charge = 32u * 3u + sizeof(RequestReadback);
-		if (charge > _available(work_budget, work_reserved)) {
+		if (DIAGNOSTIC_WORK_BYTES > _available(work_budget, work_reserved)) {
 			return ERR_BUSY;
 		}
 		diagnostics_buffer = rd->storage_buffer_create(8);
 		ERR_FAIL_COND_V(diagnostics_buffer.is_null(), ERR_CANT_CREATE);
-		work_reserved += charge;
+		work_reserved += DIAGNOSTIC_WORK_BYTES;
 		rd->buffer_clear(diagnostics_buffer, 0, 8);
 	}
 	if (diagnostics_version.is_null()) {
@@ -567,6 +652,7 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	asset->metadata = charge;
 	asset->gpu_bytes = gpu_bytes;
 	asset->bindings = { metadata, pool, table_byte / 4, p_generation };
+	asset->bindings.metadata_words = gpu_bytes / 4;
 	asset->bindings.parts_word = decode_uint64(p_root.ptr() + 144) / 4;
 	asset->bindings.groups_word = decode_uint64(p_root.ptr() + 192) / 4;
 	asset->bindings.nodes = asset->root.hierarchy.nodes.size();

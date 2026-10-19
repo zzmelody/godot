@@ -6,15 +6,6 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 2, std430) readonly buffer Transforms { vec4 data[]; } transforms;
-layout(set = 0, binding = 3, std140) uniform Parameters {
-	mat4 model;
-	mat4 world_to_view;
-	mat4 projection;
-	vec4 lod;
-	uvec4 source;
-	uvec4 limits;
-	uvec4 offsets;
-} params;
 layout(set = 0, binding = 4, std430) readonly buffer Work { uint data[]; } work;
 #define VG_SCENE_WRITE
 #include "virtual_geometry_scene_inc.glsl"
@@ -22,11 +13,7 @@ layout(set = 0, binding = 26, std430) buffer PreviousSources {
 	uint data[];
 }
 previous_sources;
-layout(set = 0, binding = 27, std140) uniform PreviousBatch {
-	mat4 model;
-	uvec4 info; // Previous transform offset, history enabled, reserved[2].
-}
-previous_batch;
+layout(set = 0, binding = 27, std430) readonly buffer BatchParameters { uint data[]; } batch_parameters;
 layout(push_constant, std430) uniform SourceParameters {
 	uint first;
 	uint material_map;
@@ -43,10 +30,22 @@ layout(push_constant, std430) uniform SourceParameters {
 	vec4 lightmap_uv_scale;
 	uvec4 identity;
 	uint batch_word;
+	uint input_word;
 } source_info;
 
+mat4 vg_batch_model(uint offset) {
+	uint word = source_info.input_word + offset;
+	return mat4(uintBitsToFloat(uvec4(batch_parameters.data[word], batch_parameters.data[word + 1u], batch_parameters.data[word + 2u], batch_parameters.data[word + 3u])),
+			uintBitsToFloat(uvec4(batch_parameters.data[word + 4u], batch_parameters.data[word + 5u], batch_parameters.data[word + 6u], batch_parameters.data[word + 7u])),
+			uintBitsToFloat(uvec4(batch_parameters.data[word + 8u], batch_parameters.data[word + 9u], batch_parameters.data[word + 10u], batch_parameters.data[word + 11u])),
+			uintBitsToFloat(uvec4(batch_parameters.data[word + 12u], batch_parameters.data[word + 13u], batch_parameters.data[word + 14u], batch_parameters.data[word + 15u])));
+}
+
 void vg_initialize_source(uint instance) {
-	if (instance >= params.source.x || (work.data[source_info.work_word + 4u] & 16u) != 0u) { return; }
+	uint source_word = source_info.input_word + 16u;
+	uvec4 source = uvec4(batch_parameters.data[source_word], batch_parameters.data[source_word + 1u], batch_parameters.data[source_word + 2u], batch_parameters.data[source_word + 3u]);
+	uvec2 previous_info = uvec2(batch_parameters.data[source_info.input_word + 40u], batch_parameters.data[source_info.input_word + 41u]);
+	if (instance >= source.x || (work.data[source_info.work_word + 4u] & 16u) != 0u) { return; }
 	uint selected_cut = (work.data[source_info.work_word + 4u] & 3u) != 0u ? 1u : 2u;
 	if ((work.data[source_info.work_word + 16u + instance * 16u + 15u] & selected_cut) == 0u) { return; }
 	mat4 local = mat4(1.0);
@@ -55,13 +54,13 @@ void vg_initialize_source(uint instance) {
 	mat4 previous_local = mat4(1.0);
 	vec4 previous_color = vec4(1.0);
 	vec4 previous_custom = vec4(0.0);
-	if (params.source.y != 0u) {
-		uint word = (instance + params.source.z) * params.source.y;
+	if (source.y != 0u) {
+		uint word = (instance + source.z) * source.y;
 		local = transpose(mat4(transforms.data[word], transforms.data[word + 1u], transforms.data[word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
 		if (source_info.has_color != 0u) { color = transforms.data[word + 3u]; }
 		if (source_info.has_custom != 0u) { custom = transforms.data[word + 3u + source_info.has_color]; }
-		if (previous_batch.info.y != 0u) {
-			uint previous_word = (instance + previous_batch.info.x) * params.source.y;
+		if (previous_info.y != 0u) {
+			uint previous_word = (instance + previous_info.x) * source.y;
 			previous_local = transpose(mat4(transforms.data[previous_word], transforms.data[previous_word + 1u], transforms.data[previous_word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
 			if (source_info.has_color != 0u) {
 				previous_color = transforms.data[previous_word + 3u];
@@ -71,7 +70,7 @@ void vg_initialize_source(uint instance) {
 			}
 		}
 	}
-	mat4 world = params.model * local;
+	mat4 world = vg_batch_model(0u) * local;
 	mat4 world_rows = transpose(world);
 	mat3 normal_rows = inverse(mat3(world)); // Rows of inverse transpose.
 	uint output_word = vg_source_word(source_info.first + instance);
@@ -92,10 +91,10 @@ void vg_initialize_source(uint instance) {
 	scene.data[output_word + 45u] = instance;
 	scene.data[output_word + 46u] = work.data[source_info.work_word + 16u + instance * 16u + 12u];
 	scene.data[output_word + 47u] = work.data[source_info.work_word + 16u + instance * 16u + 13u];
-	if (previous_batch.info.y == 0u) {
+	if (previous_info.y == 0u) {
 		return;
 	}
-	mat4 previous_rows = transpose(previous_batch.model * previous_local);
+	mat4 previous_rows = transpose(vg_batch_model(24u) * previous_local);
 	uint history_word = (source_info.first + instance) * 24u;
 	for (uint row = 0u; row < 3u; ++row) {
 		for (uint column = 0u; column < 4u; ++column) {
@@ -117,7 +116,7 @@ void main() {
 		scene.data[word + 1u] = source_info.shader_uniforms;
 		scene.data[word + 2u] = source_info.layers;
 		scene.data[word + 3u] = source_info.material_map;
-		scene.data[word + 4u] = params.offsets.w;
+		scene.data[word + 4u] = batch_parameters.data[source_info.input_word + 20u];
 		scene.data[word + 8u] = source_info.material_slots;
 		scene.data[word + 9u] = source_info.render_flags;
 		scene.data[word + 10u] = source_info.gi_offset;

@@ -1495,8 +1495,9 @@ void ArrayMesh::_set_blend_shape_names(const PackedStringArray &p_names) {
 		blend_shapes.write[i] = p_names[i];
 	}
 
-	if (mesh.is_valid()) {
-		RS::get_singleton()->mesh_set_blend_shape_count(mesh, blend_shapes.size());
+	const RID mesh_rid = _get_mesh();
+	if (mesh_rid.is_valid()) {
+		RS::get_singleton()->mesh_set_blend_shape_count(mesh_rid, blend_shapes.size());
 	}
 }
 
@@ -1510,13 +1511,14 @@ PackedStringArray ArrayMesh::_get_blend_shape_names() const {
 }
 
 Array ArrayMesh::_get_surfaces() const {
-	if (mesh.is_null()) {
+	const RID mesh_rid = _get_mesh();
+	if (mesh_rid.is_null()) {
 		return Array();
 	}
 
 	Array ret;
 	for (int i = 0; i < surfaces.size(); i++) {
-		RenderingServerTypes::SurfaceData surface = RS::get_singleton()->mesh_get_surface(mesh, i);
+		RenderingServerTypes::SurfaceData surface = RS::get_singleton()->mesh_get_surface(mesh_rid, i);
 		Dictionary data;
 		data["format"] = surface.format;
 		data["primitive"] = surface.primitive;
@@ -1575,13 +1577,35 @@ Array ArrayMesh::_get_surfaces() const {
 	return ret;
 }
 
-void ArrayMesh::_create_if_empty() const {
-	if (!mesh.is_valid()) {
-		mesh = RS::get_singleton()->mesh_create();
-		RS::get_singleton()->mesh_set_blend_shape_mode(mesh, (RSE::BlendShapeMode)blend_shape_mode);
-		RS::get_singleton()->mesh_set_blend_shape_count(mesh, blend_shapes.size());
-		RS::get_singleton()->mesh_set_path(mesh, get_path());
+RID ArrayMesh::_get_mesh() const {
+	MutexLock lock(mesh_mutex);
+	return mesh;
+}
+
+RID ArrayMesh::_publish_mesh(RID p_candidate) const {
+	MutexLock lock(mesh_mutex);
+	if (mesh.is_null()) {
+		mesh = p_candidate;
 	}
+	return mesh;
+}
+
+RID ArrayMesh::_create_if_empty() const {
+	const RID current = _get_mesh();
+	if (current.is_valid()) {
+		return current;
+	}
+	// Resource creation can wait or reenter. Publish only the first initialized
+	// candidate; never hold the publication mutex across a server call.
+	const RID candidate = RS::get_singleton()->mesh_create();
+	RS::get_singleton()->mesh_set_blend_shape_mode(candidate, (RSE::BlendShapeMode)blend_shape_mode);
+	RS::get_singleton()->mesh_set_blend_shape_count(candidate, blend_shapes.size());
+	RS::get_singleton()->mesh_set_path(candidate, get_path());
+	const RID published = _publish_mesh(candidate);
+	if (candidate.is_valid() && published != candidate) {
+		RS::get_singleton()->free_rid(candidate);
+	}
+	return published;
 }
 
 void ArrayMesh::_set_surfaces(const Array &p_surfaces) {
@@ -1678,18 +1702,25 @@ void ArrayMesh::_set_surfaces(const Array &p_surfaces) {
 		surface_2d.push_back(_2d);
 	}
 
-	if (mesh.is_valid()) {
-		//if mesh exists, it needs to be updated
-		RS::get_singleton()->mesh_clear(mesh);
-		for (int i = 0; i < surface_data.size(); i++) {
-			RS::get_singleton()->mesh_add_surface(mesh, surface_data[i]);
+	RID mesh_rid = _get_mesh();
+	bool update_surfaces = true;
+	if (mesh_rid.is_null()) {
+		// Keep the asynchronous single-call fast path. A reader can publish an
+		// empty RID while this call waits; preserve that already shared identity.
+		const RID candidate = RS::get_singleton()->mesh_create_from_surfaces(surface_data, blend_shapes.size());
+		RS::get_singleton()->mesh_set_blend_shape_mode(candidate, (RSE::BlendShapeMode)blend_shape_mode);
+		RS::get_singleton()->mesh_set_path(candidate, get_path());
+		mesh_rid = _publish_mesh(candidate);
+		update_surfaces = mesh_rid != candidate;
+		if (candidate.is_valid() && update_surfaces) {
+			RS::get_singleton()->free_rid(candidate);
 		}
-	} else {
-		// if mesh does not exist (first time this is loaded, most likely),
-		// we can create it with a single call, which is a lot more efficient and thread friendly
-		mesh = RS::get_singleton()->mesh_create_from_surfaces(surface_data, blend_shapes.size());
-		RS::get_singleton()->mesh_set_blend_shape_mode(mesh, (RSE::BlendShapeMode)blend_shape_mode);
-		RS::get_singleton()->mesh_set_path(mesh, get_path());
+	}
+	if (update_surfaces) {
+		RS::get_singleton()->mesh_clear(mesh_rid);
+		for (int i = 0; i < surface_data.size(); i++) {
+			RS::get_singleton()->mesh_add_surface(mesh_rid, surface_data[i]);
+		}
 	}
 
 	surfaces.clear();
@@ -1782,7 +1813,7 @@ void ArrayMesh::_recompute_aabb() {
 // TODO: Need to add binding to add_surface using future MeshSurfaceData object.
 void ArrayMesh::add_surface(BitField<ArrayFormat> p_format, PrimitiveType p_primitive, const Vector<uint8_t> &p_array, const Vector<uint8_t> &p_attribute_array, const Vector<uint8_t> &p_skin_array, int p_vertex_count, const Vector<uint8_t> &p_index_array, int p_index_count, const AABB &p_aabb, const Vector<uint8_t> &p_blend_shape_data, const Vector<AABB> &p_bone_aabbs, const Vector<RenderingServerTypes::SurfaceData::LOD> &p_lods, const Vector4 p_uv_scale) {
 	ERR_FAIL_COND(surfaces.size() == RSE::MAX_MESH_SURFACES);
-	_create_if_empty();
+	const RID mesh_rid = _create_if_empty();
 
 	Surface s;
 	s.aabb = p_aabb;
@@ -1810,7 +1841,7 @@ void ArrayMesh::add_surface(BitField<ArrayFormat> p_format, PrimitiveType p_prim
 	sd.lods = p_lods;
 	sd.uv_scale = p_uv_scale;
 
-	RenderingServer::get_singleton()->mesh_add_surface(mesh, sd);
+	RenderingServer::get_singleton()->mesh_add_surface(mesh_rid, sd);
 
 	clear_cache();
 	notify_property_list_changed();
@@ -1841,17 +1872,17 @@ void ArrayMesh::add_surface_from_arrays(PrimitiveType p_primitive, const Array &
 
 Array ArrayMesh::surface_get_arrays(int p_surface) const {
 	ERR_FAIL_INDEX_V(p_surface, surfaces.size(), Array());
-	return RenderingServer::get_singleton()->mesh_surface_get_arrays(mesh, p_surface);
+	return RenderingServer::get_singleton()->mesh_surface_get_arrays(_get_mesh(), p_surface);
 }
 
 TypedArray<Array> ArrayMesh::surface_get_blend_shape_arrays(int p_surface) const {
 	ERR_FAIL_INDEX_V(p_surface, surfaces.size(), TypedArray<Array>());
-	return RenderingServer::get_singleton()->mesh_surface_get_blend_shape_arrays(mesh, p_surface);
+	return RenderingServer::get_singleton()->mesh_surface_get_blend_shape_arrays(_get_mesh(), p_surface);
 }
 
 Dictionary ArrayMesh::surface_get_lods(int p_surface) const {
 	ERR_FAIL_INDEX_V(p_surface, surfaces.size(), Dictionary());
-	return RenderingServer::get_singleton()->mesh_surface_get_lods(mesh, p_surface);
+	return RenderingServer::get_singleton()->mesh_surface_get_lods(_get_mesh(), p_surface);
 }
 
 int ArrayMesh::get_surface_count() const {
@@ -1873,8 +1904,9 @@ void ArrayMesh::add_blend_shape(const StringName &p_name) {
 
 	blend_shapes.push_back(shape_name);
 
-	if (mesh.is_valid()) {
-		RS::get_singleton()->mesh_set_blend_shape_count(mesh, blend_shapes.size());
+	const RID mesh_rid = _get_mesh();
+	if (mesh_rid.is_valid()) {
+		RS::get_singleton()->mesh_set_blend_shape_count(mesh_rid, blend_shapes.size());
 	}
 }
 
@@ -1908,15 +1940,17 @@ void ArrayMesh::clear_blend_shapes() {
 
 	blend_shapes.clear();
 
-	if (mesh.is_valid()) {
-		RS::get_singleton()->mesh_set_blend_shape_count(mesh, 0);
+	const RID mesh_rid = _get_mesh();
+	if (mesh_rid.is_valid()) {
+		RS::get_singleton()->mesh_set_blend_shape_count(mesh_rid, 0);
 	}
 }
 
 void ArrayMesh::set_blend_shape_mode(BlendShapeMode p_mode) {
 	blend_shape_mode = p_mode;
-	if (mesh.is_valid()) {
-		RS::get_singleton()->mesh_set_blend_shape_mode(mesh, (RSE::BlendShapeMode)p_mode);
+	const RID mesh_rid = _get_mesh();
+	if (mesh_rid.is_valid()) {
+		RS::get_singleton()->mesh_set_blend_shape_mode(mesh_rid, (RSE::BlendShapeMode)p_mode);
 	}
 }
 
@@ -1950,7 +1984,7 @@ void ArrayMesh::surface_set_material(int p_idx, const Ref<Material> &p_material)
 		return;
 	}
 	surfaces.write[p_idx].material = p_material;
-	RenderingServer::get_singleton()->mesh_surface_set_material(mesh, p_idx, p_material.is_null() ? RID() : p_material->get_rid());
+	RenderingServer::get_singleton()->mesh_surface_set_material(_get_mesh(), p_idx, p_material.is_null() ? RID() : p_material->get_rid());
 
 	emit_changed();
 }
@@ -1978,19 +2012,19 @@ String ArrayMesh::surface_get_name(int p_idx) const {
 
 void ArrayMesh::surface_update_vertex_region(int p_surface, int p_offset, const Vector<uint8_t> &p_data) {
 	ERR_FAIL_INDEX(p_surface, surfaces.size());
-	RS::get_singleton()->mesh_surface_update_vertex_region(mesh, p_surface, p_offset, p_data);
+	RS::get_singleton()->mesh_surface_update_vertex_region(_get_mesh(), p_surface, p_offset, p_data);
 	emit_changed();
 }
 
 void ArrayMesh::surface_update_attribute_region(int p_surface, int p_offset, const Vector<uint8_t> &p_data) {
 	ERR_FAIL_INDEX(p_surface, surfaces.size());
-	RS::get_singleton()->mesh_surface_update_attribute_region(mesh, p_surface, p_offset, p_data);
+	RS::get_singleton()->mesh_surface_update_attribute_region(_get_mesh(), p_surface, p_offset, p_data);
 	emit_changed();
 }
 
 void ArrayMesh::surface_update_skin_region(int p_surface, int p_offset, const Vector<uint8_t> &p_data) {
 	ERR_FAIL_INDEX(p_surface, surfaces.size());
-	RS::get_singleton()->mesh_surface_update_skin_region(mesh, p_surface, p_offset, p_data);
+	RS::get_singleton()->mesh_surface_update_skin_region(_get_mesh(), p_surface, p_offset, p_data);
 	emit_changed();
 }
 
@@ -2007,8 +2041,7 @@ Ref<Material> ArrayMesh::surface_get_material(int p_idx) const {
 }
 
 RID ArrayMesh::get_rid() const {
-	_create_if_empty();
-	return mesh;
+	return _create_if_empty();
 }
 
 AABB ArrayMesh::get_aabb() const {
@@ -2016,17 +2049,18 @@ AABB ArrayMesh::get_aabb() const {
 }
 
 void ArrayMesh::clear_surfaces() {
-	if (!mesh.is_valid()) {
+	const RID mesh_rid = _get_mesh();
+	if (!mesh_rid.is_valid()) {
 		return;
 	}
-	RS::get_singleton()->mesh_clear(mesh);
+	RS::get_singleton()->mesh_clear(mesh_rid);
 	surfaces.clear();
 	aabb = AABB();
 }
 
 void ArrayMesh::surface_remove(int p_surface) {
 	ERR_FAIL_INDEX(p_surface, surfaces.size());
-	RS::get_singleton()->mesh_surface_remove(mesh, p_surface);
+	RS::get_singleton()->mesh_surface_remove(_get_mesh(), p_surface);
 	surfaces.remove_at(p_surface);
 
 	clear_cache();
@@ -2036,9 +2070,9 @@ void ArrayMesh::surface_remove(int p_surface) {
 }
 
 void ArrayMesh::set_custom_aabb(const AABB &p_custom) {
-	_create_if_empty();
+	const RID mesh_rid = _create_if_empty();
 	custom_aabb = p_custom;
-	RS::get_singleton()->mesh_set_custom_aabb(mesh, custom_aabb);
+	RS::get_singleton()->mesh_set_custom_aabb(mesh_rid, custom_aabb);
 	emit_changed();
 }
 
@@ -2282,9 +2316,9 @@ void ArrayMesh::set_shadow_mesh(const Ref<ArrayMesh> &p_mesh) {
 	ERR_FAIL_COND_MSG(p_mesh == this, "Cannot set a mesh as its own shadow mesh.");
 	shadow_mesh = p_mesh;
 	if (shadow_mesh.is_valid()) {
-		RS::get_singleton()->mesh_set_shadow_mesh(mesh, shadow_mesh->get_rid());
+		RS::get_singleton()->mesh_set_shadow_mesh(_get_mesh(), shadow_mesh->get_rid());
 	} else {
-		RS::get_singleton()->mesh_set_shadow_mesh(mesh, RID());
+		RS::get_singleton()->mesh_set_shadow_mesh(_get_mesh(), RID());
 	}
 }
 
@@ -2345,7 +2379,7 @@ void ArrayMesh::_bind_methods() {
 }
 
 void ArrayMesh::reload_from_file() {
-	RenderingServer::get_singleton()->mesh_clear(mesh);
+	RenderingServer::get_singleton()->mesh_clear(_get_mesh());
 	surfaces.clear();
 	clear_blend_shapes();
 	clear_cache();
@@ -2361,9 +2395,10 @@ ArrayMesh::ArrayMesh() {
 }
 
 ArrayMesh::~ArrayMesh() {
-	if (mesh.is_valid()) {
+	const RID mesh_rid = _get_mesh();
+	if (mesh_rid.is_valid()) {
 		ERR_FAIL_NULL(RenderingServer::get_singleton());
-		RenderingServer::get_singleton()->free_rid(mesh);
+		RenderingServer::get_singleton()->free_rid(mesh_rid);
 	}
 }
 ///////////////

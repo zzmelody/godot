@@ -32,6 +32,7 @@
 
 #include "material_storage.h"
 
+#include "core/string/print_string.h"
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
@@ -190,6 +191,30 @@ MeshStorage::MeshStorage() {
 }
 
 MeshStorage::~MeshStorage() {
+	// Report the surviving owners before RID_Alloc emits its original leak
+	// error. Do not release them here: that would hide the missing owner cleanup.
+	if (mesh_owner.get_rid_count() != 0) {
+		const LocalVector<RID> remaining_meshes = mesh_owner.get_owned_list();
+		constexpr uint32_t max_reported_meshes = 32;
+		const uint32_t reported = MIN(remaining_meshes.size(), max_reported_meshes);
+		print_line(vformat("VG_MESH_EXIT total=%s reported=%s", remaining_meshes.size(), reported));
+		for (uint32_t index = 0; index < reported; ++index) {
+			const RID rid = remaining_meshes[index];
+			// RID_Alloc::get_owned_list preserves its uninitialized validator bit.
+			// Such a slot has no constructed Mesh; do not read its object fields.
+			if ((rid.get_id() & (uint64_t(1) << 63)) != 0) {
+				print_line(vformat("VG_MESH_EXIT rid=%s initialized=false", rid.get_id()));
+				continue;
+			}
+			const Mesh *mesh = mesh_owner.get_or_null(rid);
+			if (mesh == nullptr) {
+				print_line(vformat("VG_MESH_EXIT rid=%s initialized=unavailable", rid.get_id()));
+				continue;
+			}
+			print_line(vformat("VG_MESH_EXIT rid=%s path=\"%s\" vgm=%s surfaces=%s instances=%s shadow_owners=%s", rid.get_id(), mesh->path,
+					virtual_geometry.has(rid), mesh->surface_count, mesh->instances.size(), mesh->shadow_owners.size()));
+		}
+	}
 	//def buffers
 	for (int i = 0; i < DEFAULT_RD_BUFFER_MAX; i++) {
 		RD::get_singleton()->free_rid(mesh_default_rd_buffers[i]);
@@ -1641,6 +1666,7 @@ void MeshStorage::_multimesh_allocate_data(RID p_multimesh, int p_instances, RSE
 
 	//print_line("allocate, elements: " + itos(p_instances) + " 2D: " + itos(p_transform_format == RSE::MULTIMESH_TRANSFORM_2D) + " colors " + itos(multimesh->uses_colors) + " data " + itos(multimesh->uses_custom_data) + " stride " + itos(multimesh->stride_cache) + " total size " + itos(multimesh->stride_cache * multimesh->instances));
 	multimesh->data_cache = Vector<float>();
+	multimesh->pending_aabb_data = Vector<float>();
 	multimesh->aabb = AABB();
 	multimesh->aabb_dirty = false;
 	multimesh->visible_instances = MIN(multimesh->visible_instances, multimesh->instances);
@@ -1758,10 +1784,12 @@ void MeshStorage::_multimesh_set_mesh(RID p_multimesh, RID p_mesh) {
 	if (multimesh->data_cache.size()) {
 		//we have a data cache, just mark it dirt
 		_multimesh_mark_all_dirty(multimesh, false, true);
-	} else if (multimesh->instances && multimesh->custom_aabb == AABB()) {
+	} else if (p_mesh.is_valid() && multimesh->instances && multimesh->custom_aabb == AABB()) {
 		//need to re-create AABB unfortunately, calling this has a penalty
 		// A custom AABB replaces automatic bounds, so never read the instance buffer back for it.
-		if (multimesh->buffer_set) {
+		if (!multimesh->pending_aabb_data.is_empty()) {
+			_multimesh_re_create_aabb(multimesh, multimesh->pending_aabb_data.ptr(), multimesh->instances);
+		} else if (multimesh->buffer_set) {
 #ifdef DEBUG_ENABLED
 			// Test evidence for the zero-readback contract; debug templates only.
 			print_line("MM_AUTO_AABB_READBACK multimesh=" + itos(p_multimesh.get_id()) + " instances=" + itos(multimesh->instances));
@@ -1773,6 +1801,9 @@ void MeshStorage::_multimesh_set_mesh(RID p_multimesh, RID p_mesh) {
 		}
 	}
 
+	if (p_mesh.is_valid()) {
+		multimesh->pending_aabb_data = Vector<float>();
+	}
 	multimesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MESH);
 }
 
@@ -1804,6 +1835,7 @@ void MeshStorage::_multimesh_make_local(MultiMesh *multimesh) const {
 		}
 	}
 	uint32_t data_cache_dirty_region_count = Math::division_round_up(multimesh->instances, MULTIMESH_DIRTY_REGION_SIZE);
+	multimesh->pending_aabb_data = Vector<float>();
 	multimesh->data_cache_dirty_regions = memnew_arr(bool, data_cache_dirty_region_count);
 	memset(multimesh->data_cache_dirty_regions, 0, data_cache_dirty_region_count * sizeof(bool));
 	multimesh->data_cache_dirty_region_count = 0;
@@ -2168,6 +2200,13 @@ void MeshStorage::_multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_
 	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
 	ERR_FAIL_NULL(multimesh);
 	ERR_FAIL_COND(p_buffer.size() != (multimesh->instances * (int)multimesh->stride_cache));
+	if (multimesh->mesh.is_null() && multimesh->custom_aabb == AABB() && multimesh->data_cache.is_empty()) {
+		// Virtual geometry may acquire its mesh RID later on the main thread.
+		// The upload is already on the CPU; share it until the first binding.
+		multimesh->pending_aabb_data = p_buffer;
+	} else {
+		multimesh->pending_aabb_data = Vector<float>();
+	}
 
 	bool used_motion_vectors = multimesh->motion_vectors_enabled;
 	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0) || (RendererCompositorStorage::get_singleton()->get_num_compositor_effects_with_motion_vectors() > 0);
@@ -2286,6 +2325,9 @@ void MeshStorage::_multimesh_set_custom_aabb(RID p_multimesh, const AABB &p_aabb
 	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
 	ERR_FAIL_NULL(multimesh);
 	multimesh->custom_aabb = p_aabb;
+	if (p_aabb != AABB()) {
+		multimesh->pending_aabb_data = Vector<float>();
+	}
 	multimesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_AABB);
 }
 

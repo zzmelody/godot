@@ -12,6 +12,7 @@
 #include "core/variant/typed_array.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_fixup.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_requests.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/virtual_geometry_requests_finalize.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_diagnostics.glsl.gen.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_transcoder.h"
 #include "servers/rendering/storage/mesh_storage.h"
@@ -37,6 +38,7 @@ public:
 		uint32_t root_pages = 0;
 		uint32_t root_clusters = 0;
 		uint32_t pages = 0;
+		uint32_t metadata_words = 0;
 	};
 
 private:
@@ -118,6 +120,10 @@ private:
 	};
 	struct RequestSlot {
 		RID buffer;
+		RID page_state;
+		uint32_t page_capacity = 0;
+		uint32_t pages = 0;
+		uint64_t epoch = 0;
 		uint64_t charge = 0;
 		RID mesh;
 		uint64_t generation = 0;
@@ -153,6 +159,7 @@ private:
 	static constexpr uint32_t REQUEST_BUFFER_BYTES = 16 + REQUEST_CAPACITY * 8;
 	static constexpr uint32_t REQUEST_RECORD_BYTES = 32;
 	static constexpr uint32_t REQUEST_HEADER_BYTES = 32;
+	static constexpr uint64_t DIAGNOSTIC_WORK_BYTES = 32u * 3u + sizeof(RequestReadback);
 	enum PageResult { PAGE_RESIDENT,
 		PAGE_RETIRED,
 		PAGE_FAILED,
@@ -177,6 +184,9 @@ private:
 	VirtualGeometryRequestsShaderRD request_shader;
 	RID request_version;
 	PipelineDeferredRD request_pipeline;
+	VirtualGeometryRequestsFinalizeShaderRD request_finalize_shader;
+	RID request_finalize_version;
+	PipelineDeferredRD request_finalize_pipeline;
 	RequestSlot request_slots[REQUEST_SLOTS];
 	VirtualGeometryDiagnosticsShaderRD diagnostics_shader;
 	RID diagnostics_version;
@@ -234,6 +244,7 @@ private:
 	}
 	void _free_source(Page *p_page);
 	void _consume_requests();
+	Error _seal_requests(RequestSlot &p_slot);
 	void _publish_requests();
 
 public:
@@ -256,7 +267,7 @@ public:
 	Vector<uint8_t> get_feedback(uint64_t p_after_sequence) const;
 	// Bounded asynchronous feedback, separate from install/retirement outcomes.
 	// A saturated feedback queue delays detail; it never removes root coverage.
-	Error record_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity);
+	Error record_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity, uint32_t p_header_word);
 	// Aggregate every view before asynchronous readback. No view owner or scene
 	// object is retained, and saturation cannot erase another view's error bits.
 	Error record_diagnostics(RID p_view_status, RID p_material_status);

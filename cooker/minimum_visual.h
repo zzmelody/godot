@@ -8,6 +8,7 @@
 #include "core/io/image.h"
 #include "core/object/script_language.h"
 #include "lod_silhouette.h"
+#include "minimum_batching.h"
 #include "scene/resources/3d/virtual_geometry_mesh.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
@@ -66,8 +67,11 @@ class Builder {
     }
     auto* root = memnew(Node3D);
     root->set_name("MinimumVisual");
-    const bool valid = CopyTree(original, root, Transform3D(), 0);
+    bool valid = CopyTree(original, root, Transform3D(), 0);
     memdelete(original);
+    if (valid) {
+      valid = CoalesceMinimumBatches(*root) == OK;
+    }
     Ref<PackedScene> result;
     if (valid && root->get_child_count()) {
       result.instantiate();
@@ -466,7 +470,7 @@ class Builder {
       Array arrays = source->surface_get_arrays(surface).duplicate();
       PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
       PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
-      if (vertices.is_empty() || vertices.size() > 1048576) {
+      if (vertices.is_empty()) {
         return Ref<Mesh>();
       }
       if (indices.is_empty()) {
@@ -589,10 +593,11 @@ class Builder {
   bool CopyTree(Node* source, Node3D* destination, const Transform3D& parent,
                 int depth) {
     const Ref<Script> script = source->get_script();
-    if (depth > 64 || ++nodes_ > 65536 || script.is_valid() ||
+    if (depth > 64 || script.is_valid() ||
         Object::cast_to<Skeleton3D>(source)) {
       return false;
     }
+    ++nodes_;
     Transform3D transform = parent;
     if (const auto* spatial = Object::cast_to<Node3D>(source)) {
       transform *= spatial->get_transform();
@@ -630,9 +635,7 @@ class Builder {
     } else if (auto* multi = Object::cast_to<MultiMeshInstance3D>(source);
                multi && multi->get_multimesh().is_valid()) {
       const Ref<MultiMesh> original = multi->get_multimesh();
-      if (original->get_mesh().is_null() ||
-          original->get_instance_count() > 1048576 ||
-          (instances_ += original->get_instance_count()) > 1048576) {
+      if (original->get_mesh().is_null()) {
         return false;
       }
       if (original->get_mesh()->get_aabb().size.y >= options_.minimum_height) {
@@ -669,7 +672,7 @@ class Builder {
     return true;
   }
   Options options_;
-  size_t nodes_ = 0, instances_ = 0;
+  size_t nodes_ = 0;
   std::map<ObjectID, Ref<Mesh>> meshes_;
   std::map<ObjectID, Ref<Material>> materials_;
   std::map<ObjectID, Ref<Shader>> shaders_;

@@ -8,6 +8,7 @@
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_shade_scan.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_selection.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_uniform_cache.h"
 
 namespace RendererRD {
 
@@ -44,6 +45,7 @@ public:
 	void record_sources(Span<VirtualGeometrySelection::Result> p_sources);
 	void record_bins();
 	void record_materials();
+	void clear_view();
 	RID get_surface(uint32_t p_index) const { return surfaces[p_index]; }
 	RID get_motion() const { return motion_surface; }
 	RID get_reactivity() const { return reactive_surface; }
@@ -107,16 +109,17 @@ private:
 	bool global_history_valid = false;
 	RID previous_sources;
 	uint32_t previous_source_words = 0;
-	RID empty_history_parameters;
-	LocalVector<RID> previous_parameters;
-	struct SourceBinding {
-		RID uniforms;
-		RID transforms;
-		RID parameters;
-		RID work;
-		RID history_parameters;
+	RID batch_parameters;
+	uint32_t batch_parameter_words = 0;
+	struct BatchParameters {
+		float model[16];
+		uint32_t source[4];
+		uint32_t displacement[4];
+		float previous_model[16];
+		uint32_t previous_info[4];
 	};
-	LocalVector<SourceBinding> source_bindings;
+	LocalVector<BatchParameters> batch_parameter_data;
+	VirtualGeometryUniformCache source_bindings{ { 2, 4, 8, 26, 27 } };
 	RID view_status;
 	LocalVector<RasterMaterialWork> raster_work;
 	RID raster_material_buffer;

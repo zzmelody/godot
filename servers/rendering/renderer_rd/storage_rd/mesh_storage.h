@@ -250,6 +250,8 @@ private:
 		uint32_t custom_data_offset_cache = 0;
 
 		Vector<float> data_cache; //used if individual setting is used
+		// Keep the latest upload only until a deferred mesh can consume its bounds.
+		Vector<float> pending_aabb_data;
 		bool *data_cache_dirty_regions = nullptr;
 		uint32_t data_cache_dirty_region_count = 0;
 		bool *previous_data_cache_dirty_regions = nullptr;
@@ -385,8 +387,8 @@ public:
 	Error virtual_geometry_submit_pages(const Vector<uint8_t> &p_records, const TypedArray<PackedByteArray> &p_payloads) override;
 	Vector<uint8_t> virtual_geometry_get_feedback(uint64_t p_after_sequence) const override;
 	Vector<uint8_t> virtual_geometry_get_requests(uint64_t p_after_sequence) const override;
-	Error record_virtual_geometry_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity) {
-		return virtual_geometry.record_requests(p_mesh, p_generation, p_work, p_word, p_capacity);
+	Error record_virtual_geometry_requests(RID p_mesh, uint64_t p_generation, RID p_work, uint32_t p_word, uint32_t p_capacity, uint32_t p_header_word) {
+		return virtual_geometry.record_requests(p_mesh, p_generation, p_work, p_word, p_capacity, p_header_word);
 	}
 	void update_virtual_geometry();
 	bool reserve_virtual_geometry_work(uint64_t p_bytes) { return virtual_geometry.reserve_view_work(p_bytes); }

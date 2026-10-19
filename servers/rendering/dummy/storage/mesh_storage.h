@@ -60,6 +60,8 @@ private:
 #ifdef VEYA_COOKER
 		int instance_count = 0;
 		int stride = 12;
+		bool use_colors = false;
+		bool use_custom_data = false;
 #endif
 		/*>>----- VEYA_COOKER */
 	};
@@ -228,8 +230,13 @@ public:
 #endif
 	/*>>----- VEYA_COOKER */
 	virtual void _multimesh_instance_set_transform_2d(RID p_multimesh, int p_index, const Transform2D &p_transform) override {}
+#ifdef VEYA_COOKER
+	virtual void _multimesh_instance_set_color(RID p_multimesh, int p_index, const Color &p_color) override;
+	virtual void _multimesh_instance_set_custom_data(RID p_multimesh, int p_index, const Color &p_color) override;
+#else
 	virtual void _multimesh_instance_set_color(RID p_multimesh, int p_index, const Color &p_color) override {}
 	virtual void _multimesh_instance_set_custom_data(RID p_multimesh, int p_index, const Color &p_color) override {}
+#endif
 
 	virtual void _multimesh_set_custom_aabb(RID p_multimesh, const AABB &p_aabb) override {}
 	virtual AABB _multimesh_get_custom_aabb(RID p_multimesh) const override { return AABB(); }
@@ -245,8 +252,13 @@ public:
 #endif
 	/*>>----- VEYA_COOKER */
 	virtual Transform2D _multimesh_instance_get_transform_2d(RID p_multimesh, int p_index) const override { return Transform2D(); }
+#ifdef VEYA_COOKER
+	virtual Color _multimesh_instance_get_color(RID p_multimesh, int p_index) const override;
+	virtual Color _multimesh_instance_get_custom_data(RID p_multimesh, int p_index) const override;
+#else
 	virtual Color _multimesh_instance_get_color(RID p_multimesh, int p_index) const override { return Color(); }
 	virtual Color _multimesh_instance_get_custom_data(RID p_multimesh, int p_index) const override { return Color(); }
+#endif
 	virtual void _multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_buffer) override;
 	virtual RID _multimesh_get_command_buffer_rd_rid(RID p_multimesh) const override { return RID(); }
 	virtual RID _multimesh_get_buffer_rd_rid(RID p_multimesh) const override { return RID(); }
