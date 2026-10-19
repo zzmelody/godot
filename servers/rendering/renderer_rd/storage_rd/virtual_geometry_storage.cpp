@@ -1037,6 +1037,7 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 		page->retire_outcome = true;
 		_retire(page);
 	}
+	RD::get_singleton()->request_resources_processing();
 	_publish_feedback();
 	return OK;
 }
@@ -1358,6 +1359,13 @@ void VirtualGeometryStorage::update() {
 		inflight.push_back(page);
 	}
 	queued.clear();
+	// Transfers and fixup tickets still need renderer updates after submission,
+	// even if no window can draw. Stop requesting frames once page work and
+	// deferred buffer retirement have both completed.
+	if (!inflight.is_empty() || !ready.is_empty() || !publishing.is_empty() ||
+			!uninstalls.is_empty() || !retiring.is_empty() || !freed_buffers.is_empty()) {
+		RD::get_singleton()->request_resources_processing();
+	}
 	_publish_feedback();
 }
 

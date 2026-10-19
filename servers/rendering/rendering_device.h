@@ -1869,6 +1869,8 @@ private:
 	uint32_t frames_pending_resources_for_processing = 0u;
 
 public:
+	// Keep renderer completion polling alive without a drawable window.
+	void request_resources_processing();
 	bool has_pending_resources_for_processing() const { return frames_pending_resources_for_processing != 0u; }
 
 private:

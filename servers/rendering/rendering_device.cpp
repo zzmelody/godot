@@ -7903,6 +7903,13 @@ void RenderingDevice::sync() {
 	local_device_processing = false;
 }
 
+void RenderingDevice::request_resources_processing() {
+	ERR_RENDER_THREAD_GUARD();
+	// Custom GPU owners consume fence results during the next renderer update.
+	// Include one update after the last frame slot's fence has been observed.
+	frames_pending_resources_for_processing = MAX(frames_pending_resources_for_processing, uint32_t(frames.size()) + 1u);
+}
+
 void RenderingDevice::defer_native_destroy(void (*p_callback)(void *), void *p_userdata) {
 	ERR_RENDER_THREAD_GUARD();
 	frames[frame].native_retirements.push_back({p_callback, p_userdata});
