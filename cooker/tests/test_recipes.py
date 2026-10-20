@@ -509,6 +509,56 @@ func _initialize():
         self.assertGreater(checked["cluster_count"], 0)
         self.assertGreater(checked["root_page_count"], 0)
 
+    def test_virtual_geometry_import_preserves_source_position_precision(self):
+        side = 65
+        positions = [(float(x), float(y), 5.0) for y in range(side) for x in range(side)]
+        uvs = [(x / 64.0, y / 64.0) for y in range(side) for x in range(side)]
+        indices = []
+        for y in range(64):
+            for x in range(64):
+                a = y * side + x
+                indices.extend((a, a + 1, a + side, a + 1, a + side + 1, a + side))
+        # This valid face is smaller than the ordinary GPU vertex grid. The
+        # hierarchy builder must receive source floats before that compression.
+        first = len(positions)
+        epsilon = 2.0 ** -20
+        positions.extend(((0.0, 0.0, 5.0), (epsilon, 0.0, 5.0), (0.0, epsilon, 5.0)))
+        uvs.extend(((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)))
+        indices.extend((first, first + 1, first + 2))
+        payload = bytearray()
+        views = []
+        accessors = []
+
+        def add(values, component_type, element_type, fmt, **extra):
+            packed = b''.join(struct.pack(fmt, *value) for value in values)
+            views.append({"buffer": 0, "byteOffset": len(payload), "byteLength": len(packed)})
+            payload.extend(packed)
+            accessors.append({"bufferView": len(views) - 1, "componentType": component_type,
+                              "type": element_type, "count": len(values), **extra})
+            return len(accessors) - 1
+
+        vertex = add(positions, 5126, "VEC3", "<fff", min=[0, 0, 5], max=[64, 64, 5])
+        normal = add([(0.0, 0.0, 1.0)] * len(positions), 5126, "VEC3", "<fff")
+        uv = add(uvs, 5126, "VEC2", "<ff")
+        index = add([(value,) for value in indices], 5125, "SCALAR", "<I")
+        (self.project / "precision.bin").write_bytes(payload)
+        (self.project / "precision.gltf").write_text(json.dumps({
+            "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0, "name": "SourcePrecision"}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": vertex, "NORMAL": normal,
+                                                       "TEXCOORD_0": uv}, "indices": index}]}],
+            "buffers": [{"uri": "precision.bin", "byteLength": len(payload)}],
+            "bufferViews": views, "accessors": accessors,
+        }))
+        result = self.job({"operation": "import-scene", "source": "res://precision.gltf",
+                           "output": "res://assets/runtime/model/precision/scene.scn",
+                           "options": {"meshes/generate_lods": False}})
+        policy = result["virtual_geometry"]
+        self.assertEqual(policy["converted_meshes"], 1)
+        self.assertEqual(policy["nodes"][0]["representation"], "virtual_geometry")
+        self.assertEqual(policy["nodes"][0]["build"]["source_triangles"], 8193)
+        self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
+
     def test_virtual_geometry_material_processing_preserves_root(self):
         if REFERENCE is None:
             self.skipTest("material slot inspection needs the matching private editor")

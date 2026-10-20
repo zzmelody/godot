@@ -934,6 +934,12 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			options[name] = overrides[key];
 		}
 		ERR_FAIL_COND_V_MSG(String(options["import_script/path"]) != "", ERR_UNAVAILABLE, "Post-import scripts are not supported.");
+		if (type == "PackedScene") {
+			// Preserve source floats until virtual geometry builds its hierarchy.
+			// Ordinary GPU vertex compression can collapse valid thin triangles;
+			// the virtual geometry page encoder owns the final precision.
+			options["meshes/force_disable_compression"] = true;
+		}
 		// No EditorFileSystem is present to reimport extracted images.
 		options["gltf/embedded_image_handling"] = GLTFState::HANDLE_BINARY_IMAGE_MODE_EMBED_AS_UNCOMPRESSED;
 		options["fbx/embedded_image_handling"] = GLTFState::HANDLE_BINARY_IMAGE_MODE_EMBED_AS_UNCOMPRESSED;
