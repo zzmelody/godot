@@ -186,8 +186,11 @@ bool VirtualGeometryStreaming::_demand(Asset *p_asset, uint32_t p_page, float p_
 	if (page.state == Page::RETIRING || page.state == Page::FAILED) {
 		return false;
 	}
-	if (page.state != Page::ABSENT) {
+	if (page.state != Page::ABSENT && page.state != Page::QUEUED) {
 		_touch(p_asset, p_page);
+		return true;
+	}
+	if (page.state == Page::QUEUED && p_priority <= page.queued_demand->priority) {
 		return true;
 	}
 	const auto &location = p_asset->directory.pages[p_page];
@@ -197,12 +200,18 @@ bool VirtualGeometryStreaming::_demand(Asset *p_asset, uint32_t p_page, float p_
 			return false;
 		}
 	}
-	for (uint32_t index = 0; index < location.dependency_count; ++index) {
-		++p_asset->pages[p_asset->directory.dependencies[location.dependency_start + index]].users;
+	if (page.state == Page::ABSENT) {
+		for (uint32_t index = 0; index < location.dependency_count; ++index) {
+			++p_asset->pages[p_asset->directory.dependencies[location.dependency_start + index]].users;
+		}
+		page.holds_dependencies = true;
+		page.state = Page::QUEUED;
+		page.queued_demand = demands.push({ p_asset->mesh, p_asset->generation, p_page }, p_priority);
+	} else {
+		// A ready child must not occupy the read window ahead of a queued
+		// prerequisite. Raise dependencies first, keeping one entry per page.
+		page.queued_demand = demands.raise(page.queued_demand, p_priority);
 	}
-	page.holds_dependencies = true;
-	page.state = Page::QUEUED;
-	demands.push({ { p_asset->mesh, p_asset->generation, p_page }, p_priority, ++order });
 	return true;
 }
 
@@ -449,6 +458,8 @@ void VirtualGeometryStreaming::_submit() {
 			payloads.push_back(read->bytes);
 			error = RS::get_singleton()->virtual_geometry_submit_pages(records, payloads);
 			if (error == ERR_BUSY || error == ERR_OUT_OF_MEMORY) {
+				busy_submissions += error == ERR_BUSY;
+				capacity_refusals += error == ERR_OUT_OF_MEMORY;
 				if (error == ERR_OUT_OF_MEMORY && retiring == 0) {
 					_evict();
 				}
@@ -588,10 +599,30 @@ Error VirtualGeometryStreaming::get_status(RID p_mesh, bool &r_ready) const {
 
 Dictionary VirtualGeometryStreaming::get_statistics() const {
 	Dictionary result;
+	uint32_t ready_roots = 0, waiting_roots = 0, waiting_dependencies = 0;
+	for (const Read *read : ready) {
+		const Asset *asset = read->asset;
+		if (read->key.page < asset->roots) {
+			++ready_roots;
+			continue;
+		}
+		waiting_roots += asset->roots_ready != asset->roots;
+		const auto &location = asset->directory.pages[read->key.page];
+		bool pending_dependency = false;
+		for (uint32_t index = 0; index < location.dependency_count; ++index) {
+			pending_dependency |= asset->pages[asset->directory.dependencies[location.dependency_start + index]].state != Page::RESIDENT;
+		}
+		waiting_dependencies += pending_dependency;
+	}
 	result["assets"] = assets.size();
 	result["queued_pages"] = int64_t(demands.size());
 	result["reading_pages"] = int64_t(reads.size());
 	result["ready_pages"] = int64_t(ready.size());
+	result["ready_root_pages"] = ready_roots;
+	result["ready_waiting_roots"] = waiting_roots;
+	result["ready_waiting_dependencies"] = waiting_dependencies;
+	result["busy_submissions"] = int64_t(busy_submissions);
+	result["capacity_refusals"] = int64_t(capacity_refusals);
 	result["gpu_pending"] = transfers.size();
 	result["resident_detail_pages"] = int64_t(residents.size());
 	result["pool_bytes"] = int64_t(physical_bytes);

@@ -8,9 +8,9 @@
 #include "core/variant/callable.h"
 #include "core/variant/dictionary.h"
 #include "core/variant/typed_array.h"
+#include "virtual_geometry_demand_queue.h"
 
 #include <list>
-#include <queue>
 #include <vector>
 
 // Main-thread host for publication-admitted roots. Workers borrow only their
@@ -21,6 +21,8 @@ class VirtualGeometryStreaming {
 		uint64_t generation = 0;
 		uint32_t page = 0;
 	};
+	using DemandQueue = VirtualGeometry::PageDemandQueue<Key>;
+	using Demand = DemandQueue::Demand;
 	struct Page {
 		enum State { ABSENT,
 			QUEUED,
@@ -36,6 +38,7 @@ class VirtualGeometryStreaming {
 		bool slot_reserved = false;
 		bool listed = false;
 		std::list<Key>::iterator position;
+		DemandQueue::Handle queued_demand;
 	};
 	struct Asset {
 		RID mesh;
@@ -49,14 +52,6 @@ class VirtualGeometryStreaming {
 		uint64_t metadata_lease = 0;
 		Error error = OK;
 		bool active = true;
-	};
-	struct Demand {
-		Key key;
-		float priority = 0;
-		uint64_t order = 0;
-		bool operator<(const Demand &p_other) const {
-			return priority == p_other.priority ? order > p_other.order : priority < p_other.priority;
-		}
 	};
 	struct Read {
 		Key key;
@@ -82,7 +77,7 @@ class VirtualGeometryStreaming {
 	static constexpr uint32_t MAX_SUBMISSIONS = 16;
 	HashMap<RID, Asset *> assets;
 	HashMap<uint64_t, Transfer> transfers;
-	std::priority_queue<Demand> demands;
+	DemandQueue demands;
 	std::list<Key> residents;
 	std::vector<Read *> reads;
 	std::vector<Read *> ready;
@@ -91,10 +86,11 @@ class VirtualGeometryStreaming {
 	uint64_t pool_bytes = 0;
 	uint64_t metadata_bytes = 0;
 	uint64_t work_bytes = 0;
-	uint64_t generation = 0, order = 0, transaction = 0;
+	uint64_t generation = 0, transaction = 0;
 	uint64_t requests_after = 0, outcomes_after = 0;
 	uint64_t pool_admission = 0;
 	uint64_t refused_reads = 0, failed_reads = 0, evictions = 0;
+	uint64_t busy_submissions = 0, capacity_refusals = 0;
 	uint64_t occupied = 0, retiring = 0, reserved_slots = 0;
 	uint64_t physical_bytes = 0, metadata_reserved = 0, work_reserved = 0;
 	uint64_t pinned_roots = 0;
