@@ -110,7 +110,7 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 	vec3 by = candidate.barycentrics.dy;
 	uint record = vg_record(visible.y);
 	bool vertex_frame = (geometry.data[record + 35u] & 1u) != 0u;
-#ifdef VG_VERTEX_TANGENT_WRITE
+#if defined(VG_VERTEX_TANGENT_WRITE) || (defined(VG_MODELVIEW_NORMAL_WRITE) && !defined(VERTEX_WORLD_COORDS_USED))
 	// An authored vertex frame replaces the implicit UV frame. Fragment-only
 	// writes must not select this path before the fragment program runs.
 	vertex_frame = true;

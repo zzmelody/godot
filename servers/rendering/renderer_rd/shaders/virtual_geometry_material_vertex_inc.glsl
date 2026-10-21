@@ -92,6 +92,15 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 		tangent = vg_frame_tangent(value.normal);
 		binormal = cross(value.normal, tangent);
 	}
+#if defined(VERTEX_WORLD_COORDS_USED) && !defined(SKIP_TRANSFORM_USED)
+	// Match the ordinary vertex stage. Do not normalize these inputs before
+	// the author runs: their lengths can affect authored frame operations.
+	vertex = (read_model_matrix * vec4(vertex, 1.0)).xyz;
+	normal_highp = model_normal_matrix * normal_highp;
+	tangent = model_normal_matrix * tangent;
+	binormal = model_normal_matrix * binormal;
+	vec3 original_world_position = vertex;
+#endif
 	uv_interp = value.uv[0];
 	uv2_interp = value.uv[1];
 	color_interp = value.color * vg_instance_color;
@@ -103,7 +112,13 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 #ifdef VG_QUAD_SAMPLING
 	vg_vertex_evaluation = false;
 #endif
+#if defined(VERTEX_WORLD_COORDS_USED) && !defined(SKIP_TRANSFORM_USED)
+	// Keep the original local point and transform only the world displacement.
+	// A read-only world vertex program must not round-trip a large position.
+	vec3 offset = vertex - original_world_position;
+#else
 	vec3 offset = mat3(read_model_matrix) * (vertex - value.position);
+#endif
 	if (any(isnan(offset)) || any(isinf(offset))) {
 		if (vg_previous_evaluation) {
 			vg_previous_invalid = true;
@@ -117,9 +132,25 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 		}
 		value.position += inverse(mat3(read_model_matrix)) * offset;
 	}
+#if defined(VERTEX_WORLD_COORDS_USED) && !defined(SKIP_TRANSFORM_USED)
+	// Surface reconstruction applies the model normal matrix at each corner.
+	// Return the author's independent axes to that shared local-space contract.
+	mat3 local_normal_matrix = inverse(model_normal_matrix);
+	value.normal = local_normal_matrix * normal_highp;
+	value.tangent.xyz = local_normal_matrix * tangent;
+	value.binormal = local_normal_matrix * binormal;
+#elif defined(VG_MODELVIEW_NORMAL_WRITE) && !defined(SKIP_TRANSFORM_USED)
+	// The ordinary local-coordinate path uses the author's view normal matrix
+	// after vertex(). World-coordinate mode intentionally ignores this output.
+	mat3 local_frame = inverse(model_normal_matrix) * mat3(vg_camera) * modelview_normal;
+	value.normal = local_frame * normal_highp;
+	value.tangent.xyz = local_frame * tangent;
+	value.binormal = local_frame * binormal;
+#else
 	value.normal = normal_highp;
 	value.tangent.xyz = tangent;
 	value.binormal = binormal;
+#endif
 	value.uv[0] = uv_interp;
 	value.uv[1] = uv2_interp;
 	value.color = color_interp;

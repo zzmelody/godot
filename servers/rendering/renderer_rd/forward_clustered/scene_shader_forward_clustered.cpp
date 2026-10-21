@@ -62,6 +62,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	virtual_geometry_extension_words = 0;
 	virtual_geometry_uses_light = false;
 	writes_fragment_depth = false;
+	writes_modelview_normal = false;
 
 	code = p_code;
 	ubo_size = 0;
@@ -176,6 +177,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.usage_flag_pointers["ANISOTROPY_FLOW"] = &uses_tangent;
 
 	actions.write_flag_pointers["MODELVIEW_MATRIX"] = &writes_modelview_or_projection;
+	actions.write_flag_pointers["MODELVIEW_NORMAL_MATRIX"] = &writes_modelview_normal;
 	actions.write_flag_pointers["PROJECTION_MATRIX"] = &writes_modelview_or_projection;
 	actions.write_flag_pointers["VERTEX"] = &uses_vertex;
 	actions.write_flag_pointers["POSITION"] = &uses_position;
@@ -598,7 +600,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 				(RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) == 0) {
 			virtual_geometry_error = "Virtual geometry material evaluation requires compute subgroup ballot and quad operations.";
 		} else if (!is_valid() || uses_vertex_id || uses_position || uses_point_size || writes_modelview_or_projection ||
-				uses_world_coordinates || uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_antialiasing ||
+				uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_antialiasing ||
 				stencil_enabled || wireframe) {
 			virtual_geometry_error = "Virtual geometry material requires an unsupported coverage, vertex input or shading feature: " + path;
 		} else {
@@ -625,6 +627,9 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 				Vector<String> composite_defines;
 				if (writes_vertex_tangent) {
 					generated.defines.push_back("#define VG_VERTEX_TANGENT_WRITE\n");
+				}
+				if (writes_modelview_normal) {
+					generated.defines.push_back("#define VG_MODELVIEW_NORMAL_WRITE\n");
 				}
 				composite_defines.push_back("#define VG_COMPOSITE\n#define USE_LIGHTMAP\n");
 				const bool custom_light = generated.code.has("light");
@@ -720,6 +725,9 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 							Vector<String> raster_defines = raster_code.defines;
 							if (writes_vertex_tangent && !raster_defines.has("#define VG_VERTEX_TANGENT_WRITE\n")) {
 								raster_defines.push_back("#define VG_VERTEX_TANGENT_WRITE\n");
+							}
+							if (writes_modelview_normal && !raster_defines.has("#define VG_MODELVIEW_NORMAL_WRITE\n")) {
+								raster_defines.push_back("#define VG_MODELVIEW_NORMAL_WRITE\n");
 							}
 							if (pixel_programmable && mode != 0) {
 								raster_defines.push_back("#define VG_MASKED\n");
@@ -828,6 +836,9 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_voxel_shader()
 		if (writes_vertex_tangent) {
 			generated.defines.push_back("#define VG_VERTEX_TANGENT_WRITE\n");
 		}
+		if (writes_modelview_normal) {
+			generated.defines.push_back("#define VG_MODELVIEW_NORMAL_WRITE\n");
+		}
 		virtual_geometry_voxel_version = owner->virtual_geometry_raster_hw.version_create(false);
 		owner->virtual_geometry_raster_hw.version_set_code(virtual_geometry_voxel_version, generated.code, generated.uniforms,
 				vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
@@ -934,7 +945,12 @@ bool SceneShaderForwardClustered::MaterialData::update_parameters(const HashMap<
 		RID shader_rid = SceneShaderForwardClustered::singleton->shader.version_get_shader(shader_data->version, 0);
 
 		MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
-		return update_parameters_uniform_set(p_parameters, p_uniform_dirty, p_textures_dirty, shader_data->uniforms, shader_data->ubo_offsets.ptr(), shader_data->texture_uniforms, shader_data->default_texture_params, shader_data->ubo_size, uniform_set, shader_rid, RenderForwardClustered::MATERIAL_UNIFORM_SET, true, true);
+		const bool bindings_changed = update_parameters_uniform_set(p_parameters, p_uniform_dirty, p_textures_dirty, shader_data->uniforms, shader_data->ubo_offsets.ptr(), shader_data->texture_uniforms, shader_data->default_texture_params, shader_data->ubo_size, uniform_set, shader_rid, RenderForwardClustered::MATERIAL_UNIFORM_SET, true, true);
+		// A numeric UBO upload can keep the same descriptor while changing WPO,
+		// masking or authored depth. Notify the existing scene dependencies so
+		// their paired lights retire the cached shadow at the next update.
+		const bool coverage_changed = (p_uniform_dirty || p_textures_dirty) && shader_data->uses_custom_shadow_coverage();
+		return bindings_changed || coverage_changed;
 	} else {
 		return false;
 	}
