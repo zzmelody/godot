@@ -29,7 +29,15 @@ else()
     target_link_libraries(veya_metis PUBLIC m)
 endif()
 find_package(Threads REQUIRED)
+set(VEYA_GEOMETRY_ZSTD_DIR "${CMAKE_CURRENT_LIST_DIR}/../../thirdparty/zstd")
+file(GLOB VEYA_GEOMETRY_ZSTD_SOURCES CONFIGURE_DEPENDS
+    "${VEYA_GEOMETRY_ZSTD_DIR}/common/*.c"
+    "${VEYA_GEOMETRY_ZSTD_DIR}/compress/*.c"
+    "${VEYA_GEOMETRY_ZSTD_DIR}/decompress/*.c")
+add_library(veya_geometry_zstd STATIC ${VEYA_GEOMETRY_ZSTD_SOURCES})
+target_include_directories(veya_geometry_zstd SYSTEM PUBLIC "${VEYA_GEOMETRY_ZSTD_DIR}")
+target_compile_definitions(veya_geometry_zstd PRIVATE ZSTD_DISABLE_ASM)
 add_library(veya_geometry_partition STATIC graph_partitioner.cpp graph_locality.cpp triangle_topology.cpp leaf_clusters.cpp attribute_quadric.cpp attribute_policy.cpp mesh_simplifier.cpp cluster_dag.cpp cluster_stripifier.cpp cluster_encoding.cpp ../../core/io/virtual_geometry/cluster_codec.cpp ../../core/io/virtual_geometry/topology_codec.cpp ../../core/io/virtual_geometry/attribute_codec.cpp ../../core/io/virtual_geometry/page_codec.cpp)
 target_include_directories(veya_geometry_partition PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../..")
-target_sources(veya_geometry_partition PRIVATE page_builder.cpp metadata_bounds.cpp hierarchy_builder.cpp model_builder.cpp ../../core/io/virtual_geometry/hierarchy.cpp ../../core/io/virtual_geometry/model_codec.cpp ../../core/io/virtual_geometry/runtime_fixups.cpp ../../core/io/virtual_geometry_page_directory.cpp)
-target_link_libraries(veya_geometry_partition PRIVATE veya_metis Threads::Threads)
+target_sources(veya_geometry_partition PRIVATE page_builder.cpp metadata_bounds.cpp hierarchy_builder.cpp model_builder.cpp model_decoder.cpp ../../core/io/virtual_geometry/hierarchy.cpp ../../core/io/virtual_geometry/model_codec.cpp ../../core/io/virtual_geometry/page_entropy.cpp ../../core/io/virtual_geometry/runtime_fixups.cpp ../../core/io/virtual_geometry_page_directory.cpp)
+target_link_libraries(veya_geometry_partition PRIVATE veya_metis veya_geometry_zstd Threads::Threads)

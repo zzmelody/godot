@@ -3,6 +3,7 @@
 #include "core/config/project_settings.h"
 #include "core/io/file_access.h"
 #include "core/io/marshalls.h"
+#include "core/io/virtual_geometry/page_entropy.h"
 #include "core/os/thread.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_device.h"
@@ -247,7 +248,21 @@ void VirtualGeometryStreaming::_read(void *p_read) {
 	if (file->get_buffer(read.bytes.ptrw(), read.length) != read.length) {
 		read.bytes.clear();
 		read.error = ERR_FILE_CANT_READ;
+		return;
 	}
+	PackedByteArray decoded;
+	if (decoded.resize(read.decoded_length) != OK) {
+		read.bytes.clear();
+		read.error = ERR_OUT_OF_MEMORY;
+		return;
+	}
+	const auto result = VirtualGeometry::decode_geometry_page_block(read.bytes.ptr(), read.bytes.size(), decoded.ptrw(), decoded.size());
+	if (result.error != VirtualGeometry::PageCodecError::OK) {
+		read.bytes.clear();
+		read.error = result.error == VirtualGeometry::PageCodecError::MEMORY ? ERR_OUT_OF_MEMORY : ERR_FILE_CORRUPT;
+		return;
+	}
+	read.bytes = decoded;
 }
 
 void VirtualGeometryStreaming::_delete_if_finished(Asset *p_asset) {
@@ -553,11 +568,13 @@ void VirtualGeometryStreaming::_start_reads() {
 			break;
 		}
 		const auto &location = asset->directory.pages[demand.key.page];
-		// disk_bytes includes the trailing fixup chunk in the published format.
+		// One frame contains geometry and fixups. The worker owns compressed
+		// input, decoded output and its decoder context under the same lease.
 		const uint32_t length = location.disk_bytes;
+		const uint32_t decoded_length = location.fixup_offset + location.fixup_bytes;
 		const String key = vformat("virtual-geometry:page:%s:%s:%s", asset->mesh.get_id(), asset->generation, demand.key.page);
 		const uint64_t owner = (asset->generation << 32) | uint64_t(demand.key.page);
-		const uint64_t token = _acquire(0, owner, key, length);
+		const uint64_t token = _acquire(0, owner, key, uint64_t(length) + decoded_length + VirtualGeometry::geometry_page_block_decode_scratch_bytes());
 		if (token == 0) {
 			waiting_for_read = true;
 			++refused_reads;
@@ -572,6 +589,7 @@ void VirtualGeometryStreaming::_start_reads() {
 		read->offset = location.container_offset;
 		read->container_bytes = asset->directory.container_bytes;
 		read->length = length;
+		read->decoded_length = decoded_length;
 		read->admission = token;
 		page.state = Page::READING;
 		page.slot_reserved = true;

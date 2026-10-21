@@ -13,11 +13,11 @@ VirtualGeometryTranscoder::~VirtualGeometryTranscoder() {
 	}
 }
 
-Error VirtualGeometryTranscoder::record(RID p_source, RID p_destination, const Vector<Page> &p_pages) {
+Error VirtualGeometryTranscoder::record(RID p_source, RID p_destination, RID p_dependencies, const Vector<Page> &p_pages) {
 	if (p_pages.is_empty()) {
 		return OK;
 	}
-	ERR_FAIL_COND_V(p_source.is_null() || p_destination.is_null() || p_source == p_destination, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_source.is_null() || p_destination.is_null() || p_dependencies.is_null() || p_source == p_destination, ERR_INVALID_PARAMETER);
 	for (const Page &page : p_pages) {
 		ERR_FAIL_COND_V((page.source_byte & 3) != 0 || (page.destination_byte & 3) != 0 ||
 						(page.gpu_bytes & 3) != 0 || page.clusters == 0 || page.clusters > 256 ||
@@ -39,7 +39,8 @@ Error VirtualGeometryTranscoder::record(RID p_source, RID p_destination, const V
 	ERR_FAIL_COND_V(program.is_null() || pipeline_rid.is_null(), ERR_CANT_CREATE);
 	const RD::Uniform source(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { p_source });
 	const RD::Uniform destination(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_destination });
-	const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0, source, destination);
+	const RD::Uniform dependencies(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { p_dependencies });
+	const RID uniforms = UniformSetCacheRD::get_singleton()->get_cache(program, 0, source, destination, dependencies);
 	ERR_FAIL_COND_V(uniforms.is_null(), ERR_CANT_CREATE);
 	const RD::ComputeListID commands = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(commands, pipeline_rid);
@@ -49,7 +50,7 @@ Error VirtualGeometryTranscoder::record(RID p_source, RID p_destination, const V
 			RD::get_singleton()->compute_list_add_barrier(commands);
 		}
 		for (const Page &page : p_pages) {
-			const uint32_t parameters[5] = { page.source_byte / 4, page.destination_byte / 4, page.clusters, page.gpu_bytes, phase };
+			const uint32_t parameters[7] = { page.source_byte / 4, page.destination_byte / 4, page.clusters, page.gpu_bytes, phase, page.dependency_word, page.dependencies };
 			RD::get_singleton()->compute_list_set_push_constant(commands, parameters, sizeof(parameters));
 			RD::get_singleton()->compute_list_dispatch(commands, page.clusters, 1, 1);
 		}

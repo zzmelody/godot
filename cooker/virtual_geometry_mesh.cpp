@@ -1,4 +1,5 @@
 #include "virtual_geometry_mesh.h"
+#include "virtual_geometry/model_decoder.h"
 #include "content_hash.h"
 
 #include "scene/3d/mesh_instance_3d.h"
@@ -361,21 +362,21 @@ Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &
 		}
 		uint64_t gpu_payload_bytes = 0;
 		uint64_t gpu_root_payload_bytes = 0;
-		for (uint32_t page = 0; page < metadata.directory.pages.size(); ++page) {
+		vg::GeometryModelPageDecoder decoder;
+		if (decoder.initialize(metadata, metadata.directory.pages.size()).error != vg::ModelCodecError::OK) {
+			return refuse(r_message, "virtual_geometry generated an invalid page dependency graph");
+		}
+		for (uint32_t page : decoder.get_order()) {
 			const auto &location = metadata.directory.pages[page];
 			const uint8_t *bytes = bundle.container.data() + location.container_offset;
-			vg::GeometryPage decoded_page;
+			const vg::GeometryPage *decoded_page = nullptr;
 			vg::HierarchyPage decoded_fixups;
-			const auto checked = vg::decode_geometry_model_page(metadata, page, bytes, location.disk_bytes, decoded_page, decoded_fixups);
+			std::vector<uint8_t> gpu;
+			const auto checked = decoder.decode(page, bytes, location.disk_bytes, decoded_page, decoded_fixups, &gpu);
 			if (checked.error != vg::ModelCodecError::OK) {
 				return refuse(r_message, vformat("virtual_geometry generated page %d refused: error=%d index=%d", page, int(checked.error), checked.index));
 			}
-			// Offline verification only. Runtime installation will transcode on
-			// the GPU; this oracle must not become its CPU fallback.
-			std::vector<uint8_t> gpu;
-			if (vg::transcode_geometry_page_cpu(bytes, location.fixup_offset, gpu).error != vg::PageCodecError::OK || gpu.size() != location.gpu_bytes) {
-				return refuse(r_message, vformat("virtual_geometry generated page %d failed CPU transcode verification", page));
-			}
+			// The CPU oracle belongs only to Cooker. Runtime uses GPU transcode.
 			gpu_payload_bytes += gpu.size();
 			if (page < metadata.hierarchy.root_pages) {
 				gpu_root_payload_bytes += gpu.size();

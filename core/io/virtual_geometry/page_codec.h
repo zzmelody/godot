@@ -8,7 +8,7 @@ namespace VirtualGeometry {
 
 constexpr uint32_t GEOMETRY_DISK_PAGE_MAGIC = 0x47504756; // VGPG
 constexpr uint32_t GEOMETRY_GPU_PAGE_MAGIC = 0x50474756; // VGGP
-constexpr uint32_t GEOMETRY_PAGE_VERSION = 3;
+constexpr uint32_t GEOMETRY_PAGE_VERSION = 4;
 constexpr uint32_t GEOMETRY_PAGE_HEADER_BYTES = 32;
 constexpr uint32_t GEOMETRY_PAGE_CLUSTER_BYTES = 288;
 
@@ -37,11 +37,34 @@ struct GeometryPageCluster {
 
 struct GeometryPage {
 	bool root = false;
+	// Logical page IDs, in the same sorted order as the model directory.
+	std::vector<uint32_t> dependencies;
 	std::vector<GeometryPageCluster> clusters;
 };
 
+struct GeometryPageDependency {
+	uint32_t page = UINT32_MAX;
+	const GeometryPage *geometry = nullptr; // Borrowed for one codec call.
+};
+
+// Retained by the installer after staging bytes retire. No vertex payload.
+struct GeometryPageVertexLayout {
+	uint32_t vertices = 0;
+	uint32_t precision = 0;
+	uint32_t normal_bits = 0;
+	uint32_t tangent_bits = 0;
+	uint32_t flags = 0;
+	uint32_t uv_sets = 0;
+};
+
+struct GeometryPageDependencyLayout {
+	uint32_t page = UINT32_MAX;
+	const GeometryPageVertexLayout *clusters = nullptr;
+	uint32_t cluster_count = 0;
+};
+
 struct GeometryPageSizes {
-	uint32_t disk_bytes = 0; // Upper bound before page-local vertex sharing.
+	uint32_t disk_bytes = 0; // Upper bound before local/dependency vertex sharing.
 	uint32_t gpu_bytes = 0;
 };
 
@@ -77,25 +100,36 @@ PageCodecResult measure_geometry_page(const GeometryPage &p_page, GeometryPageSi
 
 // Explicit little-endian records, canonical four-byte-aligned payload ranges,
 // zero padding, no serialized native structs. Unique vertices use wrapped
-// ZigZag deltas in four byte planes. References name a directly coded vertex
-// in this page, including earlier clusters; there are no reference chains.
+// ZigZag deltas in four byte planes. Local references name directly coded
+// vertices. External references name fully decoded vertices in declared
+// dependency pages; GPU transcode never follows a recursive reference chain.
 // Input is borrowed for the call. GPU payloads retain their packed bit layout.
 // Disk record word 71 is the canonical GPU payload byte offset. The GPU record
 // keeps word 71 zero; no physical page/pool address is stored in an asset.
 // Old output survives every refusal. No file, engine object or GPU operations.
-PageCodecResult encode_geometry_page(const GeometryPage &p_page, std::vector<uint8_t> &r_bytes);
-PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, GeometryPage &r_page);
+PageCodecResult encode_geometry_page(const GeometryPage &p_page, std::vector<uint8_t> &r_bytes,
+		const std::vector<GeometryPageDependency> &p_dependencies = {});
+PageCodecResult decode_geometry_page(const uint8_t *p_bytes, size_t p_size, GeometryPage &r_page,
+		const std::vector<GeometryPageDependency> &p_dependencies = {});
 
 // Bounded upload-layout check for publication-admitted bytes. Checks canonical
 // input/output ranges and strip headers without unpacking positions, attributes
 // or triangle arrays. This is not content admission or a CPU transcode path.
 PageCodecResult validate_geometry_page_layout(const uint8_t *p_bytes, size_t p_size);
 
+// Cross-page references read completely transcoded GPU pages. The caller pins
+// these logical dependencies until the consumer's GPU retirement completes.
+PageCodecResult validate_geometry_page_dependencies(const uint8_t *p_bytes, size_t p_size,
+		const GeometryPageDependencyLayout *p_dependencies, size_t p_dependency_count);
+// Borrows a layout-validated page and an in-range local cluster index.
+GeometryPageVertexLayout geometry_page_vertex_layout(const uint8_t *p_bytes, uint32_t p_cluster);
+
 // Bounded CPU oracle for the GPU installer. Converts disk strips into
 // minimum-base/delta triangles and restores packed positions/attributes.
 // Material table offsets are relocated to the GPU page's word addresses.
 // This does not install a page or provide a CPU runtime rendering path.
-PageCodecResult transcode_geometry_page_cpu(const uint8_t *p_bytes, size_t p_size, std::vector<uint8_t> &r_gpu_bytes);
+PageCodecResult transcode_geometry_page_cpu(const uint8_t *p_bytes, size_t p_size, std::vector<uint8_t> &r_gpu_bytes,
+		const std::vector<GeometryPageDependency> &p_dependencies = {});
 
 } // namespace VirtualGeometry
 

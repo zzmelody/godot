@@ -18,6 +18,7 @@
 #include "servers/rendering/storage/mesh_storage.h"
 
 #include <atomic>
+#include <array>
 
 namespace RendererRD {
 
@@ -62,6 +63,9 @@ private:
 		uint32_t units = 0;
 		uint32_t root_clusters = 0;
 		RID source;
+		RID dependency_buffer;
+		uint32_t dependency_buffer_bytes = 0;
+		std::array<VirtualGeometry::GeometryPageVertexLayout, 256> vertex_layouts;
 		Vector<uint8_t> bytes;
 		VirtualGeometry::HierarchyPage fixups;
 		bool canceled = false;
@@ -86,11 +90,13 @@ private:
 		uint32_t roots_published = 0;
 		bool roots_committed = false;
 		bool destroyed = false;
+		Error roots_error = OK;
 		Bindings bindings;
 		VirtualGeometry::GeometryModelRoot root;
 		Vector<RID> materials;
 		HashMap<uint32_t, Page *> pages;
 		std::vector<uint8_t> committed;
+		std::vector<Error> page_errors;
 		std::vector<uint32_t> physical_slots;
 		std::vector<uint32_t> dependency_users;
 		HashMap<uint32_t, LocalVector<Page *>> waiters;

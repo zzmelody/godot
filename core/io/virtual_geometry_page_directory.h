@@ -11,7 +11,7 @@
 namespace VirtualGeometry {
 
 constexpr uint32_t PAGE_DIRECTORY_MAGIC = 0x44504756; // "VGPD", little endian.
-constexpr uint32_t PAGE_DIRECTORY_VERSION = 1;
+constexpr uint32_t PAGE_DIRECTORY_VERSION = 2;
 constexpr uint32_t PAGE_DIRECTORY_HEADER_BYTES = 32;
 constexpr uint32_t PAGE_DIRECTORY_RECORD_BYTES = 40;
 constexpr uint32_t ROOT_PAGE_GPU_CAPACITY = 32 * 1024;
@@ -26,6 +26,8 @@ struct PageLocation {
 	uint32_t gpu_bytes = 0;
 	uint32_t dependency_start = 0;
 	uint32_t dependency_count = 0;
+	// Offsets in the decoded block. disk_bytes is the compressed frame size
+	// for published models; raw independent pages exist only during assembly.
 	uint32_t fixup_offset = 0;
 	uint32_t fixup_bytes = 0;
 	uint32_t flags = 0;

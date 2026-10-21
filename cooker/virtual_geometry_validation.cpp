@@ -2,6 +2,7 @@
 
 #include "asset_files.h"
 #include "content_hash.h"
+#include "virtual_geometry/model_decoder.h"
 #include "core/crypto/crypto_core.h"
 #include "core/os/thread.h"
 
@@ -86,8 +87,10 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 		return OK;
 	}
 	const auto &model = p_mesh->get_model();
+	vg::GeometryModelPageDecoder decoder;
+	ERR_FAIL_COND_V(decoder.initialize(model, model.directory.pages.size()).error != vg::ModelCodecError::OK, ERR_INVALID_DATA);
 	Vector<uint8_t> bytes;
-	for (uint32_t page = 0; page < model.directory.pages.size(); ++page) {
+	for (uint32_t page : decoder.get_order()) {
 		const auto &location = model.directory.pages[page];
 		const uint8_t *page_bytes = nullptr;
 		if (!snapshot.is_empty()) {
@@ -98,11 +101,10 @@ Error validate_container(const Ref<VirtualGeometryMesh> &p_mesh, const String &p
 			ERR_FAIL_COND_V(file->get_buffer(bytes.ptrw(), bytes.size()) != static_cast<uint64_t>(bytes.size()), ERR_FILE_CANT_READ);
 			page_bytes = bytes.ptr();
 		}
-		vg::GeometryPage geometry;
+		const vg::GeometryPage *geometry = nullptr;
 		vg::HierarchyPage fixups;
-		ERR_FAIL_COND_V(vg::decode_geometry_model_page(model, page, page_bytes, location.disk_bytes, geometry, fixups).error != vg::ModelCodecError::OK, ERR_INVALID_DATA);
 		std::vector<uint8_t> gpu;
-		ERR_FAIL_COND_V(vg::transcode_geometry_page_cpu(page_bytes, location.fixup_offset, gpu).error != vg::PageCodecError::OK || gpu.size() != location.gpu_bytes, ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(decoder.decode(page, page_bytes, location.disk_bytes, geometry, fixups, &gpu).error != vg::ModelCodecError::OK, ERR_INVALID_DATA);
 	}
 	if (!pinned && snapshot.is_empty()) {
 		String checked_digest;

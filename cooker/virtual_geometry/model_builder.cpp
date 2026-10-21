@@ -1,6 +1,7 @@
 #include "model_builder.h"
 
 #include "metadata_bounds.h"
+#include "core/io/virtual_geometry/page_entropy.h"
 
 #include <algorithm>
 #include <limits>
@@ -82,6 +83,23 @@ ModelBuildResult pack_geometry_model(const EncodableGeometry &p_geometry, const 
 					decoded.root != (page < p_hierarchy.root_pages) || decoded.clusters.size() != p_hierarchy.pages[page].clusters) {
 				return { ModelBuildError::PAGE_CODEC, page, {}, decoded_result };
 			}
+			// Intermediate pages are independent. Borrow only this final page's
+			// declared parents while encoding references; retain no scene-wide copy.
+			decoded.dependencies = p_hierarchy.pages[page].dependencies;
+			std::vector<GeometryPage> dependency_pages(decoded.dependencies.size());
+			std::vector<GeometryPageDependency> dependencies;
+			for (size_t index = 0; index < decoded.dependencies.size(); ++index) {
+				const uint32_t dependency = decoded.dependencies[index];
+				if (dependency >= p_pages.directory.pages.size()) {
+					return { ModelBuildError::INVALID_INPUT, page };
+				}
+				const auto &parent = p_pages.directory.pages[dependency];
+				if (parent.container_offset > p_pages.container.size() || parent.disk_bytes > p_pages.container.size() - parent.container_offset ||
+						decode_geometry_page(p_pages.container.data() + parent.container_offset, parent.disk_bytes, dependency_pages[index]).error != PageCodecError::OK) {
+					return { ModelBuildError::INVALID_INPUT, page };
+				}
+				dependencies.push_back({ dependency, &dependency_pages[index] });
+			}
 			for (uint32_t local = 0; local < decoded.clusters.size(); ++local) {
 				auto &cluster = decoded.clusters[local];
 				if (cluster.cluster >= seen.size() || seen[cluster.cluster]++ != 0 || p_pages.clusters[cluster.cluster].page != page || p_pages.clusters[cluster.cluster].cluster != local ||
@@ -98,7 +116,7 @@ ModelBuildResult pack_geometry_model(const EncodableGeometry &p_geometry, const 
 				}
 			}
 			std::vector<uint8_t> geometry_bytes;
-			const auto encoded_result = encode_geometry_page(decoded, geometry_bytes);
+			const auto encoded_result = encode_geometry_page(decoded, geometry_bytes, dependencies);
 			if (encoded_result.error != PageCodecError::OK) {
 				return { ModelBuildError::PAGE_CODEC, page, {}, encoded_result };
 			}
@@ -107,20 +125,29 @@ ModelBuildResult pack_geometry_model(const EncodableGeometry &p_geometry, const 
 			if (fixups.error != ModelCodecError::OK) {
 				return { ModelBuildError::FIXUP_CODEC, page, fixups };
 			}
-			const uint64_t extra = static_cast<uint64_t>(geometry_bytes.size()) + fixup_bytes.size();
-			if (candidate.container.size() > p_max_output_bytes || extra > p_max_output_bytes - candidate.container.size() || extra > UINT32_MAX) {
+			const uint64_t decoded_bytes = static_cast<uint64_t>(geometry_bytes.size()) + fixup_bytes.size();
+			if (decoded_bytes > UINT32_MAX) {
+				return { ModelBuildError::OUTPUT_LIMIT, page };
+			}
+			const uint32_t geometry_size = static_cast<uint32_t>(geometry_bytes.size());
+			geometry_bytes.insert(geometry_bytes.end(), fixup_bytes.begin(), fixup_bytes.end());
+			std::vector<uint8_t> block;
+			const auto compressed = encode_geometry_page_block(geometry_bytes.data(), geometry_bytes.size(), block);
+			if (compressed.error != PageCodecError::OK) {
+				return { ModelBuildError::PAGE_CODEC, page, {}, compressed };
+			}
+			if (candidate.container.size() > p_max_output_bytes || block.size() > p_max_output_bytes - candidate.container.size()) {
 				return { ModelBuildError::OUTPUT_LIMIT, page };
 			}
 			auto &location = root.directory.pages[page];
 			location.container_offset = candidate.container.size();
-			location.disk_bytes = static_cast<uint32_t>(extra);
+			location.disk_bytes = static_cast<uint32_t>(block.size());
 			location.gpu_bytes = source.gpu_bytes;
 			location.flags = source.flags;
-			location.fixup_offset = static_cast<uint32_t>(geometry_bytes.size());
+			location.fixup_offset = geometry_size;
 			location.fixup_bytes = static_cast<uint32_t>(fixup_bytes.size());
 			location.hierarchy_depth = p_hierarchy.pages[page].depth;
-			candidate.container.insert(candidate.container.end(), geometry_bytes.begin(), geometry_bytes.end());
-			candidate.container.insert(candidate.container.end(), fixup_bytes.begin(), fixup_bytes.end());
+			candidate.container.insert(candidate.container.end(), block.begin(), block.end());
 		}
 		if (std::find(seen.begin(), seen.end(), 0) != seen.end()) {
 			return { ModelBuildError::INVALID_INPUT };

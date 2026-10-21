@@ -60,6 +60,7 @@ class VirtualGeometryStreaming {
 		uint64_t offset = 0;
 		uint64_t container_bytes = 0;
 		uint32_t length = 0;
+		uint32_t decoded_length = 0;
 		uint64_t admission = 0;
 		WorkerThreadPool::TaskID task = WorkerThreadPool::INVALID_TASK_ID;
 		PackedByteArray bytes;

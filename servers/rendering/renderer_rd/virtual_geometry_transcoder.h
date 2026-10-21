@@ -19,6 +19,8 @@ public:
 		uint32_t destination_byte = 0;
 		uint32_t clusters = 0;
 		uint32_t gpu_bytes = 0;
+		uint32_t dependency_word = 0;
+		uint32_t dependencies = 0;
 	};
 
 	~VirtualGeometryTranscoder();
@@ -27,7 +29,7 @@ public:
 	// The installer supplies aligned, disjoint destination ranges inside its
 	// allocations and retains both buffers until GPU completion. Records graph
 	// work only: OK does not mean a page is ready, and never releases a lease.
-	Error record(RID p_source, RID p_destination, const Vector<Page> &p_pages);
+	Error record(RID p_source, RID p_destination, RID p_dependencies, const Vector<Page> &p_pages);
 };
 
 } // namespace RendererRD

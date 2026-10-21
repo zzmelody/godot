@@ -33,6 +33,8 @@ struct ModelBuildResult {
 // Assemble already prepared geometry/pages/hierarchy from the same build.
 // Publishes static flags, dense model material slots, per-page fixup bytes,
 // directory depths/dependencies and the standalone model-root protocol.
+// Encodes vertex sharing against declared dependency pages, then wraps each
+// complete geometry/fixup block in one checksummed Zstd frame.
 // Caller supplies the build/receipt identity; no source hashes are invented.
 // Limit covers final root+container, not borrowed input or offline staging.
 // No file writes or Resource objects. Whole old output survives refusal.

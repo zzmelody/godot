@@ -1,6 +1,7 @@
 #include "virtual_geometry_minimum.h"
 
 #include "asset_files.h"
+#include "virtual_geometry/model_decoder.h"
 #include "core/object/script_language.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/resources/multimesh.h"
@@ -41,15 +42,17 @@ Error minimum_root_mesh(const Ref<VirtualGeometryMesh> &p_source, Ref<ArrayMesh>
 	ERR_FAIL_COND_V(file->get_length() != p_source->get_container_bytes(), ERR_INVALID_DATA);
 	try {
 		std::map<uint32_t, RootSurface> surfaces;
-		for (uint32_t page = 0; page < model.hierarchy.root_pages; ++page) {
+		vg::GeometryModelPageDecoder decoder;
+		ERR_FAIL_COND_V(decoder.initialize(model, model.hierarchy.root_pages).error != vg::ModelCodecError::OK, ERR_INVALID_DATA);
+		for (uint32_t page : decoder.get_order()) {
 			const auto &location = model.directory.pages[page];
 			file->seek(location.container_offset);
 			const Vector<uint8_t> bytes = file->get_buffer(location.disk_bytes);
 			ERR_FAIL_COND_V(bytes.size() != location.disk_bytes, ERR_FILE_CANT_READ);
-			vg::GeometryPage geometry;
+			const vg::GeometryPage *geometry = nullptr;
 			vg::HierarchyPage fixups;
-			ERR_FAIL_COND_V(vg::decode_geometry_model_page(model, page, bytes.ptr(), bytes.size(), geometry, fixups).error != vg::ModelCodecError::OK, ERR_INVALID_DATA);
-			for (const auto &cluster : geometry.clusters) {
+			ERR_FAIL_COND_V(decoder.decode(page, bytes.ptr(), bytes.size(), geometry, fixups).error != vg::ModelCodecError::OK, ERR_INVALID_DATA);
+			for (const auto &cluster : geometry->clusters) {
 				if ((cluster.flags & vg::CLUSTER_FLAG_ROOT_GROUP) == 0) {
 					continue;
 				}

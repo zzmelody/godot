@@ -16,12 +16,18 @@ layout(set = 0, binding = 1, std430) buffer GpuPages {
 	uint words[];
 } gpu_pages;
 
+layout(set = 0, binding = 2, std430) readonly buffer DependencyPages {
+	uint words[];
+} dependency_pages;
+
 layout(push_constant, std430) uniform Parameters {
 	uint source_word;
 	uint destination_word;
 	uint clusters;
 	uint gpu_bytes;
 	uint phase;
+	uint dependency_word;
+	uint dependencies;
 } params;
 
 uint record_word;
@@ -33,6 +39,11 @@ uint record(uint word) {
 
 uint cluster_record(uint cluster, uint word) {
 	return disk_pages.words[params.source_word + 8u + cluster * 72u + word];
+}
+
+uint layout_record(uint page, bool from_gpu, uint cluster, uint word) {
+	uint address = page + 8u + cluster * 72u + word;
+	return from_gpu ? gpu_pages.words[address] : disk_pages.words[address];
 }
 
 uint disk_byte(uint offset) {
@@ -49,24 +60,24 @@ uint channels(uint cluster) {
 }
 
 // bits, integer origin, bit offset in a vertex, attribute-stream selector.
-uvec4 channel_at(uint cluster, uint index) {
+uvec4 channel_at(uint page, bool from_gpu, uint cluster, uint index) {
 	if (index < 3u) {
 		uint offset = 0u;
 		for (uint axis = 0u; axis < index; ++axis) {
-			offset += cluster_record(cluster, 28u + axis);
+			offset += layout_record(page, from_gpu, cluster, 28u + axis);
 		}
-		return uvec4(cluster_record(cluster, 28u + index), cluster_record(cluster, 25u + index), offset, 0u);
+		return uvec4(layout_record(page, from_gpu, cluster, 28u + index), layout_record(page, from_gpu, cluster, 25u + index), offset, 0u);
 	}
 	index -= 3u;
-	uint normal_bits = cluster_record(cluster, 33u);
+	uint normal_bits = layout_record(page, from_gpu, cluster, 33u);
 	if (index < 2u) {
 		return uvec4(normal_bits, 0u, index * normal_bits, 1u);
 	}
 	index -= 2u;
 	uint offset = normal_bits * 2u;
-	uint flags = cluster_record(cluster, 35u);
+	uint flags = layout_record(page, from_gpu, cluster, 35u);
 	if ((flags & 1u) != 0u) {
-		uint bits = cluster_record(cluster, 34u) + 1u;
+		uint bits = layout_record(page, from_gpu, cluster, 34u) + 1u;
 		if (index == 0u) {
 			return uvec4(bits, 0u, offset, 1u);
 		}
@@ -75,16 +86,16 @@ uvec4 channel_at(uint cluster, uint index) {
 	}
 	if ((flags & 2u) != 0u) {
 		for (uint component = 0u; component < 4u; ++component) {
-			uint bits = (cluster_record(cluster, 40u) >> (component * 4u)) & 15u;
+			uint bits = (layout_record(page, from_gpu, cluster, 40u) >> (component * 4u)) & 15u;
 			if (index == 0u) {
-				return uvec4(bits, (cluster_record(cluster, 39u) >> (component * 8u)) & 255u, offset, 1u);
+				return uvec4(bits, (layout_record(page, from_gpu, cluster, 39u) >> (component * 8u)) & 255u, offset, 1u);
 			}
 			--index;
 			offset += bits;
 		}
 	}
-	for (uint component = 0u; component < cluster_record(cluster, 36u) * 2u; ++component) {
-		uint code = cluster_record(cluster, 41u + component);
+	for (uint component = 0u; component < layout_record(page, from_gpu, cluster, 36u) * 2u; ++component) {
+		uint code = layout_record(page, from_gpu, cluster, 41u + component);
 		uint bits = code & 63u;
 		if (index == 0u) {
 			return uvec4(bits, code >> 6u, offset, 1u);
@@ -95,24 +106,32 @@ uvec4 channel_at(uint cluster, uint index) {
 	return uvec4(0u);
 }
 
-uint vertex_stride(uint cluster, bool p_attribute) {
+uvec4 channel_at(uint cluster, uint index) {
+	return channel_at(params.source_word, false, cluster, index);
+}
+
+uint vertex_stride(uint page, bool from_gpu, uint cluster, bool p_attribute) {
 	if (!p_attribute) {
-		return cluster_record(cluster, 28u) + cluster_record(cluster, 29u) + cluster_record(cluster, 30u);
+		return layout_record(page, from_gpu, cluster, 28u) + layout_record(page, from_gpu, cluster, 29u) + layout_record(page, from_gpu, cluster, 30u);
 	}
-	uint flags = cluster_record(cluster, 35u);
-	uint result = cluster_record(cluster, 33u) * 2u;
+	uint flags = layout_record(page, from_gpu, cluster, 35u);
+	uint result = layout_record(page, from_gpu, cluster, 33u) * 2u;
 	if ((flags & 1u) != 0u) {
-		result += cluster_record(cluster, 34u) + 1u;
+		result += layout_record(page, from_gpu, cluster, 34u) + 1u;
 	}
 	if ((flags & 2u) != 0u) {
 		for (uint component = 0u; component < 4u; ++component) {
-			result += (cluster_record(cluster, 40u) >> (component * 4u)) & 15u;
+			result += (layout_record(page, from_gpu, cluster, 40u) >> (component * 4u)) & 15u;
 		}
 	}
-	for (uint component = 0u; component < cluster_record(cluster, 36u) * 2u; ++component) {
-		result += cluster_record(cluster, 41u + component) & 63u;
+	for (uint component = 0u; component < layout_record(page, from_gpu, cluster, 36u) * 2u; ++component) {
+		result += layout_record(page, from_gpu, cluster, 41u + component) & 63u;
 	}
 	return result;
+}
+
+uint vertex_stride(uint cluster, bool p_attribute) {
+	return vertex_stride(params.source_word, false, cluster, p_attribute);
 }
 
 bool vertex_reference(uint vertex) {
@@ -161,6 +180,21 @@ uint read_vertex_value(uint cluster, uint vertex, uvec4 description) {
 	uint value = atomicOr(gpu_pages.words[word], 0u) >> shift;
 	if (shift + description.x > 32u) {
 		value |= atomicOr(gpu_pages.words[word + 1u], 0u) << (32u - shift);
+	}
+	return value & mask_bits(description.x);
+}
+
+uint read_dependency_vertex(uint page, uint cluster, uint vertex, uvec4 description) {
+	if (description.x == 0u) {
+		return 0u;
+	}
+	uint start = layout_record(page, true, cluster, description.w != 0u ? 37u : 31u);
+	uint bit = vertex * vertex_stride(page, true, cluster, description.w != 0u) + description.z;
+	uint word = page + (start >> 2u) + (bit >> 5u);
+	uint shift = bit & 31u;
+	uint value = gpu_pages.words[word] >> shift;
+	if (shift + description.x > 32u) {
+		value |= gpu_pages.words[word + 1u] << (32u - shift);
 	}
 	return value & mask_bits(description.x);
 }
@@ -216,6 +250,14 @@ void decode_referenced_vertices(uint cluster) {
 		}
 		uint ordinal = reference_count(vertex);
 		uint source_cluster = disk_byte(record(37u) + 32u + ordinal);
+		uint dependency = 0u;
+		for (uint plane = 0u; plane < 4u; ++plane) {
+			dependency |= disk_byte(record(37u) + 32u + count * (2u + plane) + ordinal) << (plane * 8u);
+		}
+		if (dependency > params.dependencies) {
+			return; // Host rejects this before dispatch; retain the shader guard.
+		}
+		uint source_page = dependency == 0u ? params.source_word : dependency_pages.words[params.dependency_word + dependency - 1u];
 		uint source_vertex = 0u;
 		for (uint reference = 0u; reference <= ordinal; ++reference) {
 			uint zigzag = disk_byte(record(37u) + 32u + count + reference);
@@ -223,8 +265,9 @@ void decode_referenced_vertices(uint cluster) {
 		}
 		for (uint channel = 0u; channel < channels(cluster); ++channel) {
 			uvec4 destination = channel_at(cluster, channel);
-			uvec4 source = channel_at(source_cluster, channel);
-			uint value = source.y + read_vertex_value(source_cluster, source_vertex, source) - destination.y;
+			uvec4 source = channel_at(source_page, dependency != 0u, source_cluster, channel);
+			uint encoded = dependency == 0u ? read_vertex_value(source_cluster, source_vertex, source) : read_dependency_vertex(source_page, source_cluster, source_vertex, source);
+			uint value = source.y + encoded - destination.y;
 			write_vertex_value(cluster, vertex, destination, value);
 		}
 	}
@@ -336,6 +379,8 @@ void main() {
 			value = params.clusters;
 		} else if (lane == 4u || lane == 5u) {
 			value = params.gpu_bytes;
+		} else if (lane == 7u) {
+			value = 0u;
 		}
 		gpu_pages.words[params.destination_word + lane] = value;
 	}

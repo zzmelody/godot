@@ -58,6 +58,9 @@ VirtualGeometryStorage::~VirtualGeometryStorage() {
 			if (entry.value->source.is_valid()) {
 				RD::get_singleton()->free_rid(entry.value->source);
 			}
+			if (entry.value->dependency_buffer.is_valid()) {
+				RD::get_singleton()->free_rid(entry.value->dependency_buffer);
+			}
 			memdelete(entry.value);
 		}
 		memdelete(asset);
@@ -618,7 +621,7 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	}
 	const uint32_t table_byte = (uint32_t(p_root.size()) + 15) & ~15u;
 	const uint64_t gpu_bytes = table_byte + uint64_t(root.hierarchy.pages.size()) * 4;
-	const uint64_t charge = sizeof(Asset) + root_memory(root) + uint64_t(p_materials.size()) * sizeof(RID) + uint64_t(root.hierarchy.pages.size()) * 9;
+	const uint64_t charge = sizeof(Asset) + root_memory(root) + uint64_t(p_materials.size()) * sizeof(RID) + uint64_t(root.hierarchy.pages.size()) * (9 + sizeof(Error));
 	if (charge + gpu_bytes > _available(metadata_budget, metadata_reserved) || gpu_bytes > UINT32_MAX || pool.is_null() || (!automatic_pool && uint64_t(root.hierarchy.root_pages) * UNIT_BYTES > pool_bytes)) {
 		return ERR_OUT_OF_MEMORY;
 	}
@@ -671,6 +674,7 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	};
 	asset->bindings.hierarchy_depth = depth(depth, 0);
 	asset->committed.resize(asset->root.hierarchy.pages.size(), 0);
+	asset->page_errors.resize(asset->root.hierarchy.pages.size(), OK);
 	asset->physical_slots.resize(asset->root.hierarchy.pages.size(), UINT32_MAX);
 	asset->dependency_users.resize(asset->root.hierarchy.pages.size(), 0);
 	metadata_reserved += charge + gpu_bytes;
@@ -684,6 +688,12 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 void VirtualGeometryStorage::_outcome(Page *p_page, uint32_t p_status, Error p_error) {
 	if (p_status == PAGE_RESIDENT || p_status == PAGE_FAILED) {
 		p_page->install_pending = false;
+	}
+	if (p_status == PAGE_FAILED) {
+		p_page->asset->page_errors[p_page->index] = p_error == OK ? FAILED : p_error;
+		if (p_page->index < p_page->asset->root.hierarchy.root_pages) {
+			p_page->asset->roots_error = p_page->asset->page_errors[p_page->index];
+		}
 	}
 	--outcome_reservations;
 	outcomes.push_back({ ++sequence, p_page->asset->mesh.get_id(), p_page->asset->generation, p_page->lease,
@@ -725,7 +735,6 @@ void VirtualGeometryStorage::_retire(Page *p_page) {
 		--p_page->asset->roots_transcoded;
 		p_page->root_counted = false;
 	}
-	_drop_dependencies(p_page);
 	if (p_page->state != Page::QUEUED && p_page->state != Page::TRANSCODING) {
 		_begin_retirement(p_page);
 	}
@@ -870,6 +879,13 @@ void VirtualGeometryStorage::_free_source(Page *p_page) {
 		p_page->work -= p_page->bytes.size();
 		p_page->source = RID();
 	}
+	if (p_page->dependency_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(p_page->dependency_buffer);
+		freed_buffers.push_back({ RD::get_singleton()->get_recording_submission_serial(), p_page->dependency_buffer_bytes });
+		p_page->work -= p_page->dependency_buffer_bytes;
+		p_page->dependency_buffer = RID();
+		p_page->dependency_buffer_bytes = 0;
+	}
 	p_page->bytes.clear();
 }
 
@@ -904,6 +920,10 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 		}
 		seen[mesh].insert(page);
 		Asset *asset = *found;
+		if (operation == 0 && asset->roots_error != OK) {
+			refusal = asset->roots_error;
+			break;
+		}
 		Page **existing = asset->pages.getptr(page);
 		if (operation == 1) {
 			if (page < asset->root.hierarchy.root_pages || payload != UINT32_MAX || existing == nullptr || (*existing)->lease != lease || (*existing)->upload != upload || (*existing)->canceled) {
@@ -921,7 +941,8 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 		const auto &location = asset->root.directory.pages[page];
 		// Bound both owned bytes and fixup preparation before decoding. RD's
 		// internal transfer allocator is not reported as measured service memory.
-		const uint64_t work = uint64_t(bytes.size()) * 2 + uint64_t(location.fixup_bytes) * 4;
+		const uint64_t work = uint64_t(bytes.size()) * 2 + uint64_t(location.fixup_bytes) * 4 +
+				uint64_t(location.dependency_count) * (sizeof(VirtualGeometry::GeometryPageDependencyLayout) * 2 + 12);
 		added_work += work;
 		added_metadata += sizeof(Page) + 64;
 		if (added_work > _available(work_budget, work_reserved) || added_metadata > _available(metadata_budget, metadata_reserved)) {
@@ -940,6 +961,9 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 		if (VirtualGeometry::validate_geometry_model_page_layout(asset->root, page, bytes.ptr(), bytes.size(), candidate->fixups).error != VirtualGeometry::ModelCodecError::OK) {
 			refusal = ERR_INVALID_DATA;
 			break;
+		}
+		for (uint32_t cluster = 0; cluster < asset->root.hierarchy.pages[page].clusters; ++cluster) {
+			candidate->vertex_layouts[cluster] = VirtualGeometry::geometry_page_vertex_layout(bytes.ptr(), cluster);
 		}
 		if (page < asset->root.hierarchy.root_pages) {
 			const uint32_t mask = VirtualGeometry::CLUSTER_FLAG_ROOT_LEAF | VirtualGeometry::CLUSTER_FLAG_ROOT_GROUP;
@@ -1016,6 +1040,7 @@ Error VirtualGeometryStorage::submit_pages(const Vector<uint8_t> &p_records, con
 	for (Page *page : prepared) {
 		Asset *asset = page->asset;
 		asset->pages.insert(page->index, page);
+		asset->page_errors[page->index] = OK;
 		asset->physical_slots[page->index] = page->slot;
 		page->dependencies_held = true;
 		for (uint32_t dependency : _dependencies(page)) {
@@ -1211,9 +1236,11 @@ void VirtualGeometryStorage::_process_uninstalls() {
 		for (Page *page : committed) {
 			page->asset->committed[page->index] = 1;
 			page->canceled = false;
-			page->dependencies_held = true;
-			for (uint32_t dependency : _dependencies(page)) {
-				++page->asset->dependency_users[dependency];
+			if (!page->dependencies_held) {
+				page->dependencies_held = true;
+				for (uint32_t dependency : _dependencies(page)) {
+					++page->asset->dependency_users[dependency];
+				}
 			}
 			if (page->retire_outcome) {
 				_outcome(page, PAGE_RETIRE_FAILED, error);
@@ -1269,7 +1296,7 @@ void VirtualGeometryStorage::update() {
 	}
 	for (uint32_t index = 0; index < retiring.size();) {
 		Page *page = retiring[index];
-		if (page->serial > completed) {
+		if (page->serial > completed || page->asset->dependency_users[page->index] != 0) {
 			++index;
 			continue;
 		}
@@ -1324,32 +1351,85 @@ void VirtualGeometryStorage::update() {
 	}
 	_process_uninstalls();
 	_process_installs();
-	for (Page *page : queued) {
+	LocalVector<Page *> candidates = std::move(queued);
+	for (Page *page : candidates) {
 		if (page->canceled) {
-			_outcome(page, PAGE_FAILED, page->install_error);
+			if (page->asset->dependency_users[page->index] != 0) {
+				queued.push_back(page);
+				continue;
+			}
+			if (page->install_pending) {
+				_outcome(page, PAGE_FAILED, page->install_error);
+			}
 			if (page->retire_outcome) {
 				_outcome(page, PAGE_RETIRED, OK);
 			}
 			_delete_page(page);
 			continue;
 		}
-		Error error = OK;
+		Error error = page->asset->roots_error;
+		bool waiting = false;
+		Vector<uint8_t> dependency_bytes;
+		LocalVector<VirtualGeometry::GeometryPageDependencyLayout> dependency_layouts;
+		const auto dependencies = _dependencies(page);
+		if (error == OK && dependencies.size() != 0 && dependency_bytes.resize(dependencies.size() * 4) != OK) {
+			error = ERR_OUT_OF_MEMORY;
+		}
+		for (uint32_t index = 0; error == OK && index < dependencies.size(); ++index) {
+			const uint32_t dependency = dependencies[index];
+			if (page->asset->page_errors[dependency] != OK) {
+				error = page->asset->page_errors[dependency];
+				break;
+			}
+			Page **source = page->asset->pages.getptr(dependency);
+			if (source != nullptr && (*source)->canceled) {
+				error = ERR_SKIP;
+				break;
+			}
+			if (source == nullptr || (*source)->state == Page::QUEUED || (*source)->state == Page::TRANSCODING) {
+				waiting = true;
+				continue;
+			}
+			encode_uint32((*source)->slot * (UNIT_BYTES / 4), dependency_bytes.ptrw() + index * 4);
+			dependency_layouts.push_back({ dependency, (*source)->vertex_layouts.data(), page->asset->root.hierarchy.pages[dependency].clusters });
+		}
+		if (error == OK && waiting) {
+			queued.push_back(page);
+			continue;
+		}
+		const auto &location = page->asset->root.directory.pages[page->index];
+		if (error == OK && VirtualGeometry::validate_geometry_page_dependencies(page->bytes.ptr(), location.fixup_offset,
+				dependency_layouts.ptr(), dependency_layouts.size()).error != VirtualGeometry::PageCodecError::OK) {
+			error = ERR_INVALID_DATA;
+		}
+		if (error == OK && !dependency_bytes.is_empty()) {
+			page->dependency_buffer = RD::get_singleton()->storage_buffer_create(dependency_bytes.size(), dependency_bytes);
+			if (page->dependency_buffer.is_null()) {
+				error = ERR_CANT_CREATE;
+			} else {
+				page->dependency_buffer_bytes = dependency_bytes.size();
+				staging_bytes += page->dependency_buffer_bytes;
+			}
+		}
 		if (error == OK) {
 			page->source = RD::get_singleton()->storage_buffer_create(page->bytes.size(), page->bytes);
 			if (page->source.is_null()) {
 				error = ERR_CANT_CREATE;
 			} else {
 				staging_bytes += page->bytes.size();
-				const auto &location = page->asset->root.directory.pages[page->index];
 				Vector<VirtualGeometryTranscoder::Page> jobs;
-				jobs.push_back({ 0, page->slot * UNIT_BYTES, page->asset->root.hierarchy.pages[page->index].clusters, location.gpu_bytes });
-				error = transcoder.record(page->source, pool, jobs);
+				jobs.push_back({ 0, page->slot * UNIT_BYTES, page->asset->root.hierarchy.pages[page->index].clusters, location.gpu_bytes, 0, location.dependency_count });
+				// A page without dependencies never reads binding 2. Reuse its
+				// immutable source buffer rather than allocate an empty GPU buffer.
+				error = transcoder.record(page->source, pool, page->dependency_buffer.is_valid() ? page->dependency_buffer : page->source, jobs);
 			}
 		}
 		if (error != OK) {
 			_free_source(page);
 			_outcome(page, PAGE_FAILED, error);
-			_delete_page(page);
+			page->install_error = error;
+			_retire(page);
+			queued.push_back(page);
 			continue;
 		}
 		// Upload staging may have flushed and begun a newer RD recording frame.
@@ -1358,11 +1438,10 @@ void VirtualGeometryStorage::update() {
 		page->state = Page::TRANSCODING;
 		inflight.push_back(page);
 	}
-	queued.clear();
 	// Transfers and fixup tickets still need renderer updates after submission,
 	// even if no window can draw. Stop requesting frames once page work and
 	// deferred buffer retirement have both completed.
-	if (!inflight.is_empty() || !ready.is_empty() || !publishing.is_empty() ||
+	if (!queued.is_empty() || !inflight.is_empty() || !ready.is_empty() || !publishing.is_empty() ||
 			!uninstalls.is_empty() || !retiring.is_empty() || !freed_buffers.is_empty()) {
 		RD::get_singleton()->request_resources_processing();
 	}

@@ -1,4 +1,5 @@
 #include "model_codec.h"
+#include "page_entropy.h"
 
 #include <algorithm>
 #include <cmath>
@@ -232,11 +233,11 @@ ModelCodecResult validate_root(const GeometryModelRoot &p_root) {
 				metadata.depth != page_depth[page] || location.hierarchy_depth != metadata.depth ||
 				location.flags != (page < hierarchy.root_pages ? PAGE_FLAG_ROOT : 0u) || location.container_offset != container ||
 				location.fixup_offset < GEOMETRY_PAGE_HEADER_BYTES || location.fixup_bytes < MODEL_FIXUP_HEADER_BYTES ||
-				location.fixup_offset > STREAMING_PAGE_GPU_CAPACITY * 2 || location.fixup_bytes > MODEL_FIXUP_HEADER_BYTES + MAX_PAGE_FIXUPS * 40 ||
-				(location.fixup_offset & 3) != 0 || (location.fixup_bytes & 3) != 0 || (location.container_offset & 3) != 0 ||
+				location.fixup_offset > STREAMING_PAGE_GPU_CAPACITY * 4 || location.fixup_bytes > MODEL_FIXUP_HEADER_BYTES + MAX_PAGE_FIXUPS * 40 ||
+				(location.fixup_offset & 3) != 0 || (location.fixup_bytes & 3) != 0 ||
 				location.gpu_bytes < GEOMETRY_PAGE_HEADER_BYTES + metadata.clusters * GEOMETRY_PAGE_CLUSTER_BYTES ||
 				location.dependency_start != first_dependency || first_dependency > p_root.directory.dependencies.size() || location.dependency_count > p_root.directory.dependencies.size() - first_dependency ||
-				location.fixup_offset > location.disk_bytes || location.fixup_bytes != location.disk_bytes - location.fixup_offset) {
+				location.fixup_bytes > UINT32_MAX - location.fixup_offset) {
 			return { ModelCodecError::INVALID_DIRECTORY, page };
 		}
 		uint32_t local = 0;
@@ -666,7 +667,7 @@ ModelCodecResult validate_geometry_model_page_layout(const GeometryModelRoot &p_
 		return { ModelCodecError::INVALID_PAGE, p_page };
 	}
 	const auto &location = p_root.directory.pages[p_page];
-	if (p_size != location.disk_bytes || location.fixup_offset > p_size || location.fixup_bytes != p_size - location.fixup_offset) {
+	if (location.fixup_offset > p_size || location.fixup_bytes != p_size - location.fixup_offset) {
 		return { ModelCodecError::INVALID_LENGTH, p_page };
 	}
 	try {
@@ -675,6 +676,15 @@ ModelCodecResult validate_geometry_model_page_layout(const GeometryModelRoot &p_
 				read32(p_bytes, 8) != (p_page < p_root.hierarchy.root_pages ? PAGE_FLAG_ROOT : 0) ||
 				read32(p_bytes, 12) != p_root.hierarchy.pages[p_page].clusters || read32(p_bytes, 20) != location.gpu_bytes) {
 			return { ModelCodecError::INVALID_PAGE, p_page };
+		}
+		const size_t dependency_offset = GEOMETRY_PAGE_HEADER_BYTES + size_t(read32(p_bytes, 12)) * GEOMETRY_PAGE_CLUSTER_BYTES;
+		if (read32(p_bytes, 28) != location.dependency_count) {
+			return { ModelCodecError::INVALID_PAGE, p_page };
+		}
+		for (uint32_t index = 0; index < location.dependency_count; ++index) {
+			if (read32(p_bytes, dependency_offset + size_t(index) * 4) != p_root.directory.dependencies[location.dependency_start + index]) {
+				return { ModelCodecError::INVALID_PAGE, p_page };
+			}
 		}
 		const auto fixed = decode_geometry_model_fixups(p_root, p_page, p_bytes + location.fixup_offset, location.fixup_bytes, chunk);
 		if (fixed.error != ModelCodecError::OK) {
@@ -745,19 +755,32 @@ ModelCodecResult validate_geometry_model_page_layout(const GeometryModelRoot &p_
 }
 
 ModelCodecResult decode_geometry_model_page(const GeometryModelRoot &p_root, uint32_t p_page,
-		const uint8_t *p_bytes, size_t p_size, GeometryPage &r_page, HierarchyPage &r_chunk) {
-	HierarchyPage chunk;
-	const auto checked = validate_geometry_model_page_layout(p_root, p_page, p_bytes, p_size, chunk);
-	if (checked.error != ModelCodecError::OK) {
-		return checked;
-	}
-	GeometryPage page;
-	if (decode_geometry_page(p_bytes, p_root.directory.pages[p_page].fixup_offset, page).error != PageCodecError::OK) {
+		const uint8_t *p_bytes, size_t p_size, GeometryPage &r_page, HierarchyPage &r_chunk,
+		const std::vector<GeometryPageDependency> &p_dependencies) {
+	if (p_page >= p_root.directory.pages.size() || p_size != p_root.directory.pages[p_page].disk_bytes) {
 		return { ModelCodecError::INVALID_PAGE, p_page };
 	}
-	r_page = std::move(page);
-	r_chunk = std::move(chunk);
-	return {};
+	try {
+		const auto &location = p_root.directory.pages[p_page];
+		std::vector<uint8_t> decoded;
+		if (decode_geometry_page_block(p_bytes, p_size, size_t(location.fixup_offset) + location.fixup_bytes, decoded).error != PageCodecError::OK) {
+			return { ModelCodecError::INVALID_PAGE, p_page };
+		}
+		HierarchyPage chunk;
+		const auto checked = validate_geometry_model_page_layout(p_root, p_page, decoded.data(), decoded.size(), chunk);
+		if (checked.error != ModelCodecError::OK) {
+			return checked;
+		}
+		GeometryPage page;
+		if (decode_geometry_page(decoded.data(), location.fixup_offset, page, p_dependencies).error != PageCodecError::OK) {
+			return { ModelCodecError::INVALID_PAGE, p_page };
+		}
+		r_page = std::move(page);
+		r_chunk = std::move(chunk);
+		return {};
+	} catch (const std::bad_alloc &) {
+		return { ModelCodecError::MEMORY };
+	}
 }
 
 } // namespace VirtualGeometry

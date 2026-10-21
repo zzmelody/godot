@@ -66,7 +66,7 @@ PageDirectoryResult validate_directory(const PageDirectory &p_directory) {
 		if (page.disk_bytes == 0 || page.container_offset > p_directory.container_bytes || page.disk_bytes > p_directory.container_bytes - page.container_offset) {
 			return { PageDirectoryError::INVALID_PAGE_RANGE, page_id };
 		}
-		if (page.fixup_offset > page.disk_bytes || page.fixup_bytes > page.disk_bytes - page.fixup_offset) {
+		if (page.fixup_bytes > UINT32_MAX - page.fixup_offset) {
 			return { PageDirectoryError::INVALID_FIXUP_RANGE, page_id };
 		}
 		if (page.hierarchy_depth > MAX_HIERARCHY_DEPTH) {

@@ -13,4 +13,4 @@ if env.msvc:
     codec_env.Append(CXXFLAGS=["/EHsc"])
 else:
     codec_env.Append(CXXFLAGS=["-fexceptions"])
-codec_env.add_source_files(env.core_sources, ["cluster_codec.cpp", "topology_codec.cpp", "attribute_codec.cpp", "page_codec.cpp", "hierarchy.cpp", "model_codec.cpp", "runtime_fixups.cpp"])
+codec_env.add_source_files(env.core_sources, ["cluster_codec.cpp", "topology_codec.cpp", "attribute_codec.cpp", "page_codec.cpp", "page_entropy.cpp", "hierarchy.cpp", "model_codec.cpp", "runtime_fixups.cpp"])
