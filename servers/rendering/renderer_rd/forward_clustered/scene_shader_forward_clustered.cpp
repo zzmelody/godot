@@ -681,6 +681,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 					if (define.begins_with("#define LIGHT_") || define.begins_with("#define DIFFUSE_") || define.begins_with("#define SPECULAR_") ||
 							define == "#define MODE_UNSHADED\n" || define == "#define FOG_DISABLED\n" ||
 							define == "#define SHADOWS_DISABLED\n" || define == "#define AMBIENT_LIGHT_DISABLED\n" ||
+							define == "#define DEBUG_DRAW_PSSM_SPLITS\n" ||
 							define == "#define ENABLE_SSS\n" || define == "#define ENABLE_TRANSMITTANCE\n" || define == "#define SSS_MODE_SKIN\n" ||
 							define == "#define AREA_LIGHT_CODE_USED\n" ||
 							define == "#define BENT_NORMAL_MAP_USED\n" || define == "#define CUSTOM_FOG_USED\n" ||

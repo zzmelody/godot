@@ -94,7 +94,16 @@ void vg_evaluate_fragment(VGSurface surface, vec2 point) {
 		atomicOr(vg_status.data[0], 2u);
 		vg_killed = true;
 	} else {
-		vg_killed = vg_killed || alpha_highp < compute_alpha_hash_threshold(surface.local_position, alpha_hash_scale);
+		vec3 object_position = surface.local_position;
+#ifdef LIGHT_VERTEX_USED
+		// The native fragment stage replaces its lighting position before alpha
+		// hash. Coverage must use the same authored position in every VG pass.
+		object_position = (inverse(read_model_matrix) * vg_camera * vec4(light_vertex, 1.0)).xyz;
+#endif
+		// Even killed lanes must participate in the hash derivatives. A
+		// short-circuit here would omit their subgroup quad operations.
+		float hash_threshold = compute_alpha_hash_threshold(object_position, alpha_hash_scale);
+		vg_killed = vg_killed || alpha_highp < hash_threshold;
 	}
 #endif
 }
