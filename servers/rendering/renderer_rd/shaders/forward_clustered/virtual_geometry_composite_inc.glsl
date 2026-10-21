@@ -19,6 +19,7 @@ vg_shading;
 #define VG_SCENE_SET 2
 #define VG_MATERIAL_LOOKUP
 #include "../virtual_geometry_scene_inc.glsl"
+#include "../virtual_geometry_frame_inc.glsl"
 layout(set = 2, binding = 16) uniform texture2D vg_albedo;
 layout(set = 2, binding = 17) uniform texture2D vg_normal;
 layout(set = 2, binding = 18) uniform texture2D vg_emission;

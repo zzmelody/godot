@@ -13,6 +13,7 @@ layout(set = 0, binding = 1, std430) readonly buffer Geometry {
 geometry;
 #include "virtual_geometry_attributes_inc.glsl"
 #include "virtual_geometry_scene_inc.glsl"
+#include "virtual_geometry_frame_inc.glsl"
 layout(set = 0, binding = 9, std430) buffer Shading {
 	uint data[];
 }
@@ -79,11 +80,13 @@ void main() {
 		return;
 	}
 	vg_evaluate_fragment(surface, vec2(point) + 0.5);
-	vec3 normal = normalize(normal_highp);
+	vec3 normal = normal_highp;
 #ifdef NORMAL_MAP_USED
 	normal_map.xy = normal_map.xy * 2.0 - 1.0;
 	normal_map.z = sqrt(max(0.0, 1.0 - dot(normal_map.xy, normal_map.xy)));
 	normal = normalize(mix(normal, tangent * normal_map.x + binormal * normal_map.y + normal * normal_map.z, normal_map_depth));
+#else
+	normal = normalize(normal);
 #endif
 #ifdef VG_EXTENDED_MATERIAL
 	// Keep each primitive's complete quad, including extrapolated helpers.
@@ -147,9 +150,9 @@ void main() {
 	imageStore(vg_backlight, pixel, vec4(backlight, ao_light_affect));
 	imageStore(vg_anisotropy, pixel, vec4(clearcoat_roughness, anisotropy, anisotropy_flow));
 	vec3 geometric_normal = normalize(normal_highp);
-	float frame_sign = dot(cross(geometric_normal, tangent), binormal) < 0.0 ? -1.0 : 1.0;
-	imageStore(vg_tangent, pixel, vec4(normalize(tangent), frame_sign));
-	imageStore(vg_geo_normal, pixel, vec4(geometric_normal, 0.0));
+	vec2 encoded_binormal = vg_encode_binormal(binormal);
+	imageStore(vg_tangent, pixel, vec4(tangent, encoded_binormal.x));
+	imageStore(vg_geo_normal, pixel, vec4(geometric_normal, encoded_binormal.y));
 	imageStore(vg_lightmap_uv, pixel, vec4(uv2_interp, 0.0, 0.0));
 	uint flags = vg_source + 1u;
 	if (vg_history_view.state.y != 0.0) {

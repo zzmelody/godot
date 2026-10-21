@@ -737,7 +737,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 							}
 						}
 					}
-					if (varying.stage != SL::ShaderNode::Varying::STAGE_FRAGMENT) {
+					if (varying.stage == SL::ShaderNode::Varying::STAGE_VERTEX) {
 						String member = name;
 						if (varying.array_size > 0) {
 							compute_interpolation += "for (int vg_i=0; vg_i<" + itos(varying.array_size) + "; ++vg_i) {\n";

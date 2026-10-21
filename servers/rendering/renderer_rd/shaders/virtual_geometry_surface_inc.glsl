@@ -114,41 +114,49 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 	vec3 b = candidate.barycentrics.value;
 	vec3 bx = candidate.barycentrics.dx;
 	vec3 by = candidate.barycentrics.dy;
-	vec3 local_normal = v[0].normal * b.x + v[1].normal * b.y + v[2].normal * b.z;
-	if (dot(local_normal, local_normal) <= 1e-20) {
-		return false;
-	}
-	local_normal = normalize(local_normal);
-	vec3 local_tangent;
-	float handedness = 1.0;
 	uint record = vg_record(visible.y);
 	if ((geometry.data[record + 35u] & 1u) != 0u) {
-		vec4 tangent = v[0].tangent * b.x + v[1].tangent * b.y + v[2].tangent * b.z;
-		local_tangent = tangent.xyz;
-		handedness = tangent.w < 0.0 ? -1.0 : 1.0;
+		// Match the scene vertex stage: transform and normalize each corner
+		// before interpolation. The three interpolated axes are independent.
+		mat3 normal_matrix = mat3(vg_source_matrix(visible.x, 24u));
+		candidate.normal = vec3(0.0);
+		candidate.tangent = vec3(0.0);
+		candidate.binormal = vec3(0.0);
+		for (uint corner = 0u; corner < 3u; ++corner) {
+			candidate.normal += normalize(normal_matrix * v[corner].normal) * b[corner];
+			candidate.tangent += normalize(normal_matrix * v[corner].tangent.xyz) * b[corner];
+			candidate.binormal += normalize(normal_matrix * v[corner].binormal) * b[corner];
+		}
 	} else {
+		// UE's implicit frame derives its tangent from this triangle's UVs.
+		vec3 local_normal = v[0].normal * b.x + v[1].normal * b.y + v[2].normal * b.z;
+		if (dot(local_normal, local_normal) <= 1e-20) {
+			return false;
+		}
+		local_normal = normalize(local_normal);
 		vec3 first = cross(local_normal, v[2].position - v[0].position);
 		vec3 second = cross(v[1].position - v[0].position, local_normal);
 		vec2 uv1 = v[1].uv[0] - v[0].uv[0];
 		vec2 uv2 = v[2].uv[0] - v[0].uv[0];
-		local_tangent = first * uv1.x + second * uv2.x;
+		vec3 local_tangent = first * uv1.x + second * uv2.x;
+		float handedness = 1.0;
 		if (dot(local_tangent, local_tangent) > 1e-20) {
 			vec3 local_binormal = cross(local_normal, normalize(local_tangent));
 			handedness = dot(first * uv1.y + second * uv2.y, local_binormal) < 0.0 ? -1.0 : 1.0;
 		}
+		if (dot(local_tangent, local_tangent) <= 1e-20) {
+			local_tangent = vg_frame_tangent(local_normal);
+		}
+		candidate.normal = normalize(mat3(vg_source_matrix(visible.x, 24u)) * local_normal);
+		vec3 world_tangent = mat3(model) * local_tangent;
+		world_tangent -= candidate.normal * dot(candidate.normal, world_tangent);
+		if (dot(world_tangent, world_tangent) <= 1e-20) {
+			return false;
+		}
+		candidate.tangent = normalize(world_tangent);
+		float orientation = uintBitsToFloat(vg_source_data(visible.x, 35u));
+		candidate.binormal = cross(candidate.normal, candidate.tangent) * handedness * orientation;
 	}
-	if (dot(local_tangent, local_tangent) <= 1e-20) {
-		local_tangent = vg_frame_tangent(local_normal);
-	}
-	candidate.normal = normalize(mat3(vg_source_matrix(visible.x, 24u)) * local_normal);
-	vec3 world_tangent = mat3(model) * local_tangent;
-	world_tangent -= candidate.normal * dot(candidate.normal, world_tangent);
-	if (dot(world_tangent, world_tangent) <= 1e-20) {
-		return false;
-	}
-	candidate.tangent = normalize(world_tangent);
-	float orientation = uintBitsToFloat(vg_source_data(visible.x, 35u));
-	candidate.binormal = cross(candidate.normal, candidate.tangent) * handedness * orientation;
 	candidate.source = visible.x;
 	candidate.local_position = v[0].position * b.x + v[1].position * b.y + v[2].position * b.z;
 	candidate.world_position = (model * vec4(candidate.local_position, 1.0)).xyz;

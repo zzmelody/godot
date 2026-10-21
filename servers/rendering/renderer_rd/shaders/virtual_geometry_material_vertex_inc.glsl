@@ -84,7 +84,7 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 	vertex = value.position;
 	normal_highp = value.normal;
 	tangent = value.tangent.xyz;
-	binormal = cross(normal_highp, tangent) * value.tangent.w;
+	binormal = value.binormal;
 	uv_interp = value.uv[0];
 	uv2_interp = value.uv[1];
 	color_interp = value.color * vg_instance_color;
@@ -106,6 +106,7 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 	}
 	value.normal = normal_highp;
 	value.tangent.xyz = tangent;
+	value.binormal = binormal;
 	value.uv[0] = uv_interp;
 	value.uv[1] = uv2_interp;
 	value.color = color_interp;

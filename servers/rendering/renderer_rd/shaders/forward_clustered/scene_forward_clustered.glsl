@@ -1330,7 +1330,7 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef VG_COMPOSITE
 	vec4 vg_frame = texelFetch(sampler2D(vg_tangent, SAMPLER_NEAREST_CLAMP), vg_pixel, 0);
 	vec3 tangent = vg_frame.xyz;
-	vec3 binormal = cross(texelFetch(sampler2D(vg_geometric_normal, SAMPLER_NEAREST_CLAMP), vg_pixel, 0).xyz, tangent) * vg_frame.w;
+	vec3 binormal = vg_decode_binormal(vec2(vg_frame.w, texelFetch(sampler2D(vg_geometric_normal, SAMPLER_NEAREST_CLAMP), vg_pixel, 0).w));
 #else
 	vec3 binormal = binormal_interp;
 	vec3 tangent = tangent_interp;
