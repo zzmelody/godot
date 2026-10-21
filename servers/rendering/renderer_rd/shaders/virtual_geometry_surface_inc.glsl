@@ -71,12 +71,6 @@ struct VGSurface {
 	float reciprocal_w;
 };
 
-vec3 vg_frame_tangent(vec3 normal) {
-	float side = normal.z >= 0.0 ? 1.0 : -1.0;
-	float divisor = 1.0 + side * normal.z;
-	return vec3(1.0 - normal.x * normal.x / divisor, -normal.x * normal.y / divisor, -side * normal.x);
-}
-
 bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitter, inout VGSurface result) {
 	if ((payload >> 7u) == 0u) {
 		return false;
@@ -115,7 +109,13 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 	vec3 bx = candidate.barycentrics.dx;
 	vec3 by = candidate.barycentrics.dy;
 	uint record = vg_record(visible.y);
-	if ((geometry.data[record + 35u] & 1u) != 0u) {
+	bool vertex_frame = (geometry.data[record + 35u] & 1u) != 0u;
+#ifdef VG_VERTEX_TANGENT_WRITE
+	// An authored vertex frame replaces the implicit UV frame. Fragment-only
+	// writes must not select this path before the fragment program runs.
+	vertex_frame = true;
+#endif
+	if (vertex_frame) {
 		// Match the scene vertex stage: transform and normalize each corner
 		// before interpolation. The three interpolated axes are independent.
 		mat3 normal_matrix = mat3(vg_source_matrix(visible.x, 24u));

@@ -559,6 +559,97 @@ func _initialize():
         self.assertEqual(policy["nodes"][0]["build"]["source_triangles"], 8193)
         self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
 
+    def test_virtual_geometry_automatic_import_accepts_extended_standard_materials(self):
+        # The USD transport exposes actual standard-material overrides before
+        # automatic conversion. Do not force virtual geometry in this test.
+        raw = self.project / "assets/raw/material-policy"
+        raw.mkdir(parents=True)
+        side = 65
+        points = [f"({x}, {y}, 0)" for y in range(side) for x in range(side)]
+        indices = []
+        for y in range(64):
+            for x in range(64):
+                a = y * side + x
+                indices.extend((a, a + 1, a + side + 1, a + side))
+        (raw / "grid.usda").write_text('''#usda 1.0
+(
+    defaultPrim = "Fixture"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "Fixture" {
+    def Mesh "Grid" {
+        point3f[] points = [POINTS]
+        int[] faceVertexCounts = [COUNTS]
+        int[] faceVertexIndices = [INDICES]
+        uniform token subdivisionScheme = "none"
+    }
+}
+'''.replace("POINTS", ",".join(points)).replace("COUNTS", ",".join(["4"] * 4096))
+            .replace("INDICES", ",".join(map(str, indices))))
+        cases = {
+            "sss": {"subsurf_scatter_enabled": True, "subsurf_scatter_strength": 0.7,
+                    "subsurf_scatter_skin_mode": True},
+            "transmittance": {"subsurf_scatter_transmittance_enabled": True,
+                              "subsurf_scatter_transmittance_depth": 0.08},
+            "bent_normal": {"bent_normal_enabled": True},
+            "combined_triplanar": {"subsurf_scatter_enabled": True, "subsurf_scatter_strength": 0.7,
+                                   "subsurf_scatter_transmittance_enabled": True,
+                                   "bent_normal_enabled": True, "uv1_triplanar": True},
+            "refraction": {"refraction_enabled": True},
+        }
+        published = []
+        for name, properties in cases.items():
+            with self.subTest(material=name):
+                material = self.project / f"assets/runtime/material/{name}/material.tres"
+                material.parent.mkdir(parents=True)
+                material.write_text('[gd_resource type="StandardMaterial3D" format=3]\n[resource]\n'
+                                    + "\n".join(f"{key} = {json.dumps(value)}" for key, value in properties.items()) + "\n")
+                result = self.job({"operation": "import-scene", "source": "res://assets/raw/material-policy/grid.usda",
+                                   "type": "PackedScene", "material_overrides": {"bark": "res://" + material.relative_to(self.project).as_posix()},
+                                   "output": f"res://assets/runtime/model/{name}/scene.scn"})
+                policy = result["virtual_geometry"]
+                self.assertEqual(len(policy["nodes"]), 1)
+                node = policy["nodes"][0]
+                self.assertEqual(node["source_triangles"], 8192)
+                accepted = name != "refraction"
+                self.assertEqual(policy["converted_meshes"], int(accepted))
+                self.assertEqual(node["representation"], "virtual_geometry" if accepted else "ordinary")
+                if not accepted:
+                    self.assertEqual(node["reason"], "material_requires_explicit_policy")
+                self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
+                published.append({"path": result["output"], "virtual": accepted, "properties": properties})
+        if REFERENCE is not None:
+            (self.project / "inspect_policy.gd").write_text('''extends SceneTree
+func _initialize():
+\tvar cases = JSON.parse_string('CASES')
+\tfor probe in cases:
+\t\tvar root = load(probe.path).instantiate()
+\t\tvar pending = [root]
+\t\tvar found = 0
+\t\twhile not pending.is_empty():
+\t\t\tvar node = pending.pop_back()
+\t\t\tpending.append_array(node.get_children())
+\t\t\tvar mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D else null
+\t\t\tif mesh == null:
+\t\t\t\tcontinue
+\t\t\tfound += 1
+\t\t\tassert((mesh is VirtualGeometryMesh) == probe.virtual)
+\t\t\tvar material = mesh.surface_get_material(0)
+\t\t\tassert(material is StandardMaterial3D)
+\t\t\tfor key in probe.properties:
+\t\t\t\tvar expected = probe.properties[key]
+\t\t\t\tassert(material.get(key) == expected if expected is bool else is_equal_approx(material.get(key), expected))
+\t\tassert(found == 1)
+\t\troot.free()
+\tquit()
+'''.replace("CASES", json.dumps(published)))
+            inspected = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                        "--script", "res://inspect_policy.gd"], capture_output=True,
+                                       text=True, encoding="utf-8", errors="replace", timeout=20)
+            self.assertEqual(inspected.returncode, 0, inspected.stdout + inspected.stderr)
+            self.assertNotIn("ERROR:", inspected.stdout + inspected.stderr)
+
     def test_virtual_geometry_material_processing_preserves_root(self):
         if REFERENCE is None:
             self.skipTest("material slot inspection needs the matching private editor")

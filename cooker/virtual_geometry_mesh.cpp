@@ -600,8 +600,7 @@ bool automatic_material(const Ref<Material> &p_material) {
 			material->get_distance_fade() == BaseMaterial3D::DISTANCE_FADE_DISABLED && !material->is_proximity_fade_enabled() &&
 			material->get_billboard_mode() == BaseMaterial3D::BILLBOARD_DISABLED && !material->is_grow_enabled() &&
 			material->get_stencil_mode() == BaseMaterial3D::STENCIL_MODE_DISABLED &&
-			!material->get_feature(BaseMaterial3D::FEATURE_SUBSURFACE_SCATTERING) && !material->get_feature(BaseMaterial3D::FEATURE_SUBSURFACE_TRANSMITTANCE) &&
-			!material->get_feature(BaseMaterial3D::FEATURE_BENT_NORMAL_MAPPING) && !material->get_feature(BaseMaterial3D::FEATURE_REFRACTION) &&
+			!material->get_feature(BaseMaterial3D::FEATURE_REFRACTION) &&
 			!material->get_flag(BaseMaterial3D::FLAG_USE_POINT_SIZE) && !material->get_flag(BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST) &&
 			!material->get_flag(BaseMaterial3D::FLAG_FIXED_SIZE) && !material->get_flag(BaseMaterial3D::FLAG_PARTICLE_TRAILS_MODE) &&
 			!material->get_flag(BaseMaterial3D::FLAG_USE_Z_CLIP_SCALE) && !material->get_flag(BaseMaterial3D::FLAG_USE_FOV_OVERRIDE);

@@ -49,6 +49,14 @@ float vg_decode_uv(uint code) {
 	return negative ? -decoded : decoded;
 }
 
+// UE supplies this basis to the vertex material when the cluster has no
+// explicit tangents. Pixel materials can still derive their frame from UVs.
+vec3 vg_frame_tangent(vec3 normal) {
+	float side = normal.z >= 0.0 ? 1.0 : -1.0;
+	float divisor = 1.0 + side * normal.z;
+	return vec3(1.0 - normal.x * normal.x / divisor, -normal.x * normal.y / divisor, -side * normal.x);
+}
+
 VGVertex vg_vertex(uint reference, uint vertex) {
 	uint record = vg_record(reference);
 	uint normal_bits = geometry.data[record + 33u];

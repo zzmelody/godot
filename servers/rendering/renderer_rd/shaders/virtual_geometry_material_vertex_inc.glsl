@@ -86,6 +86,12 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 	normal_highp = value.normal;
 	tangent = value.tangent.xyz;
 	binormal = value.binormal;
+	if (dot(tangent, tangent) == 0.0) {
+		// Implicit clusters have no encoded tangent. Supply the UE vertex
+		// material basis without changing the decoded attribute contract.
+		tangent = vg_frame_tangent(value.normal);
+		binormal = cross(value.normal, tangent);
+	}
 	uv_interp = value.uv[0];
 	uv2_interp = value.uv[1];
 	color_interp = value.color * vg_instance_color;

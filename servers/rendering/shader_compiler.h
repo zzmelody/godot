@@ -87,6 +87,7 @@ public:
 		bool uses_global_textures = false;
 		bool uses_fragment_time = false;
 		bool uses_vertex_time = false;
+		bool writes_vertex_tangent = false;
 		bool uses_screen_texture_mipmaps = false;
 		bool uses_screen_texture = false;
 		bool uses_depth_texture = false;
@@ -136,6 +137,7 @@ private:
 	HashSet<StringName> internal_functions;
 	HashSet<StringName> fragment_varyings;
 	HashSet<StringName> functions_using_time;
+	HashSet<StringName> functions_writing_tangent;
 
 	DefaultIdentifierActions actions;
 

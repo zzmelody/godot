@@ -899,6 +899,12 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 							uses_time |= functions_using_time.has(dependency);
 						}
 					}
+					if (stage == STAGE_VERTEX) {
+						r_gen_code.writes_vertex_tangent |= functions_writing_tangent.has(fnode->name);
+						for (const StringName &dependency : added_funcs_per_stage[stage]) {
+							r_gen_code.writes_vertex_tangent |= functions_writing_tangent.has(dependency);
+						}
+					}
 				}
 
 				function = nullptr;
@@ -1012,6 +1018,9 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 
 			if (p_assigning && p_actions.write_flag_pointers.has(vnode->name)) {
 				*p_actions.write_flag_pointers[vnode->name] = true;
+			}
+			if (p_assigning && !vnode->is_local && (vnode->name == "TANGENT" || vnode->name == "BINORMAL")) {
+				functions_writing_tangent.insert(current_func_name);
 			}
 
 			if (p_default_actions.usage_defines.has(vnode->name) && !used_name_defines.has(vnode->name)) {
@@ -1144,6 +1153,9 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 			if (p_assigning && p_actions.write_flag_pointers.has(anode->name)) {
 				*p_actions.write_flag_pointers[anode->name] = true;
 			}
+			if (p_assigning && !anode->is_local && (anode->name == "TANGENT" || anode->name == "BINORMAL")) {
+				functions_writing_tangent.insert(current_func_name);
+			}
 
 			if (p_default_actions.usage_defines.has(anode->name) && !used_name_defines.has(anode->name)) {
 				String define = p_default_actions.usage_defines[anode->name];
@@ -1267,7 +1279,8 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				case SL::OP_NOT:
 				case SL::OP_DECREMENT:
 				case SL::OP_INCREMENT: {
-					const String node_code = _dump_node_code(onode->arguments[0], p_level, r_gen_code, p_actions, p_default_actions, p_assigning);
+					const bool assigning = p_assigning || onode->op == SL::OP_INCREMENT || onode->op == SL::OP_DECREMENT;
+					const String node_code = _dump_node_code(onode->arguments[0], p_level, r_gen_code, p_actions, p_default_actions, assigning);
 
 					if (onode->op == SL::OP_NEGATE && node_code.begins_with("-")) { // To prevent writing unary minus twice.
 						code = node_code;
@@ -1278,7 +1291,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				} break;
 				case SL::OP_POST_DECREMENT:
 				case SL::OP_POST_INCREMENT:
-					code = _dump_node_code(onode->arguments[0], p_level, r_gen_code, p_actions, p_default_actions, p_assigning) + _opstr(onode->op);
+					code = _dump_node_code(onode->arguments[0], p_level, r_gen_code, p_actions, p_default_actions, true) + _opstr(onode->op);
 					break;
 				case SL::OP_CALL:
 				case SL::OP_STRUCT:
@@ -1351,6 +1364,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						if (is_out_qualifier) {
 							StringName name;
 							bool found = false;
+							bool is_local = false;
 							{
 								const SL::Node *node = onode->arguments[i];
 
@@ -1359,6 +1373,13 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 									switch (node->type) {
 										case SL::Node::NODE_TYPE_VARIABLE: {
 											name = static_cast<const SL::VariableNode *>(node)->name;
+											is_local = static_cast<const SL::VariableNode *>(node)->is_local;
+											done = true;
+											found = true;
+										} break;
+										case SL::Node::NODE_TYPE_ARRAY: {
+											name = static_cast<const SL::ArrayNode *>(node)->name;
+											is_local = static_cast<const SL::ArrayNode *>(node)->is_local;
 											done = true;
 											found = true;
 										} break;
@@ -1374,6 +1395,9 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 
 							if (found && p_actions.write_flag_pointers.has(name)) {
 								*p_actions.write_flag_pointers[name] = true;
+							}
+							if (found && !is_local && (name == "TANGENT" || name == "BINORMAL")) {
+								functions_writing_tangent.insert(current_func_name);
 							}
 						}
 
@@ -1740,6 +1764,7 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 	}
 	r_gen_code.uses_fragment_time = false;
 	r_gen_code.uses_vertex_time = false;
+	r_gen_code.writes_vertex_tangent = false;
 	r_gen_code.uses_global_textures = false;
 	r_gen_code.uses_screen_texture_mipmaps = false;
 	r_gen_code.uses_screen_texture = false;
@@ -1751,6 +1776,7 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 	used_flag_pointers.clear();
 	fragment_varyings.clear();
 	functions_using_time.clear();
+	functions_writing_tangent.clear();
 
 	shader = parser.get_shader();
 	function = nullptr;

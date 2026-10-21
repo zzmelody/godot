@@ -94,7 +94,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_roughness = false;
 	uses_normal = false;
 	uses_tangent = false;
-	writes_tangent = false;
+	writes_vertex_tangent = false;
 	uses_normal_map = false;
 	uses_bent_normal_map = false;
 	wireframe = false;
@@ -180,8 +180,6 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.write_flag_pointers["VERTEX"] = &uses_vertex;
 	actions.write_flag_pointers["POSITION"] = &uses_position;
 	actions.write_flag_pointers["DEPTH"] = &writes_fragment_depth;
-	actions.write_flag_pointers["TANGENT"] = &writes_tangent;
-	actions.write_flag_pointers["BINORMAL"] = &writes_tangent;
 	actions.write_flag_pointers["Z_CLIP_SCALE"] = &uses_z_clip_scale;
 
 	actions.stencil_mode_values["read"] = Pair<int *, int>(&stencil_readi, STENCIL_FLAG_READ);
@@ -233,6 +231,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_normal_texture = gen_code.uses_normal_roughness_texture;
 	uses_vertex_time = gen_code.uses_vertex_time;
 	uses_fragment_time = gen_code.uses_fragment_time;
+	writes_vertex_tangent = gen_code.writes_vertex_tangent;
 	uses_normal |= uses_normal_map;
 	uses_normal |= uses_bent_normal_map;
 	uses_tangent |= uses_normal_map;
@@ -598,7 +597,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 		if ((RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & required) != required ||
 				(RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) == 0) {
 			virtual_geometry_error = "Virtual geometry material evaluation requires compute subgroup ballot and quad operations.";
-		} else if (!is_valid() || uses_vertex_id || uses_position || uses_point_size || writes_tangent || writes_modelview_or_projection ||
+		} else if (!is_valid() || uses_vertex_id || uses_position || uses_point_size || writes_modelview_or_projection ||
 				uses_world_coordinates || uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_antialiasing ||
 				stencil_enabled || wireframe) {
 			virtual_geometry_error = "Virtual geometry material requires an unsupported coverage, vertex input or shading feature: " + path;
@@ -624,6 +623,9 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 				virtual_geometry_error = "Virtual geometry static material mode is not connected: " + path;
 			} else {
 				Vector<String> composite_defines;
+				if (writes_vertex_tangent) {
+					generated.defines.push_back("#define VG_VERTEX_TANGENT_WRITE\n");
+				}
 				composite_defines.push_back("#define VG_COMPOSITE\n#define USE_LIGHTMAP\n");
 				const bool custom_light = generated.code.has("light");
 				virtual_geometry_uses_light = custom_light;
@@ -716,6 +718,9 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 									? (mode == 1 ? generated : fragment_code)
 									: vertex_code;
 							Vector<String> raster_defines = raster_code.defines;
+							if (writes_vertex_tangent && !raster_defines.has("#define VG_VERTEX_TANGENT_WRITE\n")) {
+								raster_defines.push_back("#define VG_VERTEX_TANGENT_WRITE\n");
+							}
 							if (pixel_programmable && mode != 0) {
 								raster_defines.push_back("#define VG_MASKED\n");
 							}
@@ -820,6 +825,9 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_voxel_shader()
 		}
 		ERR_FAIL_COND_V_MSG(error != OK || generated.uniform_total_size != ubo_size || generated.uniform_offsets != ubo_offsets || generated.texture_uniforms.size() != texture_uniforms.size(), RID(), "Virtual geometry SDFGI material layout refused: " + path);
 		generated.defines.push_back("#define VG_VOXEL_CAPTURE\n");
+		if (writes_vertex_tangent) {
+			generated.defines.push_back("#define VG_VERTEX_TANGENT_WRITE\n");
+		}
 		virtual_geometry_voxel_version = owner->virtual_geometry_raster_hw.version_create(false);
 		owner->virtual_geometry_raster_hw.version_set_code(virtual_geometry_voxel_version, generated.code, generated.uniforms,
 				vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
