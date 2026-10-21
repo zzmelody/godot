@@ -81,6 +81,7 @@ public:
 		virtual void set_code(const String &p_Code) = 0;
 		virtual bool is_animated() const = 0;
 		virtual bool uses_custom_depth() const { return false; }
+		virtual bool uses_custom_shadow_coverage() const { return false; }
 		virtual bool casts_shadows() const = 0;
 		virtual RenderingServerTypes::ShaderNativeSourceCode get_native_source_code() const = 0;
 		virtual Pair<ShaderRD *, RID> get_native_shader_and_version() const = 0;
@@ -93,6 +94,7 @@ public:
 
 	struct MaterialData {
 		Vector<RendererRD::TextureStorage::RenderTarget *> render_target_cache;
+		bool uses_dynamic_textures = false;
 		void update_uniform_buffer(const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &p_uniforms, const uint32_t *p_uniform_offsets, const HashMap<StringName, Variant> &p_parameters, uint8_t *p_buffer, uint32_t p_buffer_size, bool p_use_linear_color);
 		void update_textures(const HashMap<StringName, Variant> &p_parameters, const HashMap<StringName, HashMap<int, RID>> &p_default_textures, const Vector<ShaderCompiler::GeneratedCode::Texture> &p_texture_uniforms, RID *p_textures, bool p_use_linear_color, bool p_3d_material);
 		void set_as_used();
@@ -118,6 +120,7 @@ public:
 		List<RID>::Element *global_texture_E = nullptr;
 		uint64_t global_textures_pass = 0;
 		HashMap<StringName, uint64_t> used_global_textures;
+		HashSet<RID> used_textures;
 
 		//internally by update_parameters_uniform_set
 		Vector<uint8_t> ubo_data[2]; // 0: linear buffer; 1: sRGB buffer.
@@ -257,6 +260,7 @@ private:
 
 		bool must_update_texture_materials = false;
 		bool must_update_buffer_materials = false;
+		bool must_invalidate_buffer_shadows = false;
 
 		HashMap<RID, int32_t> instance_buffer_pos;
 	} global_shader_uniforms;
@@ -316,6 +320,11 @@ private:
 	MaterialDataRequestFunction material_data_request_func[SHADER_TYPE_MAX];
 	mutable RID_Owner<Material, true> material_owner;
 	Material *get_material(RID p_rid) { return material_owner.get_or_null(p_rid); }
+	Mutex texture_materials_mutex;
+	HashMap<RID, HashSet<RID>> texture_materials;
+	void _material_register_texture(RID p_material, RID p_texture);
+	void _material_unregister_texture(RID p_material, RID p_texture);
+	void _texture_changed(RID p_texture, bool p_bindings_changed, bool p_deleted);
 
 	SelfList<Material>::List material_update_list;
 	Mutex material_update_list_mutex;
@@ -494,6 +503,9 @@ public:
 
 	void _material_queue_update(Material *material, bool p_uniform, bool p_texture);
 	void _update_queued_materials();
+	void texture_content_changed(RID p_texture);
+	void texture_binding_changed(RID p_texture);
+	void texture_deleted(RID p_texture);
 
 	virtual RID material_allocate() override;
 	virtual void material_initialize(RID p_material) override;
@@ -512,6 +524,7 @@ public:
 
 	virtual bool material_is_animated(RID p_material) override;
 	virtual bool material_uses_custom_depth(RID p_material) override;
+	virtual bool material_uses_custom_shadow_coverage(RID p_material) override;
 	virtual bool material_casts_shadows(RID p_material) override;
 	virtual RSE::CullMode material_get_cull_mode(RID p_material) const override;
 

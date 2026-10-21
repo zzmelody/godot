@@ -182,6 +182,7 @@ private:
 		RenderTarget *render_target = nullptr;
 		bool is_render_target;
 		bool is_proxy;
+		bool is_external_rd = false;
 
 		Ref<Image> image_cache_2d;
 		String path;
@@ -228,6 +229,7 @@ private:
 
 	Ref<Image> _validate_texture_format(const Ref<Image> &p_image, TextureToRDFormat &r_format);
 	void _texture_2d_update(RID p_texture, const Ref<Image> &p_image, int p_layer = 0, bool p_immediate = false);
+	void _texture_content_changed(RID p_texture);
 
 	struct TextureFromRDFormat {
 		Image::Format image_format;

@@ -839,6 +839,9 @@ void MaterialStorage::MaterialData::update_uniform_buffer(const HashMap<StringNa
 
 MaterialStorage::MaterialData::~MaterialData() {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
+	for (RID texture : used_textures) {
+		material_storage->_material_unregister_texture(self, texture);
+	}
 
 	if (global_buffer_E) {
 		//unregister global buffers
@@ -867,6 +870,8 @@ MaterialStorage::MaterialData::~MaterialData() {
 
 void MaterialStorage::MaterialData::update_textures(const HashMap<StringName, Variant> &p_parameters, const HashMap<StringName, HashMap<int, RID>> &p_default_textures, const Vector<ShaderCompiler::GeneratedCode::Texture> &p_texture_uniforms, RID *p_textures, bool p_use_linear_color, bool p_3d_material) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
+	HashSet<RID> textures_in_use;
+	uses_dynamic_textures = false;
 
 #ifdef TOOLS_ENABLED
 	TextureStorage::Texture *roughness_detect_texture = nullptr;
@@ -984,6 +989,10 @@ void MaterialStorage::MaterialData::update_textures(const HashMap<StringName, Va
 
 				if (tex) {
 					rd_texture = (srgb && tex->rd_texture_srgb.is_valid()) ? tex->rd_texture_srgb : tex->rd_texture;
+					uses_dynamic_textures |= tex->is_external_rd || tex->render_target != nullptr;
+					if (rd_texture.is_valid()) {
+						textures_in_use.insert(textures[j]);
+					}
 #ifdef TOOLS_ENABLED
 					if (tex->detect_3d_callback && p_3d_material) {
 						tex->detect_3d_callback(tex->detect_3d_callback_ud);
@@ -1020,6 +1029,17 @@ void MaterialStorage::MaterialData::update_textures(const HashMap<StringName, Va
 			}
 		}
 	}
+	for (RID texture : used_textures) {
+		if (!textures_in_use.has(texture)) {
+			material_storage->_material_unregister_texture(self, texture);
+		}
+	}
+	for (RID texture : textures_in_use) {
+		if (!used_textures.has(texture)) {
+			material_storage->_material_register_texture(self, texture);
+		}
+	}
+	used_textures = textures_in_use;
 	{
 		//for textures no longer used, unregister them
 		List<StringName> to_delete;
@@ -1199,7 +1219,7 @@ bool MaterialStorage::MaterialData::update_parameters_uniform_set(const HashMap<
 		}
 	}
 
-	if (p_textures_dirty && tex_uniform_count) {
+	if (p_textures_dirty) {
 		update_textures(p_parameters, p_default_texture_params, p_texture_uniforms, texture_cache.ptrw(), p_use_linear_color, p_3d_material);
 	}
 
@@ -1882,10 +1902,12 @@ Vector<StringName> MaterialStorage::global_shader_parameter_get_list() const {
 void MaterialStorage::global_shader_parameter_set(const StringName &p_name, const Variant &p_value) {
 	ERR_FAIL_COND(!global_shader_uniforms.variables.has(p_name));
 	GlobalShaderUniforms::Variable &gv = global_shader_uniforms.variables[p_name];
+	const bool value_changed = gv.value != p_value;
 	gv.value = p_value;
 	if (gv.override.get_type() == Variant::NIL) {
 		if (gv.buffer_index >= 0) {
 			//buffer
+			global_shader_uniforms.must_invalidate_buffer_shadows |= value_changed;
 			_global_shader_uniform_store_in_buffer(gv.buffer_index, gv.type, gv.value);
 			_global_shader_uniform_mark_buffer_dirty(gv.buffer_index, gv.buffer_elements);
 		} else {
@@ -1909,10 +1931,13 @@ void MaterialStorage::global_shader_parameter_set_override(const StringName &p_n
 
 	GlobalShaderUniforms::Variable &gv = global_shader_uniforms.variables[p_name];
 
+	const Variant previous_value = gv.override.get_type() == Variant::NIL ? gv.value : gv.override;
+	const Variant next_value = p_value.get_type() == Variant::NIL ? gv.value : p_value;
 	gv.override = p_value;
 
 	if (gv.buffer_index >= 0) {
 		//buffer
+		global_shader_uniforms.must_invalidate_buffer_shadows |= previous_value != next_value;
 		if (gv.override.get_type() == Variant::NIL) {
 			_global_shader_uniform_store_in_buffer(gv.buffer_index, gv.type, gv.value);
 		} else {
@@ -2180,6 +2205,17 @@ void MaterialStorage::_update_global_shader_uniforms() {
 
 		global_shader_uniforms.must_update_texture_materials = false;
 	}
+	if (global_shader_uniforms.must_invalidate_buffer_shadows) {
+		global_shader_uniforms.must_invalidate_buffer_shadows = false;
+		// Reuse the registered global-buffer subscribers. Instance uniform writes
+		// share this buffer, but do not set this global-parameter event flag.
+		for (RID material_rid : global_shader_uniforms.materials_using_buffer) {
+			Material *material = material_owner.get_or_null(material_rid);
+			if (material && material->shader && material->shader->data && material->shader->data->uses_custom_shadow_coverage()) {
+				material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+			}
+		}
+	}
 }
 
 /* SHADER API */
@@ -2436,6 +2472,62 @@ void MaterialStorage::_material_uniform_set_erased(void *p_material) {
 	}
 }
 
+void MaterialStorage::_material_register_texture(RID p_material, RID p_texture) {
+	MutexLock lock(texture_materials_mutex);
+	texture_materials[p_texture].insert(p_material);
+}
+
+void MaterialStorage::_material_unregister_texture(RID p_material, RID p_texture) {
+	MutexLock lock(texture_materials_mutex);
+	HashSet<RID> *materials = texture_materials.getptr(p_texture);
+	if (materials && materials->erase(p_material) && materials->is_empty()) {
+		texture_materials.erase(p_texture);
+	}
+}
+
+void MaterialStorage::_texture_changed(RID p_texture, bool p_bindings_changed, bool p_deleted) {
+	LocalVector<RID> subscribers;
+	{
+		MutexLock lock(texture_materials_mutex);
+		const HashSet<RID> *materials = texture_materials.getptr(p_texture);
+		if (!materials) {
+			return;
+		}
+		for (RID material : *materials) {
+			subscribers.push_back(material);
+		}
+		if (p_deleted) {
+			texture_materials.erase(p_texture);
+		}
+	}
+	// Never hold the reverse-index lock while queuing uploads or calling scene
+	// dependencies. The index borrows RIDs and does not keep resources alive.
+	for (RID material_rid : subscribers) {
+		Material *material = material_owner.get_or_null(material_rid);
+		if (!material) {
+			continue;
+		}
+		if (p_bindings_changed) {
+			_material_queue_update(material, false, true);
+		}
+		if (material->shader && material->shader->data && material->shader->data->uses_custom_shadow_coverage()) {
+			material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+		}
+	}
+}
+
+void MaterialStorage::texture_content_changed(RID p_texture) {
+	_texture_changed(p_texture, false, false);
+}
+
+void MaterialStorage::texture_binding_changed(RID p_texture) {
+	_texture_changed(p_texture, true, false);
+}
+
+void MaterialStorage::texture_deleted(RID p_texture) {
+	_texture_changed(p_texture, true, true);
+}
+
 void MaterialStorage::_material_queue_update(Material *material, bool p_uniform, bool p_texture) {
 	MutexLock lock(material_update_list_mutex);
 	material->uniform_dirty = material->uniform_dirty || p_uniform;
@@ -2641,7 +2733,8 @@ bool MaterialStorage::material_is_animated(RID p_material) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL_V(material, false);
 	if (material->shader && material->shader->data) {
-		if (material->shader->data->is_animated()) {
+		if (material->shader->data->is_animated() ||
+				(material->data && material->shader->data->uses_custom_shadow_coverage() && material->data->uses_dynamic_textures)) {
 			return true;
 		} else if (material->next_pass.is_valid()) {
 			return material_is_animated(material->next_pass);
@@ -2657,6 +2750,15 @@ bool MaterialStorage::material_uses_custom_depth(RID p_material) {
 		return true;
 	}
 	return material->next_pass.is_valid() && material_uses_custom_depth(material->next_pass);
+}
+
+bool MaterialStorage::material_uses_custom_shadow_coverage(RID p_material) {
+	Material *material = material_owner.get_or_null(p_material);
+	ERR_FAIL_NULL_V(material, false);
+	if (material->shader && material->shader->data && material->shader->data->uses_custom_shadow_coverage()) {
+		return true;
+	}
+	return material->next_pass.is_valid() && material_uses_custom_shadow_coverage(material->next_pass);
 }
 
 bool MaterialStorage::material_casts_shadows(RID p_material) {

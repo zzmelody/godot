@@ -329,7 +329,7 @@ public:
 			return !uses_particle_trails && !writes_modelview_or_projection && !uses_vertex && !uses_position && !uses_discard && !writes_fragment_depth && !uses_depth_prepass_alpha && !uses_alpha_clip && !uses_alpha_antialiasing && backface_culling && !uses_point_size && !uses_world_coordinates && !wireframe && !uses_z_clip_scale && !stencil_enabled;
 		}
 
-		_FORCE_INLINE_ bool uses_custom_shadow_coverage() const {
+		_FORCE_INLINE_ bool uses_custom_shadow_coverage() const override {
 			return uses_vertex || uses_position || writes_modelview_or_projection || uses_z_clip_scale ||
 					uses_point_size || uses_particle_trails || uses_discard || uses_alpha || uses_alpha_clip ||
 					uses_depth_prepass_alpha || writes_fragment_depth;

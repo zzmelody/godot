@@ -626,6 +626,7 @@ public:
 		bool can_cast_shadows;
 		bool material_is_animated;
 		bool material_uses_custom_depth = false;
+		bool material_uses_custom_shadow_coverage = false;
 		uint32_t projector_count = 0;
 		uint32_t softshadow_count = 0;
 

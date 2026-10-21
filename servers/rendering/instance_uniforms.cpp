@@ -114,6 +114,9 @@ void InstanceUniforms::set(RID p_self, const StringName &p_name, const Variant &
 	if (Item *ptr = _parameters.getptr(p_name); ptr) {
 		ptr->value = p_value;
 		if (ptr->is_valid()) {
+			if (ptr->value.get_type() == Variant::NIL) {
+				ptr->value = ptr->default_value;
+			}
 			RSG::material_storage->global_shader_parameters_instance_update(p_self, ptr->index, ptr->value, ptr->flags);
 		}
 	} else {

@@ -1588,7 +1588,16 @@ void RendererSceneCull::instance_geometry_set_shader_parameter(RID p_instance, c
 	Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(instance);
 
+	const bool value_changed = instance->instance_uniforms.get(p_parameter) != p_value;
 	instance->instance_uniforms.set(instance->self, p_parameter, p_value);
+	if (value_changed && instance->base_data && ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK)) {
+		const auto *geometry = static_cast<const InstanceGeometryData *>(instance->base_data);
+		if (geometry->material_uses_custom_shadow_coverage && geometry->can_cast_shadows) {
+			// Keep this update scoped to the owner. _update_instance invalidates
+			// its paired lights without rebuilding material dependency metadata.
+			_instance_queue_update(instance, false, false);
+		}
+	}
 }
 
 Variant RendererSceneCull::instance_geometry_get_shader_parameter(RID p_instance, const StringName &p_parameter) const {
@@ -4305,6 +4314,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			bool can_cast_shadows = true;
 			bool is_animated = false;
 			bool uses_custom_depth = false;
+			bool uses_custom_shadow_coverage = false;
 
 			p_instance->instance_uniforms.materials_start();
 
@@ -4318,6 +4328,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 				}
 				is_animated = RSG::material_storage->material_is_animated(p_instance->material_override);
 				uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(p_instance->material_override);
+				uses_custom_shadow_coverage |= RSG::material_storage->material_uses_custom_shadow_coverage(p_instance->material_override);
 				p_instance->instance_uniforms.materials_append(p_instance->material_override);
 			} else {
 				if (!metadata_materials.rids.is_empty()) {
@@ -4334,6 +4345,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 						cast_shadows |= RSG::material_storage->material_casts_shadows(mat);
 						is_animated |= RSG::material_storage->material_is_animated(mat);
 						uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(mat);
+						uses_custom_shadow_coverage |= RSG::material_storage->material_uses_custom_shadow_coverage(mat);
 						p_instance->instance_uniforms.materials_append(mat);
 						RSG::material_storage->material_update_dependency(mat, &p_instance->dependency_tracker);
 					}
@@ -4358,6 +4370,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 									is_animated = true;
 								}
 								uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(mat);
+								uses_custom_shadow_coverage |= RSG::material_storage->material_uses_custom_shadow_coverage(mat);
 
 								p_instance->instance_uniforms.materials_append(mat);
 
@@ -4390,6 +4403,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 									is_animated = true;
 								}
 								uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(mat);
+								uses_custom_shadow_coverage |= RSG::material_storage->material_uses_custom_shadow_coverage(mat);
 
 								p_instance->instance_uniforms.materials_append(mat);
 
@@ -4429,6 +4443,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 									is_animated = true;
 								}
 								uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(mat);
+								uses_custom_shadow_coverage |= RSG::material_storage->material_uses_custom_shadow_coverage(mat);
 
 								p_instance->instance_uniforms.materials_append(mat);
 
@@ -4447,6 +4462,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 				can_cast_shadows = can_cast_shadows && RSG::material_storage->material_casts_shadows(p_instance->material_overlay);
 				is_animated = is_animated || RSG::material_storage->material_is_animated(p_instance->material_overlay);
 				uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(p_instance->material_overlay);
+				uses_custom_shadow_coverage |= RSG::material_storage->material_uses_custom_shadow_coverage(p_instance->material_overlay);
 				p_instance->instance_uniforms.materials_append(p_instance->material_overlay);
 			}
 
@@ -4461,6 +4477,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			}
 
 			geom->material_is_animated = is_animated;
+			geom->material_uses_custom_shadow_coverage = uses_custom_shadow_coverage;
 			if (geom->material_uses_custom_depth != uses_custom_depth) {
 				// Authored absolute depth can be closer than this instance's AABB.
 				// Keep the author's occlusion settings and restore them on removal.

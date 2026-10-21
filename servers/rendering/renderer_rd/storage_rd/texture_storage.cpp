@@ -966,6 +966,12 @@ void TextureStorage::texture_free(RID p_texture) {
 	Texture *t = texture_owner.get_or_null(p_texture);
 	ERR_FAIL_NULL(t);
 	ERR_FAIL_COND(t->is_render_target);
+	if (MaterialStorage *materials = MaterialStorage::get_singleton()) {
+		materials->texture_deleted(p_texture);
+		for (RID proxy : t->proxies) {
+			materials->texture_binding_changed(proxy);
+		}
+	}
 
 	t->cleanup();
 
@@ -1613,6 +1619,25 @@ RID TextureStorage::texture_create_from_native_handle(RSE::TextureType p_type, I
 	return texture;
 }
 
+void TextureStorage::_texture_content_changed(RID p_texture) {
+	MaterialStorage *materials = MaterialStorage::get_singleton();
+	if (!materials) {
+		return;
+	}
+	Texture *texture = texture_owner.get_or_null(p_texture);
+	if (!texture) {
+		return;
+	}
+	const RID owner = texture->proxy_to.is_valid() ? texture->proxy_to : p_texture;
+	materials->texture_content_changed(owner);
+	Texture *source = texture_owner.get_or_null(owner);
+	if (source) {
+		for (RID proxy : source->proxies) {
+			materials->texture_content_changed(proxy);
+		}
+	}
+}
+
 void TextureStorage::_texture_2d_update(RID p_texture, const Ref<Image> &p_image, int p_layer, bool p_immediate) {
 	ERR_FAIL_COND(p_image.is_null() || p_image->is_empty());
 
@@ -1633,6 +1658,7 @@ void TextureStorage::_texture_2d_update(RID p_texture, const Ref<Image> &p_image
 	Ref<Image> validated = _validate_texture_format(p_image, f);
 
 	RD::get_singleton()->texture_update(tex->rd_texture, p_layer, validated->get_data());
+	_texture_content_changed(p_texture);
 }
 
 void TextureStorage::texture_2d_update(RID p_texture, const Ref<Image> &p_image, int p_layer) {
@@ -1675,6 +1701,7 @@ void TextureStorage::texture_3d_update(RID p_texture, const Vector<Ref<Image>> &
 	}
 
 	RD::get_singleton()->texture_update(tex->rd_texture, 0, all_data);
+	_texture_content_changed(p_texture);
 }
 
 void TextureStorage::texture_external_update(RID p_texture, int p_width, int p_height, uint64_t p_external_buffer) {
@@ -1720,6 +1747,9 @@ void TextureStorage::texture_proxy_update(RID p_texture, RID p_proxy_to) {
 	if (tex->rd_texture_srgb.is_valid()) {
 		tex->rd_view.format_override = tex->rd_format_srgb;
 		tex->rd_texture_srgb = RD::get_singleton()->texture_create_shared(tex->rd_view, proxy_to->rd_texture);
+	}
+	if (MaterialStorage *materials = MaterialStorage::get_singleton()) {
+		materials->texture_binding_changed(p_texture);
 	}
 }
 
@@ -1860,6 +1890,9 @@ void TextureStorage::texture_drawable_blit_rect(const TypedArray<RID> &p_texture
 
 	RD::get_singleton()->draw_list_end();
 	RD::get_singleton()->draw_command_end_label();
+	for (RID texture : p_textures) {
+		_texture_content_changed(texture);
+	}
 }
 
 //these two APIs can be used together or in combination with the others.
@@ -1989,28 +2022,32 @@ Vector<Ref<Image>> TextureStorage::texture_3d_get(RID p_texture) const {
 
 void TextureStorage::texture_drawable_generate_mipmaps(RID p_texture) {
 	Texture *tex = get_texture(p_texture);
+	ERR_FAIL_NULL(tex);
 	CopyEffects *copy_effects = CopyEffects::get_singleton();
 	ERR_FAIL_NULL(copy_effects);
 
 	uint32_t mipmaps = tex->mipmaps;
+	ERR_FAIL_COND(tex->cached_rd_slices.size() != int(mipmaps));
 	int width = tex->width;
 	int height = tex->height;
-
-	RID source = tex->rd_texture;
-	RID dest = tex->cached_rd_slices[0];
 
 	for (uint32_t m = 1; m < mipmaps; m++) {
 		width = MAX(1, width >> 1);
 		height = MAX(1, height >> 1);
 
-		source = dest;
-		dest = RD::get_singleton()->texture_create_shared_from_slice(RD::TextureView(), source, 0, m, 1, RD::TEXTURE_SLICE_2D);
+		// These level views are owned by the texture. Creating another view on
+		// each update retains unbounded shared RIDs until the texture is freed.
+		const RID source = tex->cached_rd_slices[m - 1];
+		const RID dest = tex->cached_rd_slices[m];
 
 		if (copy_effects->get_raster_effects().has_flag(CopyEffects::RASTER_EFFECT_COPY)) {
 			copy_effects->make_mipmap_raster(source, dest, Size2i(width, height));
 		} else {
 			copy_effects->make_mipmap(source, dest, Size2i(width, height));
 		}
+	}
+	if (mipmaps > 1) {
+		_texture_content_changed(p_texture);
 	}
 }
 
@@ -2059,6 +2096,10 @@ void TextureStorage::texture_replace(RID p_texture, RID p_by_texture) {
 		texture_proxy_update(proxies_to_redirect[i], p_texture);
 	}
 	//delete last, so proxies can be updated
+	if (MaterialStorage *materials = MaterialStorage::get_singleton()) {
+		materials->texture_deleted(p_by_texture);
+		materials->texture_binding_changed(p_texture);
+	}
 	texture_owner.free(p_by_texture);
 
 	decal_atlas_mark_dirty_on_texture(p_texture);
@@ -2174,6 +2215,7 @@ void TextureStorage::texture_rd_initialize(RID p_texture, const RID &p_rd_textur
 	ERR_FAIL_COND(imfmt.image_format == Image::FORMAT_MAX);
 
 	Texture texture;
+	texture.is_external_rd = true;
 
 	switch (tf.texture_type) {
 		case RD::TEXTURE_TYPE_2D: {
