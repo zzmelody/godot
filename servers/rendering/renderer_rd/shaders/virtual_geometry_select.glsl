@@ -210,7 +210,9 @@ void visit_node(uint id) {
 				uint index = reserve_request(5u, VG_SELECTION_INPUT.limits.w);
 				if (index < VG_SELECTION_INPUT.limits.w) {
 					VG_SELECTION_REQUEST(16u + index * 2u) = page;
-					VG_SELECTION_REQUEST(17u + index * 2u) = floatBitsToUint(threshold / max(edge, 1e-20));
+					// A camera inside the LOD sphere yields edge zero. Saturate the
+					// ratio so the CPU's finite-priority admission keeps this demand.
+					VG_SELECTION_REQUEST(17u + index * 2u) = floatBitsToUint(min(threshold / max(edge, 1e-20), 3.402823e38));
 				} else { mark_failure(4u); }
 			}
 			continue;

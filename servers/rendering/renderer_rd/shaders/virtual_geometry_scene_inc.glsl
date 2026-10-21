@@ -35,6 +35,11 @@ uvec2 vg_visible_reference(uint index) {
 	return uvec2(scene.data[word], scene.data[word + 1u]);
 }
 
+bool vg_source_front_facing(uint source, bool projected_front, bool reverse_view) {
+	bool reverse_instance = uintBitsToFloat(vg_source_data(source, 35u)) < 0.0;
+	return projected_front != (reverse_instance != reverse_view);
+}
+
 #ifdef VG_MATERIAL_LOOKUP
 #include "virtual_geometry_page_inc.glsl"
 uint vg_material_reference(uvec2 visible, uint triangle) {

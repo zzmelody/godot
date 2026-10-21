@@ -15,6 +15,8 @@ bool vg_cull_material(uint payload, bool front_facing) {
 		return false;
 	}
 	uint mode = raster_materials.data[material * 4u];
+	uint source = vg_visible_reference((payload >> 7u) - 1u).x;
+	front_facing = vg_source_front_facing(source, front_facing, raster_materials.data[material * 4u + 3u] != 0u);
 	return (mode == 1u && !front_facing) || (mode == 2u && front_facing);
 }
 #else

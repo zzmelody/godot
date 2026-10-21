@@ -1881,6 +1881,7 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		}
 		auto *&selection = data->virtual_geometry[eye];
 		auto *&raster = data->virtual_geometry_raster[eye];
+		bool root_fallback = false;
 		if (selection) {
 			selection->begin(camera, projection, scene->flip_y, buffers->get_internal_size());
 		}
@@ -1900,7 +1901,11 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 			selection->add_batch(batch);
 		}
 		if (selection) {
-			const Error error = selection->record();
+			Error error = selection->record();
+			if (error == ERR_OUT_OF_MEMORY) {
+				root_fallback = true;
+				error = selection->use_root_coverage();
+			}
 			if (error != OK) {
 				ERR_PRINT("Virtual geometry selection refused a complete view: " + itos(error));
 			}
@@ -1921,6 +1926,7 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		view.eye_offset = scene->view_eye_offset[eye];
 		view.projection = correction * projection;
 		view.camera = camera;
+		view.reverse_cull = p_render_data->reflection_probe.is_valid() || camera.basis.determinant() < 0;
 		view.jitter = scene->taa_jitter;
 		view.time = time;
 		view.exposure = 1.0f / normalization;
@@ -1930,7 +1936,7 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		view.previous_projection = history_valid ? correction * previous_projection : view.projection;
 		view.previous_time = data->virtual_geometry_previous_time;
 		view.motion = scene->calculate_motion_vectors;
-		view.history_valid = history_valid;
+		view.history_valid = history_valid && !root_fallback;
 		view.previous_jitter = history_valid ? scene->prev_taa_jitter : scene->taa_jitter;
 		data->virtual_geometry_views[eye] = view;
 	}
@@ -3526,19 +3532,25 @@ void RenderForwardClustered::_render_shadow_end() {
 			for (const auto &batch : shadow_pass.virtual_geometry_batches) {
 				virtual_geometry_aux_selection->add_batch(batch);
 			}
-			const Error selection_error = virtual_geometry_aux_selection->record();
-			const bool valid = selection_error == OK;
-			if (!valid) {
-				ERR_PRINT("Virtual geometry shadow selection refused: " + itos(selection_error));
-			}
-			if (valid) {
-				Error error = virtual_geometry_aux_raster->record_shadow(shadow_pass.virtual_geometry_size, view,
+			Error error = virtual_geometry_aux_selection->record();
+			if (error == OK) {
+				error = virtual_geometry_aux_raster->record_shadow(shadow_pass.virtual_geometry_size, view,
 						virtual_geometry_aux_selection->get_results(), scene_shader.default_material);
-				if (error == OK) {
-					error = virtual_geometry_aux_raster->record_depth(shadow_pass.framebuffer, RendererRD::VirtualGeometryRasterizer::DEPTH_SHADOW, RID(), shadow_pass.rect);
-				}
-				ERR_CONTINUE_MSG(error != OK, "Virtual geometry shadow view refused: " + itos(error));
 			}
+			if (error == ERR_OUT_OF_MEMORY) {
+				// Match the color view's complete-root fallback when fine work
+				// cannot be allocated. Never turn a fine-capacity refusal into
+				// missing shadows for an otherwise resident root cover.
+				error = virtual_geometry_aux_selection->use_root_coverage();
+				if (error == OK) {
+					error = virtual_geometry_aux_raster->record_shadow(shadow_pass.virtual_geometry_size, view,
+							virtual_geometry_aux_selection->get_results(), scene_shader.default_material);
+				}
+			}
+			if (error == OK) {
+				error = virtual_geometry_aux_raster->record_depth(shadow_pass.framebuffer, RendererRD::VirtualGeometryRasterizer::DEPTH_SHADOW, RID(), shadow_pass.rect);
+			}
+			ERR_CONTINUE_MSG(error != OK, "Virtual geometry shadow view refused: " + itos(error));
 		}
 	}
 

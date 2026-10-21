@@ -104,6 +104,13 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 	if (!vg_barycentrics(clips[0], clips[1], clips[2], pixel, size, candidate.barycentrics)) {
 		return false;
 	}
+	// UE reverses winding for mirrored instances and reverse-culling views.
+	// Keep vertex order and the visibility triangle ID unchanged here.
+	bool reverse_view = false;
+#ifdef VG_EVALUATE_VERTEX
+	reverse_view = (vg_view.flags.w & 2u) != 0u;
+#endif
+	candidate.barycentrics.front_facing = vg_source_front_facing(visible.x, candidate.barycentrics.front_facing, reverse_view);
 	vec3 b = candidate.barycentrics.value;
 	vec3 bx = candidate.barycentrics.dx;
 	vec3 by = candidate.barycentrics.dy;

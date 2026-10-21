@@ -473,16 +473,14 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 	view.flags[0] = p_view.layers;
 	view.flags[1] = p_view.shadow_flags;
 	view.flags[2] = p_view.history_valid && (!p_view.motion || global_history_valid);
-	view.flags[3] = p_view.motion && !global_history_valid ? 1u : 0u;
+	view.flags[3] = (p_view.motion && !global_history_valid ? 1u : 0u) | (p_view.reverse_cull ? 2u : 0u);
 	view.eye_offset[0] = p_view.eye_offset.x;
 	view.eye_offset[1] = p_view.eye_offset.y;
 	view.eye_offset[2] = p_view.eye_offset.z;
 	view.eye_offset[3] = p_view.view_index;
 	rd->buffer_update(material_view, 0, sizeof(view), &view);
 	for (uint32_t material_index = 0; material_index < materials.size(); ++material_index) {
-		if (depth_only && p_view.reverse_cull && raster_material_data[material_index * 4] != 0) {
-			raster_material_data[material_index * 4] = 3 - raster_material_data[material_index * 4];
-		}
+		raster_material_data[material_index * 4 + 3] = p_view.reverse_cull ? 1u : 0u;
 		RID material = materials[material_index];
 		auto *data = static_cast<SceneShader::MaterialData *>(storage->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
 		ERR_FAIL_COND_V(data == nullptr || data->shader_data == nullptr, ERR_INVALID_DATA);
