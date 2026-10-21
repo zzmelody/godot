@@ -21,7 +21,7 @@ vec2 vg_motion(uint payload, VGSurface surface) {
 	uvec3 vertices = vg_triangle(visible.y, payload & 127u);
 	mat4 previous_world = transpose(mat4(vg_previous_vector(visible.x, 0u), vg_previous_vector(visible.x, 4u), vg_previous_vector(visible.x, 8u), vec4(0.0, 0.0, 0.0, 1.0)));
 	float previous_determinant = determinant(mat3(previous_world));
-	if (isnan(previous_determinant) || isinf(previous_determinant) || abs(previous_determinant) <= 1e-20) {
+	if (isnan(previous_determinant) || isinf(previous_determinant) || previous_determinant == 0.0) {
 		return vec2(0.0);
 	}
 	read_model_matrix = previous_world;
@@ -45,7 +45,7 @@ vec2 vg_motion(uint payload, VGSurface surface) {
 	}
 	vec4 previous_clip = projection_matrix * modelview * vec4(previous_position, 1.0);
 	vec4 current_clip = vg_view.projection * vec4(surface.view_position, 1.0);
-	if (vg_previous_invalid || previous_clip.w <= 1e-8 || current_clip.w <= 1e-8) {
+	if (vg_previous_invalid || previous_clip.w <= 0.0 || current_clip.w <= 0.0) {
 		return vec2(0.0);
 	}
 	// Both projections are unjittered here. This equals the ordinary scene's

@@ -159,9 +159,9 @@ void main() {
 		vec2 velocity = vg_motion(payload, surface);
 		imageStore(vg_velocity, pixel, vec4(velocity, 0.0, 0.0));
 		uvec2 source_id = uvec2(vg_source_data(vg_source, 60u), vg_source_data(vg_source, 61u));
-		uvec2 mesh_id = uvec2(vg_source_data(vg_source, 62u), vg_source_data(vg_source, 63u));
+		uvec2 mesh_tag = uvec2(vg_source_data(vg_source, 62u), vg_source_data(vg_source, 63u));
 		// Temporal tags are hashes, never object or asset authority.
-		uvec2 tag = (source_id ^ (mesh_id.yx * uvec2(0x9e3779b9u, 0x85ebca6bu))) * uvec2(0xc2b2ae35u, 0x27d4eb2fu);
+		uvec2 tag = (source_id ^ (mesh_tag.yx * uvec2(0x9e3779b9u, 0x85ebca6bu))) * uvec2(0xc2b2ae35u, 0x27d4eb2fu);
 		uvec2 reference = vg_visible_reference((payload >> 7u) - 1u);
 		// Physical slots can be reused for another page between frames. The
 		// model's logical cluster identity survives relocation and distinguishes

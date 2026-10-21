@@ -25,6 +25,7 @@ public:
 		RID source;
 		// Borrowed renderer object, valid only between begin() boundaries.
 		RenderGeometryInstance *source_instance = nullptr;
+		uint64_t history_instance_id = 0;
 		RID transforms;
 		Transform3D model;
 		Transform3D previous_model;

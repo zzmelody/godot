@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "virtual_geometry_shading.h"
 
+#include "core/templates/hashfuncs.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
@@ -269,10 +270,12 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 		const Rect2 &uv = source.batch.lightmap_uv_scale;
 		const float lightmap_uv[4] = { uv.position.x, uv.position.y, uv.size.x, uv.size.y };
 		memcpy(push + 12, lightmap_uv, sizeof(lightmap_uv));
-		push[16] = uint32_t(source.batch.source.get_id());
-		push[17] = uint32_t(source.batch.source.get_id() >> 32);
-		push[18] = uint32_t(source.batch.mesh.get_id());
-		push[19] = uint32_t(source.batch.mesh.get_id() >> 32);
+		push[16] = uint32_t(source.batch.history_instance_id);
+		push[17] = uint32_t(source.batch.history_instance_id >> 32);
+		// This is a history tag, never a resource handle or admission identity.
+		const uint64_t mesh_tag = hash64_murmur3_64(source.batch.geometry.generation, hash64_murmur3_64(source.batch.mesh.get_id(), 0));
+		push[18] = uint32_t(mesh_tag);
+		push[19] = uint32_t(mesh_tag >> 32);
 		push[20] = sources[index].batch_word;
 		push[21] = index * 44;
 		rd->compute_list_bind_uniform_set(list, sources[index].uniforms, 0);

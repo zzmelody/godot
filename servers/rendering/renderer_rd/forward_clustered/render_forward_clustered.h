@@ -599,6 +599,8 @@ private:
 
 	class GeometryInstanceForwardClustered : public RenderGeometryInstanceBase {
 	public:
+		// History belongs to this allocation, not its shared Mesh/MultiMesh RID.
+		uint64_t history_instance_id = 0;
 		// lightmap
 		RID lightmap_instance;
 		Rect2 lightmap_uv_scale;
@@ -659,6 +661,7 @@ private:
 	SelfList<GeometryInstanceSurfaceDataCache>::List geometry_surface_compilation_all_list;
 
 	PagedAllocator<GeometryInstanceForwardClustered> geometry_instance_alloc;
+	uint64_t geometry_history_instance_id = 0;
 	PagedAllocator<GeometryInstanceSurfaceDataCache> geometry_instance_surface_alloc;
 	PagedAllocator<GeometryInstanceLightmapSH> geometry_instance_lightmap_sh;
 

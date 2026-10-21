@@ -1796,6 +1796,7 @@ bool RenderForwardClustered::_virtual_geometry_batch(RenderGeometryInstance *p_i
 	r_batch.mesh = mesh;
 	r_batch.source = owner->data->base;
 	r_batch.source_instance = p_instance;
+	r_batch.history_instance_id = owner->history_instance_id;
 	r_batch.model = owner->transform;
 	r_batch.previous_model = owner->prev_transform;
 	r_batch.material_override = owner->data->material_override;
@@ -5650,6 +5651,7 @@ RenderGeometryInstance *RenderForwardClustered::geometry_instance_create(RID p_b
 	ERR_FAIL_COND_V(!((1 << type) & RSE::INSTANCE_GEOMETRY_MASK), nullptr);
 
 	GeometryInstanceForwardClustered *ginstance = geometry_instance_alloc.alloc();
+	ginstance->history_instance_id = ++geometry_history_instance_id;
 	ginstance->data = memnew(GeometryInstanceForwardClustered::Data);
 
 	ginstance->data->base = p_base;
