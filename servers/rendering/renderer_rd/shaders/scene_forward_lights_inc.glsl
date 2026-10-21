@@ -129,6 +129,9 @@ void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is
 			scene_data_block.data.view_matrix[2],
 			vec4(0.0, 0.0, 0.0, 1.0)));
 
+#ifdef VG_COMPOSITE
+	mat4 read_model_matrix = vg_source_matrix(vg_light_source, 0u);
+#else
 #ifdef USING_MOBILE_RENDERER
 	uint instance_index = draw_call.instance_index;
 #else
@@ -139,6 +142,7 @@ void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is
 			instances.data[instance_index].transform[1],
 			instances.data[instance_index].transform[2],
 			vec4(0.0, 0.0, 0.0, 1.0)));
+#endif
 
 #undef projection_matrix
 #define projection_matrix scene_data_block.data.projection_matrix
@@ -1160,6 +1164,9 @@ void light_process_area(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 			scene_data_block.data.view_matrix[2],
 			vec4(0.0, 0.0, 0.0, 1.0)));
 
+#ifdef VG_COMPOSITE
+	mat4 read_model_matrix = vg_source_matrix(vg_light_source, 0u);
+#else
 #ifdef USING_MOBILE_RENDERER
 	uint instance_index = draw_call.instance_index;
 #else
@@ -1170,6 +1177,7 @@ void light_process_area(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 			instances.data[instance_index].transform[1],
 			instances.data[instance_index].transform[2],
 			vec4(0.0, 0.0, 0.0, 1.0)));
+#endif
 
 #undef projection_matrix
 #define projection_matrix scene_data_block.data.projection_matrix

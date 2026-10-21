@@ -59,6 +59,15 @@ void vg_evaluate_fragment(VGSurface surface, vec2 point) {
 	anisotropy_flow = vec2(1.0, 0.0);
 	alpha_scissor_threshold = 1.0;
 	alpha_hash_scale = 1.0;
+	sss_strength = 0.0;
+	transmittance_color = vec4(0.0, 0.0, 0.0, 1.0);
+	transmittance_depth = 0.0;
+	transmittance_boost = 0.0;
+	bent_normal_map = vec3(0.5);
+	light_vertex = vertex;
+	fog = vec4(0.0, 0.0, 0.0, 1.0);
+	custom_radiance = vec4(0.0);
+	custom_irradiance = vec4(0.0);
 	vg_user_fragment();
 	if (isnan(alpha_highp) || isinf(alpha_highp)) {
 		atomicOr(vg_status.data[0], 2u);

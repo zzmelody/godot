@@ -47,6 +47,8 @@ public:
 	void record_materials();
 	void clear_view();
 	RID get_surface(uint32_t p_index) const { return surfaces[p_index]; }
+	RID get_extensions() const { return extensions; }
+	uint32_t get_extension_stride() const { return extension_stride; }
 	RID get_motion() const { return motion_surface; }
 	RID get_reactivity() const { return reactive_surface; }
 	bool are_materials_ready() const { return materials_ready; }
@@ -126,6 +128,9 @@ private:
 	uint32_t raster_material_words = 0;
 	LocalVector<uint32_t> raster_material_data;
 	RID surfaces[10];
+	RID extensions;
+	uint32_t extension_words = 0;
+	uint32_t extension_stride = 0;
 	RID motion_surface;
 	RID reactive_surface;
 	RID temporal_keys[2];

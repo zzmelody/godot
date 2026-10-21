@@ -66,6 +66,9 @@ float alpha_highp, metallic_highp, roughness_highp, specular, normal_map_depth;
 float ao, ao_light_affect, rim, rim_tint, clearcoat, clearcoat_roughness, anisotropy;
 float alpha_scissor_threshold, alpha_hash_scale;
 vec2 anisotropy_flow;
+vec3 bent_normal_map, light_vertex;
+float sss_strength, transmittance_depth, transmittance_boost;
+vec4 transmittance_color, fog, custom_radiance, custom_irradiance;
 
 void vg_discard() {
 	vg_killed = true;

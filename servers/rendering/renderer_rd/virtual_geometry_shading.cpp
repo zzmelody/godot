@@ -31,7 +31,7 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 			memory.free(snapshot);
 		}
 	}
-	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, dummy_transforms, material_view, frame_history, previous_sources, batch_parameters, view_status, raster_material_buffer }) {
+	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, dummy_transforms, material_view, frame_history, previous_sources, batch_parameters, view_status, raster_material_buffer, extensions }) {
 		if (rid.is_valid()) {
 			memory.free(rid);
 		}
@@ -418,6 +418,20 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 	if (materials.is_empty()) {
 		return OK;
 	}
+	extension_stride = 0;
+	if (!depth_only) {
+		for (RID material : materials) {
+			auto *data = static_cast<SceneShader::MaterialData *>(storage->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
+			ERR_FAIL_COND_V(data == nullptr || data->shader_data == nullptr, ERR_INVALID_DATA);
+			String message;
+			ERR_FAIL_COND_V_MSG(data->shader_data->get_virtual_geometry_shader(message).is_null(), ERR_UNAVAILABLE, message);
+			extension_stride = MAX(extension_stride, data->shader_data->virtual_geometry_extension_words);
+		}
+		const Error error = ensure_words(memory, extensions, extension_words, MAX(uint64_t(1), uint64_t(size.x) * size.y * 4 * extension_stride));
+		if (error != OK) {
+			return error;
+		}
+	}
 	if (view_status.is_null()) {
 		view_status = memory.storage(4);
 	}
@@ -525,6 +539,9 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 31, { temporal_keys[0] }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 28, { frame_history }));
+		if (data->shader_data->virtual_geometry_extension_words != 0) {
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 64, { extensions }));
+		}
 		for (uint32_t index = 0; index < 10; ++index) {
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, index == 9 ? 29 : 16 + index, { surfaces[index] }));
 		}
@@ -553,7 +570,7 @@ void VirtualGeometryShading::record_materials() {
 	const RD::ComputeListID list = rd->compute_list_begin();
 	for (uint32_t index = 0; index < material_work.size(); ++index) {
 		const auto &work = material_work[index];
-		const uint32_t push[3] = { index, uint32_t(materials.size()), entries_word };
+		const uint32_t push[4] = { index, uint32_t(materials.size()), entries_word, extension_stride };
 		rd->compute_list_bind_compute_pipeline(list, work.pipeline);
 		rd->compute_list_bind_uniform_set(list, work.scene, 0);
 		if (work.material.is_valid()) {
@@ -568,7 +585,7 @@ void VirtualGeometryShading::record_materials() {
 }
 
 uint64_t VirtualGeometryShading::get_buffer_bytes() const {
-	return uint64_t(scene_words + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + batch_parameter_words) * 4 +
+	return (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + batch_parameter_words + extension_words) * 4 +
 			uint64_t(global_history_words[0] + global_history_words[1]) * 4 +
 			(dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 320 : 0) +
 			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;

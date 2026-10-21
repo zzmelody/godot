@@ -41,8 +41,10 @@ layout(push_constant, std430) uniform Parameters {
 	uint material;
 	uint materials;
 	uint entries_word;
+	uint extension_stride;
 }
 params;
+#include "virtual_geometry_material_extensions_inc.glsl"
 
 #define VG_GLOBALS_BINDING 11
 #define VG_MATERIAL_INDEX params.material
@@ -83,7 +85,57 @@ void main() {
 	normal_map.z = sqrt(max(0.0, 1.0 - dot(normal_map.xy, normal_map.xy)));
 	normal = normalize(mix(normal, tangent * normal_map.x + binormal * normal_map.y + normal * normal_map.z, normal_map_depth));
 #endif
-	// Helpers execute all material code. Only covered lanes publish a surface.
+#ifdef VG_EXTENDED_MATERIAL
+	// Keep each primitive's complete quad, including extrapolated helpers.
+	// Two primitives sharing a screen quad must never overwrite each other.
+	uint vg_extension = (index * 4u + lane) * params.extension_stride;
+#ifdef VG_SSS_WORD
+	vg_light_data.data[vg_extension + VG_SSS_WORD] = floatBitsToUint(sss_strength);
+#endif
+#ifdef VG_TRANSMITTANCE_WORD
+	vg_extension_store4(vg_extension + VG_TRANSMITTANCE_WORD, transmittance_color);
+	vg_light_data.data[vg_extension + VG_TRANSMITTANCE_WORD + 4u] = floatBitsToUint(transmittance_depth);
+	vg_light_data.data[vg_extension + VG_TRANSMITTANCE_WORD + 5u] = floatBitsToUint(transmittance_boost);
+#endif
+#ifdef VG_BENT_NORMAL_WORD
+	bent_normal_map.xy = bent_normal_map.xy * 2.0 - 1.0;
+	bent_normal_map.z = sqrt(max(0.0, 1.0 - dot(bent_normal_map.xy, bent_normal_map.xy)));
+	vg_extension_store3(vg_extension + VG_BENT_NORMAL_WORD, normalize(tangent * bent_normal_map.x + binormal * bent_normal_map.y + normal * bent_normal_map.z));
+#endif
+#ifdef VG_FOG_WORD
+	vg_extension_store4(vg_extension + VG_FOG_WORD, fog);
+#endif
+#ifdef VG_RADIANCE_WORD
+	vg_extension_store4(vg_extension + VG_RADIANCE_WORD, custom_radiance);
+#endif
+#ifdef VG_IRRADIANCE_WORD
+	vg_extension_store4(vg_extension + VG_IRRADIANCE_WORD, custom_irradiance);
+#endif
+#ifdef VG_LIGHT_VERTEX_WORD
+	vg_extension_store3(vg_extension + VG_LIGHT_VERTEX_WORD, light_vertex);
+#endif
+#ifdef VG_LIGHT_INPUT_WORD
+	vg_extension_store4(vg_extension + VG_LIGHT_INPUT_WORD, vec4(uv_interp, uv2_interp));
+	vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 4u] = floatBitsToUint(vg_fragcoord.w);
+#if defined(ALPHA_SCISSOR_USED) || defined(ALPHA_HASH_USED)
+	vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 5u] = floatBitsToUint(1.0);
+#else
+	vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 5u] = floatBitsToUint(alpha_highp);
+#endif
+	vg_extension_store3(vg_extension + VG_LIGHT_INPUT_WORD + 6u, normal);
+	vg_extension_store3(vg_extension + VG_LIGHT_INPUT_WORD + 9u, surface.view_position);
+	vg_extension_store3(vg_extension + VG_LIGHT_INPUT_WORD + 12u, albedo_highp);
+	vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 15u] = floatBitsToUint(roughness_highp);
+	vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 16u] = floatBitsToUint(metallic_highp);
+	vg_extension_store3(vg_extension + VG_LIGHT_INPUT_WORD + 17u, backlight);
+	vg_extension_store3(vg_extension + VG_LIGHT_INPUT_WORD + 20u, tangent);
+	vg_extension_store3(vg_extension + VG_LIGHT_INPUT_WORD + 23u, binormal);
+	vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 26u] = floatBitsToUint(vg_fragcoord.z);
+	uint vg_light_word = vg_extension + VG_LIGHT_VARYINGS_WORD;
+#CODE : VIRTUAL_GEOMETRY_LIGHT_STORE
+#endif
+#endif
+	// Helpers publish only the primitive-private extension record.
 	if ((shading.data[word + 2u] & (1u << lane)) == 0u || vg_killed) {
 		return;
 	}

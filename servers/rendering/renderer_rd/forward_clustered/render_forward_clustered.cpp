@@ -1894,6 +1894,18 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 				batch.previous_model = batch.model;
 				batch.previous_transform_offset = batch.transform_offset;
 			}
+			if (eye == 0) {
+				// Virtual meshes have no ordinary surface-cache draws to request
+				// the shared SSS pass on their behalf.
+				const auto slots = RendererRD::MeshStorage::get_singleton()->mesh_get_virtual_geometry_materials(batch.mesh);
+				for (uint32_t slot = 0; slot < slots.rids.size(); ++slot) {
+					const RID material = slots.resolve(slot, batch.surface_materials, batch.material_override, scene_shader.default_material);
+					auto *material_data = static_cast<SceneShaderForwardClustered::MaterialData *>(RendererRD::MaterialStorage::get_singleton()->material_get_data(material, RendererRD::MaterialStorage::SHADER_TYPE_3D));
+					if (material_data && material_data->shader_data) {
+						scene_state.used_sss |= material_data->shader_data->uses_sss;
+					}
+				}
+			}
 			if (!selection) {
 				selection = memnew(RendererRD::VirtualGeometrySelection);
 				selection->begin(camera, projection, scene->flip_y, buffers->get_internal_size());
@@ -1985,7 +1997,13 @@ Error RenderForwardClustered::_render_virtual_geometry_color(RenderDataRD *p_ren
 			for (uint32_t surface = 0; surface < 10; ++surface) {
 				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, surface == 9 ? 29 : 16 + surface, { shading.get_surface(surface) }));
 			}
+			if (material->shader_data->virtual_geometry_extension_words != 0) {
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 64, { shading.get_extensions() }));
+			}
 			work.surfaces = cache->get_cache_vec(work.program, TRANSFORMS_UNIFORM_SET, uniforms);
+			work.material = material->shader_data->virtual_geometry_uses_light ? material->get_parameters_uniform_set(work.program, MATERIAL_UNIFORM_SET, true, material->shader_data->texture_uniforms) : RID();
+			ERR_FAIL_COND_V(material->shader_data->virtual_geometry_uses_light && work.material.is_null() &&
+						(material->shader_data->ubo_size != 0 || !material->shader_data->texture_uniforms.is_empty()), ERR_CANT_CREATE);
 			ERR_FAIL_COND_V(work.base.is_null() || work.pass.is_null() || work.surfaces.is_null(), ERR_CANT_CREATE);
 		}
 		RENDER_TIMESTAMP("Virtual Geometry Scene Lighting");
@@ -1996,7 +2014,10 @@ Error RenderForwardClustered::_render_virtual_geometry_color(RenderDataRD *p_ren
 			rd->draw_list_bind_uniform_set(list, work.base, SCENE_UNIFORM_SET);
 			rd->draw_list_bind_uniform_set(list, work.pass, RENDER_PASS_UNIFORM_SET);
 			rd->draw_list_bind_uniform_set(list, work.surfaces, TRANSFORMS_UNIFORM_SET);
-			const uint32_t push[8] = { index, uint32_t(materials.size()), shading.get_entries_word(), eye, 0, 0, 0, 0 };
+			if (work.material.is_valid()) {
+				rd->draw_list_bind_uniform_set(list, work.material, MATERIAL_UNIFORM_SET);
+			}
+			const uint32_t push[8] = { index, uint32_t(materials.size()), shading.get_entries_word(), eye, shading.get_extension_stride(), 0, 0, 0 };
 			rd->draw_list_set_push_constant(list, push, sizeof(push));
 			rd->draw_list_draw_indirect(list, false, shading.get_draw_arguments(), index * 16);
 		}

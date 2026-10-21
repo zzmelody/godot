@@ -82,6 +82,7 @@ public:
 		String stage_globals[STAGE_MAX];
 
 		HashMap<String, String> code;
+		uint32_t virtual_geometry_varying_words = 0;
 
 		bool uses_global_textures = false;
 		bool uses_fragment_time = false;

@@ -243,6 +243,8 @@ public:
 		PipelineDeferredRD virtual_geometry_pipeline;
 		bool virtual_geometry_attempted = false;
 		String virtual_geometry_error;
+		uint32_t virtual_geometry_extension_words = 0;
+		bool virtual_geometry_uses_light = false;
 
 		static const uint32_t VERTEX_INPUT_MASKS_SIZE = ShaderVersion::SHADER_VERSION_COLOR_PASS * 2 + SHADER_COLOR_PASS_FLAG_COUNT;
 		std::atomic<uint64_t> vertex_input_masks[VERTEX_INPUT_MASKS_SIZE] = {};
@@ -378,6 +380,7 @@ public:
 	VirtualGeometryMaterialShaderRD virtual_geometry_shader;
 	ShaderCompiler virtual_geometry_compiler;
 	ShaderCompiler virtual_geometry_raster_compiler;
+	ShaderCompiler virtual_geometry_light_compiler;
 	VirtualGeometryRasterBinShaderRD virtual_geometry_raster_bin;
 	VirtualGeometryRasterSwShaderRD virtual_geometry_raster_sw;
 	VirtualGeometryRasterShaderRD virtual_geometry_raster_hw;

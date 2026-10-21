@@ -14,9 +14,11 @@ layout(set = 2, binding = 3, std430) readonly buffer Shading {
 }
 vg_shading;
 layout(location = 15) flat out uint vg_entry_payload;
+layout(location = 16) flat out uint vg_entry_index;
 void main() {
 	uint entry = vg_shading.data[2u + draw_call.uv_offset + draw_call.instance_index] + uint(gl_InstanceIndex);
 	uint word = draw_call.multimesh_motion_vectors_current_offset + entry * 3u;
+	vg_entry_index = entry;
 	uint origin = vg_shading.data[word];
 	vg_entry_payload = vg_shading.data[word + 1u];
 	const vec2 corners[6] = vec2[](vec2(0, 0), vec2(2, 0), vec2(2, 2), vec2(0, 0), vec2(2, 2), vec2(0, 2));
@@ -1058,6 +1060,12 @@ layout(location = 14) in vec2 point_coord_interp;
 #define LIGHT_TRANSMITTANCE_USED
 #endif
 
+#ifdef VG_COMPOSITE
+#include "virtual_geometry_composite_inc.glsl"
+layout(location = 15) flat in uint vg_entry_payload;
+layout(location = 16) flat in uint vg_entry_index;
+#endif
+
 #ifdef MATERIAL_UNIFORMS_USED
 /* clang-format off */
 layout(set = MATERIAL_UNIFORM_SET, binding = 0, std140) uniform MaterialUniforms {
@@ -1240,11 +1248,6 @@ uint cluster_get_range_clip_mask(uint i, uint z_min, uint z_max) {
 #include "../normal_fit_inc.glsl"
 #endif // MODE_RENDER_NORMAL_ROUGHNESS
 
-#ifdef VG_COMPOSITE
-#include "virtual_geometry_composite_inc.glsl"
-layout(location = 15) flat in uint vg_entry_payload;
-#endif
-
 void fragment_shader(in SceneData scene_data) {
 #ifdef VG_COMPOSITE
 	ivec2 vg_pixel = ivec2(gl_FragCoord.xy);
@@ -1253,12 +1256,15 @@ void fragment_shader(in SceneData scene_data) {
 		discard;
 	}
 	ivec2 vg_size = textureSize(sampler2D(vg_albedo, SAMPLER_NEAREST_CLAMP), 0);
-	uvec2 vg_visible = vg_visibility.data[vg_pixel.y * vg_size.x + vg_pixel.x];
+	ivec2 vg_visible_pixel = clamp(vg_pixel, ivec2(0), vg_size - ivec2(1));
+	uvec2 vg_visible = vg_visibility.data[vg_visible_pixel.y * vg_size.x + vg_visible_pixel.x];
 	if (vg_visible.x != vg_entry_payload || vg_material(vg_visible.x) != draw_call.instance_index) {
 		discard;
 	}
 	gl_FragDepth = uintBitsToFloat(vg_visible.y);
-	uint vg_source = vg_visible_reference((vg_visible.x >> 7u) - 1u).x;
+	// Helper lanes must use this quad's instance, even when another primitive
+	// owns their screen pixel or the helper lies outside an odd-sized viewport.
+	uint vg_source = vg_visible_reference((vg_entry_payload >> 7u) - 1u).x;
 	InstanceData fragment_instance = vg_instance(vg_source);
 #else
 	uint instance_index = instance_index_interp;
@@ -1453,6 +1459,52 @@ void fragment_shader(in SceneData scene_data) {
 		clearcoat_roughness = vg_an.x;
 		anisotropy = vg_an.y;
 		anisotropy_flow = vg_an.zw;
+#ifdef VG_EXTENDED_MATERIAL
+		uint vg_lane = (uint(vg_pixel.x) & 1u) | ((uint(vg_pixel.y) & 1u) << 1u);
+		uint vg_extension = (vg_entry_index * 4u + vg_lane) * draw_call.gpu_visibility_offset;
+#ifdef VG_SSS_WORD
+		sss_strength = uintBitsToFloat(vg_light_data.data[vg_extension + VG_SSS_WORD]);
+#endif
+#ifdef VG_TRANSMITTANCE_WORD
+		transmittance_color = vg_extension_load4(vg_extension + VG_TRANSMITTANCE_WORD);
+		transmittance_depth = uintBitsToFloat(vg_light_data.data[vg_extension + VG_TRANSMITTANCE_WORD + 4u]);
+		transmittance_boost = uintBitsToFloat(vg_light_data.data[vg_extension + VG_TRANSMITTANCE_WORD + 5u]);
+#endif
+#ifdef VG_BENT_NORMAL_WORD
+		bent_normal_vector = vg_extension_load3(vg_extension + VG_BENT_NORMAL_WORD);
+#endif
+#ifdef VG_FOG_WORD
+		fog = vg_extension_load4(vg_extension + VG_FOG_WORD);
+#endif
+#ifdef VG_RADIANCE_WORD
+		custom_radiance = vg_extension_load4(vg_extension + VG_RADIANCE_WORD);
+#endif
+#ifdef VG_IRRADIANCE_WORD
+		custom_irradiance = vg_extension_load4(vg_extension + VG_IRRADIANCE_WORD);
+#endif
+#ifdef VG_LIGHT_VERTEX_WORD
+		light_vertex = vg_extension_load3(vg_extension + VG_LIGHT_VERTEX_WORD);
+#endif
+#ifdef VG_LIGHT_INPUT_WORD
+		vg_light_source = vg_source;
+		vec4 vg_uv = vg_extension_load4(vg_extension + VG_LIGHT_INPUT_WORD);
+		vg_light_uv = vg_uv.xy;
+		vg_light_uv2 = vg_uv.zw;
+		vg_light_fragcoord = vec4(gl_FragCoord.xy, uintBitsToFloat(vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 26u]), uintBitsToFloat(vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 4u]));
+		alpha_highp = uintBitsToFloat(vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 5u]);
+		normal_highp = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 6u);
+		vertex = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 9u);
+		view_highp = -normalize(vertex - eye_offset);
+		albedo_highp = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 12u);
+		roughness_highp = uintBitsToFloat(vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 15u]);
+		metallic_highp = uintBitsToFloat(vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 16u]);
+		backlight = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 17u);
+		tangent = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 20u);
+		binormal = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 23u);
+		uint vg_light_word = vg_extension + VG_LIGHT_VARYINGS_WORD;
+#CODE : VIRTUAL_GEOMETRY_LIGHT_LOAD
+#endif
+#endif
 #else
 #CODE : FRAGMENT
 #endif
@@ -1555,7 +1607,7 @@ void fragment_shader(in SceneData scene_data) {
 	normal = geo_normal;
 #endif // NORMAL_MAP_USED
 
-#ifdef BENT_NORMAL_MAP_USED
+#if defined(BENT_NORMAL_MAP_USED) && !defined(VG_COMPOSITE)
 	bent_normal_map.xy = bent_normal_map.xy * 2.0 - 1.0;
 	bent_normal_map.z = sqrt(max(0.0, 1.0 - dot(bent_normal_map.xy, bent_normal_map.xy)));
 

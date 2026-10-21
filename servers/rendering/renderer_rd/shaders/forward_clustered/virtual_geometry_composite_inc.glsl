@@ -29,6 +29,14 @@ layout(set = 2, binding = 22) uniform utexture2D vg_flags;
 layout(set = 2, binding = 23) uniform texture2D vg_tangent;
 layout(set = 2, binding = 24) uniform texture2D vg_geometric_normal;
 layout(set = 2, binding = 29) uniform texture2D vg_lightmap_uv;
+#define VG_EXTENSION_SET 2
+#define VG_EXTENSION_READONLY
+#include "../virtual_geometry_material_extensions_inc.glsl"
+#ifdef VG_LIGHT_INPUT_WORD
+uint vg_light_source;
+vec2 vg_light_uv, vg_light_uv2;
+vec4 vg_light_fragcoord;
+#endif
 
 InstanceData vg_instance(uint source) {
 	InstanceData value;

@@ -44,7 +44,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	// Join them before changing either, including the empty/error code paths.
 	pipeline_hash_map.clear_pipelines();
 	_clear_virtual_geometry_raster();
-	for (uint32_t color_variant = 0; color_variant < 2; ++color_variant) {
+	for (uint32_t color_variant = 0; color_variant < 8; ++color_variant) {
 		virtual_geometry_composite_pipelines[color_variant].clear();
 		virtual_geometry_composite_initialized[color_variant] = false;
 	}
@@ -59,6 +59,8 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	}
 	virtual_geometry_attempted = false;
 	virtual_geometry_error = String();
+	virtual_geometry_extension_words = 0;
+	virtual_geometry_uses_light = false;
 
 	code = p_code;
 	ubo_size = 0;
@@ -590,7 +592,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 			virtual_geometry_error = "Virtual geometry material evaluation requires compute subgroup ballot and quad operations.";
 		} else if (!is_valid() || uses_vertex_id || uses_position || writes_tangent || writes_modelview_or_projection ||
 				uses_world_coordinates || uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_antialiasing ||
-				uses_sss || uses_transmittance || uses_bent_normal_map || stencil_enabled || wireframe) {
+				stencil_enabled || wireframe) {
 			virtual_geometry_error = "Virtual geometry material requires an unsupported coverage, vertex input or shading feature: " + path;
 		} else {
 			ShaderCompiler::IdentifierActions actions;
@@ -609,22 +611,63 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 			}
 			if (error != OK || generated.uniform_total_size != ubo_size || generated.uniform_offsets != ubo_offsets || generated.texture_uniforms.size() != texture_uniforms.size()) {
 				virtual_geometry_error = "Virtual geometry material compilation or shared parameter layout failed: " + path;
-			} else if (generated.code.has("light")) {
-				virtual_geometry_error = "Virtual geometry custom light functions are not connected yet: " + path;
 			} else if (generated.defines.has("#define SKIP_TRANSFORM_USED\n") || generated.defines.has("#define USE_VERTEX_LIGHTING\n") ||
-					generated.defines.has("#define USE_SHADOW_TO_OPACITY\n") || generated.defines.has("#define LIGHT_VERTEX_USED\n") ||
-					generated.defines.has("#define CUSTOM_FOG_USED\n") || generated.defines.has("#define CUSTOM_RADIANCE_USED\n") ||
-					generated.defines.has("#define CUSTOM_IRRADIANCE_USED\n")) {
+					generated.defines.has("#define USE_SHADOW_TO_OPACITY\n")) {
 				virtual_geometry_error = "Virtual geometry static material mode is not connected: " + path;
 			} else {
 				Vector<String> composite_defines;
 				composite_defines.push_back("#define VG_COMPOSITE\n#define USE_LIGHTMAP\n");
+				const bool custom_light = generated.code.has("light");
+				virtual_geometry_uses_light = custom_light;
+				ShaderCompiler::GeneratedCode light_code;
+				if (custom_light) {
+					ShaderCompiler::IdentifierActions light_actions;
+					light_actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
+					HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> light_uniforms;
+					light_actions.uniforms = &light_uniforms;
+					{
+						MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
+						error = owner->virtual_geometry_light_compiler.compile(RSE::SHADER_SPATIAL, code, &light_actions, path, light_code);
+					}
+					if (error != OK || light_code.uniform_total_size != ubo_size || light_code.uniform_offsets != ubo_offsets ||
+							light_code.texture_uniforms.size() != texture_uniforms.size() || light_code.virtual_geometry_varying_words != generated.virtual_geometry_varying_words) {
+						virtual_geometry_error = "Virtual geometry light parameter or varying layout failed: " + path;
+						r_error = virtual_geometry_error;
+						return RID();
+					}
+				}
+				virtual_geometry_extension_words = 0;
+				auto extension = [&](const char *p_name, uint32_t p_words, bool p_enabled) {
+					if (p_enabled) {
+						const String define = "#define VG_" + String(p_name) + "_WORD " + uitos(virtual_geometry_extension_words) + "u\n";
+						generated.defines.push_back(define);
+						composite_defines.push_back(define);
+						virtual_geometry_extension_words += p_words;
+					}
+				};
+				extension("SSS", 1, uses_sss || uses_transmittance);
+				extension("TRANSMITTANCE", 6, uses_transmittance);
+				extension("BENT_NORMAL", 3, uses_bent_normal_map);
+				extension("FOG", 4, generated.defines.has("#define CUSTOM_FOG_USED\n"));
+				extension("RADIANCE", 4, generated.defines.has("#define CUSTOM_RADIANCE_USED\n"));
+				extension("IRRADIANCE", 4, generated.defines.has("#define CUSTOM_IRRADIANCE_USED\n"));
+				extension("LIGHT_VERTEX", 3, generated.defines.has("#define LIGHT_VERTEX_USED\n"));
+				extension("LIGHT_INPUT", 27, custom_light);
+				extension("LIGHT_VARYINGS", generated.virtual_geometry_varying_words, custom_light);
+				if (virtual_geometry_extension_words != 0) {
+					generated.defines.push_back("#define VG_EXTENDED_MATERIAL\n");
+					composite_defines.push_back("#define VG_EXTENDED_MATERIAL\n");
+				}
 				for (const String &define : generated.defines) {
-					// Attribute/varying, material UBO and texture declarations belong
-					// to compute evaluation. Keep only the scene's lighting choices.
+					// Keep the shared lighting choices. The light compiler supplies
+					// its own material declarations and restored custom varyings.
 					if (define.begins_with("#define LIGHT_") || define.begins_with("#define DIFFUSE_") || define.begins_with("#define SPECULAR_") ||
 							define == "#define MODE_UNSHADED\n" || define == "#define FOG_DISABLED\n" ||
-							define == "#define SHADOWS_DISABLED\n" || define == "#define AMBIENT_LIGHT_DISABLED\n") {
+							define == "#define SHADOWS_DISABLED\n" || define == "#define AMBIENT_LIGHT_DISABLED\n" ||
+							define == "#define ENABLE_SSS\n" || define == "#define ENABLE_TRANSMITTANCE\n" || define == "#define SSS_MODE_SKIN\n" ||
+							define == "#define AREA_LIGHT_CODE_USED\n" ||
+							define == "#define BENT_NORMAL_MAP_USED\n" || define == "#define CUSTOM_FOG_USED\n" ||
+							define == "#define CUSTOM_RADIANCE_USED\n" || define == "#define CUSTOM_IRRADIANCE_USED\n") {
 						composite_defines.push_back(define);
 					}
 				}
@@ -694,7 +737,8 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 					}
 				}
 				virtual_geometry_composite_version = owner->shader.version_create(false);
-				owner->shader.version_set_code(virtual_geometry_composite_version, {}, "", "", "", composite_defines);
+				owner->shader.version_set_code(virtual_geometry_composite_version, custom_light ? light_code.code : HashMap<String, String>(),
+						custom_light ? light_code.uniforms : String(), String(), custom_light ? light_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT] : String(), composite_defines);
 				virtual_geometry_version = owner->virtual_geometry_shader.version_create(false);
 				owner->virtual_geometry_shader.version_set_compute_code(virtual_geometry_version, generated.code, generated.uniforms, generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
 				RID program = owner->virtual_geometry_shader.version_get_shader(virtual_geometry_version, 0);
@@ -1186,6 +1230,15 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.check_multiview_samplers = true;
 
 		compiler.initialize(actions);
+		{
+			ShaderCompiler::DefaultIdentifierActions light_actions = actions;
+			light_actions.compute_material_varyings = true;
+			light_actions.instance_uniform_index_variable = "vg_source_data(vg_light_source, 45u)";
+			light_actions.renames["UV"] = "vg_light_uv";
+			light_actions.renames["UV2"] = "vg_light_uv2";
+			light_actions.renames["FRAGCOORD"] = "vg_light_fragcoord";
+			virtual_geometry_light_compiler.initialize(light_actions);
+		}
 		actions.global_buffer_array_variable = "vg_global_uniform";
 		actions.global_buffer_array_function = true;
 		actions.compute_material_varyings = true;

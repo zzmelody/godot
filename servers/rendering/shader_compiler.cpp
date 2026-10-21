@@ -699,6 +699,8 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 			varying_names.sort_custom<StringName::AlphCompare>(); //ensure order is deterministic so the same shader is always produced
 			String compute_fields;
 			String compute_interpolation;
+			String compute_light_store;
+			String compute_light_load;
 
 			for (int k = 0; k < varying_names.size(); k++) {
 				const StringName &varying_name = varying_names[k];
@@ -710,6 +712,31 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						compute_fields += "[" + itos(varying.array_size) + "]";
 					}
 					compute_fields += ";\n";
+					// Preserve typed fragment/vertex varyings across the compute
+					// material and scene-light stages without float conversions.
+					if (varying.stage != SL::ShaderNode::Varying::STAGE_UNKNOWN) {
+						const int components = SL::get_cardinality(varying.type);
+						const int matrix_size = varying.type == SL::TYPE_MAT2 ? 2 : varying.type == SL::TYPE_MAT3 ? 3 : varying.type == SL::TYPE_MAT4 ? 4 : 0;
+						for (int element = 0; element < MAX(1, varying.array_size); ++element) {
+							for (int component = 0; component < components; ++component) {
+								String member = "vg_varyings." + name;
+								if (varying.array_size > 0) {
+									member += "[" + itos(element) + "]";
+								}
+								if (matrix_size != 0) {
+									member += "[" + itos(component / matrix_size) + "][" + itos(component % matrix_size) + "]";
+								} else if (components > 1) {
+									member += "[" + itos(component) + "]";
+								}
+								const String word = "vg_light_data.data[vg_light_word + " + uitos(r_gen_code.virtual_geometry_varying_words++) + "u]";
+								const SL::DataType scalar = SL::get_scalar_type(varying.type);
+								const String packed = scalar == SL::TYPE_FLOAT ? "floatBitsToUint(" + member + ")" : "uint(" + member + ")";
+								const String unpacked = scalar == SL::TYPE_FLOAT ? "uintBitsToFloat(" + word + ")" : _typestr(scalar) + "(" + word + ")";
+								compute_light_store += word + " = " + packed + ";\n";
+								compute_light_load += member + " = " + unpacked + ";\n";
+							}
+						}
+					}
 					if (varying.stage != SL::ShaderNode::Varying::STAGE_FRAGMENT) {
 						String member = name;
 						if (varying.array_size > 0) {
@@ -766,8 +793,12 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				if (compute_fields.is_empty()) {
 					compute_fields = "float unused;\n";
 				}
-				r_gen_code.stage_globals[STAGE_COMPUTE] += "struct VGCustomVaryings {\n" + compute_fields + "};\nVGCustomVaryings vg_varyings;\nVGCustomVaryings vg_corners[3];\n";
+				const String declarations = "struct VGCustomVaryings {\n" + compute_fields + "};\nVGCustomVaryings vg_varyings;\n";
+				r_gen_code.stage_globals[STAGE_COMPUTE] += declarations + "VGCustomVaryings vg_corners[3];\n";
+				r_gen_code.stage_globals[STAGE_FRAGMENT] += declarations;
 				r_gen_code.code["virtual_geometry_varyings"] = compute_interpolation;
+				r_gen_code.code["virtual_geometry_light_store"] = compute_light_store;
+				r_gen_code.code["virtual_geometry_light_load"] = compute_light_load;
 			}
 			if (var_frag_to_light.size() > 0) {
 				String gcode = "\n\nstruct {\n";
@@ -1679,6 +1710,7 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 
 	r_gen_code.defines.clear();
 	r_gen_code.code.clear();
+	r_gen_code.virtual_geometry_varying_words = 0;
 	for (int i = 0; i < STAGE_MAX; i++) {
 		r_gen_code.stage_globals[i] = String();
 	}

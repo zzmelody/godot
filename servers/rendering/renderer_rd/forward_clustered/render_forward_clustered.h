@@ -515,6 +515,7 @@ private:
 		RID base;
 		RID pass;
 		RID surfaces;
+		RID material;
 	};
 	LocalVector<VirtualGeometryColorWork> virtual_geometry_color_work;
 	Error _render_virtual_geometry_color(RenderDataRD *p_render_data, RID p_framebuffer, uint32_t p_color_flags, RID p_radiance, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer, const SceneShaderForwardClustered::ShaderSpecialization &p_specialization);
