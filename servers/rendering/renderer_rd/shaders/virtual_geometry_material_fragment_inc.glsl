@@ -43,7 +43,9 @@ void vg_evaluate_fragment(VGSurface surface, vec2 point) {
 	albedo_highp = vec3(1.0);
 	alpha_highp = 1.0;
 	metallic_highp = 0.0;
-	roughness_highp = surface.roughness;
+	// The native fragment stage has its own default. Vertex ROUGHNESS only
+	// controls vertex lighting, which this material path does not use.
+	roughness_highp = 1.0;
 	specular = 0.5;
 	emission = vec3(0.0);
 	backlight = vec3(0.0);

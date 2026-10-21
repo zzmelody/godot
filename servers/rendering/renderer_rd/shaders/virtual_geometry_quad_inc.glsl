@@ -66,11 +66,18 @@ VG_QUAD_DERIVATIVES(vec4)
 
 // Implicit fragment sampling must become explicit gradients in compute. Keep
 // array layers out of the gradient. Explicit LOD/gradient calls stay unchanged.
+#define VG_QUAD_SAMPLING
+// The same generated helpers can be called by vertex() and fragment(). Vertex
+// sampling has no screen derivatives, including during partial-quad motion work.
+bool vg_vertex_evaluation = false;
+
 #define VG_QUAD_TEXTURE(S, R, C, G) \
 	R vg_texture(S image, C uv) { \
+		if (vg_vertex_evaluation) { return textureLod(image, uv, 0.0); } \
 		return textureGrad(image, uv, vg_dFdxFine(G), vg_dFdyFine(G)); \
 	} \
 	R vg_texture(S image, C uv, float bias) { \
+		if (vg_vertex_evaluation) { return textureLod(image, uv, 0.0); } \
 		float scale = exp2(bias); \
 		return textureGrad(image, uv, vg_dFdxFine(G) * scale, vg_dFdyFine(G) * scale); \
 	}
@@ -92,9 +99,11 @@ VG_QUAD_TEXTURE(usampler3D, uvec4, vec3, uv)
 // The spatial compiler therefore passes the texture and sampler separately.
 #define VG_QUAD_SEPARATE_TEXTURE(T, S, R, C, G) \
 	R vg_texture(T image, sampler sampling, C uv) { \
+		if (vg_vertex_evaluation) { return textureLod(S(image, sampling), uv, 0.0); } \
 		return textureGrad(S(image, sampling), uv, vg_dFdxFine(G), vg_dFdyFine(G)); \
 	} \
 	R vg_texture(T image, sampler sampling, C uv, float bias) { \
+		if (vg_vertex_evaluation) { return textureLod(S(image, sampling), uv, 0.0); } \
 		float scale = exp2(bias); \
 		return textureGrad(S(image, sampling), uv, vg_dFdxFine(G) * scale, vg_dFdyFine(G) * scale); \
 	}
@@ -112,22 +121,29 @@ VG_QUAD_SEPARATE_TEXTURE(utexture2DArray, usampler2DArray, uvec4, vec3, uv.xy)
 VG_QUAD_SEPARATE_TEXTURE(utexture3D, usampler3D, uvec4, vec3, uv)
 #undef VG_QUAD_SEPARATE_TEXTURE
 
-vec4 vg_textureProj(texture2D image, sampler sampling, vec3 uv) {
-	return vg_texture(image, sampling, uv.xy / uv.z);
-}
-vec4 vg_textureProj(texture2D image, sampler sampling, vec4 uv) {
-	return vg_texture(image, sampling, uv.xy / uv.w);
-}
-vec4 vg_textureProj(texture3D image, sampler sampling, vec4 uv) {
-	return vg_texture(image, sampling, uv.xyz / uv.w);
-}
+// Project before deriving gradients, then apply the optional mip bias. Keep
+// all spatial-language float/signed/unsigned overloads in both sampler forms.
+#define VG_QUAD_PROJECTED_TEXTURE(T, S, R, C, P) \
+	R vg_textureProj(S image, C uv) { \
+		return vg_texture(image, P); \
+	} \
+	R vg_textureProj(S image, C uv, float bias) { \
+		return vg_texture(image, P, bias); \
+	} \
+	R vg_textureProj(T image, sampler sampling, C uv) { \
+		return vg_texture(image, sampling, P); \
+	} \
+	R vg_textureProj(T image, sampler sampling, C uv, float bias) { \
+		return vg_texture(image, sampling, P, bias); \
+	}
 
-vec4 vg_textureProj(sampler2D image, vec3 uv) {
-	return vg_texture(image, uv.xy / uv.z);
-}
-vec4 vg_textureProj(sampler2D image, vec4 uv) {
-	return vg_texture(image, uv.xy / uv.w);
-}
-vec4 vg_textureProj(sampler3D image, vec4 uv) {
-	return vg_texture(image, uv.xyz / uv.w);
-}
+VG_QUAD_PROJECTED_TEXTURE(texture2D, sampler2D, vec4, vec3, uv.xy / uv.z)
+VG_QUAD_PROJECTED_TEXTURE(texture2D, sampler2D, vec4, vec4, uv.xy / uv.w)
+VG_QUAD_PROJECTED_TEXTURE(itexture2D, isampler2D, ivec4, vec3, uv.xy / uv.z)
+VG_QUAD_PROJECTED_TEXTURE(itexture2D, isampler2D, ivec4, vec4, uv.xy / uv.w)
+VG_QUAD_PROJECTED_TEXTURE(utexture2D, usampler2D, uvec4, vec3, uv.xy / uv.z)
+VG_QUAD_PROJECTED_TEXTURE(utexture2D, usampler2D, uvec4, vec4, uv.xy / uv.w)
+VG_QUAD_PROJECTED_TEXTURE(texture3D, sampler3D, vec4, vec4, uv.xyz / uv.w)
+VG_QUAD_PROJECTED_TEXTURE(itexture3D, isampler3D, ivec4, vec4, uv.xyz / uv.w)
+VG_QUAD_PROJECTED_TEXTURE(utexture3D, usampler3D, uvec4, vec4, uv.xyz / uv.w)
+#undef VG_QUAD_PROJECTED_TEXTURE

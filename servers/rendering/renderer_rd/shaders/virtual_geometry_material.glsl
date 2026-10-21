@@ -156,7 +156,8 @@ void main() {
 	imageStore(vg_lightmap_uv, pixel, vec4(uv2_interp, 0.0, 0.0));
 	uint flags = vg_source + 1u;
 	if (vg_history_view.state.y != 0.0) {
-		vec2 velocity = vg_motion(payload, surface);
+		bool motion_valid;
+		vec2 velocity = vg_motion(payload, surface, motion_valid);
 		imageStore(vg_velocity, pixel, vec4(velocity, 0.0, 0.0));
 		uvec2 source_id = uvec2(vg_source_data(vg_source, 60u), vg_source_data(vg_source, 61u));
 		uvec2 mesh_tag = uvec2(vg_source_data(vg_source, 62u), vg_source_data(vg_source, 63u));
@@ -171,7 +172,7 @@ void main() {
 		uint index = point.y * uint(vg_view.dimensions.x) + point.x;
 		current_keys.data[index] = key;
 		vec2 previous_point = vec2(point) + 0.5 + velocity * vg_view.dimensions.xy + (vg_history_view.state.zw - vg_view.dimensions.zw) * 0.5 * vg_view.dimensions.xy;
-		bool stable = vg_view.flags.z != 0u && all(greaterThanEqual(previous_point, vec2(0.0))) && all(lessThan(previous_point, vg_view.dimensions.xy));
+		bool stable = motion_valid && vg_view.flags.z != 0u && all(greaterThanEqual(previous_point, vec2(0.0))) && all(lessThan(previous_point, vg_view.dimensions.xy));
 		if (stable) {
 			uvec2 previous_pixel = uvec2(previous_point);
 			stable = all(equal(previous_keys.data[previous_pixel.y * uint(vg_view.dimensions.x) + previous_pixel.x], key));

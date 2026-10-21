@@ -89,7 +89,13 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 	uv2_interp = value.uv[1];
 	color_interp = value.color * vg_instance_color;
 	roughness_highp = value.roughness;
+#ifdef VG_QUAD_SAMPLING
+	vg_vertex_evaluation = true;
+#endif
 	vg_user_vertex();
+#ifdef VG_QUAD_SAMPLING
+	vg_vertex_evaluation = false;
+#endif
 	vec3 offset = mat3(read_model_matrix) * (vertex - value.position);
 	if (any(isnan(offset)) || any(isinf(offset))) {
 		if (vg_previous_evaluation) {

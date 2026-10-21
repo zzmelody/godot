@@ -8,7 +8,10 @@ vec4 vg_previous_vector(uint source, uint offset) {
 	return uintBitsToFloat(uvec4(previous_sources.data[word], previous_sources.data[word + 1u], previous_sources.data[word + 2u], previous_sources.data[word + 3u]));
 }
 
-vec2 vg_motion(uint payload, VGSurface surface) {
+vec2 vg_motion(uint payload, VGSurface surface, out bool valid) {
+	// A zero vector can be valid stationary motion or an unavailable previous
+	// position. Keep that distinction for temporal history rejection.
+	valid = false;
 	if (vg_history_view.state.y == 0.0) {
 		return vec2(0.0);
 	}
@@ -51,5 +54,6 @@ vec2 vg_motion(uint payload, VGSurface surface) {
 	// Both projections are unjittered here. This equals the ordinary scene's
 	// previous-minus-current UV convention after removing each frame's jitter.
 	vec2 velocity = (previous_clip.xy / previous_clip.w - current_clip.xy / current_clip.w) * 0.5;
-	return any(isnan(velocity)) || any(isinf(velocity)) ? vec2(0.0) : velocity;
+	valid = !any(isnan(velocity)) && !any(isinf(velocity));
+	return valid ? velocity : vec2(0.0);
 }

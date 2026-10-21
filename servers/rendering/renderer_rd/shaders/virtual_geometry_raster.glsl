@@ -84,22 +84,27 @@ geometry;
 #endif
 
 void main() {
-	if (shadow_clip > 0.0) {
-		discard;
-	}
+	// Mask evaluation needs the complete primitive quad. A varying hemisphere
+	// clip must not terminate lanes before implicit sampling or derivatives.
 #ifndef VG_VOXEL_CAPTURE
+	// Face culling is uniform for this primitive and its helper lanes.
 	if (vg_cull_material(pixel_value, gl_FrontFacing)) {
 		discard;
 	}
 #endif
 #ifdef VG_VOXEL_CAPTURE
-	vg_capture_sdfgi(pixel_value, gl_FragCoord.xy);
-#else
-#ifdef VG_MASKED
-	if (!vg_raster_coverage(pixel_value, gl_FragCoord.xy)) {
+	if (shadow_clip > 0.0) {
 		discard;
 	}
+	vg_capture_sdfgi(pixel_value, gl_FragCoord.xy);
+#else
+	bool covered = true;
+#ifdef VG_MASKED
+	covered = vg_raster_coverage(pixel_value, gl_FragCoord.xy);
 #endif
+	if (!covered || shadow_clip > 0.0) {
+		discard;
+	}
 	vg_write_pixel(ivec2(gl_FragCoord.xy), gl_FragCoord.z, pixel_value);
 #endif
 }
