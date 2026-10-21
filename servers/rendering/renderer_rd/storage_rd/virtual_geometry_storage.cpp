@@ -689,12 +689,6 @@ void VirtualGeometryStorage::_outcome(Page *p_page, uint32_t p_status, Error p_e
 	if (p_status == PAGE_RESIDENT || p_status == PAGE_FAILED) {
 		p_page->install_pending = false;
 	}
-	if (p_status == PAGE_FAILED) {
-		p_page->asset->page_errors[p_page->index] = p_error == OK ? FAILED : p_error;
-		if (p_page->index < p_page->asset->root.hierarchy.root_pages) {
-			p_page->asset->roots_error = p_page->asset->page_errors[p_page->index];
-		}
-	}
 	--outcome_reservations;
 	outcomes.push_back({ ++sequence, p_page->asset->mesh.get_id(), p_page->asset->generation, p_page->lease,
 			p_page->upload, p_page->index, p_status, p_error, RD::get_singleton()->get_completed_submission_serial() });
@@ -727,16 +721,53 @@ uint32_t VirtualGeometryStorage::_allocate(uint32_t p_units) {
 }
 
 void VirtualGeometryStorage::_retire(Page *p_page) {
-	if (p_page->canceled) {
-		return;
-	}
-	p_page->canceled = true;
-	if (p_page->root_counted) {
-		--p_page->asset->roots_transcoded;
-		p_page->root_counted = false;
-	}
-	if (p_page->state != Page::QUEUED && p_page->state != Page::TRANSCODING) {
-		_begin_retirement(p_page);
+	LocalVector<Page *> pending;
+	pending.push_back(p_page);
+	while (!pending.is_empty()) {
+		Page *page = pending[pending.size() - 1];
+		pending.remove_at(pending.size() - 1);
+		if (page->canceled) {
+			continue;
+		}
+		page->canceled = true;
+		if (page->root_counted) {
+			--page->asset->roots_transcoded;
+			page->root_counted = false;
+		}
+		if (page->install_error != ERR_SKIP) {
+			Asset *asset = page->asset;
+			asset->page_errors[page->index] = page->install_error;
+			if (page->index < asset->root.hierarchy.root_pages) {
+				const bool first_root_failure = asset->roots_error == OK;
+				asset->roots_error = page->install_error;
+				if (first_root_failure) {
+					// A failed mandatory root invalidates the complete root cover.
+					for (const KeyValue<uint32_t, Page *> &entry : asset->pages) {
+						if (!entry.value->canceled) {
+							entry.value->install_error = page->install_error;
+							pending.push_back(entry.value);
+						}
+					}
+				}
+			} else {
+				LocalVector<Page *> *found = asset->waiters.getptr(page->index);
+				if (found != nullptr) {
+					LocalVector<Page *> listeners = std::move(*found);
+					asset->waiters.erase(page->index);
+					// Fail consumers before waiting for their pins to drain.
+					// Outcomes still follow their actual GPU retirement fences.
+					for (Page *listener : listeners) {
+						if (!listener->canceled) {
+							listener->install_error = page->install_error;
+							pending.push_back(listener);
+						}
+					}
+				}
+			}
+		}
+		if (page->state != Page::QUEUED && page->state != Page::TRANSCODING) {
+			_begin_retirement(page);
+		}
 	}
 }
 

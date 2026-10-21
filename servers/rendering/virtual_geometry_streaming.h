@@ -108,7 +108,7 @@ class VirtualGeometryStreaming {
 	static void _read(void *p_read);
 	Asset *_find(const Key &p_key) const;
 	void _drop_dependencies(Asset *p_asset, uint32_t p_page);
-	bool _demand(Asset *p_asset, uint32_t p_page, float p_priority, uint32_t p_depth = 0);
+	bool _demand(Asset *p_asset, uint32_t p_page, float p_priority);
 	void _touch(Asset *p_asset, uint32_t p_page);
 	bool _evict();
 	void _outcomes();

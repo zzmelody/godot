@@ -5,6 +5,7 @@
 #include "core/io/marshalls.h"
 #include "core/io/virtual_geometry/page_entropy.h"
 #include "core/os/thread.h"
+#include "core/templates/local_vector.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_device.h"
 
@@ -179,39 +180,53 @@ void VirtualGeometryStreaming::_touch(Asset *p_asset, uint32_t p_page) {
 	}
 }
 
-bool VirtualGeometryStreaming::_demand(Asset *p_asset, uint32_t p_page, float p_priority, uint32_t p_depth) {
-	if (p_page >= p_asset->pages.size() || p_depth > VirtualGeometry::MAX_HIERARCHY_DEPTH || !p_asset->active || p_asset->error != OK) {
+bool VirtualGeometryStreaming::_demand(Asset *p_asset, uint32_t p_page, float p_priority) {
+	if (p_page >= p_asset->pages.size() || !p_asset->active || p_asset->error != OK) {
 		return false;
 	}
-	Page &page = p_asset->pages[p_page];
-	if (page.state == Page::RETIRING || page.state == Page::FAILED) {
-		return false;
-	}
-	if (page.state != Page::ABSENT && page.state != Page::QUEUED) {
-		_touch(p_asset, p_page);
-		return true;
-	}
-	if (page.state == Page::QUEUED && p_priority <= page.queued_demand->priority) {
-		return true;
-	}
-	const auto &location = p_asset->directory.pages[p_page];
-	for (uint32_t index = 0; index < location.dependency_count; ++index) {
-		const uint32_t dependency = p_asset->directory.dependencies[location.dependency_start + index];
-		if (!_demand(p_asset, dependency, p_priority, p_depth + 1)) {
+	struct Frame {
+		uint32_t page;
+		uint32_t dependency;
+	};
+	LocalVector<Frame> pending;
+	pending.push_back({ p_page, 0 });
+	// The publication-admitted directory is acyclic. Its dependency-chain
+	// length is independent of the spatial BVH's maximum depth.
+	while (!pending.is_empty()) {
+		const uint32_t last = pending.size() - 1;
+		const uint32_t page_id = pending[last].page;
+		Page &page = p_asset->pages[page_id];
+		if (page.state == Page::RETIRING || page.state == Page::FAILED) {
 			return false;
 		}
-	}
-	if (page.state == Page::ABSENT) {
-		for (uint32_t index = 0; index < location.dependency_count; ++index) {
-			++p_asset->pages[p_asset->directory.dependencies[location.dependency_start + index]].users;
+		if (page.state != Page::ABSENT && page.state != Page::QUEUED) {
+			_touch(p_asset, page_id);
+			pending.remove_at(last);
+			continue;
 		}
-		page.holds_dependencies = true;
-		page.state = Page::QUEUED;
-		page.queued_demand = demands.push({ p_asset->mesh, p_asset->generation, p_page }, p_priority);
-	} else {
-		// A ready child must not occupy the read window ahead of a queued
-		// prerequisite. Raise dependencies first, keeping one entry per page.
-		page.queued_demand = demands.raise(page.queued_demand, p_priority);
+		if (page.state == Page::QUEUED && p_priority <= page.queued_demand->priority) {
+			pending.remove_at(last);
+			continue;
+		}
+		const auto &location = p_asset->directory.pages[page_id];
+		if (pending[last].dependency < location.dependency_count) {
+			const uint32_t dependency = p_asset->directory.dependencies[location.dependency_start + pending[last].dependency++];
+			pending.push_back({ dependency, 0 });
+			continue;
+		}
+		if (page.state == Page::ABSENT) {
+			for (uint32_t index = 0; index < location.dependency_count; ++index) {
+				++p_asset->pages[p_asset->directory.dependencies[location.dependency_start + index]].users;
+			}
+			page.holds_dependencies = true;
+			page.state = Page::QUEUED;
+			page.queued_demand = demands.push({ p_asset->mesh, p_asset->generation, page_id }, p_priority);
+		} else {
+			// Raise prerequisites first so a child cannot occupy every read slot
+			// ahead of a queued source. Each page keeps one queue entry.
+			page.queued_demand = demands.raise(page.queued_demand, p_priority);
+		}
+		pending.remove_at(last);
 	}
 	return true;
 }
