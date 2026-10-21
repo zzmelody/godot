@@ -109,6 +109,8 @@ public:
 		int base_texture_binding_index = 0;
 		int texture_layout_set = 0;
 		String base_uniform_string;
+		String previous_uniform_string;
+		String previous_uniform_condition;
 		String global_buffer_array_variable;
 		bool global_buffer_array_function = false;
 		String instance_uniform_index_variable;
@@ -121,6 +123,7 @@ private:
 	ShaderLanguage parser;
 
 	String _get_sampler_name(ShaderLanguage::TextureFilter p_filter, ShaderLanguage::TextureRepeat p_repeat);
+	String _get_uniform_name(const DefaultIdentifierActions &p_actions, const StringName &p_name) const;
 
 	void _dump_function_deps(const ShaderLanguage::ShaderNode *p_node, const StringName &p_for_func, const HashMap<StringName, String> &p_func_code, String &r_to_add, HashSet<StringName> &added);
 	String _dump_node_code(const ShaderLanguage::Node *p_node, int p_level, GeneratedCode &r_gen_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_default_actions, bool p_assigning, bool p_scope = true);

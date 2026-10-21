@@ -20,6 +20,13 @@ vec2 vg_motion(uint payload, VGSurface surface, out bool valid) {
 		// this view reactive; geometry topology changes still evaluate real motion.
 		return vec2(0.0);
 	}
+#ifdef VG_MATERIAL_HISTORY
+	if ((raster_materials.data[VG_MATERIAL_INDEX * 4u + 3u] & 2u) != 0u) {
+		// This material has no compatible prior parameter/texture input. Do not
+		// classify its zero velocity as stationary geometry with valid history.
+		return vec2(0.0);
+	}
+#endif
 	uvec2 visible = vg_visible_reference((payload >> 7u) - 1u);
 	uvec3 vertices = vg_triangle(visible.y, payload & 127u);
 	mat4 previous_world = transpose(mat4(vg_previous_vector(visible.x, 0u), vg_previous_vector(visible.x, 4u), vg_previous_vector(visible.x, 8u), vec4(0.0, 0.0, 0.0, 1.0)));

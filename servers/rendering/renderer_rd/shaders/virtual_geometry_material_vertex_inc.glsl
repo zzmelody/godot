@@ -40,6 +40,14 @@ raster_materials;
 layout(set = 3, binding = 0, std140) uniform MaterialUniforms {
 #MATERIAL_UNIFORMS
 } material;
+#ifdef VG_MATERIAL_HISTORY
+layout(set = 0, binding = 65, std140) uniform PreviousMaterialUniforms {
+#MATERIAL_UNIFORMS
+} vg_previous_material;
+#else
+// Software coverage shares the quad compiler but has no previous evaluation.
+#define vg_previous_material material
+#endif
 /* clang-format on */
 #endif
 

@@ -5,6 +5,7 @@
 
 #VERSION_DEFINES
 
+#define VG_MATERIAL_HISTORY
 #include "virtual_geometry_quad_inc.glsl"
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 1, std430) readonly buffer Geometry {

@@ -111,6 +111,9 @@ public:
 		// Borrow the existing parameter buffers/textures in another shader layout.
 		// UniformSetCacheRD invalidates the binding when any borrowed RID retires.
 		RID get_parameters_uniform_set(RID p_shader, uint32_t p_set, bool p_use_linear_color, const Vector<ShaderCompiler::GeneratedCode::Texture> &p_textures) const;
+		RID get_uniform_buffer(bool p_use_linear_color) const { return uniform_buffer[p_use_linear_color]; }
+		const Vector<uint8_t> &get_uniform_data(bool p_use_linear_color) const { return ubo_data[p_use_linear_color]; }
+		uint64_t get_texture_revision() const { return texture_revision; }
 
 	private:
 		friend class MaterialStorage;
@@ -121,6 +124,7 @@ public:
 		uint64_t global_textures_pass = 0;
 		HashMap<StringName, uint64_t> used_global_textures;
 		HashSet<RID> used_textures;
+		uint64_t texture_revision = 0;
 
 		//internally by update_parameters_uniform_set
 		Vector<uint8_t> ubo_data[2]; // 0: linear buffer; 1: sRGB buffer.
@@ -322,6 +326,7 @@ private:
 	Material *get_material(RID p_rid) { return material_owner.get_or_null(p_rid); }
 	Mutex texture_materials_mutex;
 	HashMap<RID, HashSet<RID>> texture_materials;
+	uint64_t texture_revision = 0;
 	void _material_register_texture(RID p_material, RID p_texture);
 	void _material_unregister_texture(RID p_material, RID p_texture);
 	void _texture_changed(RID p_texture, bool p_bindings_changed, bool p_deleted);

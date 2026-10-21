@@ -871,6 +871,7 @@ MaterialStorage::MaterialData::~MaterialData() {
 void MaterialStorage::MaterialData::update_textures(const HashMap<StringName, Variant> &p_parameters, const HashMap<StringName, HashMap<int, RID>> &p_default_textures, const Vector<ShaderCompiler::GeneratedCode::Texture> &p_texture_uniforms, RID *p_textures, bool p_use_linear_color, bool p_3d_material) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	HashSet<RID> textures_in_use;
+	texture_revision = ++material_storage->texture_revision;
 	uses_dynamic_textures = false;
 
 #ifdef TOOLS_ENABLED
@@ -2506,6 +2507,9 @@ void MaterialStorage::_texture_changed(RID p_texture, bool p_bindings_changed, b
 		Material *material = material_owner.get_or_null(material_rid);
 		if (!material) {
 			continue;
+		}
+		if (material->data) {
+			material->data->texture_revision = ++texture_revision;
 		}
 		if (p_bindings_changed) {
 			_material_queue_update(material, false, true);

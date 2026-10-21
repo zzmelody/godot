@@ -2,6 +2,7 @@
 #pragma once
 
 #include "core/templates/a_hash_map.h"
+#include "core/templates/hash_map.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_scene_init.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_shade_bin.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_shade_dispatch.glsl.gen.h"
@@ -110,6 +111,29 @@ private:
 	uint64_t global_history_layout = 0;
 	uint64_t temporal_frame = UINT64_MAX;
 	bool global_history_valid = false;
+	struct MaterialHistoryInput {
+		RID shader;
+		// Borrowed only during capture on the render thread, never retained.
+		const uint8_t *uniform_data = nullptr;
+		uint64_t shader_generation = 0;
+		uint64_t texture_revision = 0;
+		uint32_t bytes = 0;
+		float maximum_displacement = 0.0f;
+		bool dynamic_textures = false;
+	};
+	struct MaterialHistory {
+		RID uniforms[2];
+		RID shader;
+		uint64_t frame = UINT64_MAX;
+		uint64_t shader_generation = 0;
+		uint64_t texture_revision = 0;
+		uint32_t bytes = 0;
+		float maximum_displacement = 0.0f;
+		bool valid = false;
+	};
+	HashMap<RID, MaterialHistory> material_history;
+	void _prune_material_history(uint64_t p_frame, bool p_enabled);
+	Error _capture_material_history(RID p_material, const MaterialHistoryInput &p_input, uint64_t p_frame, RID &r_previous, bool &r_valid);
 	RID previous_sources;
 	uint32_t previous_source_words = 0;
 	RID batch_parameters;

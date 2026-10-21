@@ -275,6 +275,7 @@ public:
 		bool uses_normal = false;
 		bool uses_tangent = false;
 		bool writes_vertex_tangent = false;
+		uint64_t virtual_geometry_generation = 0;
 		bool writes_modelview_normal = false;
 		bool uses_particle_trails = false;
 		bool uses_normal_map = false;

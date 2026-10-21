@@ -27,6 +27,7 @@ void dispatch_items(RD::ComputeListID p_list, uint32_t p_items, uint32_t p_threa
 } // namespace
 
 VirtualGeometryShading::~VirtualGeometryShading() {
+	_prune_material_history(0, false);
 	for (RID snapshot : global_history) {
 		if (snapshot.is_valid()) {
 			memory.free(snapshot);
@@ -248,6 +249,7 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 
 void VirtualGeometryShading::clear_view() {
 	materials_ready = false;
+	_prune_material_history(0, false);
 	// Ordinary-only frames must not expose a previous virtual surface through
 	// a compositor or a shared lighting input. The mask invalidates all fields.
 	if (RD::get_singleton()->texture_is_valid(surfaces[6])) {
@@ -332,11 +334,91 @@ void VirtualGeometryShading::record_bins() {
 	RENDER_TIMESTAMP("Virtual Geometry Shading Bins End");
 }
 
+void VirtualGeometryShading::_prune_material_history(uint64_t p_frame, bool p_enabled) {
+	LocalVector<RID> retired;
+	for (const KeyValue<RID, MaterialHistory> &entry : material_history) {
+		const MaterialHistory &history = entry.value;
+		if (!p_enabled || history.frame > p_frame || p_frame - history.frame > 1) {
+			for (RID buffer : history.uniforms) {
+				if (buffer.is_valid()) {
+					memory.free(buffer);
+				}
+			}
+			retired.push_back(entry.key);
+		}
+	}
+	for (RID material : retired) {
+		material_history.erase(material);
+	}
+}
+
+Error VirtualGeometryShading::_capture_material_history(RID p_material, const MaterialHistoryInput &p_input, uint64_t p_frame, RID &r_previous, bool &r_valid) {
+	ERR_FAIL_COND_V(p_input.bytes != 0 && p_input.uniform_data == nullptr, ERR_INVALID_DATA);
+	MaterialHistory &history = material_history[p_material];
+	if (history.bytes != p_input.bytes) {
+		RID candidate[2];
+		if (p_input.bytes != 0) {
+			candidate[0] = memory.uniform(p_input.bytes);
+			if (candidate[0].is_null()) {
+				return ERR_OUT_OF_MEMORY;
+			}
+			candidate[1] = memory.uniform(p_input.bytes);
+			if (candidate[1].is_null()) {
+				memory.free(candidate[0]);
+				return ERR_OUT_OF_MEMORY;
+			}
+		}
+		for (uint32_t index = 0; index < 2; index++) {
+			if (history.uniforms[index].is_valid()) {
+				memory.free(history.uniforms[index]);
+			}
+			history.uniforms[index] = candidate[index];
+		}
+		history.bytes = p_input.bytes;
+		history.frame = UINT64_MAX;
+	}
+	const bool compatible = history.shader == p_input.shader && history.shader_generation == p_input.shader_generation &&
+			history.texture_revision == p_input.texture_revision && history.maximum_displacement == p_input.maximum_displacement && !p_input.dynamic_textures;
+	if (history.frame != p_frame) {
+		history.valid = history.frame != UINT64_MAX && history.frame + 1 == p_frame && compatible;
+		std::swap(history.uniforms[0], history.uniforms[1]);
+	} else {
+		// A second draw in one frame can replace current values, but it must not
+		// promote that draw into the previous frame or restore invalid history.
+		history.valid &= compatible;
+	}
+	history.shader = p_input.shader;
+	history.shader_generation = p_input.shader_generation;
+	history.texture_revision = p_input.texture_revision;
+	history.maximum_displacement = p_input.maximum_displacement;
+	history.frame = p_frame;
+	if (p_input.bytes != 0) {
+		RD *rd = RD::get_singleton();
+		// Ordinary material UBOs do not have transfer-source usage. Upload the
+		// existing CPU packing instead of copying from an unsupported GPU source.
+		Error error = rd->buffer_update(history.uniforms[0], 0, p_input.bytes, p_input.uniform_data);
+		if (error == OK && !history.valid) {
+			error = rd->buffer_update(history.uniforms[1], 0, p_input.bytes, p_input.uniform_data);
+		}
+		if (error != OK) {
+			history.valid = false;
+			history.frame = UINT64_MAX;
+			return error;
+		}
+	}
+	r_previous = history.uniforms[1];
+	r_valid = history.valid;
+	return OK;
+}
+
 Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> &p_buffers, RID p_geometry, const ViewParameters &p_view, RD::FramebufferFormatID p_raster_format, bool p_voxel) {
 	materials_ready = false;
 	RD *rd = RD::get_singleton();
 	MaterialStorage *storage = MaterialStorage::get_singleton();
 	const uint64_t current_frame = RSG::rasterizer != nullptr ? RSG::rasterizer->get_frame_number() : global_history_frame + 1;
+	if (!depth_only) {
+		_prune_material_history(current_frame, p_view.motion);
+	}
 	previous_global_binding = storage->global_shader_uniforms_get_storage_buffer();
 	if (p_view.motion && !depth_only) {
 		const uint32_t bytes = storage->global_shader_uniforms_get_storage_buffer_bytes();
@@ -350,17 +432,27 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 				return error;
 			}
 		}
-		if (current_frame != global_history_frame || replaced || layout != global_history_layout) {
-			global_history_valid = !replaced && layout == global_history_layout && global_history_frame != UINT64_MAX && current_frame == global_history_frame + 1;
+		const bool compatible = !replaced && layout == global_history_layout;
+		if (current_frame != global_history_frame) {
+			global_history_valid = compatible && global_history_frame != UINT64_MAX && current_frame == global_history_frame + 1;
 			std::swap(global_history[0], global_history[1]);
 			std::swap(global_history_words[0], global_history_words[1]);
-			rd->buffer_copy(previous_global_binding, global_history[0], 0, 0, bytes);
-			if (!global_history_valid) {
-				rd->buffer_copy(previous_global_binding, global_history[1], 0, 0, bytes);
-			}
-			global_history_frame = current_frame;
-			global_history_layout = layout;
+		} else {
+			global_history_valid &= compatible;
 		}
+		// Capture the final current values even when this view is prepared again
+		// in one frame. Only a new frame can advance the previous snapshot.
+		Error error = rd->buffer_copy(previous_global_binding, global_history[0], 0, 0, bytes);
+		if (error == OK && !global_history_valid) {
+			error = rd->buffer_copy(previous_global_binding, global_history[1], 0, 0, bytes);
+		}
+		if (error != OK) {
+			global_history_valid = false;
+			global_history_frame = UINT64_MAX;
+			return error;
+		}
+		global_history_frame = current_frame;
+		global_history_layout = layout;
 		previous_global_binding = global_history[1];
 	}
 	using SceneShader = RendererSceneRenderImplementation::SceneShaderForwardClustered;
@@ -529,7 +621,31 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 			data->set_as_used();
 			continue;
 		}
+		RID previous_material = data->get_uniform_buffer(true);
+		if (p_view.motion) {
+			MaterialHistoryInput input;
+			input.shader = data->shader_data->version;
+			input.shader_generation = data->shader_data->virtual_geometry_generation;
+			const Vector<uint8_t> &uniform_data = data->get_uniform_data(true);
+			input.uniform_data = uniform_data.ptr();
+			input.bytes = uniform_data.size();
+			input.texture_revision = data->get_texture_revision();
+			input.maximum_displacement = storage->material_get_max_vertex_displacement(material);
+			input.dynamic_textures = data->uses_dynamic_textures;
+			bool valid = false;
+			const Error error = _capture_material_history(material, input, current_frame, previous_material, valid);
+			if (error != OK) {
+				return error;
+			}
+			if (!valid) {
+				raster_material_data[material_index * 4 + 3] |= 2u;
+			}
+		}
 		LocalVector<RD::Uniform> uniforms;
+		if (data->shader_data->ubo_size != 0) {
+			ERR_FAIL_COND_V(previous_material.is_null(), ERR_INVALID_DATA);
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 65, { previous_material }));
+		}
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { p_geometry }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { previous_global_binding }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }));
@@ -590,7 +706,11 @@ void VirtualGeometryShading::record_materials() {
 }
 
 uint64_t VirtualGeometryShading::get_buffer_bytes() const {
-	return (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + batch_parameter_words + extension_words) * 4 +
+	uint64_t material_bytes = 0;
+	for (const KeyValue<RID, MaterialHistory> &entry : material_history) {
+		material_bytes += uint64_t(entry.value.bytes) * 2;
+	}
+	return material_bytes + (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + batch_parameter_words + extension_words) * 4 +
 			uint64_t(global_history_words[0] + global_history_words[1]) * 4 +
 			(dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 320 : 0) +
 			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;

@@ -39,6 +39,7 @@
 using namespace RendererSceneRenderImplementation;
 
 void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
+	++virtual_geometry_generation;
 	//compile
 	// Background pipelines borrow this shader's version and render state.
 	// Join them before changing either, including the empty/error code paths.
@@ -1314,6 +1315,8 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 			}
 			actions.builtin_function_renames[name] = "vg_" + replacement;
 		}
+		actions.previous_uniform_string = "vg_previous_material.";
+		actions.previous_uniform_condition = "vg_previous_evaluation";
 		virtual_geometry_compiler.initialize(actions);
 		Vector<String> modes;
 		modes.push_back("");

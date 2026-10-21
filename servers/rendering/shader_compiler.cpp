@@ -1082,7 +1082,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					} else {
 						//a scalar or vector
 						if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
-							code = actions.base_uniform_string + _mkid(vnode->name); //texture, use as is
+							code = _get_uniform_name(p_default_actions, vnode->name);
 							//global variable, this means the code points to an index to the global table
 							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
@@ -1091,7 +1091,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else {
 							//regular uniform, index from UBO
-							code = actions.base_uniform_string + _mkid(vnode->name);
+							code = _get_uniform_name(p_default_actions, vnode->name);
 						}
 					}
 
@@ -1191,7 +1191,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					} else {
 						//a scalar or vector
 						if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
-							code = actions.base_uniform_string + _mkid(anode->name); //texture, use as is
+							code = _get_uniform_name(p_default_actions, anode->name);
 							//global variable, this means the code points to an index to the global table
 							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
@@ -1200,7 +1200,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 							code = _get_global_shader_uniform_from_type_and_index(p_default_actions.global_buffer_array_variable, code, u.type, p_default_actions.global_buffer_array_function);
 						} else {
 							//regular uniform, index from UBO
-							code = actions.base_uniform_string + _mkid(anode->name);
+							code = _get_uniform_name(p_default_actions, anode->name);
 						}
 					}
 				} else {
@@ -1784,6 +1784,15 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 	_ALLOW_DISCARD_ _dump_node_code(shader, 1, r_gen_code, *p_actions, actions, false);
 
 	return OK;
+}
+
+String ShaderCompiler::_get_uniform_name(const DefaultIdentifierActions &p_actions, const StringName &p_name) const {
+	const String name = _mkid(p_name);
+	const String current = p_actions.base_uniform_string + name;
+	if (p_actions.previous_uniform_condition.is_empty()) {
+		return current;
+	}
+	return "(" + p_actions.previous_uniform_condition + " ? " + p_actions.previous_uniform_string + name + " : " + current + ")";
 }
 
 void ShaderCompiler::initialize(DefaultIdentifierActions p_actions) {
