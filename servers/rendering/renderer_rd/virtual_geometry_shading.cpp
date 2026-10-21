@@ -487,7 +487,7 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 	view.flags[0] = p_view.layers;
 	view.flags[1] = p_view.shadow_flags;
 	view.flags[2] = p_view.history_valid && (!p_view.motion || global_history_valid);
-	view.flags[3] = (p_view.motion && !global_history_valid ? 1u : 0u) | (p_view.reverse_cull ? 2u : 0u);
+	view.flags[3] = (p_view.motion && !global_history_valid ? 1u : 0u) | (p_view.reverse_cull ? 2u : 0u) | (p_view.multiview ? 4u : 0u);
 	view.eye_offset[0] = p_view.eye_offset.x;
 	view.eye_offset[1] = p_view.eye_offset.y;
 	view.eye_offset[2] = p_view.eye_offset.z;

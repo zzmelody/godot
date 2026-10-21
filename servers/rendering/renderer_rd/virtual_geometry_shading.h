@@ -36,6 +36,7 @@ public:
 		Vector2 previous_jitter;
 		uint32_t view_index = 0;
 		Vector3 eye_offset;
+		bool multiview = false;
 		bool prediction = false;
 		RID occlusion;
 		Projection occlusion_projection;

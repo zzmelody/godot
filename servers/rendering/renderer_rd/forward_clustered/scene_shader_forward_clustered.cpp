@@ -590,7 +590,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 		if ((RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & required) != required ||
 				(RD::get_singleton()->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) == 0) {
 			virtual_geometry_error = "Virtual geometry material evaluation requires compute subgroup ballot and quad operations.";
-		} else if (!is_valid() || uses_vertex_id || uses_position || writes_tangent || writes_modelview_or_projection ||
+		} else if (!is_valid() || uses_vertex_id || uses_position || uses_point_size || writes_tangent || writes_modelview_or_projection ||
 				uses_world_coordinates || uses_particle_trails || uses_z_clip_scale || uses_alpha_pass() || uses_alpha_antialiasing ||
 				stencil_enabled || wireframe) {
 			virtual_geometry_error = "Virtual geometry material requires an unsupported coverage, vertex input or shading feature: " + path;
@@ -1265,7 +1265,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.renames["CAMERA_POSITION_WORLD"] = "vg_camera[3].xyz";
 		actions.renames["CAMERA_DIRECTION_WORLD"] = "vg_camera[2].xyz";
 		actions.renames["CAMERA_VISIBLE_LAYERS"] = "vg_view.flags.x";
-		actions.renames["IS_MULTIVIEW"] = "false";
+		actions.renames["IS_MULTIVIEW"] = "((vg_view.flags.w & 4u) != 0u)";
 		actions.renames["VIEW_INDEX"] = "int(vg_view.eye_offset.w)";
 		actions.renames["EYE_OFFSET"] = "vg_view.eye_offset.xyz";
 		virtual_geometry_raster_compiler.initialize(actions);

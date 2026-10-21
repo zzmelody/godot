@@ -1250,17 +1250,25 @@ uint cluster_get_range_clip_mask(uint i, uint z_min, uint z_max) {
 
 void fragment_shader(in SceneData scene_data) {
 #ifdef VG_COMPOSITE
-	ivec2 vg_pixel = ivec2(gl_FragCoord.xy);
-	uint vg_flags_value = texelFetch(usampler2D(vg_flags, SAMPLER_NEAREST_CLAMP), vg_pixel, 0).r;
-	if (vg_status.data[0] != 0u || vg_shading.data[1] != 0u || vg_flags_value == 0u) {
+	if (vg_status.data[0] != 0u || vg_shading.data[1] != 0u) {
 		discard;
 	}
 	ivec2 vg_size = textureSize(sampler2D(vg_albedo, SAMPLER_NEAREST_CLAMP), 0);
-	ivec2 vg_visible_pixel = clamp(vg_pixel, ivec2(0), vg_size - ivec2(1));
-	uvec2 vg_visible = vg_visibility.data[vg_visible_pixel.y * vg_size.x + vg_visible_pixel.x];
-	if (vg_visible.x != vg_entry_payload || vg_material(vg_visible.x) != draw_call.instance_index) {
+	ivec2 vg_point = ivec2(gl_FragCoord.xy);
+	// Hardware helpers can lie outside an odd-sized viewport. Clamp borrowed
+	// surface reads, but retain the original pixel for the private quad lane.
+	ivec2 vg_pixel = clamp(vg_point, ivec2(0), vg_size - ivec2(1));
+	uint vg_flags_value = texelFetch(usampler2D(vg_flags, SAMPLER_NEAREST_CLAMP), vg_pixel, 0).r;
+	uvec2 vg_visible = vg_visibility.data[vg_pixel.y * vg_size.x + vg_pixel.x];
+	bool vg_covered = all(greaterThanEqual(vg_point, ivec2(0))) && all(lessThan(vg_point, vg_size)) && vg_flags_value != 0u && vg_visible.x == vg_entry_payload;
+	if (vg_material(vg_entry_payload) != draw_call.instance_index) {
 		discard;
 	}
+#ifndef VG_LIGHT_INPUT_WORD
+	if (!vg_covered) {
+		discard;
+	}
+#endif
 	gl_FragDepth = uintBitsToFloat(vg_visible.y);
 	// Helper lanes must use this quad's instance, even when another primitive
 	// owns their screen pixel or the helper lies outside an odd-sized viewport.
@@ -1460,7 +1468,7 @@ void fragment_shader(in SceneData scene_data) {
 		anisotropy = vg_an.y;
 		anisotropy_flow = vg_an.zw;
 #ifdef VG_EXTENDED_MATERIAL
-		uint vg_lane = (uint(vg_pixel.x) & 1u) | ((uint(vg_pixel.y) & 1u) << 1u);
+		uint vg_lane = (uint(vg_point.x) & 1u) | ((uint(vg_point.y) & 1u) << 1u);
 		uint vg_extension = (vg_entry_index * 4u + vg_lane) * draw_call.gpu_visibility_offset;
 #ifdef VG_SSS_WORD
 		sss_strength = uintBitsToFloat(vg_light_data.data[vg_extension + VG_SSS_WORD]);
@@ -3278,6 +3286,13 @@ void fragment_shader(in SceneData scene_data) {
 	vec2 prev_position_uv = prev_position_clip * vec2(0.5, 0.5);
 
 	motion_vector = prev_position_uv - position_uv;
+#endif
+#if defined(VG_COMPOSITE) && defined(VG_LIGHT_INPUT_WORD)
+	// Evaluate authored light derivatives with the complete primitive quad.
+	// Ownership gates framebuffer writes only after all light calls finish.
+	if (!vg_covered) {
+		discard;
+	}
 #endif
 }
 

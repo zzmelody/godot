@@ -1936,6 +1936,7 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		RendererRD::VirtualGeometryShading::ViewParameters view;
 		view.view_index = eye;
 		view.eye_offset = scene->view_eye_offset[eye];
+		view.multiview = buffers->get_view_count() > 1;
 		view.projection = correction * projection;
 		view.camera = camera;
 		view.reverse_cull = p_render_data->reflection_probe.is_valid() || camera.basis.determinant() < 0;
