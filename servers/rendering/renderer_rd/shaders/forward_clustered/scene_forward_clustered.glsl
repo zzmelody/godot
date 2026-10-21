@@ -1284,8 +1284,14 @@ void fragment_shader(in SceneData scene_data) {
 #endif // PREMUL_ALPHA_USED
 	//lay out everything, whatever is unused is optimized away anyway
 #ifdef VG_COMPOSITE
+#ifdef VG_SURFACE_POSITION_WORD
+	uint vg_position_lane = (uint(vg_point.x) & 1u) | ((uint(vg_point.y) & 1u) << 1u);
+	uint vg_position_word = (vg_entry_index * 4u + vg_position_lane) * draw_call.gpu_visibility_offset + VG_SURFACE_POSITION_WORD;
+	vec3 vertex = vg_extension_load3(vg_position_word);
+#else
 	vec4 vg_position = inv_projection_matrix * vec4(gl_FragCoord.xy * scene_data.screen_pixel_size * 2.0 - 1.0, gl_FragDepth, 1.0);
 	vec3 vertex = vg_position.xyz / vg_position.w;
+#endif
 #else
 	vec3 vertex = vertex_interp;
 #endif

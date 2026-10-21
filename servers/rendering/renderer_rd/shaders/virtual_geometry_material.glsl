@@ -92,6 +92,11 @@ void main() {
 	// Keep each primitive's complete quad, including extrapolated helpers.
 	// Two primitives sharing a screen quad must never overwrite each other.
 	uint vg_extension = (index * 4u + lane) * params.extension_stride;
+#ifdef VG_SURFACE_POSITION_WORD
+	// DEPTH changes visibility, while Godot's authored geometry and lighting
+	// position remain unchanged. Preserve helpers from this original triangle.
+	vg_extension_store3(vg_extension + VG_SURFACE_POSITION_WORD, surface.view_position);
+#endif
 #ifdef VG_SSS_WORD
 	vg_light_data.data[vg_extension + VG_SSS_WORD] = floatBitsToUint(sss_strength);
 #endif

@@ -99,12 +99,17 @@ void main() {
 	vg_capture_sdfgi(pixel_value, gl_FragCoord.xy);
 #else
 	bool covered = true;
+	float depth = gl_FragCoord.z;
 #ifdef VG_MASKED
-	covered = vg_raster_coverage(pixel_value, gl_FragCoord.xy);
+	float material_depth;
+	covered = vg_raster_coverage(pixel_value, gl_FragCoord.xy, material_depth);
+#ifdef VG_DEPTH_USED
+	depth = material_depth;
+#endif
 #endif
 	if (!covered || shadow_clip > 0.0) {
 		discard;
 	}
-	vg_write_pixel(ivec2(gl_FragCoord.xy), gl_FragCoord.z, pixel_value);
+	vg_write_pixel(ivec2(gl_FragCoord.xy), depth, pixel_value);
 #endif
 }

@@ -508,9 +508,11 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 						data->shader_data->get_virtual_geometry_composite_shader(true).is_null(),
 				ERR_UNAVAILABLE,
 				"Virtual geometry scene lighting shader compilation failed.");
-		if (p_voxel || data->shader_data->uses_vertex || data->shader_data->uses_alpha_clip || data->shader_data->uses_discard) {
+		if (p_voxel || data->shader_data->uses_vertex || data->shader_data->uses_alpha_clip || data->shader_data->uses_discard || data->shader_data->writes_fragment_depth) {
 			ERR_FAIL_COND_V_MSG(data->shader_data->uses_vertex && storage->material_get_max_vertex_displacement(material) <= 0.0f, ERR_UNAVAILABLE, "Virtual geometry vertex deformation requires a positive max_vertex_displacement.");
-			raster_material_data[material_index * 4 + 2] = 1;
+			// Bit 0 selects programmable raster; bit 1 prevents geometric Hi-Z
+			// from rejecting a cluster whose authored depth can move forward.
+			raster_material_data[material_index * 4 + 2] = 1u | (data->shader_data->writes_fragment_depth ? 2u : 0u);
 			RasterMaterialWork raster;
 			raster.material = material_index;
 			for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {

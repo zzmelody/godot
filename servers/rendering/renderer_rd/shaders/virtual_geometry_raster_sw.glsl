@@ -90,11 +90,15 @@ void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
 			ivec2 pixel = ivec2(x, y) + lane_offset;
 			// Every physical quad evaluates the same triangle and the same pixel
 			// origin. Do not branch on coverage before derivative/texture work.
-			bool accepted = vg_raster_coverage(payload, vec2(pixel) + 0.5);
+			float material_depth;
+			bool accepted = vg_raster_coverage(payload, vec2(pixel) + 0.5, material_depth);
 			ivec2 point = (pixel - first) * 256;
 			ivec3 edges = ivec3(vg_edge(fixed_position[1], fixed_position[2], point), vg_edge(fixed_position[2], fixed_position[0], point), vg_edge(fixed_position[0], fixed_position[1], point));
 			if (accepted && dot(shadow_clips, vec3(edges) / float(area)) <= 0.0 && all(greaterThanEqual(pixel, first)) && all(lessThanEqual(pixel, last)) && all(greaterThanEqual(edges + bias, ivec3(0)))) {
 				float depth = depths.x + (depths.y - depths.x) * (float(edges.y) / float(area)) + (depths.z - depths.x) * (float(edges.z) / float(area));
+#ifdef VG_DEPTH_USED
+				depth = material_depth;
+#endif
 				vg_write_pixel(pixel, depth, payload);
 			}
 		}

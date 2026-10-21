@@ -288,6 +288,7 @@ public:
 		bool uses_transmittance = false;
 		bool uses_screen_texture = false;
 		bool uses_depth_texture = false;
+		bool writes_fragment_depth = false;
 		bool uses_normal_texture = false;
 		bool uses_time = false;
 		bool uses_vertex_time = false;
@@ -324,12 +325,13 @@ public:
 
 		_FORCE_INLINE_ bool uses_shared_shadow_material() const {
 			bool backface_culling = cull_mode == RSE::CULL_MODE_BACK;
-			return !uses_particle_trails && !writes_modelview_or_projection && !uses_vertex && !uses_position && !uses_discard && !uses_depth_prepass_alpha && !uses_alpha_clip && !uses_alpha_antialiasing && backface_culling && !uses_point_size && !uses_world_coordinates && !wireframe && !uses_z_clip_scale && !stencil_enabled;
+			return !uses_particle_trails && !writes_modelview_or_projection && !uses_vertex && !uses_position && !uses_discard && !writes_fragment_depth && !uses_depth_prepass_alpha && !uses_alpha_clip && !uses_alpha_antialiasing && backface_culling && !uses_point_size && !uses_world_coordinates && !wireframe && !uses_z_clip_scale && !stencil_enabled;
 		}
 
 		virtual void set_code(const String &p_Code);
 
 		virtual bool is_animated() const;
+		virtual bool uses_custom_depth() const override { return writes_fragment_depth; }
 		virtual bool casts_shadows() const;
 		virtual RenderingServerTypes::ShaderNativeSourceCode get_native_source_code() const;
 		virtual Pair<ShaderRD *, RID> get_native_shader_and_version() const;

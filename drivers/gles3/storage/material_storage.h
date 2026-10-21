@@ -63,6 +63,7 @@ struct ShaderData {
 
 	virtual void set_code(const String &p_Code) = 0;
 	virtual bool is_animated() const = 0;
+	virtual bool uses_custom_depth() const { return false; }
 	virtual bool casts_shadows() const = 0;
 	virtual RenderingServerTypes::ShaderNativeSourceCode get_native_source_code() const { return RenderingServerTypes::ShaderNativeSourceCode(); }
 
@@ -329,6 +330,7 @@ struct SceneShaderData : public ShaderData {
 	bool uses_screen_texture;
 	bool uses_screen_texture_mipmaps;
 	bool uses_depth_texture;
+	bool writes_fragment_depth = false;
 	bool uses_normal_texture;
 	bool uses_bent_normal_texture;
 	bool uses_time;
@@ -354,6 +356,7 @@ struct SceneShaderData : public ShaderData {
 	virtual bool is_animated() const;
 	virtual bool casts_shadows() const;
 	virtual RenderingServerTypes::ShaderNativeSourceCode get_native_source_code() const;
+	virtual bool uses_custom_depth() const override { return writes_fragment_depth; }
 
 	SceneShaderData();
 	virtual ~SceneShaderData();
@@ -687,6 +690,7 @@ public:
 	virtual void material_set_render_priority(RID p_material, int priority) override;
 
 	virtual bool material_is_animated(RID p_material) override;
+	virtual bool material_uses_custom_depth(RID p_material) override;
 	virtual bool material_casts_shadows(RID p_material) override;
 	virtual RSE::CullMode material_get_cull_mode(RID p_material) const override;
 

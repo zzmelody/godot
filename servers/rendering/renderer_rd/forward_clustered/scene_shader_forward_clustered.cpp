@@ -61,6 +61,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	virtual_geometry_error = String();
 	virtual_geometry_extension_words = 0;
 	virtual_geometry_uses_light = false;
+	writes_fragment_depth = false;
 
 	code = p_code;
 	ubo_size = 0;
@@ -68,6 +69,10 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	_clear_vertex_input_mask_cache();
 
 	if (code.is_empty()) {
+		if (version.is_valid()) {
+			SceneShaderForwardClustered::singleton->shader.version_free(version);
+			version = RID();
+		}
 		return; //just invalid, but no error
 	}
 
@@ -174,6 +179,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.write_flag_pointers["PROJECTION_MATRIX"] = &writes_modelview_or_projection;
 	actions.write_flag_pointers["VERTEX"] = &uses_vertex;
 	actions.write_flag_pointers["POSITION"] = &uses_position;
+	actions.write_flag_pointers["DEPTH"] = &writes_fragment_depth;
 	actions.write_flag_pointers["TANGENT"] = &writes_tangent;
 	actions.write_flag_pointers["BINORMAL"] = &writes_tangent;
 	actions.write_flag_pointers["Z_CLIP_SCALE"] = &uses_z_clip_scale;
@@ -269,9 +275,9 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 }
 
 bool SceneShaderForwardClustered::ShaderData::is_animated() const {
-	const bool masked = uses_discard || uses_alpha_clip;
+	const bool pixel_coverage = uses_discard || uses_alpha_clip || writes_fragment_depth;
 	// Vertex TIME can reach fragment coverage through an authored varying.
-	return (uses_fragment_time && masked) || (uses_vertex_time && (uses_vertex || masked));
+	return (uses_fragment_time && pixel_coverage) || (uses_vertex_time && (uses_vertex || pixel_coverage));
 }
 
 bool SceneShaderForwardClustered::ShaderData::casts_shadows() const {
@@ -654,6 +660,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 				extension("RADIANCE", 4, generated.defines.has("#define CUSTOM_RADIANCE_USED\n"));
 				extension("IRRADIANCE", 4, generated.defines.has("#define CUSTOM_IRRADIANCE_USED\n"));
 				extension("LIGHT_VERTEX", 3, generated.defines.has("#define LIGHT_VERTEX_USED\n"));
+				extension("SURFACE_POSITION", 3, writes_fragment_depth);
 				extension("LIGHT_INPUT", 27, custom_light);
 				extension("LIGHT_VARYINGS", generated.virtual_geometry_varying_words, custom_light);
 				if (virtual_geometry_extension_words != 0) {
@@ -673,8 +680,8 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 						composite_defines.push_back(define);
 					}
 				}
-				if (uses_vertex || uses_alpha_clip || uses_discard) {
-					const bool masked = uses_alpha_clip || uses_discard;
+				if (uses_vertex || uses_alpha_clip || uses_discard || writes_fragment_depth) {
+					const bool pixel_programmable = uses_alpha_clip || uses_discard || writes_fragment_depth;
 					ShaderCompiler::IdentifierActions vertex_actions;
 					vertex_actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
 					HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> vertex_uniforms;
@@ -686,7 +693,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 						vertex_error = owner->virtual_geometry_raster_compiler.compile(RSE::SHADER_SPATIAL, code, &vertex_actions, path, vertex_code);
 					}
 					ShaderCompiler::GeneratedCode fragment_code;
-					if (vertex_error == OK && masked) {
+					if (vertex_error == OK && pixel_programmable) {
 						ShaderCompiler::IdentifierActions fragment_actions;
 						fragment_actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_COMPUTE;
 						fragment_actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_COMPUTE;
@@ -705,10 +712,11 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 					} else {
 						ShaderRD *templates[3] = { &owner->virtual_geometry_raster_bin, &owner->virtual_geometry_raster_sw, &owner->virtual_geometry_raster_hw };
 						for (uint32_t mode = 0; mode < 3; ++mode) {
-							const ShaderCompiler::GeneratedCode &raster_code = masked && mode == 1 ? generated : masked && mode == 2 ? fragment_code
-																																	 : vertex_code;
+							const ShaderCompiler::GeneratedCode &raster_code = pixel_programmable && mode != 0
+									? (mode == 1 ? generated : fragment_code)
+									: vertex_code;
 							Vector<String> raster_defines = raster_code.defines;
-							if (masked && mode != 0) {
+							if (pixel_programmable && mode != 0) {
 								raster_defines.push_back("#define VG_MASKED\n");
 							}
 							RID &raster_version = virtual_geometry_raster_versions[mode];
@@ -717,7 +725,7 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 								templates[mode]->version_set_compute_code(raster_version, raster_code.code, raster_code.uniforms, raster_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], raster_defines);
 							} else {
 								templates[mode]->version_set_code(raster_version, raster_code.code, raster_code.uniforms,
-										vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], masked ? fragment_code.stage_globals[ShaderCompiler::STAGE_COMPUTE] : String(), raster_defines);
+										vertex_code.stage_globals[ShaderCompiler::STAGE_COMPUTE], pixel_programmable ? fragment_code.stage_globals[ShaderCompiler::STAGE_COMPUTE] : String(), raster_defines);
 							}
 							RID raster_program = templates[mode]->version_get_shader(raster_version, 0);
 							if (raster_program.is_null()) {
@@ -1251,6 +1259,8 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.instance_uniform_index_variable = "vg_source_data(vg_source, 45u)";
 		actions.renames["INSTANCE_ID"] = "int(vg_source_data(vg_source, 44u))";
 		actions.renames["FRAGCOORD"] = "vg_fragcoord";
+		actions.renames["DEPTH"] = "vg_fragment_depth";
+		actions.usage_defines["DEPTH"] = "#define VG_DEPTH_USED\n";
 		actions.renames["FRONT_FACING"] = "vg_front_facing";
 		actions.renames["TIME"] = "vg_time";
 		actions.renames["EXPOSURE"] = "vg_view.state.y";

@@ -40,6 +40,7 @@ void vg_evaluate_fragment(VGSurface surface, vec2 point) {
 	uv2_interp = surface.uv[1];
 	color_interp = surface.color;
 	vg_fragcoord = vec4(point, surface.depth, surface.reciprocal_w);
+	vg_fragment_depth = surface.depth;
 	albedo_highp = vec3(1.0);
 	alpha_highp = 1.0;
 	metallic_highp = 0.0;
@@ -71,6 +72,12 @@ void vg_evaluate_fragment(VGSurface surface, vec2 point) {
 	custom_radiance = vec4(0.0);
 	custom_irradiance = vec4(0.0);
 	vg_user_fragment();
+#ifdef VG_DEPTH_USED
+	if (isnan(vg_fragment_depth) || isinf(vg_fragment_depth)) {
+		atomicOr(vg_status.data[0], 2u);
+		vg_killed = true;
+	}
+#endif
 	if (isnan(alpha_highp) || isinf(alpha_highp)) {
 		atomicOr(vg_status.data[0], 2u);
 		vg_killed = true;

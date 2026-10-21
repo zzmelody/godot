@@ -5,7 +5,8 @@
 #include "virtual_geometry_surface_inc.glsl"
 #include "virtual_geometry_material_fragment_inc.glsl"
 
-bool vg_raster_coverage(uint payload, vec2 point) {
+bool vg_raster_coverage(uint payload, vec2 point, out float depth) {
+	depth = 0.0;
 	vg_setup_vertex(vg_visible_reference((payload >> 7u) - 1u).x);
 	VGSurface surface;
 	bool valid = vg_surface(payload, point, projection_matrix, vg_view.dimensions.xy, vg_view.dimensions.zw, surface);
@@ -17,5 +18,6 @@ bool vg_raster_coverage(uint payload, vec2 point) {
 		return false;
 	}
 	vg_evaluate_fragment(surface, point);
+	depth = clamp(vg_fragment_depth, 0.0, 1.0);
 	return !vg_killed;
 }

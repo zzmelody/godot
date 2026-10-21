@@ -1163,7 +1163,7 @@ void RendererSceneCull::instance_geometry_set_gpu_occlusion_margin(RID p_instanc
 	instance->gpu_occlusion_margin = p_margin;
 	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
 		InstanceGeometryData *geometry = static_cast<InstanceGeometryData *>(instance->base_data);
-		geometry->geometry_instance->set_gpu_occlusion_margin(instance->ignore_all_culling || instance->ignore_occlusion_culling ? -1.0f : p_margin);
+		geometry->geometry_instance->set_gpu_occlusion_margin(instance->ignore_all_culling || instance->ignore_occlusion_culling || geometry->material_uses_custom_depth ? -1.0f : p_margin);
 	}
 	if (changed) {
 		_instance_queue_update(instance, true, false);
@@ -1321,10 +1321,12 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 		case RSE::INSTANCE_FLAG_IGNORE_OCCLUSION_CULLING: {
 			instance->ignore_occlusion_culling = p_enabled;
 			instance_geometry_set_gpu_occlusion_margin(p_instance, instance->gpu_occlusion_margin);
+			const bool custom_depth = ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) && instance->base_data &&
+					static_cast<InstanceGeometryData *>(instance->base_data)->material_uses_custom_depth;
 
 			if (instance->scenario && instance->array_index >= 0) {
 				InstanceData &idata = instance->scenario->instance_data[instance->array_index];
-				if (instance->ignore_occlusion_culling) {
+				if (instance->ignore_occlusion_culling || custom_depth) {
 					idata.flags |= InstanceData::FLAG_IGNORE_OCCLUSION_CULLING;
 				} else {
 					idata.flags &= ~InstanceData::FLAG_IGNORE_OCCLUSION_CULLING;
@@ -1863,7 +1865,8 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		if (p_instance->mesh_instance.is_valid()) {
 			idata.flags |= InstanceData::FLAG_USES_MESH_INSTANCE;
 		}
-		if (p_instance->ignore_occlusion_culling) {
+		if (p_instance->ignore_occlusion_culling || (((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) &&
+				static_cast<InstanceGeometryData *>(p_instance->base_data)->material_uses_custom_depth)) {
 			idata.flags |= InstanceData::FLAG_IGNORE_OCCLUSION_CULLING;
 		}
 		if (p_instance->ignore_all_culling) {
@@ -4301,6 +4304,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 			bool can_cast_shadows = true;
 			bool is_animated = false;
+			bool uses_custom_depth = false;
 
 			p_instance->instance_uniforms.materials_start();
 
@@ -4313,6 +4317,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 					can_cast_shadows = false;
 				}
 				is_animated = RSG::material_storage->material_is_animated(p_instance->material_override);
+				uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(p_instance->material_override);
 				p_instance->instance_uniforms.materials_append(p_instance->material_override);
 			} else {
 				if (!metadata_materials.rids.is_empty()) {
@@ -4328,6 +4333,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 						}
 						cast_shadows |= RSG::material_storage->material_casts_shadows(mat);
 						is_animated |= RSG::material_storage->material_is_animated(mat);
+						uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(mat);
 						p_instance->instance_uniforms.materials_append(mat);
 						RSG::material_storage->material_update_dependency(mat, &p_instance->dependency_tracker);
 					}
@@ -4351,6 +4357,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 								if (RSG::material_storage->material_is_animated(mat)) {
 									is_animated = true;
 								}
+								uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(mat);
 
 								p_instance->instance_uniforms.materials_append(mat);
 
@@ -4382,6 +4389,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 								if (RSG::material_storage->material_is_animated(mat)) {
 									is_animated = true;
 								}
+								uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(mat);
 
 								p_instance->instance_uniforms.materials_append(mat);
 
@@ -4420,6 +4428,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 								if (RSG::material_storage->material_is_animated(mat)) {
 									is_animated = true;
 								}
+								uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(mat);
 
 								p_instance->instance_uniforms.materials_append(mat);
 
@@ -4437,6 +4446,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			if (p_instance->material_overlay.is_valid()) {
 				can_cast_shadows = can_cast_shadows && RSG::material_storage->material_casts_shadows(p_instance->material_overlay);
 				is_animated = is_animated || RSG::material_storage->material_is_animated(p_instance->material_overlay);
+				uses_custom_depth |= RSG::material_storage->material_uses_custom_depth(p_instance->material_overlay);
 				p_instance->instance_uniforms.materials_append(p_instance->material_overlay);
 			}
 
@@ -4451,6 +4461,20 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			}
 
 			geom->material_is_animated = is_animated;
+			if (geom->material_uses_custom_depth != uses_custom_depth) {
+				// Authored absolute depth can be closer than this instance's AABB.
+				// Keep the author's occlusion settings and restore them on removal.
+				geom->material_uses_custom_depth = uses_custom_depth;
+				geom->geometry_instance->set_gpu_occlusion_margin(p_instance->ignore_all_culling || p_instance->ignore_occlusion_culling || uses_custom_depth ? -1.0f : p_instance->gpu_occlusion_margin);
+				if (p_instance->scenario && p_instance->array_index >= 0) {
+					InstanceData &idata = p_instance->scenario->instance_data[p_instance->array_index];
+					if (p_instance->ignore_occlusion_culling || uses_custom_depth) {
+						idata.flags |= InstanceData::FLAG_IGNORE_OCCLUSION_CULLING;
+					} else {
+						idata.flags &= ~InstanceData::FLAG_IGNORE_OCCLUSION_CULLING;
+					}
+				}
+			}
 
 			if (p_instance->instance_uniforms.materials_finish(p_instance->self)) {
 				geom->geometry_instance->set_instance_shader_uniforms_offset(p_instance->instance_uniforms.location());

@@ -44,11 +44,17 @@ void SceneShaderForwardMobile::ShaderData::set_code(const String &p_code) {
 	//compile
 
 	code = p_code;
+	writes_fragment_depth = false;
 	ubo_size = 0;
 	uniforms.clear();
 	_clear_vertex_input_mask_cache();
 
 	if (code.is_empty()) {
+		pipeline_hash_map.clear_pipelines();
+		if (version.is_valid()) {
+			SceneShaderForwardMobile::singleton->shader.version_free(version);
+			version = RID();
+		}
 		return; //just invalid, but no error
 	}
 
@@ -150,6 +156,7 @@ void SceneShaderForwardMobile::ShaderData::set_code(const String &p_code) {
 	actions.write_flag_pointers["MODELVIEW_MATRIX"] = &writes_modelview_or_projection;
 	actions.write_flag_pointers["PROJECTION_MATRIX"] = &writes_modelview_or_projection;
 	actions.write_flag_pointers["VERTEX"] = &uses_vertex;
+	actions.write_flag_pointers["DEPTH"] = &writes_fragment_depth;
 	actions.write_flag_pointers["TANGENT"] = &writes_tangent;
 	actions.write_flag_pointers["BINORMAL"] = &writes_tangent;
 
@@ -260,9 +267,9 @@ void SceneShaderForwardMobile::ShaderData::set_code(const String &p_code) {
 }
 
 bool SceneShaderForwardMobile::ShaderData::is_animated() const {
-	const bool masked = uses_discard || uses_alpha_clip;
+	const bool pixel_coverage = uses_discard || uses_alpha_clip || writes_fragment_depth;
 	// Vertex TIME can reach fragment coverage through an authored varying.
-	return (uses_fragment_time && masked) || (uses_vertex_time && (uses_vertex || masked));
+	return (uses_fragment_time && pixel_coverage) || (uses_vertex_time && (uses_vertex || pixel_coverage));
 }
 
 bool SceneShaderForwardMobile::ShaderData::casts_shadows() const {

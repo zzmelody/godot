@@ -2587,6 +2587,15 @@ bool MaterialStorage::material_is_animated(RID p_material) {
 	return false; //by default nothing is animated
 }
 
+bool MaterialStorage::material_uses_custom_depth(RID p_material) {
+	GLES3::Material *material = material_owner.get_or_null(p_material);
+	ERR_FAIL_NULL_V(material, false);
+	if (material->shader && material->shader->data && material->shader->data->uses_custom_depth()) {
+		return true;
+	}
+	return material->next_pass.is_valid() && material_uses_custom_depth(material->next_pass);
+}
+
 bool MaterialStorage::material_casts_shadows(RID p_material) {
 	GLES3::Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL_V(material, true);
@@ -2989,6 +2998,7 @@ void SceneShaderData::set_code(const String &p_code) {
 	uses_screen_texture = false;
 	uses_screen_texture_mipmaps = false;
 	uses_depth_texture = false;
+	writes_fragment_depth = false;
 	uses_normal_texture = false;
 	uses_bent_normal_texture = false;
 	uses_time = false;
@@ -3082,6 +3092,7 @@ void SceneShaderData::set_code(const String &p_code) {
 	actions.write_flag_pointers["PROJECTION_MATRIX"] = &writes_modelview_or_projection;
 	actions.write_flag_pointers["VERTEX"] = &uses_vertex;
 	actions.write_flag_pointers["POSITION"] = &uses_position;
+	actions.write_flag_pointers["DEPTH"] = &writes_fragment_depth;
 	actions.write_flag_pointers["TANGENT"] = &writes_tangent;
 	actions.write_flag_pointers["BINORMAL"] = &writes_tangent;
 
@@ -3216,7 +3227,8 @@ void SceneShaderData::set_code(const String &p_code) {
 }
 
 bool SceneShaderData::is_animated() const {
-	return (uses_fragment_time && uses_discard) || (uses_vertex_time && uses_vertex);
+	const bool pixel_coverage = uses_discard || uses_alpha_clip || writes_fragment_depth;
+	return (uses_fragment_time && pixel_coverage) || (uses_vertex_time && (uses_vertex || pixel_coverage));
 }
 
 bool SceneShaderData::casts_shadows() const {

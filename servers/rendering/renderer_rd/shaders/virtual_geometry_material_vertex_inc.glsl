@@ -63,6 +63,7 @@ vec4 vg_global_uniform(uint index) {
 }
 vec3 albedo_highp, emission, backlight, normal_map;
 float alpha_highp, metallic_highp, roughness_highp, specular, normal_map_depth;
+float vg_fragment_depth;
 float ao, ao_light_affect, rim, rim_tint, clearcoat, clearcoat_roughness, anisotropy;
 float alpha_scissor_threshold, alpha_hash_scale;
 vec2 anisotropy_flow;

@@ -2650,6 +2650,15 @@ bool MaterialStorage::material_is_animated(RID p_material) {
 	return false; //by default nothing is animated
 }
 
+bool MaterialStorage::material_uses_custom_depth(RID p_material) {
+	Material *material = material_owner.get_or_null(p_material);
+	ERR_FAIL_NULL_V(material, false);
+	if (material->shader && material->shader->data && material->shader->data->uses_custom_depth()) {
+		return true;
+	}
+	return material->next_pass.is_valid() && material_uses_custom_depth(material->next_pass);
+}
+
 bool MaterialStorage::material_casts_shadows(RID p_material) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL_V(material, true);

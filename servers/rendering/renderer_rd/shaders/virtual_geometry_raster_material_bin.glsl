@@ -44,6 +44,7 @@ layout(push_constant, std430) uniform Parameters {
 params;
 shared uint pipeline_ids[64];
 shared bool draw_cluster;
+shared uint custom_depth;
 
 bool vg_cluster_visible(uvec2 reference) {
 	if (occlusion.flags.x == 0u) {
@@ -105,19 +106,9 @@ void main() {
 	}
 	uint lane = gl_LocalInvocationIndex;
 	if (lane == 0u) {
-		if (params.phase == 0u) {
-			draw_cluster = vg_cluster_visible(reference);
-			if (params.scatter == 0u) {
-				pending.data[index] = draw_cluster ? 0u : 1u;
-			}
-		} else {
-			draw_cluster = pending.data[index] != 0u && vg_cluster_visible(reference);
-		}
+		custom_depth = 0u;
 	}
 	barrier();
-	if (!draw_cluster) {
-		return;
-	}
 	uint record = vg_record(reference.y);
 	uint count = geometry.data[record + 6u];
 	uint pipeline = 0xffffffffu;
@@ -135,12 +126,33 @@ void main() {
 			if (material >= scene.data[3]) {
 				atomicOr(status.data[0], 4u);
 			} else {
-				pipeline = materials.data[material * 4u + 2u] == 0u ? 0u : material + 1u;
+				uint flags = materials.data[material * 4u + 2u];
+				pipeline = flags == 0u ? 0u : material + 1u;
+				if ((flags & 2u) != 0u) {
+					atomicOr(custom_depth, 1u);
+				}
 			}
 		}
 	}
 	pipeline_ids[lane] = pipeline;
 	barrier();
+	if (lane == 0u) {
+		// Absolute DEPTH may pull a geometrically hidden surface forward.
+		// Its original bounds cannot prove occlusion in either Hi-Z phase.
+		bool visible = custom_depth != 0u || vg_cluster_visible(reference);
+		if (params.phase == 0u) {
+			draw_cluster = visible;
+			if (params.scatter == 0u) {
+				pending.data[index] = visible ? 0u : 1u;
+			}
+		} else {
+			draw_cluster = pending.data[index] != 0u && visible;
+		}
+	}
+	barrier();
+	if (!draw_cluster) {
+		return;
+	}
 	if (pipeline == 0xffffffffu || pipeline >= params.buckets) {
 		return;
 	}

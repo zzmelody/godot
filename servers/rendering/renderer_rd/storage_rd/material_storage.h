@@ -80,6 +80,7 @@ public:
 
 		virtual void set_code(const String &p_Code) = 0;
 		virtual bool is_animated() const = 0;
+		virtual bool uses_custom_depth() const { return false; }
 		virtual bool casts_shadows() const = 0;
 		virtual RenderingServerTypes::ShaderNativeSourceCode get_native_source_code() const = 0;
 		virtual Pair<ShaderRD *, RID> get_native_shader_and_version() const = 0;
@@ -510,6 +511,7 @@ public:
 	float material_get_max_vertex_displacement(RID p_material) const override;
 
 	virtual bool material_is_animated(RID p_material) override;
+	virtual bool material_uses_custom_depth(RID p_material) override;
 	virtual bool material_casts_shadows(RID p_material) override;
 	virtual RSE::CullMode material_get_cull_mode(RID p_material) const override;
 
