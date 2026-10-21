@@ -168,7 +168,7 @@ MFXTemporalContext *MFXTemporalEffect::create_context(CreateParams p_params) con
 
 	MFXTemporalContext *context = memnew(MFXTemporalContext);
 	context->reactive_requested = p_params.reactive_format != RDD::DATA_FORMAT_MAX;
-	context->reactive_enabled = context->reactive_requested && desc->respondsToSelector(sel_registerName("setReactiveMaskTextureEnabled:"));
+	context->reactive_enabled = context->reactive_requested && NS::Object::sendMessage<bool>(desc.get(), sel_registerName("respondsToSelector:"), sel_registerName("setReactiveMaskTextureEnabled:"));
 	if (context->reactive_enabled) {
 		desc->setReactiveMaskTextureEnabled(true);
 		desc->setReactiveMaskTextureFormat((MTL::PixelFormat)pf.getMTLPixelFormat(p_params.reactive_format));

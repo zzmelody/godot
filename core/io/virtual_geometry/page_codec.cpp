@@ -1014,6 +1014,7 @@ PageCodecResult validate_geometry_page_dependencies(const uint8_t *p_bytes, size
 					source = &p_dependencies[index];
 					break;
 				}
+			}
 			const uint32_t source_cluster = p_bytes[record[37] + 32 + reference];
 			if (source == nullptr || source->clusters == nullptr || source_cluster >= source->cluster_count) {
 				return { PageCodecError::INVALID_METADATA, cluster };

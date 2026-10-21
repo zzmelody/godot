@@ -737,7 +737,8 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 					}
 				}
 				virtual_geometry_composite_version = owner->shader.version_create(false);
-				owner->shader.version_set_code(virtual_geometry_composite_version, custom_light ? light_code.code : HashMap<String, String>(),
+				const HashMap<String, String> empty_code;
+				owner->shader.version_set_code(virtual_geometry_composite_version, custom_light ? light_code.code : empty_code,
 						custom_light ? light_code.uniforms : String(), String(), custom_light ? light_code.stage_globals[ShaderCompiler::STAGE_FRAGMENT] : String(), composite_defines);
 				virtual_geometry_version = owner->virtual_geometry_shader.version_create(false);
 				owner->virtual_geometry_shader.version_set_compute_code(virtual_geometry_version, generated.code, generated.uniforms, generated.stage_globals[ShaderCompiler::STAGE_COMPUTE], generated.defines);
