@@ -840,10 +840,35 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 			}
 
 			HashMap<StringName, String> function_code;
+			HashMap<StringName, int> function_indices;
+			HashSet<StringName> reachable_functions;
+			Vector<int> pending_functions;
+			for (int i = 0; i < pnode->vfunctions.size(); i++) {
+				const StringName &name = pnode->vfunctions[i].name;
+				function_indices[name] = i;
+				if (p_actions.entry_point_stages.has(name)) {
+					reachable_functions.insert(name);
+					pending_functions.push_back(i);
+				}
+			}
+			// Feature flags must describe executable entry-point dependencies.
+			// Uncalled helpers must not require unavailable texture inputs or
+			// turn a supported virtual material into an unsupported one.
+			for (int next = 0; next < pending_functions.size(); next++) {
+				for (const StringName &dependency : pnode->vfunctions[pending_functions[next]].uses_function) {
+					if (!reachable_functions.has(dependency)) {
+						reachable_functions.insert(dependency);
+						pending_functions.push_back(function_indices[dependency]);
+					}
+				}
+			}
 
 			//code for functions
 			for (int i = 0; i < pnode->vfunctions.size(); i++) {
 				SL::FunctionNode *fnode = pnode->vfunctions[i].function;
+				if (!reachable_functions.has(fnode->name)) {
+					continue;
+				}
 				function = fnode;
 				current_func_name = fnode->name;
 				function_code[fnode->name] = _dump_node_code(fnode->body, p_level + 1, r_gen_code, p_actions, p_default_actions, p_assigning);
@@ -865,6 +890,15 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					Stage stage = p_actions.entry_point_stages[fnode->name];
 					_dump_function_deps(pnode, fnode->name, function_code, r_gen_code.stage_globals[stage], added_funcs_per_stage[stage]);
 					r_gen_code.code[fnode->name] = function_code[fnode->name];
+					if (stage == STAGE_VERTEX || stage == STAGE_FRAGMENT) {
+						bool &uses_time = stage == STAGE_VERTEX ? r_gen_code.uses_vertex_time : r_gen_code.uses_fragment_time;
+						uses_time |= functions_using_time.has(fnode->name);
+						// The emitted dependency set is already transitive. It also
+						// handles helpers shared by fragment() and light().
+						for (const StringName &dependency : added_funcs_per_stage[stage]) {
+							uses_time |= functions_using_time.has(dependency);
+						}
+					}
 				}
 
 				function = nullptr;
@@ -1063,12 +1097,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 			}
 
 			if (vnode->name == time_name) {
-				if (p_actions.entry_point_stages.has(current_func_name) && p_actions.entry_point_stages[current_func_name] == STAGE_VERTEX) {
-					r_gen_code.uses_vertex_time = true;
-				}
-				if (p_actions.entry_point_stages.has(current_func_name) && p_actions.entry_point_stages[current_func_name] == STAGE_FRAGMENT) {
-					r_gen_code.uses_fragment_time = true;
-				}
+				functions_using_time.insert(current_func_name);
 			}
 
 		} break;
@@ -1185,12 +1214,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 			}
 
 			if (anode->name == time_name) {
-				if (p_actions.entry_point_stages.has(current_func_name) && p_actions.entry_point_stages[current_func_name] == STAGE_VERTEX) {
-					r_gen_code.uses_vertex_time = true;
-				}
-				if (p_actions.entry_point_stages.has(current_func_name) && p_actions.entry_point_stages[current_func_name] == STAGE_FRAGMENT) {
-					r_gen_code.uses_fragment_time = true;
-				}
+				functions_using_time.insert(current_func_name);
 			}
 
 		} break;
@@ -1726,6 +1750,7 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 	used_rmode_defines.clear();
 	used_flag_pointers.clear();
 	fragment_varyings.clear();
+	functions_using_time.clear();
 
 	shader = parser.get_shader();
 	function = nullptr;

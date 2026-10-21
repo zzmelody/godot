@@ -135,6 +135,7 @@ private:
 	HashSet<StringName> used_rmode_defines;
 	HashSet<StringName> internal_functions;
 	HashSet<StringName> fragment_varyings;
+	HashSet<StringName> functions_using_time;
 
 	DefaultIdentifierActions actions;
 

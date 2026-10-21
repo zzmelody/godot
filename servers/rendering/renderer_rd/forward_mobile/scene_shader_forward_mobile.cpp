@@ -260,7 +260,9 @@ void SceneShaderForwardMobile::ShaderData::set_code(const String &p_code) {
 }
 
 bool SceneShaderForwardMobile::ShaderData::is_animated() const {
-	return (uses_fragment_time && uses_discard) || (uses_vertex_time && uses_vertex);
+	const bool masked = uses_discard || uses_alpha_clip;
+	// Vertex TIME can reach fragment coverage through an authored varying.
+	return (uses_fragment_time && masked) || (uses_vertex_time && (uses_vertex || masked));
 }
 
 bool SceneShaderForwardMobile::ShaderData::casts_shadows() const {
