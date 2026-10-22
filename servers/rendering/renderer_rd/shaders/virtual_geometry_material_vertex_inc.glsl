@@ -90,6 +90,9 @@ void vg_user_vertex() {
 }
 
 void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
+	// A vertex program owns a fresh mutable matrix, including helper calls.
+	// Never carry one corner's authored normal transform into the next corner.
+	modelview_normal = mat3(vg_world_to_view) * model_normal_matrix;
 	vertex = value.position;
 	normal_highp = value.normal;
 	tangent = value.tangent.xyz;

@@ -921,11 +921,13 @@ Error import_scene(const Dictionary &job, Dictionary &result) {
 		ERR_FAIL_COND_V(key != "prototype_triangles" && key != "bark_triangles" && key != "leaf_triangles" && key != "virtual_geometry" && key != "preserve_area" && key != "asset_coordinates" && key != "height" && key != "rooted", ERR_INVALID_PARAMETER);
 	}
 	const bool runtime_scene = type == "PackedScene";
-	for (const String &key : { String("virtual_geometry"), String("preserve_area"), String("asset_coordinates"), String("rooted") }) {
+	for (const String &key : { String("asset_coordinates"), String("rooted") }) {
 		ERR_FAIL_COND_V(options.has(key) && (!runtime_scene || options[key].get_type() != Variant::BOOL), ERR_INVALID_PARAMETER);
 	}
-	const bool explicit_geometry = options.get("virtual_geometry", false);
-	ERR_FAIL_COND_V(options.has("preserve_area") && !explicit_geometry, ERR_INVALID_PARAMETER);
+	CookerVirtualGeometry::Settings settings;
+	bool explicit_geometry = false;
+	e = CookerVirtualGeometry::parse_import_settings(options, runtime_scene, settings, explicit_geometry);
+	ERR_FAIL_COND_V(e != OK, e);
 	const Variant height = options.get("height", 0.0);
 	ERR_FAIL_COND_V(options.has("height") && (!runtime_scene || (height.get_type() != Variant::INT && height.get_type() != Variant::FLOAT) || !Math::is_finite(double(height)) || double(height) <= 0 || double(height) > 100000), ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(options.has("rooted") && !options.has("height"), ERR_INVALID_PARAMETER);
@@ -965,12 +967,10 @@ Error import_scene(const Dictionary &job, Dictionary &result) {
 			std::map<ObjectID, CookerVirtualGeometry::BuildOutput> builds;
 			Dictionary report;
 			String message;
-			CookerVirtualGeometry::Settings settings;
 			// Composed USD models retain every unique prototype. Their aggregate
 			// page output is separate from the ordinary recipe/fragment allowance.
 			settings.max_source_vertices = SceneImport::MAX_PROTOTYPE_VERTICES;
 			settings.max_output_bytes = 1024ull * 1024 * 1024;
-			settings.dag.preserve_area = options.get("preserve_area", false);
 			e = CookerVirtualGeometry::convert_imported_scene(scene, prepared, builds, report, message, explicit_geometry ? &settings : nullptr);
 			ERR_FAIL_COND_V_MSG(e != OK, e, message);
 			e = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));

@@ -1639,7 +1639,11 @@ void ResourceLoader::clear_thread_load_tasks() {
 		DEV_ASSERT(user_token->user_rc > 0 && !user_token->user_path.is_empty());
 		user_token->user_path.clear();
 		user_token->user_rc = 0;
-		user_token->unreference();
+		// Completed requests may only be kept alive by their unclaimed user
+		// reference. The task map stores a borrowed pointer, not an owner.
+		if (user_token->unreference()) {
+			memdelete(user_token);
+		}
 	}
 
 	thread_load_tasks.clear();

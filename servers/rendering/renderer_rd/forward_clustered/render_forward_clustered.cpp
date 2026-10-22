@@ -1973,7 +1973,11 @@ Error RenderForwardClustered::_render_virtual_geometry_color(RenderDataRD *p_ren
 		if (results.is_empty()) {
 			continue;
 		}
-		const RID eye_framebuffer = multiview ? data->get_color_pass_fb(p_color_flags, eye) : p_framebuffer;
+		// Virtual geometry resolves velocity in its own depth-tested pass. Keep
+		// that attachment out of the lighting framebuffer and shader interface.
+		const uint32_t lighting_flags = p_color_flags & ~COLOR_PASS_FLAG_MOTION_VECTORS;
+		const RID eye_framebuffer = multiview ? data->get_color_pass_fb(lighting_flags, eye) :
+				(p_color_flags != lighting_flags ? data->get_color_pass_fb(lighting_flags) : p_framebuffer);
 		const auto &shading = raster->get_shading();
 		const auto materials = shading.get_materials();
 		RD *rd = RD::get_singleton();
@@ -5021,7 +5025,7 @@ void RenderForwardClustered::_geometry_instance_add_surface_with_material(Geomet
 	sdcache->sort.uses_softshadow = ginstance->using_softshadows;
 
 	uint64_t format = RendererRD::MeshStorage::get_singleton()->mesh_surface_get_format(sdcache->surface);
-	if (p_material->shader_data->uses_tangent && !p_material->shader_data->writes_tangent && !(format & RSE::ARRAY_FORMAT_TANGENT)) {
+	if (p_material->shader_data->uses_tangent && !p_material->shader_data->writes_vertex_tangent && !(format & RSE::ARRAY_FORMAT_TANGENT)) {
 		String shader_path = p_material->shader_data->path.is_empty() ? "" : "(" + p_material->shader_data->path + ")";
 		String mesh_path = mesh_storage->mesh_get_path(p_mesh).is_empty() ? "" : "(" + mesh_storage->mesh_get_path(p_mesh) + ")";
 		WARN_PRINT_ED(vformat("Attempting to use a shader %s that requires tangents with a mesh %s that doesn't contain tangents. Ensure that meshes are imported with the 'ensure_tangents' option. If creating your own meshes, add an `ARRAY_TANGENT` array (when using ArrayMesh) or call `generate_tangents()` (when using SurfaceTool).", shader_path, mesh_path));

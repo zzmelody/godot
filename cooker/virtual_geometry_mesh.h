@@ -19,6 +19,11 @@ struct Settings {
 	uint64_t max_output_bytes = UINT64_MAX;
 };
 
+// Shared import policy for USD and the ordinary scene importers. An absent
+// explicit request retains the automatic dense-static conversion policy.
+Error parse_import_settings(const Dictionary &p_options, bool p_runtime_scene,
+		Settings &r_settings, bool &r_explicit_geometry);
+
 struct BuildOutput {
 	Ref<VirtualGeometryMesh> mesh;
 	std::vector<uint8_t> container;

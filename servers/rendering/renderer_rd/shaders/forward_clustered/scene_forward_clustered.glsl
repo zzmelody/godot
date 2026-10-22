@@ -1506,7 +1506,9 @@ void fragment_shader(in SceneData scene_data) {
 		vg_light_uv2 = vg_uv.zw;
 		vg_light_fragcoord = vec4(gl_FragCoord.xy, uintBitsToFloat(vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 26u]), uintBitsToFloat(vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 4u]));
 		alpha_highp = uintBitsToFloat(vg_light_data.data[vg_extension + VG_LIGHT_INPUT_WORD + 5u]);
+#ifdef NORMAL_USED
 		normal_highp = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 6u);
+#endif
 		vertex = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 9u);
 		view_highp = -normalize(vertex - eye_offset);
 		albedo_highp = vg_extension_load3(vg_extension + VG_LIGHT_INPUT_WORD + 12u);

@@ -3081,6 +3081,10 @@ void EditorHelp::_gen_doc_thread(void *p_udata) {
 }
 
 void EditorHelp::_gen_extensions_docs() {
+	if (!doc) {
+		return;
+	}
+
 	doc->generate((DocTools::GENERATE_FLAG_SKIP_BASIC_TYPES | DocTools::GENERATE_FLAG_EXTENSION_CLASSES_ONLY));
 
 	// Append extra doc data, as it gets overridden by the generation step.
@@ -3093,6 +3097,12 @@ static void _load_script_doc_cache(bool p_changes) {
 }
 
 void EditorHelp::load_script_doc_cache() {
+	// A documentation worker can enqueue this callback while cleanup_doc()
+	// joins it. Do not restart documentation work after its owner is gone.
+	if (!doc) {
+		return;
+	}
+
 	if (!ProjectSettings::get_singleton()->is_project_loaded()) {
 		print_verbose("Skipping loading script doc cache since no project is open.");
 		return;
@@ -3167,6 +3177,10 @@ static void _regenerate_script_doc_cache(bool p_changes) {
 }
 
 void EditorHelp::regenerate_script_doc_cache() {
+	if (!doc) {
+		return;
+	}
+
 	if (EditorFileSystem::get_singleton()->is_scanning()) {
 		// Wait until EditorFileSystem scanning is complete to use updated filesystem structure.
 		EditorFileSystem::get_singleton()->connect(SNAME("sources_changed"), callable_mp_static(_regenerate_script_doc_cache), CONNECT_ONE_SHOT);
@@ -3252,6 +3266,11 @@ void EditorHelp::save_script_doc_cache() {
 }
 
 void EditorHelp::generate_doc(bool p_use_cache, bool p_use_script_cache) {
+	// Cache-load failure can defer regeneration until after editor shutdown.
+	if (!EditorNode::get_singleton()) {
+		return;
+	}
+
 	doc_generation_count++;
 	OS::get_singleton()->benchmark_begin_measure("EditorHelp", vformat("Generate Documentation (Run %d)", doc_generation_count));
 
