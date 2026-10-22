@@ -305,6 +305,11 @@ void RenderingServerDefault::finish() {
 			server_task_id = WorkerThreadPool::INVALID_TASK_ID;
 		}
 		server_thread = Thread::MAIN_ID;
+		RenderingDevice *rd = RenderingDevice::get_singleton();
+		if (rd) {
+			// The worker has finished; device destruction now belongs to main.
+			rd->make_current();
+		}
 	} else {
 		_finish();
 	}
