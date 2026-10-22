@@ -20,14 +20,14 @@ layout(set = 0, binding = 9, std430) buffer Shading {
 }
 shading;
 layout(set = 0, binding = 16, rgba16f) uniform writeonly image2D vg_albedo;
-layout(set = 0, binding = 17, rgba16f) uniform writeonly image2D vg_normal;
+layout(set = 0, binding = 17, rgba32f) uniform writeonly image2D vg_normal;
 layout(set = 0, binding = 18, rgba16f) uniform writeonly image2D vg_emission;
 layout(set = 0, binding = 19, rgba16f) uniform writeonly image2D vg_specular;
 layout(set = 0, binding = 20, rgba16f) uniform writeonly image2D vg_backlight;
 layout(set = 0, binding = 21, rgba16f) uniform writeonly image2D vg_anisotropy;
 layout(set = 0, binding = 22, r32ui) uniform writeonly uimage2D vg_flags;
-layout(set = 0, binding = 23, rgba16f) uniform writeonly image2D vg_tangent;
-layout(set = 0, binding = 24, rgba16f) uniform writeonly image2D vg_geo_normal;
+layout(set = 0, binding = 23, rgba32f) uniform writeonly image2D vg_tangent;
+layout(set = 0, binding = 24, rgba32f) uniform writeonly image2D vg_geo_normal;
 layout(set = 0, binding = 25, rg16f) uniform writeonly image2D vg_velocity;
 layout(set = 0, binding = 29, rg16f) uniform writeonly image2D vg_lightmap_uv;
 layout(set = 0, binding = 27, r32f) uniform writeonly image2D vg_reactivity;

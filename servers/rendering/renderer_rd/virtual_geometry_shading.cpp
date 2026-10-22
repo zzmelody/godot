@@ -468,6 +468,11 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 			format.width = size.x;
 			format.height = size.y;
 			format.format = index == 6 ? RD::DATA_FORMAT_R32_UINT : (index == 9 ? RD::DATA_FORMAT_R16G16_SFLOAT : RD::DATA_FORMAT_R16G16B16A16_SFLOAT);
+			if (index == 1 || index == 7 || index == 8) {
+				// Independent authored axes feed anisotropic specular lighting.
+				// Half-float octahedral binormals amplify error in that BRDF.
+				format.format = RD::DATA_FORMAT_R32G32B32A32_SFLOAT;
+			}
 			format.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 			surfaces[index] = p_buffers->create_texture_from_format(surface_context, names[index], format);
 			ERR_FAIL_COND_V(surfaces[index].is_null(), ERR_CANT_CREATE);

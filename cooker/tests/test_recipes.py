@@ -379,7 +379,8 @@ return second
         self.assertEqual(len(files), 1)
         container = self.project / files[0]["path"].removeprefix("res://")
         data = container.read_bytes()
-        self.assertEqual(data[:4], b"VGPG")
+        # Each published page is an independent Zstandard frame.
+        self.assertEqual(data[:4], b"\x28\xb5\x2f\xfd")
         self.assertEqual(len(data), report["container_bytes"])
         self.assertEqual(files[0]["sha256"], hashlib.sha256(data).hexdigest())
         self.assertEqual(container.name, "geometry--" + files[0]["sha256"] + ".vgp")
@@ -775,7 +776,12 @@ func _initialize():
         file.seek(root.decode_u64(location))
         var bytes = file.get_buffer(root.decode_u32(location + 8))
         assert(bytes.size() == root.decode_u32(location + 8))
-        assert(bytes.decode_u32(0) == 0x47504756)
+        assert(bytes.decode_u32(0) == 0xfd2fb528)
+        var decoded_length = root.decode_u32(location + 24) + root.decode_u32(location + 28)
+        var page_bytes = bytes.decompress(decoded_length, FileAccess.COMPRESSION_ZSTD)
+        assert(page_bytes.size() == decoded_length)
+        assert(page_bytes.decode_u32(0) == 0x47504756)
+        assert(page_bytes.decode_u32(4) == 4)
         verified += 1
     print("VG_PACKED_PAGES:", verified)
     quit()

@@ -399,9 +399,10 @@ RID RenderSceneBuffersRD::create_texture_from_format(const StringName &p_context
 		// and slices borrow the same textures and receive no second payload charge.
 		ERR_FAIL_COND_V(p_texture_format.array_layers != 1 || p_texture_format.depth != 1 || p_texture_format.mipmaps != 1 ||
 						p_texture_format.samples != RD::TEXTURE_SAMPLES_1 ||
-						(p_texture_format.format != RD::DATA_FORMAT_R32_UINT && p_texture_format.format != RD::DATA_FORMAT_R32_SFLOAT && p_texture_format.format != RD::DATA_FORMAT_R16G16_SFLOAT && p_texture_format.format != RD::DATA_FORMAT_R16G16B16A16_SFLOAT),
+						(p_texture_format.format != RD::DATA_FORMAT_R32_UINT && p_texture_format.format != RD::DATA_FORMAT_R32_SFLOAT && p_texture_format.format != RD::DATA_FORMAT_R16G16_SFLOAT && p_texture_format.format != RD::DATA_FORMAT_R16G16B16A16_SFLOAT && p_texture_format.format != RD::DATA_FORMAT_R32G32B32A32_SFLOAT),
 				RID());
-		virtual_geometry_bytes = uint64_t(p_texture_format.width) * p_texture_format.height * (p_texture_format.format == RD::DATA_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4);
+		const uint32_t texel_bytes = p_texture_format.format == RD::DATA_FORMAT_R32G32B32A32_SFLOAT ? 16 : (p_texture_format.format == RD::DATA_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4);
+		virtual_geometry_bytes = uint64_t(p_texture_format.width) * p_texture_format.height * texel_bytes;
 		ERR_FAIL_COND_V(!RendererRD::MeshStorage::get_singleton()->reserve_virtual_geometry_work(virtual_geometry_bytes), RID());
 	}
 
