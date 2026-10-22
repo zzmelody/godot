@@ -739,7 +739,17 @@ Error ResourceLoaderBinary::load() {
 		if (r) {
 			if (!path.is_empty()) {
 				if (cache_mode != ResourceFormatLoader::CACHE_MODE_IGNORE) {
-					r->set_path(path, cache_mode == ResourceFormatLoader::CACHE_MODE_REPLACE); // If got here because the resource with same path has different type, replace it.
+					if (main && cache_mode == ResourceFormatLoader::CACHE_MODE_REUSE) {
+						// Deadlock prevention can load the same resource on two threads.
+						// Another load may have registered it after the earlier cache check.
+						// ResourceLoader selects the cached instance once both loads finish.
+						MutexLock lock(ResourceCache::lock);
+						if (!ResourceCache::has(path)) {
+							r->set_path(path);
+						}
+					} else {
+						r->set_path(path, cache_mode == ResourceFormatLoader::CACHE_MODE_REPLACE); // If got here because the resource with same path has different type, replace it.
+					}
 				} else {
 					r->set_path_cache(path);
 				}

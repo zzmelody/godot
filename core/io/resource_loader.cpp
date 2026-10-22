@@ -343,6 +343,23 @@ Ref<Resource> ResourceLoader::_load(const String &p_path, const String &p_origin
 	ERR_FAIL_V_MSG(Ref<Resource>(), vformat("No loader found for resource: %s (expected type: %s)", p_path, !p_type_hint.is_empty() ? p_type_hint : "unknown"));
 }
 
+static void _delete_completed_load_token(uint64_t p_instance_id) {
+	ResourceLoader::LoadToken *token = static_cast<ResourceLoader::LoadToken *>(ObjectDB::get_instance(ObjectID(p_instance_id)));
+	if (token) {
+		DEV_ASSERT(token->get_reference_count() == 0);
+		memdelete(token);
+	}
+}
+
+static void _release_completed_load_token(ResourceLoader::LoadToken *p_token) {
+	const uint64_t instance_id = p_token->get_instance_id();
+	if (p_token->unreference()) {
+		// The last worker can outlive all claimants. Destroy on the main thread:
+		// LoadToken::clear() may need to join this very worker task.
+		MessageQueue::get_main_singleton()->push_callable(callable_mp_static(&_delete_completed_load_token).bind(instance_id));
+	}
+}
+
 // This implementation must allow re-entrancy for a task that started awaiting in a deeper stack frame.
 // The load task token must be manually re-referenced before this is called, which includes threaded runs.
 void ResourceLoader::_run_load_task(void *p_userdata) {
@@ -517,7 +534,6 @@ void ResourceLoader::_run_load_task(void *p_userdata) {
 		}
 
 		if (status != THREAD_LOAD_IN_PROGRESS) {
-			load_task.load_token->unreference();
 			thread_load_mutex.lock();
 			if (thread_waiting_on_backup.is_empty()) {
 				thread_waiting_on.erase(thread_index);
@@ -525,6 +541,7 @@ void ResourceLoader::_run_load_task(void *p_userdata) {
 				thread_waiting_on[thread_index] = thread_waiting_on_backup;
 			}
 			thread_load_mutex.unlock();
+			_release_completed_load_token(load_task.load_token);
 			return;
 		}
 
@@ -682,9 +699,6 @@ void ResourceLoader::_run_load_task(void *p_userdata) {
 
 	thread_load_mutex.unlock();
 
-	// It's safe now to let the task go in case no one else was grabbing the token.
-	load_task.load_token->unreference();
-
 	if (load_nesting == 0) {
 		if (own_mq_override) {
 			MessageQueue::set_thread_singleton_override(nullptr);
@@ -695,6 +709,8 @@ void ResourceLoader::_run_load_task(void *p_userdata) {
 	curr_load_task = curr_load_task_backup;
 
 	print_verbose(vformat("Completed load for: '%s' remapped '%s' at thread %d", load_task.local_path, remapped_path, thread_index));
+	// No task fields may be read after releasing the worker's ownership.
+	_release_completed_load_token(load_task.load_token);
 }
 
 String ResourceLoader::_validate_local_path(const String &p_path) {
@@ -1646,6 +1662,17 @@ void ResourceLoader::clear_thread_load_tasks() {
 		}
 	}
 
+	// A completed worker may have queued its final deletion just before shutdown.
+	// Keep the task map alive while clear() joins that worker and removes its entry.
+	LocalVector<uint64_t> completed_tokens;
+	for (const KeyValue<String, ThreadLoadTask> &E : thread_load_tasks) {
+		if (E.value.load_token->get_reference_count() == 0) {
+			completed_tokens.push_back(E.value.load_token->get_instance_id());
+		}
+	}
+	for (uint64_t instance_id : completed_tokens) {
+		_delete_completed_load_token(instance_id);
+	}
 	thread_load_tasks.clear();
 	thread_waiting_on.clear();
 	// yielders is already guaranteed to be empty now

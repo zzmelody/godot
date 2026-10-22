@@ -197,6 +197,7 @@ VARIANT_ENUM_CAST(Resource::DeepDuplicateMode);
 class ResourceCache {
 	friend class Resource;
 	friend class ResourceLoader; // Need the lock.
+	friend class ResourceLoaderBinary; // Register competing main-resource loads atomically.
 	static Mutex lock;
 	static HashMap<String, Resource *> resources;
 #ifdef TOOLS_ENABLED
