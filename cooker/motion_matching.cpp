@@ -405,6 +405,17 @@ Error Build(const Dictionary &job, Dictionary &result) {
 	ERR_FAIL_COND_V(declarations.is_empty() || declarations.size() > 64, ERR_INVALID_PARAMETER);
 	const double right_sign = job.get("feature_right_sign", -1.0);
 	ERR_FAIL_COND_V(right_sign != -1 && right_sign != 1, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(job.get("feature_weights", Array()).get_type() != Variant::ARRAY, ERR_INVALID_PARAMETER);
+	const Array declared_weights = job.get("feature_weights", Array());
+	ERR_FAIL_COND_V(!declared_weights.is_empty() && declared_weights.size() != kDimensions, ERR_INVALID_PARAMETER);
+	PackedFloat32Array weights;
+	for (int i = 0; i < kDimensions; ++i) {
+		const Variant value = declared_weights.is_empty() ? Variant(1.0) : declared_weights[i];
+		ERR_FAIL_COND_V(value.get_type() != Variant::FLOAT && value.get_type() != Variant::INT, ERR_INVALID_PARAMETER);
+		const double weight = value;
+		ERR_FAIL_COND_V(!std::isfinite(weight) || weight < 0 || weight > 100, ERR_INVALID_PARAMETER);
+		weights.push_back(weight);
+	}
 	Ref<AnimationLibrary> library = base->duplicate(true);
 	Array reports;
 	for (const Dictionary &declaration : declarations) {
@@ -453,6 +464,7 @@ Error Build(const Dictionary &job, Dictionary &result) {
 		record["body_sha256"] = FileAccess::get_sha256(job["target_model"]);
 		record["mean"] = mean;
 		record["inverse_deviation"] = inverse_deviation;
+		record["feature_weights"] = weights;
 		animation->set_meta("motion_matching", record);
 	}
 	const Error directory = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(output.get_base_dir()));
@@ -463,6 +475,7 @@ Error Build(const Dictionary &job, Dictionary &result) {
 	result["output"] = output;
 	result["clips"] = reports;
 	result["feature_dimensions"] = kDimensions;
+	result["feature_weights"] = weights;
 	return OK;
 }
 } // namespace CookerMotionMatching
