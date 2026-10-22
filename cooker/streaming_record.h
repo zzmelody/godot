@@ -133,6 +133,17 @@ inline Error MeasureValue(const Variant &p_value, Measure &result, int) {
 				for (int i = 0; i < animation->get_track_count(); ++i) {
 					geometry_bytes += uint64_t(animation->track_get_key_count(i)) * 96 + 512;
 				}
+				if (animation->has_meta("motion_matching")) {
+					const Variant metadata = animation->get_meta("motion_matching");
+					ERR_FAIL_COND_V(metadata.get_type() != Variant::DICTIONARY, ERR_INVALID_DATA);
+					const Dictionary motion = metadata;
+					ERR_FAIL_COND_V(motion.get("eligible", Variant()).get_type() != Variant::PACKED_BYTE_ARRAY, ERR_INVALID_DATA);
+					const PackedByteArray eligible = motion["eligible"];
+					ERR_FAIL_COND_V(eligible.size() < 2 || eligible.size() > 1801, ERR_INVALID_DATA);
+					// Reserve packed resource data plus the shared native numeric copy.
+					// Actor cursors are separately owned by the character runtime.
+					geometry_bytes += uint64_t(eligible.size()) * (29 * 4 * 2 + 4 + 3 * 4) + 4096;
+				}
 			}
 			Ref<Shape3D> shape = resource;
 			if (shape.is_valid()) {
