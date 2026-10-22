@@ -14,10 +14,18 @@ bool vg_finite(vec3 value) {
 	return !any(isnan(value)) && !any(isinf(value));
 }
 
-// Solve the two homogeneous screen equations before dividing by their sum.
-// This equals perspective interpolation, including an original corner at W=0.
+// Retain the low product bits when nearly parallel grid edges cancel. A valid
+// 16.8 triangle can have a determinant of only one fixed-point unit.
+float vg_difference_of_products(float a, float b, float c, float d) {
+	float product = c * d;
+	float error = fma(-c, d, product);
+	return fma(a, b, -product) + error;
+}
+
+// Positive-W corners use rebased screen edges. The homogeneous path also
+// supports an original corner at W=0 and triangles crossing the camera plane.
 // Pixel coordinates use Godot's increasing framebuffer Y, as does vg_screen.
-bool vg_barycentrics(vec4 c0, vec4 c1, vec4 c2, vec2 pixel, vec2 size, inout VGBarycentrics result) {
+bool vg_barycentrics(vec4 c0, vec4 c1, vec4 c2, vec2 pixel, vec2 size, bool snap_to_grid, inout VGBarycentrics result) {
 	if (any(lessThanEqual(size, vec2(0.0)))) {
 		return false;
 	}
@@ -27,6 +35,53 @@ bool vg_barycentrics(vec4 c0, vec4 c1, vec4 c2, vec2 pixel, vec2 size, inout VGB
 	float scale = max(max(max(abs(x.x), abs(x.y)), abs(x.z)), max(max(max(abs(y.x), abs(y.y)), abs(y.z)), max(max(abs(w.x), abs(w.y)), abs(w.z))));
 	if (scale == 0.0 || isnan(scale) || isinf(scale)) {
 		return false;
+	}
+	if (all(greaterThan(w, vec3(0.0)))) {
+		vec2 p0 = vg_screen_position(c0, size);
+		vec2 p1 = vg_screen_position(c1, size);
+		vec2 p2 = vg_screen_position(c2, size);
+		if (snap_to_grid) {
+			p0 = vg_snap(p0);
+			p1 = vg_snap(p1);
+			p2 = vg_snap(p2);
+		}
+		vec2 e1 = p1 - p0;
+		vec2 e2 = p2 - p0;
+		vec2 point = pixel - p0;
+		float area = vg_difference_of_products(e1.x, e2.y, e1.y, e2.x);
+		if (area == 0.0 || isnan(area) || isinf(area)) {
+			return false;
+		}
+		vec3 affine;
+		affine.y = vg_difference_of_products(point.x, e2.y, point.y, e2.x) / area;
+		affine.z = vg_difference_of_products(e1.x, point.y, e1.y, point.x) / area;
+		affine.x = 1.0 - affine.y - affine.z;
+		vec3 dx = vec3(e1.y - e2.y, e2.y, -e1.y) / area;
+		vec3 dy = vec3(e2.x - e1.x, -e2.x, e1.x) / area;
+		// Ratios avoid overflow for an otherwise equivalent tiny clip scale.
+		vec3 reciprocal_w = vec3(min(min(w.x, w.y), w.z)) / w;
+		vec3 numerator = affine * reciprocal_w;
+		// Helper pixels extrapolate beyond a needle triangle. Sum the reciprocal
+		// plane from its first corner, without cancelling three large weights.
+		vec2 w_delta = reciprocal_w.yz - reciprocal_w.xx;
+		float denominator = fma(affine.y, w_delta.x, fma(affine.z, w_delta.y, reciprocal_w.x));
+		if (denominator == 0.0 || isnan(denominator) || isinf(denominator)) {
+			return false;
+		}
+		VGBarycentrics candidate;
+		candidate.value = numerator / denominator;
+		float denominator_dx = fma(dx.y, w_delta.x, dx.z * w_delta.y);
+		float denominator_dy = fma(dy.y, w_delta.x, dy.z * w_delta.y);
+		dx *= reciprocal_w;
+		dy *= reciprocal_w;
+		candidate.dx = (dx - candidate.value * denominator_dx) / denominator;
+		candidate.dy = (dy - candidate.value * denominator_dy) / denominator;
+		candidate.front_facing = area > 0.0;
+		if (!vg_finite(candidate.value) || !vg_finite(candidate.dx) || !vg_finite(candidate.dy)) {
+			return false;
+		}
+		result = candidate;
+		return true;
 	}
 	x /= scale;
 	y /= scale;
@@ -49,6 +104,10 @@ bool vg_barycentrics(vec4 c0, vec4 c1, vec4 c2, vec2 pixel, vec2 size, inout VGB
 	}
 	result = candidate;
 	return true;
+}
+
+bool vg_barycentrics(vec4 c0, vec4 c1, vec4 c2, vec2 pixel, vec2 size, inout VGBarycentrics result) {
+	return vg_barycentrics(c0, c1, c2, pixel, size, false, result);
 }
 
 struct VGSurface {
@@ -95,7 +154,7 @@ bool vg_surface(uint payload, vec2 pixel, mat4 projection, vec2 size, vec2 jitte
 		clips[corner] = vg_snap_clip(clip, size);
 	}
 	VGSurface candidate;
-	if (!vg_barycentrics(clips[0], clips[1], clips[2], pixel, size, candidate.barycentrics)) {
+	if (!vg_barycentrics(clips[0], clips[1], clips[2], pixel, size, true, candidate.barycentrics)) {
 		return false;
 	}
 	// Material FRONT_FACING follows physical winding, as gl_FrontFacing does
