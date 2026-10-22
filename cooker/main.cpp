@@ -924,11 +924,18 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 			options[option.option.name] = option.default_value;
 		}
 		Dictionary overrides = job.get("options", Dictionary());
+		CookerVirtualGeometry::Settings geometry_settings;
+		bool explicit_geometry = false;
+		error = CookerVirtualGeometry::parse_import_settings(overrides, type == "PackedScene", geometry_settings, explicit_geometry);
+		ERR_FAIL_COND_V(error != OK, error);
 		// External subresource saves need an explicit output manifest before they can be enabled.
 		ERR_FAIL_COND_V_MSG(overrides.has("_subresources") && !Dictionary(overrides["_subresources"]).is_empty(), ERR_UNAVAILABLE, "External subresource overrides are not supported by this batch protocol.");
 		Array keys = overrides.keys();
 		for (const Variant &key : keys) {
 			StringName name = key;
+			if (name == "virtual_geometry" || name == "preserve_area") {
+				continue; // Cooker policy is not an upstream importer option.
+			}
 			ERR_FAIL_COND_V_MSG(!options.has(name), ERR_INVALID_PARAMETER, "Unknown import option: " + String(name));
 			ERR_FAIL_COND_V_MSG(!Variant::can_convert_strict(overrides[key].get_type(), options[name].get_type()), ERR_INVALID_PARAMETER, "Wrong import option type: " + String(name));
 			options[name] = overrides[key];
@@ -972,7 +979,8 @@ Error execute_job(const Dictionary &job, Dictionary &r_result) {
 		Dictionary geometry_report;
 		String geometry_message;
 		Ref<Resource> prepared;
-		error = CookerVirtualGeometry::convert_imported_scene(imported, prepared, geometry_builds, geometry_report, geometry_message);
+		error = CookerVirtualGeometry::convert_imported_scene(imported, prepared, geometry_builds, geometry_report, geometry_message,
+				explicit_geometry ? &geometry_settings : nullptr);
 		ERR_FAIL_COND_V_MSG(error != OK, error, geometry_message);
 		imported = prepared;
 		r_result["virtual_geometry"] = geometry_report;

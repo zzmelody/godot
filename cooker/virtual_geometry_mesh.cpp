@@ -273,6 +273,20 @@ Error extract(const Ref<Mesh> &p_source, const Settings &p_settings, vg::Geometr
 }
 } // namespace
 
+Error parse_import_settings(const Dictionary &p_options, bool p_runtime_scene,
+		Settings &r_settings, bool &r_explicit_geometry) {
+	for (const String &key : { String("virtual_geometry"), String("preserve_area") }) {
+		ERR_FAIL_COND_V_MSG(p_options.has(key) && (!p_runtime_scene || p_options[key].get_type() != Variant::BOOL),
+				ERR_INVALID_PARAMETER, "Virtual geometry import options require a PackedScene and boolean values: " + key);
+	}
+	const bool explicit_geometry = p_options.get("virtual_geometry", false);
+	ERR_FAIL_COND_V_MSG(p_options.has("preserve_area") && !explicit_geometry, ERR_INVALID_PARAMETER,
+			"preserve_area requires virtual_geometry=true.");
+	r_settings.dag.preserve_area = p_options.get("preserve_area", false);
+	r_explicit_geometry = explicit_geometry;
+	return OK;
+}
+
 Error build(const Ref<Mesh> &p_source, const Settings &p_settings, BuildOutput &r_output, String &r_message) {
 	if (p_source.is_null() || Ref<VirtualGeometryMesh>(p_source).is_valid()) {
 		return refuse(r_message, "virtual_geometry requires an ordinary source Mesh");
@@ -684,6 +698,7 @@ Error convert_imported_scene(const Ref<Resource> &p_source, Ref<Resource> &r_res
 		record["node"] = String(root->get_path_to(node));
 		record["source_triangles"] = int64_t(triangles);
 		if (reason.is_empty()) {
+			record["preserve_area"] = preserve_area;
 			const auto key = std::make_pair(source->get_instance_id(), preserve_area);
 			const auto previous = converted.find(key);
 			Ref<Mesh> replacement;

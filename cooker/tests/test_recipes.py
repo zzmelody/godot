@@ -560,6 +560,67 @@ func _initialize():
         self.assertEqual(policy["nodes"][0]["build"]["source_triangles"], 8193)
         self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
 
+    def test_virtual_geometry_scene_import_options_are_shared(self):
+        positions = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 1, 0)
+        normals = struct.pack("<9f", *([0, 0, 1] * 3))
+        indices = struct.pack("<3H", 0, 1, 2)
+        payload = positions + normals + indices
+        (self.project / "options.bin").write_bytes(payload)
+        (self.project / "options.gltf").write_text(json.dumps({
+            "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0, "name": "Triangle"}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2}]}],
+            "buffers": [{"uri": "options.bin", "byteLength": len(payload)}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                            {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+                            {"buffer": 0, "byteOffset": 72, "byteLength": 6}],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                           "min": [0, 0, 0], "max": [1, 1, 0]},
+                          {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                          {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}],
+        }))
+        (self.project / "options.usda").write_text('''#usda 1.0
+(
+    defaultPrim = "Fixture"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "Fixture" {
+    def Mesh "Triangle" {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        uniform token subdivisionScheme = "none"
+    }
+}
+''')
+        for extension in ("gltf", "usda"):
+            source = f"res://options.{extension}"
+            automatic = self.job({"operation": "import-scene", "source": source,
+                                  "output": f"res://assets/runtime/model/{extension}-auto/scene.scn"})
+            self.assertEqual(automatic["virtual_geometry"]["converted_meshes"], 0)
+            for preserve_area in (False, True):
+                with self.subTest(format=extension, preserve_area=preserve_area):
+                    result = self.job({"operation": "import-scene", "source": source,
+                                       "output": f"res://assets/runtime/model/{extension}-{preserve_area}/scene.scn",
+                                       "options": {"virtual_geometry": True, "preserve_area": preserve_area}})
+                    policy = result["virtual_geometry"]
+                    self.assertEqual(policy["policy"], "explicit_static_scene_v1")
+                    self.assertEqual(policy["converted_meshes"], 1)
+                    self.assertEqual(policy["nodes"][0]["source_triangles"], 1)
+                    self.assertEqual(policy["nodes"][0]["preserve_area"], preserve_area)
+                    self.job({"operation": "validate-resource", "source": result["output"], "type": "PackedScene"})
+            for index, options in enumerate(({"virtual_geometry": 1}, {"preserve_area": True},
+                                              {"virtual_geometry": False, "preserve_area": False})):
+                output = f"res://assets/runtime/model/{extension}-bad-{index}/scene.scn"
+                self.job({"operation": "import-scene", "source": source, "output": output,
+                          "options": options}, success=False)
+                self.assertFalse((self.project / output.removeprefix("res://")).exists())
+            output = f"res://assets/runtime/model/{extension}-wrong-type/mesh.res"
+            self.job({"operation": "import-scene", "source": source, "output": output, "type": "ArrayMesh",
+                      "options": {"virtual_geometry": True}}, success=False)
+            self.assertFalse((self.project / output.removeprefix("res://")).exists())
+
     def test_virtual_geometry_automatic_import_accepts_extended_standard_materials(self):
         # The USD transport exposes actual standard-material overrides before
         # automatic conversion. Do not force virtual geometry in this test.
