@@ -338,18 +338,23 @@ void visit_node(uint id) {
 	}
 }
 
-void select_cluster(uint instance, uint reference, bool root_only) {
-	if (VG_SELECTION_WORK(instance_base() + instance * 16u + 14u) == 0u) { return; }
+bool cluster_visible(uint instance, uint reference, bool root_only) {
+	if (VG_SELECTION_WORK(instance_base() + instance * 16u + 14u) == 0u) { return false; }
 	uint record = (reference >> 8u) * 8192u + 8u + (reference & 255u) * 72u;
 	uint flags = geometry.data[record + 7u];
-	if (root_only && (flags & 9u) != 9u) { return; }
+	if (root_only && (flags & 9u) != 9u) { return false; }
 	mat4 transform = instance_transform(instance);
-	if (!in_frustum(geom3(record + 18u), geom3(record + 21u), transform)) { return; }
+	if (!in_frustum(geom3(record + 18u), geom3(record + 21u), transform)) { return false; }
 	if (!root_only) {
 		float edge = projected_edge(instance, geom4(record + 12u), transform);
 		float error_scale = params.lod.y * uintBitsToFloat(VG_SELECTION_WORK(instance_base() + instance * 16u + 12u));
-		if (edge <= error_scale * uintBitsToFloat(geometry.data[record + 16u]) && (flags & 2u) == 0u) { return; }
+		if (edge <= error_scale * uintBitsToFloat(geometry.data[record + 16u]) && (flags & 2u) == 0u) { return false; }
 	}
+	return true;
+}
+
+void select_cluster(uint instance, uint reference, bool root_only) {
+	if (!cluster_visible(instance, reference, root_only)) { return; }
 	uint capacity = root_only ? VG_SELECTION_INPUT.limits.z : VG_SELECTION_INPUT.limits.y;
 	uint index = reserve_result(root_only ? 6u : 3u, capacity);
 	if (index < capacity) {
@@ -360,6 +365,75 @@ void select_cluster(uint instance, uint reference, bool root_only) {
 		// root fallback must not expose an uninitialized material source.
 		atomicOr(VG_SELECTION_WORK(instance_base() + instance * 16u + 15u), root_only ? 1u : 2u);
 	} else { mark_failure(root_only ? 8u : 2u); }
+}
+
+// Grant the remaining prefix when a source cannot fit the whole request.
+// The counter stays bounded, and only excess lanes refuse their own source.
+uvec2 reserve_result_prefix(uint count, uint capacity) {
+	uint previous = atomicOr(VG_SELECTION_WORK(3u), 0u);
+	for (;;) {
+		if (previous >= capacity) { return uvec2(INVALID, 0u); }
+		uint granted = min(count, capacity - previous);
+		uint observed = atomicCompSwap(VG_SELECTION_WORK(3u), previous, previous + granted);
+		if (observed == previous) { return uvec2(previous, granted); }
+		previous = observed;
+	}
+}
+
+void select_cluster_group(uint id) {
+	uint lane = gl_LocalInvocationIndex;
+	bool has_task = id < min(work.data[2u], params.limits.y);
+	uint source_index = INVALID;
+	uint instance = 0u;
+	uint reference = 0u;
+	bool selected = false;
+	if (has_task) {
+		uint word = candidate_base() + id * 4u;
+		source_index = work.data[word];
+		instance = work.data[word + 1u];
+		reference = work.data[word + 2u];
+		vg_batch_index = source_index;
+		if ((atomicOr(VG_SELECTION_WORK(4u), 0u) & 16u) == 0u) {
+			selected = cluster_visible(instance, reference, false);
+		}
+	}
+	group_scan[lane * 2u] = source_index;
+	group_scan[lane * 2u + 1u] = selected ? 1u : 0u;
+	// Inactive lanes participate too. Root coverage keeps its independent
+	// per-cluster path because its page loops are not workgroup-uniform.
+	barrier();
+	if (lane == 0u) {
+		uint first_lane = 0u;
+		while (first_lane < 64u) {
+			uint source = group_scan[first_lane * 2u];
+			uint last_lane = first_lane + 1u;
+			while (last_lane < 64u && group_scan[last_lane * 2u] == source) { ++last_lane; }
+			uint count = 0u;
+			for (uint member = first_lane; member < last_lane; ++member) { count += group_scan[member * 2u + 1u]; }
+			uvec2 range = uvec2(INVALID, 0u);
+			if (count != 0u) {
+				vg_batch_index = source;
+				range = reserve_result_prefix(count, VG_SELECTION_INPUT.limits.y);
+			}
+			uint prefix = 0u;
+			for (uint member = first_lane; member < last_lane; ++member) {
+				uint valid = group_scan[member * 2u + 1u];
+				group_scan[member * 2u + 1u] = valid != 0u && prefix < range.y ? range.x + prefix : INVALID;
+				prefix += valid;
+			}
+			first_lane = last_lane;
+		}
+	}
+	barrier();
+	// The leader borrowed each segment's source while reserving its range.
+	vg_batch_index = source_index;
+	if (!selected) { return; }
+	uint index = group_scan[lane * 2u + 1u];
+	if (index == INVALID) { mark_failure(2u); return; }
+	uint base = (16u + VG_SELECTION_INPUT.source.x * 16u) + index * 2u;
+	VG_SELECTION_WORK(base) = instance;
+	VG_SELECTION_WORK(base + 1u) = reference;
+	atomicOr(VG_SELECTION_WORK(instance_base() + instance * 16u + 15u), 2u);
 }
 
 void main() {
@@ -386,12 +460,7 @@ void main() {
 		if (vg_batch_index == INVALID) { return; }
 		mark_failure(1u);
 	} else if (mode == 4u) {
-		if (id >= min(work.data[2u], params.limits.y)) { return; }
-		uint word = candidate_base() + id * 4u;
-		vg_batch_index = work.data[word];
-		if ((atomicOr(VG_SELECTION_WORK(4u), 0u) & 16u) == 0u) {
-			select_cluster(work.data[word + 1u], work.data[word + 2u], false);
-		}
+		select_cluster_group(id);
 	} else if (mode == 5u) {
 		if (id >= params.source.z) { return; }
 		vg_batch_index = source_for_task(id, true);
