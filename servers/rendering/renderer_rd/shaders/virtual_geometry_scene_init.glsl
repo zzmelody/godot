@@ -86,7 +86,7 @@ mat4 vg_batch_model(uint offset) {
 void vg_initialize_source(uint instance) {
 	uint source_word = source_info.input_word + 16u;
 	uvec4 source = uvec4(batch_parameters.data[source_word], batch_parameters.data[source_word + 1u], batch_parameters.data[source_word + 2u], batch_parameters.data[source_word + 3u]);
-	uvec2 previous_info = uvec2(batch_parameters.data[source_info.input_word + 40u], batch_parameters.data[source_info.input_word + 41u]);
+	uvec3 previous_info = uvec3(batch_parameters.data[source_info.input_word + 40u], batch_parameters.data[source_info.input_word + 41u], batch_parameters.data[source_info.input_word + 42u]);
 	if (instance >= source.x || (work.data[source_info.work_word + 4u] & 16u) != 0u) { return; }
 	uint selected_cut = (work.data[source_info.work_word + 4u] & 3u) != 0u ? 1u : 2u;
 	if ((work.data[source_info.work_word + 16u + instance * 16u + 15u] & selected_cut) == 0u) { return; }
@@ -101,7 +101,11 @@ void vg_initialize_source(uint instance) {
 		local = transpose(mat4(transforms.data[word], transforms.data[word + 1u], transforms.data[word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
 		if (source_info.has_color != 0u) { color = transforms.data[word + 3u]; }
 		if (source_info.has_custom != 0u) { custom = transforms.data[word + 3u + source_info.has_color]; }
-		if (previous_info.y != 0u) {
+		if (previous_info.y != 0u && previous_info.z != 0u) {
+			previous_local = local;
+			previous_color = color;
+			previous_custom = custom;
+		} else if (previous_info.y != 0u) {
 			uint previous_word = instance * source.y + previous_info.x;
 			previous_local = transpose(mat4(previous_transforms.data[previous_word], previous_transforms.data[previous_word + 1u], previous_transforms.data[previous_word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
 			if (source_info.has_color != 0u) {

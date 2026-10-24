@@ -229,11 +229,17 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 			input.previous_info[0] = uint32_t(history_words / 4);
 			input.previous_info[1] = 1;
 			if (batch.stride != 0) {
-				const uint64_t bytes = uint64_t(batch.count) * batch.stride * 16;
-				const uint64_t source_byte = uint64_t(batch.previous_transform_offset) * batch.stride * 16;
-				ERR_FAIL_COND_V(bytes > UINT32_MAX || source_byte > UINT32_MAX || history_words + bytes / 4 > UINT32_MAX / 4, ERR_OUT_OF_MEMORY);
-				source_history_copies.push_back({ batch.transforms, uint32_t(source_byte), uint32_t(history_words * 4), uint32_t(bytes) });
-				history_words += bytes / 4;
+				if (batch.previous_transform_offset == batch.transform_offset) {
+					// Static MultiMeshes share the current and previous span. Keep
+					// the previous model, but borrow the existing local snapshot.
+					input.previous_info[2] = 1;
+				} else {
+					const uint64_t bytes = uint64_t(batch.count) * batch.stride * 16;
+					const uint64_t source_byte = uint64_t(batch.previous_transform_offset) * batch.stride * 16;
+					ERR_FAIL_COND_V(bytes > UINT32_MAX || source_byte > UINT32_MAX || history_words + bytes / 4 > UINT32_MAX / 4, ERR_OUT_OF_MEMORY);
+					source_history_copies.push_back({ batch.transforms, uint32_t(source_byte), uint32_t(history_words * 4), uint32_t(bytes) });
+					history_words += bytes / 4;
+				}
 			}
 		}
 		sources[index].batch_word = uint32_t(batches_word + uint64_t(index) * 20);
