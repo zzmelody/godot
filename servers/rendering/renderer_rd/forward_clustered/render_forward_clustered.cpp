@@ -32,6 +32,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/object/callable_mp.h"
+#include "core/os/os.h"
 #include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
@@ -350,9 +351,49 @@ bool RenderForwardClustered::free(RID p_rid) {
 }
 
 void RenderForwardClustered::update() {
+	_publish_geometry_update_profile();
 	RendererSceneRenderRD::update();
 	_update_global_pipeline_data_requirements_from_project();
 	_update_global_pipeline_data_requirements_from_light_storage();
+}
+
+void RenderForwardClustered::_publish_geometry_update_profile() {
+#if defined(GODOT_USE_TRACY)
+	const bool connected = TracyIsConnected;
+	if (connected && geometry_update_profile_active) {
+		static const char *const reasons[GEOMETRY_DIRTY_REASON_MAX] = {
+			"Render/Geometry/dirty_other",
+			"Render/Geometry/dirty_created",
+			"Render/Geometry/dirty_material",
+			"Render/Geometry/dirty_mesh",
+			"Render/Geometry/dirty_particles",
+			"Render/Geometry/dirty_multimesh",
+			"Render/Geometry/dirty_skeleton",
+			"Render/Geometry/dirty_dependency_deleted",
+			"Render/Geometry/dirty_lightmap",
+			"Render/Geometry/dirty_capture",
+			"Render/Geometry/dirty_shadow_projector",
+		};
+		for (uint32_t i = 0; i < GEOMETRY_DIRTY_REASON_MAX; i++) {
+			TracyPlot(reasons[i], int64_t(geometry_update_profile.dirty_requests[i]));
+		}
+		TracyPlot("Render/Geometry/completed_frame", int64_t(geometry_update_profile.frame));
+		TracyPlot("Render/Geometry/updated_instances", int64_t(geometry_update_profile.instances));
+		TracyPlot("Render/Geometry/surfaces_created", int64_t(geometry_update_profile.surfaces_created));
+		TracyPlot("Render/Geometry/surfaces_freed", int64_t(geometry_update_profile.surfaces_freed));
+		TracyPlot("Render/Geometry/instance_update_us", int64_t(geometry_update_profile.instance_update_usec));
+		TracyPlot("Render/Geometry/pipeline_update_us", int64_t(geometry_update_profile.pipeline_update_usec));
+		TracyPlot("Render/Geometry/local_pipeline_surfaces", int64_t(geometry_update_profile.local_pipeline_surfaces));
+		TracyPlot("Render/Geometry/global_pipeline_surfaces", int64_t(geometry_update_profile.global_pipeline_surfaces));
+		TracyPlot("Render/Geometry/new_pipeline_compilations", int64_t(geometry_update_profile.pipeline_compilations));
+		TracyPlot("Render/Geometry/global_key_changes", int64_t(geometry_update_profile.global_key_changes));
+		TracyPlot("Render/Geometry/global_key_changed_bits", int64_t(geometry_update_profile.global_key_changed_bits));
+		TracyPlot("Render/Geometry/capture_updates", int64_t(geometry_update_profile.capture_updates));
+	}
+	geometry_update_profile_active = connected;
+#endif
+	geometry_update_profile = {};
+	geometry_update_profile.frame = RSG::rasterizer->get_frame_number();
 }
 
 /// RENDERING ///
@@ -4873,6 +4914,14 @@ uint32_t RenderForwardClustered::sdfgi_get_pending_region_cascade(const Ref<Rend
 }
 
 void RenderForwardClustered::GeometryInstanceForwardClustered::_mark_dirty() {
+	_mark_dirty_with_reason(GEOMETRY_DIRTY_OTHER);
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::_mark_dirty_with_reason(GeometryDirtyReason p_reason) {
+	RenderForwardClustered *renderer = RenderForwardClustered::get_singleton();
+	if (renderer->geometry_update_profile_active) {
+		renderer->geometry_update_profile.dirty_requests[p_reason]++;
+	}
 	if (dirty_list_element.in_list()) {
 		return;
 	}
@@ -4882,6 +4931,9 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::_mark_dirty() {
 
 	while (surf) {
 		GeometryInstanceSurfaceDataCache *next = surf->next;
+		if (renderer->geometry_update_profile_active) {
+			renderer->geometry_update_profile.surfaces_freed++;
+		}
 		RenderForwardClustered::get_singleton()->geometry_instance_surface_alloc.free(surf);
 		surf = next;
 	}
@@ -4984,6 +5036,9 @@ void RenderForwardClustered::_geometry_instance_add_surface_with_material(Geomet
 	}
 
 	GeometryInstanceSurfaceDataCache *sdcache = geometry_instance_surface_alloc.alloc();
+	if (geometry_update_profile_active) {
+		geometry_update_profile.surfaces_created++;
+	}
 
 	sdcache->flags = flags;
 
@@ -5585,15 +5640,43 @@ void RenderForwardClustered::_mesh_generate_all_pipelines_for_surface_cache(Geom
 
 void RenderForwardClustered::_update_dirty_geometry_instances() {
 	GodotProfileZone("Render/List/dirty_geometry");
-	while (geometry_instance_dirty_list.first()) {
-		_geometry_instance_update(geometry_instance_dirty_list.first()->self());
+	const uint32_t compilations = geometry_update_profile_active ? get_pipeline_compilations(RSE::PIPELINE_SOURCE_SURFACE) : 0;
+	{
+		GodotProfileZoneGroupedFirst(instances, "Render/Geometry/update_instances");
+		const uint64_t start = geometry_update_profile_active ? OS::get_singleton()->get_ticks_usec() : 0;
+		uint64_t count = 0;
+		while (geometry_instance_dirty_list.first()) {
+			_geometry_instance_update(geometry_instance_dirty_list.first()->self());
+			count++;
+		}
+		GodotProfileZoneGroupedValue(instances, count);
+		if (geometry_update_profile_active) {
+			geometry_update_profile.instances += count;
+			geometry_update_profile.instance_update_usec += OS::get_singleton()->get_ticks_usec() - start;
+		}
 	}
 
+	const uint64_t start = geometry_update_profile_active ? OS::get_singleton()->get_ticks_usec() : 0;
 	_update_dirty_geometry_pipelines();
+	if (geometry_update_profile_active) {
+		geometry_update_profile.pipeline_update_usec += OS::get_singleton()->get_ticks_usec() - start;
+		geometry_update_profile.pipeline_compilations += get_pipeline_compilations(RSE::PIPELINE_SOURCE_SURFACE) - compilations;
+	}
 }
 
 void RenderForwardClustered::_update_dirty_geometry_pipelines() {
 	if (global_pipeline_data_required.key != global_pipeline_data_compiled.key) {
+		GodotProfileZoneGroupedFirst(global_pipelines, "Render/Geometry/global_pipelines");
+		{
+			GodotProfileZoneGroupedFirst(key_change, "Render/Geometry/global_key_change");
+			GodotProfileZoneGroupedValue(key_change, (uint64_t(global_pipeline_data_compiled.key) << 32) | global_pipeline_data_required.key);
+		}
+		const uint32_t changed_bits = global_pipeline_data_required.key ^ global_pipeline_data_compiled.key;
+		if (geometry_update_profile_active) {
+			geometry_update_profile.global_key_changes++;
+			geometry_update_profile.global_key_changed_bits |= changed_bits;
+		}
+		uint64_t count = 0;
 		// Go through the entire list of surfaces and compile pipelines for everything again.
 		SelfList<GeometryInstanceSurfaceDataCache> *list = geometry_surface_compilation_all_list.first();
 		while (list != nullptr) {
@@ -5606,6 +5689,11 @@ void RenderForwardClustered::_update_dirty_geometry_pipelines() {
 			}
 
 			list = list->next();
+			count++;
+		}
+		GodotProfileZoneGroupedValue(global_pipelines, count);
+		if (geometry_update_profile_active) {
+			geometry_update_profile.global_pipeline_surfaces += count;
 		}
 
 		global_pipeline_data_compiled.key = global_pipeline_data_required.key;
@@ -5615,10 +5703,17 @@ void RenderForwardClustered::_update_dirty_geometry_pipelines() {
 			return;
 		}
 
+		GodotProfileZoneGroupedFirst(local_pipelines, "Render/Geometry/local_pipelines");
+		uint64_t count = 0;
 		while (geometry_surface_compilation_dirty_list.first() != nullptr) {
 			GeometryInstanceSurfaceDataCache *surface_cache = geometry_surface_compilation_dirty_list.first()->self();
 			_mesh_generate_all_pipelines_for_surface_cache(surface_cache, global_pipeline_data_compiled);
 			surface_cache->compilation_dirty_element.remove_from_list();
+			count++;
+		}
+		GodotProfileZoneGroupedValue(local_pipelines, count);
+		if (geometry_update_profile_active) {
+			geometry_update_profile.local_pipeline_surfaces += count;
 		}
 	}
 }
@@ -5631,7 +5726,24 @@ void RenderForwardClustered::_geometry_instance_dependency_changed(Dependency::D
 		case Dependency::DEPENDENCY_CHANGED_PARTICLES_INSTANCES:
 		case Dependency::DEPENDENCY_CHANGED_MULTIMESH:
 		case Dependency::DEPENDENCY_CHANGED_SKELETON_DATA: {
-			static_cast<RenderGeometryInstance *>(p_tracker->userdata)->_mark_dirty();
+			GeometryDirtyReason reason = GEOMETRY_DIRTY_PARTICLES;
+			switch (p_notification) {
+				case Dependency::DEPENDENCY_CHANGED_MATERIAL:
+					reason = GEOMETRY_DIRTY_MATERIAL;
+					break;
+				case Dependency::DEPENDENCY_CHANGED_MESH:
+					reason = GEOMETRY_DIRTY_MESH;
+					break;
+				case Dependency::DEPENDENCY_CHANGED_MULTIMESH:
+					reason = GEOMETRY_DIRTY_MULTIMESH;
+					break;
+				case Dependency::DEPENDENCY_CHANGED_SKELETON_DATA:
+					reason = GEOMETRY_DIRTY_SKELETON;
+					break;
+				default:
+					break;
+			}
+			static_cast<GeometryInstanceForwardClustered *>(p_tracker->userdata)->_mark_dirty_with_reason(reason);
 			static_cast<GeometryInstanceForwardClustered *>(p_tracker->userdata)->data->dirty_dependencies = true;
 		} break;
 		case Dependency::DEPENDENCY_CHANGED_MULTIMESH_VISIBLE_INSTANCES: {
@@ -5646,7 +5758,7 @@ void RenderForwardClustered::_geometry_instance_dependency_changed(Dependency::D
 	}
 }
 void RenderForwardClustered::_geometry_instance_dependency_deleted(const RID &p_dependency, DependencyTracker *p_tracker) {
-	static_cast<RenderGeometryInstance *>(p_tracker->userdata)->_mark_dirty();
+	static_cast<GeometryInstanceForwardClustered *>(p_tracker->userdata)->_mark_dirty_with_reason(GEOMETRY_DIRTY_DEPENDENCY_DELETED);
 	static_cast<GeometryInstanceForwardClustered *>(p_tracker->userdata)->data->dirty_dependencies = true;
 }
 
@@ -5664,7 +5776,7 @@ RenderGeometryInstance *RenderForwardClustered::geometry_instance_create(RID p_b
 	ginstance->data->dependency_tracker.changed_callback = _geometry_instance_dependency_changed;
 	ginstance->data->dependency_tracker.deleted_callback = _geometry_instance_dependency_deleted;
 
-	ginstance->_mark_dirty();
+	ginstance->_mark_dirty_with_reason(GEOMETRY_DIRTY_CREATED);
 
 	return ginstance;
 }
@@ -5692,10 +5804,14 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::set_use_lightmap(
 	lightmap_uv_scale = p_lightmap_uv_scale;
 	lightmap_slice_index = p_lightmap_slice_index;
 
-	_mark_dirty();
+	_mark_dirty_with_reason(GEOMETRY_DIRTY_LIGHTMAP);
 }
 
 void RenderForwardClustered::GeometryInstanceForwardClustered::set_lightmap_capture(const Color *p_sh9) {
+	RenderForwardClustered *renderer = RenderForwardClustered::get_singleton();
+	if (renderer->geometry_update_profile_active) {
+		renderer->geometry_update_profile.capture_updates++;
+	}
 	if (p_sh9) {
 		if (lightmap_sh == nullptr) {
 			lightmap_sh = RenderForwardClustered::get_singleton()->geometry_instance_lightmap_sh.alloc();
@@ -5708,7 +5824,7 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::set_lightmap_capt
 			lightmap_sh = nullptr;
 		}
 	}
-	_mark_dirty();
+	_mark_dirty_with_reason(GEOMETRY_DIRTY_LIGHTMAP_CAPTURE);
 }
 
 void RenderForwardClustered::geometry_instance_free(RenderGeometryInstance *p_geometry_instance) {
@@ -5828,7 +5944,7 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::pair_voxel_gi_ins
 void RenderForwardClustered::GeometryInstanceForwardClustered::set_softshadow_projector_pairing(bool p_softshadow, bool p_projector) {
 	using_projectors = p_projector;
 	using_softshadows = p_softshadow;
-	_mark_dirty();
+	_mark_dirty_with_reason(GEOMETRY_DIRTY_SHADOW_PROJECTOR);
 }
 
 void RenderForwardClustered::_update_shader_quality_settings() {

@@ -529,6 +529,41 @@ private:
 		Color sh[9];
 	};
 
+	enum GeometryDirtyReason {
+		GEOMETRY_DIRTY_OTHER,
+		GEOMETRY_DIRTY_CREATED,
+		GEOMETRY_DIRTY_MATERIAL,
+		GEOMETRY_DIRTY_MESH,
+		GEOMETRY_DIRTY_PARTICLES,
+		GEOMETRY_DIRTY_MULTIMESH,
+		GEOMETRY_DIRTY_SKELETON,
+		GEOMETRY_DIRTY_DEPENDENCY_DELETED,
+		GEOMETRY_DIRTY_LIGHTMAP,
+		GEOMETRY_DIRTY_LIGHTMAP_CAPTURE,
+		GEOMETRY_DIRTY_SHADOW_PROJECTOR,
+		GEOMETRY_DIRTY_REASON_MAX,
+	};
+
+	// Cull workers use the existing cull lock. Publish after they have joined,
+	// at the next rendering update; this cycle is distinct from a CPU main frame.
+	struct GeometryUpdateProfile {
+		uint64_t frame = 0;
+		uint64_t dirty_requests[GEOMETRY_DIRTY_REASON_MAX] = {};
+		uint64_t instances = 0;
+		uint64_t surfaces_created = 0;
+		uint64_t surfaces_freed = 0;
+		uint64_t instance_update_usec = 0;
+		uint64_t pipeline_update_usec = 0;
+		uint64_t local_pipeline_surfaces = 0;
+		uint64_t global_pipeline_surfaces = 0;
+		uint64_t pipeline_compilations = 0;
+		uint64_t global_key_changes = 0;
+		uint32_t global_key_changed_bits = 0;
+		uint64_t capture_updates = 0;
+	} geometry_update_profile;
+	bool geometry_update_profile_active = false;
+	void _publish_geometry_update_profile();
+
 	// Cached data for drawing surfaces
 	struct GeometryInstanceSurfaceDataCache {
 		enum {
@@ -604,7 +639,7 @@ private:
 		// lightmap
 		RID lightmap_instance;
 		Rect2 lightmap_uv_scale;
-		uint32_t lightmap_slice_index;
+		uint32_t lightmap_slice_index = 0;
 		GeometryInstanceLightmapSH *lightmap_sh = nullptr;
 
 		//used during rendering
@@ -634,6 +669,7 @@ private:
 				dirty_list_element(this) {}
 
 		virtual void _mark_dirty() override;
+		void _mark_dirty_with_reason(GeometryDirtyReason p_reason);
 
 		virtual void set_transform(const Transform3D &p_transform, const AABB &p_aabb, const AABB &p_transformed_aabb) override;
 		virtual void reset_motion_vectors() override;
