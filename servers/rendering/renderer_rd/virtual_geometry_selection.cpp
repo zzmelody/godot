@@ -220,6 +220,8 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	for (uint32_t index = 0; index < used; ++index) {
 		results[index].work = result_buffer;
 		results[index].parameters = view_parameters;
+		results[index].transforms = transforms_buffer;
+		results[index].transform_offset = parameter_data[index].source[2];
 	}
 	if (version.is_null()) {
 		Vector<String> modes;

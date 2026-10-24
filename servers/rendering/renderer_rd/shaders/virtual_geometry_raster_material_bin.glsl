@@ -42,6 +42,7 @@ layout(push_constant, std430) uniform Parameters {
 	uint phase;
 }
 params;
+layout(set = 0, binding = 28, std430) readonly buffer SourceTasks { uint data[]; } source_tasks;
 shared uint pipeline_ids[64];
 shared bool draw_cluster;
 shared uint custom_depth;
@@ -97,7 +98,7 @@ bool vg_cluster_visible(uvec2 reference) {
 
 void main() {
 	uint index = gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u;
-	if (index >= params.references) {
+	if (index >= min(params.references, source_tasks.data[0])) {
 		return;
 	}
 	uvec2 reference = vg_visible_reference(index);

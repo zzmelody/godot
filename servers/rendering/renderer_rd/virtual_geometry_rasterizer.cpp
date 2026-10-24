@@ -236,7 +236,7 @@ void VirtualGeometryRasterizer::_record_material_bins(uint32_t p_phase) {
 		rd->compute_list_bind_compute_pipeline(list, material_bin_pipeline.get_rid());
 		rd->compute_list_bind_uniform_set(list, candidate_uniforms, 0);
 		rd->compute_list_set_push_constant(list, push, sizeof(push));
-		dispatch_count(list, visible_capacity, 1);
+		rd->compute_list_dispatch_indirect(list, shading.get_source_arguments(), 16);
 		rd->compute_list_add_barrier(list);
 	};
 	bin_pass(0);
@@ -428,6 +428,7 @@ Error VirtualGeometryRasterizer::_prepare_candidates(const VirtualGeometryShadin
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 10, { pending }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { shading.get_raster_materials() }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 15, { shading.get_status() }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 28, { shading.get_source_tasks() }),
 			RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 30, { sampler, hierarchy }),
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 31, { occlusion_parameters }));
 	ERR_FAIL_COND_V(candidate_uniforms.is_null(), ERR_CANT_CREATE);

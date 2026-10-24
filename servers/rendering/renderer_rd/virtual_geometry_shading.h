@@ -9,7 +9,6 @@
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_shade_scan.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_selection.h"
-#include "servers/rendering/renderer_rd/virtual_geometry_uniform_cache.h"
 
 namespace RendererRD {
 
@@ -55,6 +54,8 @@ public:
 	RID get_reactivity() const { return reactive_surface; }
 	bool are_materials_ready() const { return materials_ready; }
 	RID get_scene() const { return scene_buffer; }
+	RID get_source_tasks() const { return source_tasks; }
+	RID get_source_arguments() const { return source_arguments; }
 	RID get_bins() const { return bins_buffer; }
 	RID get_arguments() const { return arguments; }
 	RID get_draw_arguments() const { return draw_arguments; }
@@ -85,7 +86,6 @@ private:
 		uint32_t visible_base = 0;
 		uint32_t material_slots = 0;
 		uint32_t batch_word = 0;
-		RID uniforms;
 	};
 	struct ScanLevel {
 		uint32_t count = 0;
@@ -99,7 +99,7 @@ private:
 	VirtualGeometryShadeDispatchShaderRD dispatch_shader;
 	RID init_version, bin_version, scan_version, dispatch_version;
 	PipelineDeferredRD init_pipeline, bin_pipeline, scan_pipeline, dispatch_pipeline;
-	RID scene_buffer, bins_buffer, arguments, dummy_transforms;
+	RID scene_buffer, bins_buffer, arguments;
 	RID draw_arguments;
 	uint32_t draw_argument_words = 0;
 	RID material_view;
@@ -136,6 +136,22 @@ private:
 	Error _capture_material_history(RID p_material, const MaterialHistoryInput &p_input, uint64_t p_frame, RID &r_previous, bool &r_valid);
 	RID previous_sources;
 	uint32_t previous_source_words = 0;
+	RID previous_transforms;
+	uint32_t previous_transform_words = 0;
+	RID source_tasks;
+	uint32_t source_task_words = 0;
+	RID source_arguments;
+	uint32_t source_argument_words = 0;
+	uint32_t source_instances = 0;
+	RID source_uniforms, source_scan_uniforms;
+	LocalVector<ScanLevel> source_levels;
+	struct HistoryCopy {
+		RID source;
+		uint32_t source_byte;
+		uint32_t destination_byte;
+		uint32_t bytes;
+	};
+	LocalVector<HistoryCopy> source_history_copies;
 	RID batch_parameters;
 	uint32_t batch_parameter_words = 0;
 	struct BatchParameters {
@@ -144,9 +160,9 @@ private:
 		uint32_t displacement[4];
 		float previous_model[16];
 		uint32_t previous_info[4];
+		uint32_t info[22];
 	};
 	LocalVector<BatchParameters> batch_parameter_data;
-	VirtualGeometryUniformCache source_bindings{ { 2, 4, 8, 26, 27 } };
 	RID view_status;
 	LocalVector<RasterMaterialWork> raster_work;
 	RID raster_material_buffer;

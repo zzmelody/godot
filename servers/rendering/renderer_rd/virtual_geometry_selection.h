@@ -50,6 +50,9 @@ public:
 		// Borrowed view arena; this result's header begins at work_word.
 		RID work;
 		RID parameters;
+		// Borrowed current-transform snapshot, with a vec4 offset per source.
+		RID transforms;
+		uint32_t transform_offset = 0;
 		uint32_t work_word = 0;
 		uint32_t selected_capacity = 0;
 		uint32_t root_capacity = 0;

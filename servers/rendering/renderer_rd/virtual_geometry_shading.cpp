@@ -33,7 +33,7 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 			memory.free(snapshot);
 		}
 	}
-	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, dummy_transforms, material_view, frame_history, previous_sources, batch_parameters, view_status, raster_material_buffer, extensions }) {
+	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, material_view, frame_history, previous_sources, previous_transforms, source_tasks, source_arguments, batch_parameters, view_status, raster_material_buffer, extensions }) {
 		if (rid.is_valid()) {
 			memory.free(rid);
 		}
@@ -57,7 +57,6 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 }
 
 Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only, bool p_motion) {
-	auto binding_frame = source_bindings.begin();
 	depth_only = p_depth_only;
 	const bool record_history = !depth_only && p_motion;
 	materials.clear();
@@ -68,6 +67,8 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	material_map.clear();
 	sources.clear();
 	levels.clear();
+	source_levels.clear();
+	source_history_copies.clear();
 	size = p_size;
 	uint64_t instances = 0, visible = 0;
 	MaterialStorage *storage = MaterialStorage::get_singleton();
@@ -139,6 +140,11 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 			previous_sources = RID();
 			previous_source_words = 0;
 		}
+		if (previous_transform_words > 16) {
+			memory.free(previous_transforms);
+			previous_transforms = RID();
+			previous_transform_words = 0;
+		}
 	}
 	error = ensure_words(memory, previous_sources, previous_source_words, record_history ? MAX(uint64_t(1), instances) * 24 : 1);
 	if (error != OK) {
@@ -197,42 +203,111 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		scan_pipeline.create_compute_pipeline(scan_shader.version_get_shader(scan_version, 0));
 		dispatch_pipeline.create_compute_pipeline(dispatch_shader.version_get_shader(dispatch_version, 0));
 	}
-	if (dummy_transforms.is_null()) {
-		dummy_transforms = memory.storage(48);
-	}
-	ERR_FAIL_COND_V(init_pipeline.get_rid().is_null() || bin_pipeline.get_rid().is_null() || scan_pipeline.get_rid().is_null() || dispatch_pipeline.get_rid().is_null() || dummy_transforms.is_null(), ERR_CANT_CREATE);
+	ERR_FAIL_COND_V(init_pipeline.get_rid().is_null() || bin_pipeline.get_rid().is_null() || scan_pipeline.get_rid().is_null() || dispatch_pipeline.get_rid().is_null(), ERR_CANT_CREATE);
 	UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
-	static_assert(sizeof(BatchParameters) == 176);
-	error = ensure_words(memory, batch_parameters, batch_parameter_words, MAX(uint64_t(1), uint64_t(p_sources.size()) * 44));
+	static_assert(sizeof(BatchParameters) == 264);
+	error = ensure_words(memory, batch_parameters, batch_parameter_words, MAX(uint64_t(1), uint64_t(p_sources.size()) * 66));
 	if (error != OK) {
 		return error;
 	}
 	batch_parameter_data.resize(p_sources.size());
+	uint64_t history_words = 0;
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
-		const auto &batch = p_sources[index].batch;
+		const auto &source = p_sources[index];
+		const auto &batch = source.batch;
+		ERR_FAIL_COND_V(source.work != p_sources[0].work || source.transforms != p_sources[0].transforms, ERR_INVALID_PARAMETER);
 		BatchParameters &input = batch_parameter_data[index];
 		input = {};
 		MaterialStorage::store_transform(batch.model, input.model);
 		input.source[0] = batch.count;
 		input.source[1] = batch.stride;
-		input.source[2] = batch.transform_offset;
+		input.source[2] = source.transform_offset;
 		input.source[3] = batch.geometry.root_pages;
 		memcpy(&input.displacement[0], &batch.max_vertex_displacement, sizeof(float));
 		if (record_history) {
 			MaterialStorage::store_transform(batch.previous_model, input.previous_model);
-			input.previous_info[0] = batch.previous_transform_offset;
+			input.previous_info[0] = uint32_t(history_words / 4);
 			input.previous_info[1] = 1;
+			if (batch.stride != 0) {
+				const uint64_t bytes = uint64_t(batch.count) * batch.stride * 16;
+				const uint64_t source_byte = uint64_t(batch.previous_transform_offset) * batch.stride * 16;
+				ERR_FAIL_COND_V(bytes > UINT32_MAX || source_byte > UINT32_MAX || history_words + bytes / 4 > UINT32_MAX / 4, ERR_OUT_OF_MEMORY);
+				source_history_copies.push_back({ batch.transforms, uint32_t(source_byte), uint32_t(history_words * 4), uint32_t(bytes) });
+				history_words += bytes / 4;
+			}
 		}
+		sources[index].batch_word = uint32_t(batches_word + uint64_t(index) * 20);
+		uint32_t *info = input.info;
+		info[0] = sources[index].first;
+		info[1] = sources[index].map;
+		info[2] = batch.has_color;
+		info[3] = batch.has_custom;
+		info[4] = uint32_t(batch.shader_uniforms_offset);
+		info[5] = batch.layer_mask;
+		info[6] = sources[index].visible_base;
+		info[7] = source.selected_capacity;
+		info[8] = sources[index].material_slots;
+		info[9] = batch.render_flags;
+		info[10] = batch.gi_offset;
+		info[11] = source.work_word;
+		const Rect2 &uv = batch.lightmap_uv_scale;
+		const float lightmap_uv[4] = { uv.position.x, uv.position.y, uv.size.x, uv.size.y };
+		memcpy(info + 12, lightmap_uv, sizeof(lightmap_uv));
+		info[16] = uint32_t(batch.history_instance_id);
+		info[17] = uint32_t(batch.history_instance_id >> 32);
+		const uint64_t mesh_tag = hash64_murmur3_64(batch.geometry.generation, hash64_murmur3_64(batch.mesh.get_id(), 0));
+		info[18] = uint32_t(mesh_tag);
+		info[19] = uint32_t(mesh_tag >> 32);
+		info[20] = sources[index].batch_word;
+		info[21] = index * 66;
+	}
+	error = ensure_words(memory, previous_transforms, previous_transform_words, MAX(uint64_t(1), history_words));
+	if (error != OK) {
+		return error;
 	}
 	if (!batch_parameter_data.is_empty()) {
 		rd->buffer_update(batch_parameters, 0, uint32_t(uint64_t(batch_parameter_data.size()) * sizeof(BatchParameters)), batch_parameter_data.ptr());
 	}
-	for (uint32_t index = 0; index < p_sources.size(); ++index) {
-		const auto &source = p_sources[index];
-		sources[index].batch_word = uint32_t(batches_word + uint64_t(index) * 20);
-		const RID transforms = source.batch.stride != 0 ? source.batch.transforms : dummy_transforms;
-		sources[index].uniforms = source_bindings.get(init_shader.version_get_shader(init_version, 0), { transforms, source.work, scene_buffer, previous_sources, batch_parameters });
-		ERR_FAIL_COND_V(sources[index].uniforms.is_null(), ERR_CANT_CREATE);
+	source_instances = uint32_t(instances);
+	uint64_t task_scratch = 16 + uint64_t(p_sources.size()) * 2;
+	if (!p_sources.is_empty()) {
+		ScanLevel level{ uint32_t(p_sources.size()), 16, 16 + uint32_t(p_sources.size()) };
+		while (true) {
+			if (level.count <= 128) {
+				source_levels.push_back(level);
+				break;
+			}
+			const uint32_t blocks = (level.count + 127) / 128;
+			level.sums = uint32_t(task_scratch);
+			task_scratch += blocks;
+			source_levels.push_back(level);
+			level = { blocks, level.sums, uint32_t(task_scratch) };
+			task_scratch += blocks;
+		}
+	}
+	error = ensure_words(memory, source_tasks, source_task_words, task_scratch);
+	if (error != OK) {
+		return error;
+	}
+	const uint32_t tasks_header[16] = { 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0 };
+	rd->buffer_update(source_tasks, 0, sizeof(tasks_header), tasks_header);
+	error = ensure_words(memory, source_arguments, source_argument_words, 8, true);
+	if (error != OK) {
+		return error;
+	}
+	const uint32_t source_dispatch[8] = { 0, 1, 1, 0, 0, 1, 1, 0 };
+	rd->buffer_update(source_arguments, 0, sizeof(source_dispatch), source_dispatch);
+	if (!p_sources.is_empty()) {
+		source_uniforms = cache->get_cache(init_shader.version_get_shader(init_version, 0), 0,
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { p_sources[0].transforms }),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { p_sources[0].work }),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 27, { batch_parameters }),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 28, { source_tasks }),
+				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 29, { previous_transforms }));
+		source_scan_uniforms = cache->get_cache(scan_shader.version_get_shader(scan_version, 0), 0, RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, { source_tasks }));
+		ERR_FAIL_COND_V(source_uniforms.is_null() || source_scan_uniforms.is_null(), ERR_CANT_CREATE);
 	}
 	if (!materials.is_empty() && !depth_only) {
 		bin_uniforms = cache->get_cache(bin_shader.version_get_shader(bin_version, 0), 0,
@@ -263,27 +338,48 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 	}
 	RD *rd = RD::get_singleton();
 	RENDER_TIMESTAMP("Virtual Geometry Material Sources Begin");
-	const RD::ComputeListID list = rd->compute_list_begin();
-	rd->compute_list_bind_compute_pipeline(list, init_pipeline.get_rid());
-	for (uint32_t index = 0; index < p_sources.size(); ++index) {
-		const auto &source = p_sources[index];
-		uint32_t push[22] = { sources[index].first, sources[index].map, uint32_t(source.batch.has_color), uint32_t(source.batch.has_custom), uint32_t(source.batch.shader_uniforms_offset), source.batch.layer_mask,
-			sources[index].visible_base, source.selected_capacity, sources[index].material_slots, source.batch.render_flags, source.batch.gi_offset, source.work_word };
-		const Rect2 &uv = source.batch.lightmap_uv_scale;
-		const float lightmap_uv[4] = { uv.position.x, uv.position.y, uv.size.x, uv.size.y };
-		memcpy(push + 12, lightmap_uv, sizeof(lightmap_uv));
-		push[16] = uint32_t(source.batch.history_instance_id);
-		push[17] = uint32_t(source.batch.history_instance_id >> 32);
-		// This is a history tag, never a resource handle or admission identity.
-		const uint64_t mesh_tag = hash64_murmur3_64(source.batch.geometry.generation, hash64_murmur3_64(source.batch.mesh.get_id(), 0));
-		push[18] = uint32_t(mesh_tag);
-		push[19] = uint32_t(mesh_tag >> 32);
-		push[20] = sources[index].batch_word;
-		push[21] = index * 44;
-		rd->compute_list_bind_uniform_set(list, sources[index].uniforms, 0);
-		rd->compute_list_set_push_constant(list, push, sizeof(push));
-		dispatch_items(list, MAX(source.batch.count, source.selected_capacity), 64);
+	for (const HistoryCopy &copy : source_history_copies) {
+		const Error error = rd->buffer_copy(copy.source, previous_transforms, copy.source_byte, copy.destination_byte, copy.bytes);
+		ERR_FAIL_COND(error != OK);
 	}
+	RD::ComputeListID list = rd->compute_list_begin();
+	auto init_pass = [&](uint32_t p_mode, uint32_t p_items, bool p_indirect = false) {
+		const uint32_t push[4] = { uint32_t(p_sources.size()), p_mode, p_items, 0 };
+		rd->compute_list_bind_compute_pipeline(list, init_pipeline.get_rid());
+		rd->compute_list_bind_uniform_set(list, source_uniforms, 0);
+		rd->compute_list_set_push_constant(list, push, sizeof(push));
+		if (p_indirect) {
+			rd->compute_list_dispatch_indirect(list, source_arguments, 0);
+		} else {
+			dispatch_items(list, p_items, 64);
+		}
+		rd->compute_list_add_barrier(list);
+	};
+	init_pass(0, p_sources.size());
+	rd->compute_list_bind_compute_pipeline(list, scan_pipeline.get_rid());
+	rd->compute_list_bind_uniform_set(list, source_scan_uniforms, 0);
+	for (const ScanLevel &level : source_levels) {
+		const uint32_t push[5] = { 0, level.count, level.input, level.output, level.sums };
+		rd->compute_list_set_push_constant(list, push, sizeof(push));
+		dispatch_items(list, level.count, 128);
+		rd->compute_list_add_barrier(list);
+	}
+	for (int index = int(source_levels.size()) - 2; index >= 0; --index) {
+		const ScanLevel &level = source_levels[index];
+		const uint32_t push[5] = { 1, level.count, source_levels[index + 1].output, level.output, 0 };
+		rd->compute_list_set_push_constant(list, push, sizeof(push));
+		dispatch_items(list, level.count, 128);
+		rd->compute_list_add_barrier(list);
+	}
+	init_pass(3, 1);
+	// Keep indirect parameters outside the storage buffer that the source
+	// pipeline writes. The transfer also records an explicit producer edge.
+	rd->compute_list_end();
+	const Error copy_error = rd->buffer_copy(source_tasks, source_arguments, 16, 0, 28);
+	ERR_FAIL_COND(copy_error != OK);
+	list = rd->compute_list_begin();
+	init_pass(1, source_instances);
+	init_pass(2, 0, true);
 	rd->compute_list_end();
 	RENDER_TIMESTAMP("Virtual Geometry Material Sources End");
 }
@@ -715,9 +811,9 @@ uint64_t VirtualGeometryShading::get_buffer_bytes() const {
 	for (const KeyValue<RID, MaterialHistory> &entry : material_history) {
 		material_bytes += uint64_t(entry.value.bytes) * 2;
 	}
-	return material_bytes + (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + batch_parameter_words + extension_words) * 4 +
+	return material_bytes + (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + previous_transform_words + source_task_words + source_argument_words + batch_parameter_words + extension_words) * 4 +
 			uint64_t(global_history_words[0] + global_history_words[1]) * 4 +
-			(dummy_transforms.is_valid() ? 48 : 0) + (material_view.is_valid() ? 320 : 0) +
+			(material_view.is_valid() ? 320 : 0) +
 			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;
 }
 
