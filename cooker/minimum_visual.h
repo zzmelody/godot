@@ -330,6 +330,13 @@ class Builder {
     } else {
       result = ImageTexture::create_from_image(image);
     }
+    // Keep semantic resource identity when minimum textures are embedded or
+    // externalized under a content hash. Runtime render categories read this
+    // value without retaining or loading the full-resolution source.
+    const String identity = source->get_meta("_veya_render_resource", source->get_path());
+    if (!identity.is_empty()) {
+      result->set_meta("_veya_render_resource", identity);
+    }
     textures_.emplace(id, result);
     return result;
   }
@@ -446,6 +453,8 @@ class Builder {
       // Do not register this temporary identity in ResourceCache.
       minimum->set_path_cache(virtual_source->get_path().get_slice("::", 0) +
           "::minimum_geometry");
+      minimum->set_meta("_veya_render_resource",
+          source->get_meta("_veya_render_resource", source->get_path()));
       meshes_.emplace(id, minimum);
       return minimum;
     }
@@ -586,6 +595,8 @@ class Builder {
     if (covered_lods || preserve_lods) {
       result->set_meta("veya_covered_lods", 1);
     }
+    result->set_meta("_veya_render_resource",
+        source->get_meta("_veya_render_resource", source->get_path()));
     meshes_.emplace(id, result);
     return result;
   }
