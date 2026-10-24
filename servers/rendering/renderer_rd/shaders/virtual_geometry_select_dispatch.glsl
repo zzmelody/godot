@@ -22,6 +22,10 @@ void main() {
 	uint count;
 	if (phase.mode == 1u) {
 		uint parity = phase.round & 1u;
+		if (phase.round == 0u) {
+			// Initialization directly addresses the first frontier by instance ID.
+			work.data[0u] = min(params.source.y, params.limits.x);
+		}
 		work.data[1u - parity] = 0u;
 		count = min(work.data[parity], params.limits.x);
 	} else if (phase.mode == 11u) {

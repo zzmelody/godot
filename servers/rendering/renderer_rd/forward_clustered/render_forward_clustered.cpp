@@ -1955,6 +1955,7 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 			selection->add_batch(batch);
 		}
 		if (selection) {
+			RD::get_singleton()->draw_command_begin_label("VG/MainView");
 			Error error = selection->record();
 			if (error == ERR_OUT_OF_MEMORY) {
 				root_fallback = true;
@@ -1963,6 +1964,7 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 			if (error != OK) {
 				ERR_PRINT("Virtual geometry selection refused a complete view: " + itos(error));
 			}
+			RD::get_singleton()->draw_command_end_label();
 		}
 		if (!selection || (selection->get_results().is_empty() && !raster)) {
 			continue;
@@ -3600,6 +3602,7 @@ void RenderForwardClustered::_render_shadow_end() {
 			for (const auto &batch : shadow_pass.virtual_geometry_batches) {
 				virtual_geometry_aux_selection->add_batch(batch);
 			}
+			RD::get_singleton()->draw_command_begin_label("VG/ShadowView");
 			Error error = virtual_geometry_aux_selection->record();
 			if (error == OK) {
 				error = virtual_geometry_aux_raster->record_shadow(shadow_pass.virtual_geometry_size, view,
@@ -3618,6 +3621,7 @@ void RenderForwardClustered::_render_shadow_end() {
 			if (error == OK) {
 				error = virtual_geometry_aux_raster->record_depth(shadow_pass.framebuffer, RendererRD::VirtualGeometryRasterizer::DEPTH_SHADOW, RID(), shadow_pass.rect);
 			}
+			RD::get_singleton()->draw_command_end_label();
 			ERR_CONTINUE_MSG(error != OK, "Virtual geometry shadow view refused: " + itos(error));
 		}
 	}
@@ -3938,7 +3942,9 @@ void RenderForwardClustered::_render_sdfgi(Ref<RenderSceneBuffersRD> p_render_bu
 				}
 				// Every window uses the stable complete root proxy. Residency
 				// changes cannot leave a dirty region waiting for recapture.
+				RD::get_singleton()->draw_command_begin_label("VG/SDFGIView");
 				Error error = virtual_geometry_sdfgi_selection->record(true);
+				RD::get_singleton()->draw_command_end_label();
 				if (error == OK) {
 					error = virtual_geometry_sdfgi_raster->record_sdfgi(fb_size, view, virtual_geometry_sdfgi_selection->get_results(), scene_shader.default_material,
 							p_bounds, p_from, p_size, p_albedo_texture, p_emission_texture, p_emission_aniso_texture, p_geom_facing_texture);
