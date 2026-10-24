@@ -17,11 +17,14 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 shared uint maximum_edge;
 shared uint needs_hardware;
 shared uint active_triangles;
+#ifdef VG_GLOBAL_RASTER
+shared bool group_refused;
+#endif
 
 void main() {
 	uint index = gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u;
 #ifdef VG_GLOBAL_RASTER
-	if (index >= vg_raster_bucket_count() || work.data[1] != 0u || atomicOr(vg_status.data[0], 0u) != 0u) {
+	if (index >= vg_raster_bucket_count() || work.data[1] != 0u) {
 		return;
 	}
 	index = vg_raster_input(index);
@@ -32,11 +35,21 @@ void main() {
 	uvec2 selected = vg_selected(index);
 	uint record = vg_record(selected.y);
 	if (lane == 0u) {
+#ifdef VG_GLOBAL_RASTER
+		// Other groups can set this flag during the dispatch. Sample it once
+		// for the whole group so no invocation abandons the later barriers.
+		group_refused = atomicOr(vg_status.data[0], 0u) != 0u;
+#endif
 		maximum_edge = 0u;
 		needs_hardware = 0u;
 		active_triangles = 0u;
 	}
 	barrier();
+#ifdef VG_GLOBAL_RASTER
+	if (group_refused) {
+		return;
+	}
+#endif
 	for (uint triangle = lane; triangle < geometry.data[record + 5u]; triangle += 64u) {
 		if (!vg_raster_material_active(selected, triangle)) {
 			continue;
