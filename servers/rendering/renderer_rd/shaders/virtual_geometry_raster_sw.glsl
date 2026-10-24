@@ -26,13 +26,6 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 shared bool group_refused;
 #endif
 
-#ifndef VG_MASKED
-// Matches the admitted VGGP cluster vertex limit (cluster_codec.h).
-const uint VG_MAX_CLUSTER_VERTICES = 256u;
-shared uint vertex_used[VG_MAX_CLUSTER_VERTICES];
-shared vec4 vertex_clip[VG_MAX_CLUSTER_VERTICES];
-shared float vertex_shadow_clip[VG_MAX_CLUSTER_VERTICES];
-#endif
 
 int vg_edge(ivec2 a, ivec2 b, ivec2 point) {
 	ivec2 d = b - a;
@@ -45,37 +38,6 @@ int vg_bias(ivec2 a, ivec2 b) {
 	return d.y < 0 || (d.y == 0 && d.x > 0) ? 0 : -1;
 }
 
-#ifndef VG_MASKED
-void vg_prepare_vertices(uvec2 selected, uint triangle_count) {
-	uint vertex_count = geometry.data[vg_record(selected.y) + 4u];
-	uint lane = gl_LocalInvocationIndex;
-	for (uint vertex = lane; vertex < vertex_count; vertex += 64u) {
-		vertex_used[vertex] = 0u;
-	}
-	barrier();
-	// Evaluate only vertices referenced by this material's active triangles.
-	// Evaluating unused/foreign vertices could introduce new material errors.
-	for (uint triangle = lane; triangle < triangle_count; triangle += 64u) {
-		if (!vg_raster_material_active(selected, triangle)) {
-			continue;
-		}
-		uvec3 vertices = vg_triangle(selected.y, triangle);
-		for (uint corner = 0u; corner < 3u; ++corner) {
-			atomicOr(vertex_used[vertices[corner]], 1u);
-		}
-	}
-	barrier();
-	for (uint vertex = lane; vertex < vertex_count; vertex += 64u) {
-		if (vertex_used[vertex] == 0u) {
-			continue;
-		}
-		vec3 point = vg_raster_position(selected.x, selected.y, vertex);
-		vertex_clip[vertex] = vg_project(selected.x, point);
-		vertex_shadow_clip[vertex] = vg_shadow_clip(selected.x, point);
-	}
-	barrier();
-}
-#endif
 
 void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
 	if (!vg_raster_material_active(selected, triangle)) {
@@ -86,14 +48,9 @@ void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
 	vec3 shadow_clips;
 	ivec2 fixed_position[3];
 	for (uint corner = 0u; corner < 3u; ++corner) {
-#ifdef VG_MASKED
 		vec3 point = vg_raster_position(selected.x, selected.y, vertices[corner]);
 		clip[corner] = vg_project(selected.x, point);
 		shadow_clips[corner] = vg_shadow_clip(selected.x, point);
-#else
-		clip[corner] = vertex_clip[vertices[corner]];
-		shadow_clips[corner] = vertex_shadow_clip[vertices[corner]];
-#endif
 		fixed_position[corner] = ivec2(floor(vg_screen(clip[corner]) * 256.0 + 0.5));
 	}
 	ivec2 lower = min(min(fixed_position[0], fixed_position[1]), fixed_position[2]);
@@ -211,7 +168,6 @@ void main() {
 		vg_raster_triangle(index, selected, triangle, lane);
 	}
 #else
-	vg_prepare_vertices(selected, count);
 	for (uint triangle = gl_LocalInvocationIndex; triangle < count; triangle += 64u) {
 		vg_raster_triangle(index, selected, triangle, 0u);
 	}
