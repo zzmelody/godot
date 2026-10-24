@@ -5800,6 +5800,9 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::reset_motion_vect
 }
 
 void RenderForwardClustered::GeometryInstanceForwardClustered::set_use_lightmap(RID p_lightmap_instance, const Rect2 &p_lightmap_uv_scale, int p_lightmap_slice_index) {
+	if (lightmap_instance == p_lightmap_instance && lightmap_uv_scale == p_lightmap_uv_scale && lightmap_slice_index == uint32_t(p_lightmap_slice_index)) {
+		return;
+	}
 	lightmap_instance = p_lightmap_instance;
 	lightmap_uv_scale = p_lightmap_uv_scale;
 	lightmap_slice_index = p_lightmap_slice_index;
@@ -5812,6 +5815,7 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::set_lightmap_capt
 	if (renderer->geometry_update_profile_active) {
 		renderer->geometry_update_profile.capture_updates++;
 	}
+	const bool capture_changed = (lightmap_sh != nullptr) != (p_sh9 != nullptr);
 	if (p_sh9) {
 		if (lightmap_sh == nullptr) {
 			lightmap_sh = RenderForwardClustered::get_singleton()->geometry_instance_lightmap_sh.alloc();
@@ -5824,7 +5828,11 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::set_lightmap_capt
 			lightmap_sh = nullptr;
 		}
 	}
-	_mark_dirty_with_reason(GEOMETRY_DIRTY_LIGHTMAP_CAPTURE);
+	// Surface variants depend on capture presence. Coefficients are uploaded by
+	// _fill_render_list and may change every frame without rebuilding surfaces.
+	if (capture_changed) {
+		_mark_dirty_with_reason(GEOMETRY_DIRTY_LIGHTMAP_CAPTURE);
+	}
 }
 
 void RenderForwardClustered::geometry_instance_free(RenderGeometryInstance *p_geometry_instance) {
@@ -5942,6 +5950,9 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::pair_voxel_gi_ins
 }
 
 void RenderForwardClustered::GeometryInstanceForwardClustered::set_softshadow_projector_pairing(bool p_softshadow, bool p_projector) {
+	if (using_projectors == p_projector && using_softshadows == p_softshadow) {
+		return;
+	}
 	using_projectors = p_projector;
 	using_softshadows = p_softshadow;
 	_mark_dirty_with_reason(GEOMETRY_DIRTY_SHADOW_PROJECTOR);
