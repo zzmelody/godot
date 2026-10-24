@@ -19,22 +19,39 @@ layout(push_constant, std430) uniform Params {
 	uvec4 draw_info; // command word offset, phase, test enabled, multimesh
 } params;
 
-bool is_visible(uint id) {
-	mat4 transform = mat4(1.0);
+void instance_bounds(uint id, out vec3 object_min, out vec3 object_max) {
+	object_min = params.bounds_min_margin.xyz;
+	object_max = params.bounds_max_bias.xyz;
 	if (params.draw_info.w != 0u) {
 		uint offset = (id + params.source_info.z) * params.source_info.y;
-		transform = transpose(mat4(source.data[offset], source.data[offset + 1u], source.data[offset + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
-	}
-	vec3 object_min = vec3(3.402823e38);
-	vec3 object_max = vec3(-3.402823e38);
-	for (uint corner = 0u; corner < 8u; ++corner) {
-		vec3 point = mix(params.bounds_min_margin.xyz, params.bounds_max_bias.xyz, bvec3((corner & 1u) != 0u, (corner & 2u) != 0u, (corner & 4u) != 0u));
-		vec3 object_point = (transform * vec4(point, 1.0)).xyz;
-		object_min = min(object_min, object_point);
-		object_max = max(object_max, object_point);
+		mat4 transform = transpose(mat4(source.data[offset], source.data[offset + 1u], source.data[offset + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
+		// Halve before adding/subtracting to avoid overflowing finite bounds.
+		vec3 center = object_min * 0.5 + object_max * 0.5;
+		vec3 half_size = abs(object_max * 0.5 - object_min * 0.5);
+		vec3 absolute_x = abs(transform[0].xyz);
+		vec3 absolute_y = abs(transform[1].xyz);
+		vec3 absolute_z = abs(transform[2].xyz);
+		vec3 transformed_center = (transform * vec4(center, 1.0)).xyz;
+		vec3 transformed_half_size = absolute_x * half_size.x + absolute_y * half_size.y + absolute_z * half_size.z;
+		// Account for cancellation and float rounding before testing occlusion.
+		// The absolute basis also preserves non-uniform scale and shear.
+		vec3 largest_point = max(abs(object_min), abs(object_max));
+		vec3 magnitude = absolute_x * largest_point.x + absolute_y * largest_point.y + absolute_z * largest_point.z + abs(transform[3].xyz);
+		vec3 rounding_margin = max(magnitude, vec3(1e-30)) * 1.9073486328125e-6; // 16 * float epsilon.
+		object_min = transformed_center - transformed_half_size - rounding_margin;
+		object_max = transformed_center + transformed_half_size + rounding_margin;
 	}
 	object_min -= vec3(params.bounds_min_margin.w);
 	object_max += vec3(params.bounds_min_margin.w);
+}
+
+bool is_visible(uint id) {
+	vec3 object_min;
+	vec3 object_max;
+	instance_bounds(id, object_min, object_max);
+	if (any(isnan(object_min)) || any(isinf(object_min)) || any(isnan(object_max)) || any(isinf(object_max))) {
+		return true;
+	}
 	vec2 rect_min = vec2(1.0);
 	vec2 rect_max = vec2(-1.0);
 	float nearest_depth = 0.0;
