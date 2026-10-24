@@ -84,6 +84,7 @@ class VirtualGeometryStreaming {
 		uint64_t lease = 0;
 		PackedByteArray records;
 		TypedArray<PackedByteArray> payloads;
+		bool retiring = false;
 		std::atomic<int> result{ -1 };
 		void submit(const Ref<RefCounted> &p_keep_alive);
 	};

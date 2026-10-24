@@ -560,6 +560,9 @@ void VirtualGeometryStreaming::_receive_submissions() {
 		}
 		submissions[index] = submissions.back();
 		submissions.pop_back();
+		if (result == OK && submission->retiring) {
+			++evictions;
+		}
 		Transfer *found = transfers.getptr(submission->lease);
 		if (found == nullptr) {
 			continue; // GPU feedback already consumed this accepted transfer.
@@ -642,12 +645,12 @@ bool VirtualGeometryStreaming::_evict() {
 		submission.instantiate();
 		submission->lease = page.lease;
 		submission->records = records;
+		submission->retiring = true;
 		transfers.insert(page.lease, { asset, it->page, page.upload, 0, true });
 		++asset->pending;
 		page.state = Page::RETIRING;
 		page.listed = false;
 		residents.erase(it);
-		++evictions;
 		_queue_submission(submission);
 		return true;
 	}
