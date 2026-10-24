@@ -1,15 +1,18 @@
 #ifndef VIRTUAL_GEOMETRY_STREAMING_H
 #define VIRTUAL_GEOMETRY_STREAMING_H
 
+#include "virtual_geometry_demand_queue.h"
+
 #include "core/io/virtual_geometry/model_codec.h"
+#include "core/object/ref_counted.h"
 #include "core/object/worker_thread_pool.h"
 #include "core/os/mutex.h"
 #include "core/templates/hash_map.h"
 #include "core/variant/callable.h"
 #include "core/variant/dictionary.h"
 #include "core/variant/typed_array.h"
-#include "virtual_geometry_demand_queue.h"
 
+#include <atomic>
 #include <list>
 #include <vector>
 
@@ -72,6 +75,17 @@ class VirtualGeometryStreaming {
 		uint64_t upload = 0;
 		uint64_t admission = 0;
 		bool retiring = false;
+		Read *read = nullptr; // Main-thread owner until render admission completes.
+	};
+	// The render command owns only value inputs. It cannot dereference this host
+	// or an Asset after world cancellation. GPU completion remains separate.
+	class Submission : public RefCounted {
+	public:
+		uint64_t lease = 0;
+		PackedByteArray records;
+		TypedArray<PackedByteArray> payloads;
+		std::atomic<int> result{ -1 };
+		void submit(const Ref<RefCounted> &p_keep_alive);
 	};
 	static VirtualGeometryStreaming *singleton;
 	static constexpr uint32_t MAX_READS = 16;
@@ -82,6 +96,7 @@ class VirtualGeometryStreaming {
 	std::list<Key> residents;
 	std::vector<Read *> reads;
 	std::vector<Read *> ready;
+	std::vector<Ref<Submission>> submissions;
 	Callable acquire, received, release;
 	// Zero selects automatic pool growth and unrestricted aggregate accounting.
 	uint64_t pool_bytes = 0;
@@ -115,6 +130,8 @@ class VirtualGeometryStreaming {
 	void _requests();
 	void _receive();
 	void _submit();
+	void _queue_submission(const Ref<Submission> &p_submission);
+	void _receive_submissions();
 	void _start_reads();
 	void _delete_if_finished(Asset *p_asset);
 	void _fail_roots(Asset *p_asset, Error p_error);

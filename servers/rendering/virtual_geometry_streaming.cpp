@@ -4,15 +4,33 @@
 #include "core/io/file_access.h"
 #include "core/io/marshalls.h"
 #include "core/io/virtual_geometry/page_entropy.h"
+#include "core/object/callable_mp.h"
 #include "core/os/thread.h"
 #include "core/templates/local_vector.h"
-#include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_device.h"
+#include "servers/rendering/rendering_server.h"
+#include "servers/rendering/rendering_server_globals.h"
+#include "servers/rendering/storage/mesh_storage.h"
 
 #include <cmath>
 #include <limits>
 
 VirtualGeometryStreaming *VirtualGeometryStreaming::singleton = nullptr;
+
+void VirtualGeometryStreaming::Submission::submit(const Ref<RefCounted> &p_keep_alive) {
+	// Already on the render thread. Re-entering the RS wrapper would flush later
+	// commands (including mesh destruction) ahead of this submission.
+	const Error error = RSG::mesh_storage->virtual_geometry_submit_pages(records, payloads);
+	payloads.clear();
+	records.clear();
+	result.store(error, std::memory_order_release);
+}
+
+void VirtualGeometryStreaming::_queue_submission(const Ref<Submission> &p_submission) {
+	submissions.push_back(p_submission);
+	const Ref<RefCounted> keep_alive = p_submission;
+	RS::get_singleton()->call_on_render_thread(callable_mp(p_submission.ptr(), &Submission::submit).bind(keep_alive));
+}
 
 VirtualGeometryStreaming::VirtualGeometryStreaming() {
 	DEV_ASSERT(singleton == nullptr);
@@ -27,6 +45,9 @@ VirtualGeometryStreaming::~VirtualGeometryStreaming() {
 	// RenderingServer has stopped its owners. The device itself can outlive
 	// this service, so its process-resident capacity is never lent out again.
 	for (const KeyValue<uint64_t, Transfer> &entry : transfers) {
+		if (entry.value.read != nullptr) {
+			memdelete(entry.value.read);
+		}
 		_release(entry.value.admission);
 		Asset *asset = entry.value.asset;
 		--asset->pending;
@@ -347,6 +368,11 @@ void VirtualGeometryStreaming::_outcomes() {
 		}
 		Asset *asset = transfer.asset;
 		Page &page = asset->pages[transfer.page];
+		// A fast render thread can publish the GPU outcome between our admission
+		// poll and this snapshot. The outcome also proves admission succeeded.
+		if (transfer.read != nullptr) {
+			memdelete(transfer.read);
+		}
 		_release(transfer.admission);
 		transfers.erase(lease);
 		--asset->pending;
@@ -486,26 +512,19 @@ void VirtualGeometryStreaming::_submit() {
 			encode_uint32(0, record + 40);
 			TypedArray<PackedByteArray> payloads;
 			payloads.push_back(read->bytes);
-			error = RS::get_singleton()->virtual_geometry_submit_pages(records, payloads);
-			if (error == ERR_BUSY || error == ERR_OUT_OF_MEMORY) {
-				busy_submissions += error == ERR_BUSY;
-				capacity_refusals += error == ERR_OUT_OF_MEMORY;
-				if (error == ERR_OUT_OF_MEMORY && retiring == 0) {
-					_evict();
-				}
-				++index;
-				continue;
-			}
-			if (error == OK) {
-				const uint64_t slot = read->key.page < asset->roots ? VirtualGeometry::ROOT_PAGE_GPU_CAPACITY : VirtualGeometry::STREAMING_PAGE_GPU_CAPACITY;
-				reserved_slots -= slot;
-				page.slot_reserved = false;
-				occupied += slot;
-				page.state = Page::UPLOADING;
-				page.lease = page.upload = lease;
-				transfers.insert(lease, { asset, read->key.page, lease, read->admission, false });
-				++submitted;
-			}
+			Ref<Submission> submission;
+			submission.instantiate();
+			submission->lease = lease;
+			submission->records = records;
+			submission->payloads = payloads;
+			page.state = Page::UPLOADING;
+			page.lease = page.upload = lease;
+			transfers.insert(lease, { asset, read->key.page, lease, read->admission, false, read });
+			ready[index] = ready.back();
+			ready.pop_back();
+			_queue_submission(submission);
+			++submitted;
+			continue;
 		}
 		if (error != OK) {
 			page.state = Page::FAILED;
@@ -531,6 +550,76 @@ void VirtualGeometryStreaming::_submit() {
 	}
 }
 
+void VirtualGeometryStreaming::_receive_submissions() {
+	for (size_t index = 0; index < submissions.size();) {
+		const Ref<Submission> submission = submissions[index];
+		const int result = submission->result.load(std::memory_order_acquire);
+		if (result == -1) {
+			++index;
+			continue;
+		}
+		submissions[index] = submissions.back();
+		submissions.pop_back();
+		Transfer *found = transfers.getptr(submission->lease);
+		if (found == nullptr) {
+			continue; // GPU feedback already consumed this accepted transfer.
+		}
+		if (result == OK) {
+			if (found->read != nullptr) {
+				memdelete(found->read);
+				found->read = nullptr;
+			}
+			Page &page = found->asset->pages[found->page];
+			if (page.slot_reserved) {
+				reserved_slots -= found->page < found->asset->roots ? VirtualGeometry::ROOT_PAGE_GPU_CAPACITY : VirtualGeometry::STREAMING_PAGE_GPU_CAPACITY;
+				page.slot_reserved = false;
+			}
+			// The render thread publishes occupied bytes before this result. The
+			// following feedback read replaces the reservation with GPU ownership.
+			continue;
+		}
+		const Transfer transfer = *found;
+		transfers.erase(submission->lease);
+		Asset *asset = transfer.asset;
+		Page &page = asset->pages[transfer.page];
+		busy_submissions += result == ERR_BUSY;
+		capacity_refusals += result == ERR_OUT_OF_MEMORY;
+		if (transfer.retiring) {
+			if (asset->active) {
+				page.state = Page::RESIDENT;
+				residents.push_back({ asset->mesh, asset->generation, transfer.page });
+				page.position = --residents.end();
+				page.listed = true;
+			}
+		} else if (asset->active && asset->error == OK && !stopping && (result == ERR_BUSY || result == ERR_OUT_OF_MEMORY)) {
+			page.state = Page::READING;
+			ready.push_back(transfer.read);
+			if (result == ERR_OUT_OF_MEMORY && retiring == 0) {
+				_evict();
+			}
+			continue;
+		} else {
+			page.state = Page::FAILED;
+			_drop_dependencies(asset, transfer.page);
+			if (page.slot_reserved) {
+				reserved_slots -= transfer.page < asset->roots ? VirtualGeometry::ROOT_PAGE_GPU_CAPACITY : VirtualGeometry::STREAMING_PAGE_GPU_CAPACITY;
+				page.slot_reserved = false;
+			}
+			_release(transfer.admission);
+			memdelete(transfer.read);
+			if (asset->active) {
+				++failed_reads;
+				if (transfer.page < asset->roots) {
+					_fail_roots(asset, Error(result));
+				}
+				WARN_PRINT(vformat("Virtual geometry upload refused for %s, page %s, error %s.", asset->container, transfer.page, result));
+			}
+		}
+		--asset->pending;
+		_delete_if_finished(asset);
+	}
+}
+
 bool VirtualGeometryStreaming::_evict() {
 	for (auto it = residents.begin(); it != residents.end(); ++it) {
 		Asset *asset = _find(*it);
@@ -549,23 +638,24 @@ bool VirtualGeometryStreaming::_evict() {
 		encode_uint32(it->page, record + 32);
 		encode_uint32(UINT32_MAX, record + 36);
 		encode_uint32(1, record + 40);
-		const Error error = RS::get_singleton()->virtual_geometry_submit_pages(records, {});
-		if (error != OK) {
-			return false;
-		}
+		Ref<Submission> submission;
+		submission.instantiate();
+		submission->lease = page.lease;
+		submission->records = records;
 		transfers.insert(page.lease, { asset, it->page, page.upload, 0, true });
 		++asset->pending;
 		page.state = Page::RETIRING;
 		page.listed = false;
 		residents.erase(it);
 		++evictions;
+		_queue_submission(submission);
 		return true;
 	}
 	return false;
 }
 
 void VirtualGeometryStreaming::_start_reads() {
-	while (!demands.empty() && reads.size() + ready.size() < MAX_READS) {
+	while (!demands.empty() && reads.size() + ready.size() + submissions.size() < MAX_READS) {
 		const Demand demand = demands.top();
 		Asset *asset = _find(demand.key);
 		if (asset == nullptr || asset->error != OK) {
@@ -682,6 +772,7 @@ void VirtualGeometryStreaming::update() {
 	if (!configured || stopping) {
 		return;
 	}
+	_receive_submissions();
 	_outcomes();
 	_receive();
 	_submit();
