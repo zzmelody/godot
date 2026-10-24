@@ -13,7 +13,14 @@
 #include "virtual_geometry_scene_inc.glsl"
 /* clang-format on */
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+// Programmable vertex evaluation retains its measured 64-lane layout.
+// Fixed-position decoding uses one 32-lane group per cluster.
+#ifdef VG_PROGRAMMABLE
+#define VG_BIN_GROUP_SIZE 64
+#else
+#define VG_BIN_GROUP_SIZE 32
+#endif
+layout(local_size_x = VG_BIN_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 shared uint maximum_edge;
 shared uint needs_hardware;
 shared uint active_triangles;
@@ -50,7 +57,7 @@ void main() {
 		return;
 	}
 #endif
-	for (uint triangle = lane; triangle < geometry.data[record + 5u]; triangle += 64u) {
+	for (uint triangle = lane; triangle < geometry.data[record + 5u]; triangle += VG_BIN_GROUP_SIZE) {
 		if (!vg_raster_material_active(selected, triangle)) {
 			continue;
 		}
