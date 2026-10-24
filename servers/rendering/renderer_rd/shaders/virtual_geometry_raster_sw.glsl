@@ -22,6 +22,18 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
+#ifdef VG_GLOBAL_RASTER
+shared bool group_refused;
+#endif
+
+#ifndef VG_MASKED
+// Matches the admitted VGGP cluster vertex limit (cluster_codec.h).
+const uint VG_MAX_CLUSTER_VERTICES = 256u;
+shared uint vertex_used[VG_MAX_CLUSTER_VERTICES];
+shared vec4 vertex_clip[VG_MAX_CLUSTER_VERTICES];
+shared float vertex_shadow_clip[VG_MAX_CLUSTER_VERTICES];
+#endif
+
 int vg_edge(ivec2 a, ivec2 b, ivec2 point) {
 	ivec2 d = b - a;
 	ivec2 q = point - a;
@@ -33,6 +45,38 @@ int vg_bias(ivec2 a, ivec2 b) {
 	return d.y < 0 || (d.y == 0 && d.x > 0) ? 0 : -1;
 }
 
+#ifndef VG_MASKED
+void vg_prepare_vertices(uvec2 selected, uint triangle_count) {
+	uint vertex_count = geometry.data[vg_record(selected.y) + 4u];
+	uint lane = gl_LocalInvocationIndex;
+	for (uint vertex = lane; vertex < vertex_count; vertex += 64u) {
+		vertex_used[vertex] = 0u;
+	}
+	barrier();
+	// Evaluate only vertices referenced by this material's active triangles.
+	// Evaluating unused/foreign vertices could introduce new material errors.
+	for (uint triangle = lane; triangle < triangle_count; triangle += 64u) {
+		if (!vg_raster_material_active(selected, triangle)) {
+			continue;
+		}
+		uvec3 vertices = vg_triangle(selected.y, triangle);
+		for (uint corner = 0u; corner < 3u; ++corner) {
+			atomicOr(vertex_used[vertices[corner]], 1u);
+		}
+	}
+	barrier();
+	for (uint vertex = lane; vertex < vertex_count; vertex += 64u) {
+		if (vertex_used[vertex] == 0u) {
+			continue;
+		}
+		vec3 point = vg_raster_position(selected.x, selected.y, vertex);
+		vertex_clip[vertex] = vg_project(selected.x, point);
+		vertex_shadow_clip[vertex] = vg_shadow_clip(selected.x, point);
+	}
+	barrier();
+}
+#endif
+
 void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
 	if (!vg_raster_material_active(selected, triangle)) {
 		return;
@@ -42,9 +86,14 @@ void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
 	vec3 shadow_clips;
 	ivec2 fixed_position[3];
 	for (uint corner = 0u; corner < 3u; ++corner) {
+#ifdef VG_MASKED
 		vec3 point = vg_raster_position(selected.x, selected.y, vertices[corner]);
 		clip[corner] = vg_project(selected.x, point);
 		shadow_clips[corner] = vg_shadow_clip(selected.x, point);
+#else
+		clip[corner] = vertex_clip[vertices[corner]];
+		shadow_clips[corner] = vertex_shadow_clip[vertices[corner]];
+#endif
 		fixed_position[corner] = ivec2(floor(vg_screen(clip[corner]) * 256.0 + 0.5));
 	}
 	ivec2 lower = min(min(fixed_position[0], fixed_position[1]), fixed_position[2]);
@@ -82,18 +131,23 @@ void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
 	}
 	ivec3 bias = ivec3(vg_bias(fixed_position[1], fixed_position[2]), vg_bias(fixed_position[2], fixed_position[0]), vg_bias(fixed_position[0], fixed_position[1]));
 	vec3 depths = vec3(clip[0].z / clip[0].w, clip[1].z / clip[1].w, clip[2].z / clip[2].w);
+	// Edge equations are linear in pixel coordinates. Preserve the exact
+	// fixed-point coverage and bias while advancing with integer additions.
+	ivec3 edge_step_x = -ivec3(fixed_position[2].y - fixed_position[1].y, fixed_position[0].y - fixed_position[2].y, fixed_position[1].y - fixed_position[0].y) * 256;
+	ivec3 edge_step_y = ivec3(fixed_position[2].x - fixed_position[1].x, fixed_position[0].x - fixed_position[2].x, fixed_position[1].x - fixed_position[0].x) * 256;
 #ifdef VG_MASKED
 	ivec2 quad_first = first & ~ivec2(1);
 	ivec2 lane_offset = ivec2(lane & 1u, lane >> 1u);
+	ivec2 origin_point = (quad_first + lane_offset - first) * 256;
+	ivec3 row_edges = ivec3(vg_edge(fixed_position[1], fixed_position[2], origin_point), vg_edge(fixed_position[2], fixed_position[0], origin_point), vg_edge(fixed_position[0], fixed_position[1], origin_point));
 	for (int y = quad_first.y; y <= last.y; y += 2) {
+		ivec3 edges = row_edges;
 		for (int x = quad_first.x; x <= last.x; x += 2) {
 			ivec2 pixel = ivec2(x, y) + lane_offset;
 			// Every physical quad evaluates the same triangle and the same pixel
 			// origin. Do not branch on coverage before derivative/texture work.
 			float material_depth;
 			bool accepted = vg_raster_coverage(payload, vec2(pixel) + 0.5, material_depth);
-			ivec2 point = (pixel - first) * 256;
-			ivec3 edges = ivec3(vg_edge(fixed_position[1], fixed_position[2], point), vg_edge(fixed_position[2], fixed_position[0], point), vg_edge(fixed_position[0], fixed_position[1], point));
 			if (accepted && dot(shadow_clips, vec3(edges) / float(area)) <= 0.0 && all(greaterThanEqual(pixel, first)) && all(lessThanEqual(pixel, last)) && all(greaterThanEqual(edges + bias, ivec3(0)))) {
 				float depth = depths.x + (depths.y - depths.x) * (float(edges.y) / float(area)) + (depths.z - depths.x) * (float(edges.z) / float(area));
 #ifdef VG_DEPTH_USED
@@ -101,18 +155,22 @@ void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
 #endif
 				vg_write_pixel(pixel, depth, payload);
 			}
+			edges += edge_step_x * 2;
 		}
+		row_edges += edge_step_y * 2;
 	}
 #else
+	ivec3 row_edges = ivec3(vg_edge(fixed_position[1], fixed_position[2], ivec2(0)), vg_edge(fixed_position[2], fixed_position[0], ivec2(0)), vg_edge(fixed_position[0], fixed_position[1], ivec2(0)));
 	for (int y = first.y; y <= last.y; ++y) {
+		ivec3 edges = row_edges;
 		for (int x = first.x; x <= last.x; ++x) {
-			ivec2 point = (ivec2(x, y) - first) * 256;
-			ivec3 edges = ivec3(vg_edge(fixed_position[1], fixed_position[2], point), vg_edge(fixed_position[2], fixed_position[0], point), vg_edge(fixed_position[0], fixed_position[1], point));
 			if (dot(shadow_clips, vec3(edges) / float(area)) <= 0.0 && all(greaterThanEqual(edges + bias, ivec3(0)))) {
 				float depth = depths.x + (depths.y - depths.x) * (float(edges.y) / float(area)) + (depths.z - depths.x) * (float(edges.z) / float(area));
 				vg_write_pixel(ivec2(x, y), depth, payload);
 			}
+			edges += edge_step_x;
 		}
+		row_edges += edge_step_y;
 	}
 #endif
 }
@@ -127,7 +185,16 @@ void main() {
 #endif
 	uint job = gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u;
 #ifdef VG_GLOBAL_RASTER
-	if (job >= bins.data[vg_raster_bin_header() + 1u] || bins.data[vg_raster_bin_header() + 2u] != 0u || atomicOr(vg_status.data[0], 0u) != 0u) {
+	if (job >= bins.data[vg_raster_bin_header() + 1u] || bins.data[vg_raster_bin_header() + 2u] != 0u) {
+		return;
+	}
+	// The view status can change in another group. Sample it once for all
+	// lanes; every invocation reaches this barrier before triangle work.
+	if (gl_LocalInvocationIndex == 0u) {
+		group_refused = atomicOr(vg_status.data[0], 0u) != 0u;
+	}
+	barrier();
+	if (group_refused) {
 		return;
 	}
 	uint index = vg_raster_software(job);
@@ -144,6 +211,7 @@ void main() {
 		vg_raster_triangle(index, selected, triangle, lane);
 	}
 #else
+	vg_prepare_vertices(selected, count);
 	for (uint triangle = gl_LocalInvocationIndex; triangle < count; triangle += 64u) {
 		vg_raster_triangle(index, selected, triangle, 0u);
 	}
