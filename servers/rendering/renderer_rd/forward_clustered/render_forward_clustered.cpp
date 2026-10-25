@@ -45,6 +45,8 @@
 #include "servers/rendering/rendering_server_default.h"
 #include "servers/rendering/storage/ltc_lut.gen.h"
 
+#include <cstdio>
+
 using namespace RendererSceneRenderImplementation;
 
 #define PRELOAD_PIPELINES_ON_SURFACE_CACHE_CONSTRUCTION 1
@@ -373,6 +375,7 @@ void RenderForwardClustered::_publish_geometry_update_profile() {
 			"Render/Geometry/dirty_lightmap",
 			"Render/Geometry/dirty_capture",
 			"Render/Geometry/dirty_shadow_projector",
+			"Render/Geometry/dirty_fade",
 		};
 		for (uint32_t i = 0; i < GEOMETRY_DIRTY_REASON_MAX; i++) {
 			TracyPlot(reasons[i], int64_t(geometry_update_profile.dirty_requests[i]));
@@ -389,6 +392,9 @@ void RenderForwardClustered::_publish_geometry_update_profile() {
 		TracyPlot("Render/Geometry/global_key_changes", int64_t(geometry_update_profile.global_key_changes));
 		TracyPlot("Render/Geometry/global_key_changed_bits", int64_t(geometry_update_profile.global_key_changed_bits));
 		TracyPlot("Render/Geometry/capture_updates", int64_t(geometry_update_profile.capture_updates));
+		TracyPlot("Render/Geometry/prewarm_hits", int64_t(geometry_update_profile.prewarm_hits));
+		TracyPlot("Render/Geometry/prewarm_misses", int64_t(geometry_update_profile.prewarm_misses));
+		TracyPlot("Render/Geometry/prewarm_details_omitted", int64_t(geometry_update_profile.prewarm_details_omitted));
 	}
 	geometry_update_profile_active = connected;
 #endif
@@ -1070,6 +1076,12 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 
 	for (int i = 0; i < (int)p_render_data->instances->size(); i++) {
 		GeometryInstanceForwardClustered *inst = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
+		// Parent fade is written by cull workers. Only the render thread may
+		// mutate the shared compilation lists, after those workers have joined.
+		if (inst->fade_prewarm_dirty) {
+			inst->_flush_fade_prewarm();
+			_update_dirty_geometry_instances();
+		}
 
 		Vector3 center = inst->transform.origin;
 		if (p_render_data->scene_data->cam_orthogonal) {
@@ -4930,6 +4942,7 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::_mark_dirty() {
 
 void RenderForwardClustered::GeometryInstanceForwardClustered::_mark_dirty_with_reason(GeometryDirtyReason p_reason) {
 	RenderForwardClustered *renderer = RenderForwardClustered::get_singleton();
+	pending_dirty_reasons |= uint32_t(1) << p_reason;
 	if (renderer->geometry_update_profile_active) {
 		renderer->geometry_update_profile.dirty_requests[p_reason]++;
 	}
@@ -5071,6 +5084,11 @@ void RenderForwardClustered::_geometry_instance_add_surface_with_material(Geomet
 	sdcache->surface_shadow = surface_shadow ? surface_shadow : sdcache->surface;
 
 	sdcache->owner = ginstance;
+	sdcache->prewarm_slot = ginstance->surface_prewarm_count++;
+	sdcache->dirty_reasons = ginstance->pending_dirty_reasons;
+	if (sdcache->prewarm_slot >= ginstance->surface_prewarm_keys.size()) {
+		ginstance->surface_prewarm_keys.resize(sdcache->prewarm_slot + 1);
+	}
 
 	sdcache->next = ginstance->surface_caches;
 	ginstance->surface_caches = sdcache;
@@ -5173,9 +5191,19 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	RendererRD::ParticlesStorage *particles_storage = RendererRD::ParticlesStorage::get_singleton();
 	GeometryInstanceForwardClustered *ginstance = static_cast<GeometryInstanceForwardClustered *>(p_geometry_instance);
+	ginstance->surface_prewarm_count = 0;
+	if (ginstance->fade_prewarm_dirty) {
+		ginstance->pending_dirty_reasons |= uint32_t(1) << GEOMETRY_DIRTY_FADE;
+		if (geometry_update_profile_active) {
+			geometry_update_profile.dirty_requests[GEOMETRY_DIRTY_FADE]++;
+		}
+	}
 
 	if (ginstance->data->dirty_dependencies) {
 		ginstance->data->dependency_tracker.update_begin();
+		// Container changes must arrive directly, even when surface overrides
+		// remain equal. MultiMesh also registers its currently selected mesh.
+		RSG::utilities->base_update_dependency(ginstance->data->base, &ginstance->data->dependency_tracker);
 	}
 
 	//add geometry for drawing
@@ -5326,6 +5354,9 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 		ginstance->data->dirty_dependencies = false;
 	}
 
+	ginstance->surface_prewarm_keys.resize(ginstance->surface_prewarm_count);
+	ginstance->pending_dirty_reasons = 0;
+	ginstance->fade_prewarm_dirty = false;
 	ginstance->dirty_list_element.remove_from_list();
 }
 
@@ -5496,6 +5527,11 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 
 	// Set the attributes common to all pipelines.
 	SceneShaderForwardClustered::ShaderData::PipelineKey pipeline_key;
+#ifdef GODOT_USE_TRACY
+	pipeline_key.request_frame = p_surface.request_frame;
+	pipeline_key.request_instance = p_surface.request_instance;
+	pipeline_key.request_surface = p_surface.request_surface;
+#endif
 	pipeline_key.cull_mode = RD::POLYGON_CULL_DISABLED;
 	pipeline_key.primitive_type = mesh_storage->mesh_surface_get_primitive(p_surface.mesh_surface);
 	pipeline_key.wireframe = false;
@@ -5632,10 +5668,15 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 	}
 }
 
+uint32_t RenderForwardClustered::_get_surface_prewarm_policy() const {
+	return uint32_t(scene_shader.is_multiview_shader_group_enabled()) |
+			(uint32_t(scene_shader.emulate_point_size) << 1) |
+			(uint32_t(!copy_effects->get_raster_effects().has_flag(RendererRD::CopyEffects::RASTER_EFFECT_OCTMAP)) << 2);
+}
+
 void RenderForwardClustered::_mesh_generate_all_pipelines_for_surface_cache(GeometryInstanceSurfaceDataCache *p_surface_cache, const GlobalPipelineData &p_global) {
 	bool uses_alpha_pass = (p_surface_cache->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) != 0;
-	float multiplied_fade_alpha = p_surface_cache->owner->force_alpha * p_surface_cache->owner->parent_fade_alpha;
-	bool uses_fade = (multiplied_fade_alpha < FADE_ALPHA_PASS_THRESHOLD) || p_surface_cache->owner->fade_near || p_surface_cache->owner->fade_far;
+	bool uses_fade = p_surface_cache->owner->_uses_fade();
 	SurfacePipelineData surface;
 	surface.mesh_surface = p_surface_cache->surface;
 	surface.mesh_surface_shadow = p_surface_cache->surface_shadow;
@@ -5646,7 +5687,50 @@ void RenderForwardClustered::_mesh_generate_all_pipelines_for_surface_cache(Geom
 	surface.uses_transparent = uses_alpha_pass || uses_fade;
 	surface.uses_depth = (p_surface_cache->flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH | GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE | GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW)) != 0;
 	surface.can_use_lightmap = p_surface_cache->owner->lightmap_instance.is_valid() || p_surface_cache->owner->lightmap_sh;
-	_mesh_compile_pipelines_for_surface(surface, p_global, RSE::PIPELINE_SOURCE_SURFACE);
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+	SurfacePrewarmKey key;
+	key.mesh_generation = mesh_storage->mesh_surface_get_pipeline_generation(surface.mesh_surface);
+	key.shadow_mesh_generation = mesh_storage->mesh_surface_get_pipeline_generation(surface.mesh_surface_shadow);
+	key.shader_generation = surface.shader->pipeline_generation;
+	key.shadow_shader_generation = surface.shader_shadow->pipeline_generation;
+	key.global_key = p_global.key;
+	key.color_format = _render_buffers_get_preferred_color_format();
+	key.features = uint32_t(surface.instanced) | (uint32_t(surface.uses_opaque) << 1) |
+			(uint32_t(surface.uses_transparent) << 2) | (uint32_t(surface.uses_depth) << 3) | (uint32_t(surface.can_use_lightmap) << 4);
+	key.policy = _get_surface_prewarm_policy() | (uint32_t(_render_buffers_can_be_storage()) << 3);
+	SurfacePrewarmKey &previous = p_surface_cache->owner->surface_prewarm_keys[p_surface_cache->prewarm_slot];
+	const bool hit = key == previous;
+#ifdef GODOT_USE_TRACY
+	const bool detail = geometry_update_profile_active && geometry_update_profile.prewarm_details < 128;
+	const uint32_t requests_before = detail ? get_pipeline_compilations(RSE::PIPELINE_SOURCE_SURFACE) : 0;
+	if (geometry_update_profile_active) {
+		surface.request_frame = geometry_update_profile.frame;
+		surface.request_instance = p_surface_cache->owner->history_instance_id;
+		surface.request_surface = p_surface_cache->prewarm_slot;
+	}
+#endif
+	if (!hit) {
+		_mesh_compile_pipelines_for_surface(surface, p_global, RSE::PIPELINE_SOURCE_SURFACE);
+	}
+	if (geometry_update_profile_active) {
+		geometry_update_profile.prewarm_hits += hit;
+		geometry_update_profile.prewarm_misses += !hit;
+#ifdef GODOT_USE_TRACY
+		if (detail) {
+			ZoneScopedN("Render/Geometry/surface_prewarm");
+			char text[640];
+			const int length = snprintf(text, sizeof(text), "frame=%llu instance=%llu slot=%u surface=%u dirty=%x hit=%u requests=%u old=[%llu,%llu,%llu,%llu,%x,%u,%x,%x] new=[%llu,%llu,%llu,%llu,%x,%u,%x,%x]", (unsigned long long)geometry_update_profile.frame, (unsigned long long)p_surface_cache->owner->history_instance_id, p_surface_cache->prewarm_slot, p_surface_cache->surface_index, p_surface_cache->dirty_reasons, uint32_t(hit), get_pipeline_compilations(RSE::PIPELINE_SOURCE_SURFACE) - requests_before,
+					(unsigned long long)previous.mesh_generation, (unsigned long long)previous.shadow_mesh_generation, (unsigned long long)previous.shader_generation, (unsigned long long)previous.shadow_shader_generation, previous.global_key, previous.color_format, previous.features, previous.policy,
+					(unsigned long long)key.mesh_generation, (unsigned long long)key.shadow_mesh_generation, (unsigned long long)key.shader_generation, (unsigned long long)key.shadow_shader_generation, key.global_key, key.color_format, key.features, key.policy);
+			ZoneText(text, MIN(size_t(length), sizeof(text) - 1));
+			geometry_update_profile.prewarm_details++;
+		} else {
+			geometry_update_profile.prewarm_details_omitted++;
+		}
+#endif
+	}
+	previous = key;
+	p_surface_cache->dirty_reasons = 0;
 }
 
 void RenderForwardClustered::_update_dirty_geometry_instances() {
@@ -5676,7 +5760,10 @@ void RenderForwardClustered::_update_dirty_geometry_instances() {
 }
 
 void RenderForwardClustered::_update_dirty_geometry_pipelines() {
-	if (global_pipeline_data_required.key != global_pipeline_data_compiled.key) {
+	const uint64_t shader_generation = scene_shader.get_pipeline_cache_generation();
+	const uint32_t policy = _get_surface_prewarm_policy() | (uint32_t(_render_buffers_can_be_storage()) << 3);
+	const uint32_t color_format = _render_buffers_get_preferred_color_format();
+	if (global_pipeline_data_required.key != global_pipeline_data_compiled.key || prewarm_shader_generation != shader_generation || prewarm_policy != policy || prewarm_color_format != color_format) {
 		GodotProfileZoneGroupedFirst(global_pipelines, "Render/Geometry/global_pipelines");
 		{
 			GodotProfileZoneGroupedFirst(key_change, "Render/Geometry/global_key_change");
@@ -5684,7 +5771,7 @@ void RenderForwardClustered::_update_dirty_geometry_pipelines() {
 		}
 		const uint32_t changed_bits = global_pipeline_data_required.key ^ global_pipeline_data_compiled.key;
 		if (geometry_update_profile_active) {
-			geometry_update_profile.global_key_changes++;
+			geometry_update_profile.global_key_changes += changed_bits != 0;
 			geometry_update_profile.global_key_changed_bits |= changed_bits;
 		}
 		uint64_t count = 0;
@@ -5708,6 +5795,9 @@ void RenderForwardClustered::_update_dirty_geometry_pipelines() {
 		}
 
 		global_pipeline_data_compiled.key = global_pipeline_data_required.key;
+		prewarm_shader_generation = shader_generation;
+		prewarm_policy = policy;
+		prewarm_color_format = color_format;
 	} else {
 		// Compile pipelines only for the dirty list.
 		if (!geometry_surface_compilation_dirty_list.first()) {
@@ -5783,6 +5873,7 @@ RenderGeometryInstance *RenderForwardClustered::geometry_instance_create(RID p_b
 
 	ginstance->data->base = p_base;
 	ginstance->data->base_type = type;
+	ginstance->data->dirty_dependencies = true;
 	ginstance->data->dependency_tracker.userdata = ginstance;
 	ginstance->data->dependency_tracker.changed_callback = _geometry_instance_dependency_changed;
 	ginstance->data->dependency_tracker.deleted_callback = _geometry_instance_dependency_deleted;
@@ -5790,6 +5881,98 @@ RenderGeometryInstance *RenderForwardClustered::geometry_instance_create(RID p_b
 	ginstance->_mark_dirty_with_reason(GEOMETRY_DIRTY_CREATED);
 
 	return ginstance;
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_skeleton(RID p_skeleton) {
+	if (data->skeleton != p_skeleton) {
+		RenderGeometryInstanceBase::set_skeleton(p_skeleton);
+	}
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_material_override(RID p_override) {
+	if (data->material_override != p_override) {
+		RenderGeometryInstanceBase::set_material_override(p_override);
+	}
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_material_overlay(RID p_overlay) {
+	if (data->material_overlay != p_overlay) {
+		RenderGeometryInstanceBase::set_material_overlay(p_overlay);
+	}
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_surface_materials(const Vector<RID> &p_materials) {
+	if (data->surface_materials != p_materials) {
+		RenderGeometryInstanceBase::set_surface_materials(p_materials);
+	}
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_mesh_instance(RID p_mesh_instance) {
+	if (mesh_instance != p_mesh_instance) {
+		RenderGeometryInstanceBase::set_mesh_instance(p_mesh_instance);
+	}
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_use_baked_light(bool p_enable) {
+	if (data->use_baked_light != p_enable) {
+		RenderGeometryInstanceBase::set_use_baked_light(p_enable);
+	}
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_use_dynamic_gi(bool p_enable) {
+	if (data->use_dynamic_gi != p_enable) {
+		RenderGeometryInstanceBase::set_use_dynamic_gi(p_enable);
+	}
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_cast_double_sided_shadows(bool p_enable) {
+	if (data->cast_double_sided_shadows != p_enable) {
+		RenderGeometryInstanceBase::set_cast_double_sided_shadows(p_enable);
+	}
+}
+
+bool RenderForwardClustered::GeometryInstanceForwardClustered::_uses_fade() const {
+	return force_alpha * parent_fade_alpha < FADE_ALPHA_PASS_THRESHOLD || fade_near || fade_far;
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::_update_fade_prewarm(bool p_previously_used_fade) {
+#if PRELOAD_PIPELINES_ON_SURFACE_CACHE_CONSTRUCTION
+	fade_prewarm_dirty |= p_previously_used_fade != _uses_fade();
+#endif
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::_flush_fade_prewarm() {
+	fade_prewarm_dirty = false;
+#if PRELOAD_PIPELINES_ON_SURFACE_CACHE_CONSTRUCTION
+	RenderForwardClustered *renderer = RenderForwardClustered::get_singleton();
+	if (renderer->geometry_update_profile_active) {
+		renderer->geometry_update_profile.dirty_requests[GEOMETRY_DIRTY_FADE]++;
+	}
+	for (GeometryInstanceSurfaceDataCache *surface = surface_caches; surface; surface = surface->next) {
+		surface->dirty_reasons |= uint32_t(1) << GEOMETRY_DIRTY_FADE;
+		if (!surface->compilation_dirty_element.in_list()) {
+			renderer->geometry_surface_compilation_dirty_list.add(&surface->compilation_dirty_element);
+		}
+	}
+#endif
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_fade_range(bool p_enable_near, float p_near_begin, float p_near_end, bool p_enable_far, float p_far_begin, float p_far_end) {
+	const bool used_fade = _uses_fade();
+	RenderGeometryInstanceBase::set_fade_range(p_enable_near, p_near_begin, p_near_end, p_enable_far, p_far_begin, p_far_end);
+	_update_fade_prewarm(used_fade);
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_parent_fade_alpha(float p_alpha) {
+	const bool used_fade = _uses_fade();
+	RenderGeometryInstanceBase::set_parent_fade_alpha(p_alpha);
+	_update_fade_prewarm(used_fade);
+}
+
+void RenderForwardClustered::GeometryInstanceForwardClustered::set_transparency(float p_transparency) {
+	const bool used_fade = _uses_fade();
+	RenderGeometryInstanceBase::set_transparency(p_transparency);
+	_update_fade_prewarm(used_fade);
 }
 
 void RenderForwardClustered::GeometryInstanceForwardClustered::set_transform(const Transform3D &p_transform, const AABB &p_aabb, const AABB &p_transformed_aabb) {

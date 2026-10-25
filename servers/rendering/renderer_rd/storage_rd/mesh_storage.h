@@ -79,6 +79,8 @@ private:
 
 	struct Mesh {
 		struct Surface {
+			// Vertex/attribute value uploads retain this allocation's layout identity.
+			uint64_t pipeline_generation = 0;
 			RSE::PrimitiveType primitive = RSE::PRIMITIVE_POINTS;
 			uint64_t format = 0;
 
@@ -465,6 +467,10 @@ public:
 	_FORCE_INLINE_ RSE::PrimitiveType mesh_surface_get_primitive(void *p_surface) {
 		Mesh::Surface *surface = reinterpret_cast<Mesh::Surface *>(p_surface);
 		return surface->primitive;
+	}
+
+	_FORCE_INLINE_ uint64_t mesh_surface_get_pipeline_generation(void *p_surface) const {
+		return reinterpret_cast<Mesh::Surface *>(p_surface)->pipeline_generation;
 	}
 
 	_FORCE_INLINE_ uint32_t mesh_surface_get_vertex_count(void *p_surface) {

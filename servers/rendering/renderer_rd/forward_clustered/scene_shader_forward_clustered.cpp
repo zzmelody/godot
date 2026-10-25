@@ -32,18 +32,29 @@
 
 #include "core/config/project_settings.h"
 #include "core/math/math_defs.h"
+#include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 
+#include <cstdio>
+
 using namespace RendererSceneRenderImplementation;
+
+std::atomic<uint64_t> SceneShaderForwardClustered::pipeline_generation_counter{ 0 };
+
+void SceneShaderForwardClustered::ShaderData::clear_pipelines() {
+	pipeline_hash_map.clear_pipelines();
+	// Globally unique across shader destruction, RID reuse and specialization resets.
+	pipeline_generation = pipeline_generation_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+}
 
 void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	++virtual_geometry_generation;
 	//compile
 	// Background pipelines borrow this shader's version and render state.
 	// Join them before changing either, including the empty/error code paths.
-	pipeline_hash_map.clear_pipelines();
+	clear_pipelines();
 	_clear_virtual_geometry_raster();
 	for (uint32_t color_variant = 0; color_variant < 8; ++color_variant) {
 		virtual_geometry_composite_pipelines[color_variant].clear();
@@ -537,6 +548,14 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 	ERR_FAIL_COND(pipeline.is_null());
 
 	pipeline_hash_map.add_compiled_pipeline(p_pipeline_key.hash(), pipeline);
+#ifdef GODOT_USE_TRACY
+	if (TracyIsConnected && p_pipeline_key.request_instance != 0) {
+		ZoneScopedN("Render/Pipeline/created");
+		char text[256];
+		const int length = snprintf(text, sizeof(text), "request_frame=%llu instance=%llu slot=%u shader_generation=%llu pipeline=%u", (unsigned long long)p_pipeline_key.request_frame, (unsigned long long)p_pipeline_key.request_instance, p_pipeline_key.request_surface, (unsigned long long)pipeline_generation, p_pipeline_key.hash());
+		ZoneText(text, MIN(size_t(length), sizeof(text) - 1));
+	}
+#endif
 }
 
 RD::PolygonCullMode SceneShaderForwardClustered::ShaderData::get_cull_mode_from_cull_variant(CullVariant p_cull_variant) {
@@ -1431,8 +1450,11 @@ void SceneShaderForwardClustered::set_default_specialization(const ShaderSpecial
 	default_specialization = p_specialization;
 
 	for (SelfList<ShaderData> *E = shader_list.first(); E; E = E->next()) {
-		E->self()->pipeline_hash_map.clear_pipelines();
+		E->self()->clear_pipelines();
 	}
+	// Individual shader changes already notify their material dependencies.
+	// Only this renderer-wide reset needs to revisit every live surface.
+	pipeline_cache_generation++;
 }
 
 void SceneShaderForwardClustered::enable_multiview_shader_group() {

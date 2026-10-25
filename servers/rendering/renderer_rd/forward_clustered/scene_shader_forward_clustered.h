@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/profiling/profiling.gen.h"
 #include "servers/rendering/renderer_rd/pipeline_cache_rd.h"
 #include "servers/rendering/renderer_rd/pipeline_deferred_rd.h"
 #include "servers/rendering/renderer_rd/pipeline_hash_map_rd.h"
@@ -41,14 +42,20 @@
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/rendering_server_types.h"
 
+#include <atomic>
+
 namespace RendererSceneRenderImplementation {
 
 class SceneShaderForwardClustered {
 private:
 	static SceneShaderForwardClustered *singleton;
 	static Mutex singleton_mutex;
+	static std::atomic<uint64_t> pipeline_generation_counter;
+	uint64_t pipeline_cache_generation = 0;
 
 public:
+	uint64_t get_pipeline_cache_generation() const { return pipeline_cache_generation; }
+
 	enum ShaderGroup {
 		SHADER_GROUP_BASE, // Always compiled at the beginning.
 		SHADER_GROUP_ADVANCED,
@@ -205,6 +212,13 @@ public:
 			uint32_t wireframe = false;
 			uint32_t ubershader = false;
 
+#ifdef GODOT_USE_TRACY
+			// Request provenance travels with asynchronous work, but is not pipeline state.
+			uint64_t request_frame = 0;
+			uint64_t request_instance = 0;
+			uint32_t request_surface = 0;
+#endif
+
 			uint32_t hash() const {
 				uint32_t h = hash_murmur3_one_64(vertex_format_id);
 				h = hash_murmur3_one_32(framebuffer_format_id, h);
@@ -223,6 +237,8 @@ public:
 
 		void _create_pipeline(PipelineKey p_pipeline_key);
 		PipelineHashMapRD<PipelineKey, ShaderData, void (ShaderData::*)(PipelineKey)> pipeline_hash_map;
+		uint64_t pipeline_generation = 0;
+		void clear_pipelines();
 
 		RID version;
 		RID virtual_geometry_raster_versions[3];

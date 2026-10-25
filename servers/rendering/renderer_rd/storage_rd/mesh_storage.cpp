@@ -37,6 +37,8 @@
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
 
+#include <atomic>
+
 using namespace RendererRD;
 
 MeshStorage *MeshStorage::singleton = nullptr;
@@ -439,6 +441,8 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 #endif
 
 	Mesh::Surface *s = memnew(Mesh::Surface);
+	static std::atomic<uint64_t> surface_generation{ 0 };
+	s->pipeline_generation = surface_generation.fetch_add(1, std::memory_order_relaxed) + 1;
 
 	s->format = new_surface.format;
 	s->primitive = new_surface.primitive;

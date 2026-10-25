@@ -541,6 +541,7 @@ private:
 		GEOMETRY_DIRTY_LIGHTMAP,
 		GEOMETRY_DIRTY_LIGHTMAP_CAPTURE,
 		GEOMETRY_DIRTY_SHADOW_PROJECTOR,
+		GEOMETRY_DIRTY_FADE,
 		GEOMETRY_DIRTY_REASON_MAX,
 	};
 
@@ -560,9 +561,32 @@ private:
 		uint64_t global_key_changes = 0;
 		uint32_t global_key_changed_bits = 0;
 		uint64_t capture_updates = 0;
+		uint64_t prewarm_hits = 0;
+		uint64_t prewarm_misses = 0;
+		uint64_t prewarm_details = 0;
+		uint64_t prewarm_details_omitted = 0;
 	} geometry_update_profile;
 	bool geometry_update_profile_active = false;
 	void _publish_geometry_update_profile();
+
+	// Value-only state survives transient draw-cache rebuilds. Resource tokens never
+	// refer to freed shader/surface allocations. Equality does not rely on hashes.
+	struct SurfacePrewarmKey {
+		uint64_t mesh_generation = 0;
+		uint64_t shadow_mesh_generation = 0;
+		uint64_t shader_generation = 0;
+		uint64_t shadow_shader_generation = 0;
+		uint32_t global_key = 0;
+		uint32_t color_format = 0;
+		uint32_t features = 0;
+		uint32_t policy = 0;
+
+		bool operator==(const SurfacePrewarmKey &p_other) const {
+			return mesh_generation == p_other.mesh_generation && shadow_mesh_generation == p_other.shadow_mesh_generation &&
+					shader_generation == p_other.shader_generation && shadow_shader_generation == p_other.shadow_shader_generation &&
+					global_key == p_other.global_key && color_format == p_other.color_format && features == p_other.features && policy == p_other.policy;
+		}
+	};
 
 	// Cached data for drawing surfaces
 	struct GeometryInstanceSurfaceDataCache {
@@ -613,6 +637,8 @@ private:
 		uint32_t flags = 0;
 		uint32_t surface_index = 0;
 		uint32_t color_pass_inclusion_mask = 0;
+		uint32_t prewarm_slot = 0;
+		uint32_t dirty_reasons = 0;
 
 		void *surface = nullptr;
 		RID material_uniform_set;
@@ -636,6 +662,10 @@ private:
 	public:
 		// History belongs to this allocation, not its shared Mesh/MultiMesh RID.
 		uint64_t history_instance_id = 0;
+		LocalVector<SurfacePrewarmKey> surface_prewarm_keys;
+		uint32_t surface_prewarm_count = 0;
+		uint32_t pending_dirty_reasons = 0;
+		bool fade_prewarm_dirty = false;
 		// lightmap
 		RID lightmap_instance;
 		Rect2 lightmap_uv_scale;
@@ -670,9 +700,24 @@ private:
 
 		virtual void _mark_dirty() override;
 		void _mark_dirty_with_reason(GeometryDirtyReason p_reason);
+		bool _uses_fade() const;
+		void _update_fade_prewarm(bool p_previously_used_fade);
+		void _flush_fade_prewarm();
 
+		virtual void set_skeleton(RID p_skeleton) override;
+		virtual void set_material_override(RID p_override) override;
+		virtual void set_material_overlay(RID p_overlay) override;
+		virtual void set_surface_materials(const Vector<RID> &p_materials) override;
+		virtual void set_mesh_instance(RID p_mesh_instance) override;
+		virtual void set_use_baked_light(bool p_enable) override;
+		virtual void set_use_dynamic_gi(bool p_enable) override;
+		virtual void set_cast_double_sided_shadows(bool p_enable) override;
 		virtual void set_transform(const Transform3D &p_transform, const AABB &p_aabb, const AABB &p_transformed_aabb) override;
 		virtual void reset_motion_vectors() override;
+		virtual void set_fade_range(bool p_enable_near, float p_near_begin, float p_near_end, bool p_enable_far, float p_far_begin, float p_far_end) override;
+		virtual void set_parent_fade_alpha(float p_alpha) override;
+		virtual void set_transparency(float p_transparency) override;
+		virtual void set_instance_shader_uniforms_offset(int32_t p_offset) override { shader_uniforms_offset = p_offset; }
 		virtual void set_use_lightmap(RID p_lightmap_instance, const Rect2 &p_lightmap_uv_scale, int p_lightmap_slice_index) override;
 		virtual void set_lightmap_capture(const Color *p_sh9) override;
 
@@ -711,6 +756,11 @@ private:
 		bool uses_transparent = false;
 		bool uses_depth = false;
 		bool can_use_lightmap = false;
+#ifdef GODOT_USE_TRACY
+		uint64_t request_frame = 0;
+		uint64_t request_instance = 0;
+		uint32_t request_surface = 0;
+#endif
 	};
 
 	struct GlobalPipelineData {
@@ -737,6 +787,10 @@ private:
 
 	GlobalPipelineData global_pipeline_data_compiled = {};
 	GlobalPipelineData global_pipeline_data_required = {};
+	uint64_t prewarm_shader_generation = 0;
+	uint32_t prewarm_policy = 0;
+	uint32_t prewarm_color_format = 0;
+	uint32_t _get_surface_prewarm_policy() const;
 
 	typedef Pair<SceneShaderForwardClustered::ShaderData *, SceneShaderForwardClustered::ShaderData::PipelineKey> ShaderPipelinePair;
 
