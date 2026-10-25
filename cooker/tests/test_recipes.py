@@ -1937,6 +1937,92 @@ func _initialize():
         self.assertEqual(inspected.returncode, 0, inspected.stdout+inspected.stderr)
         self.assertIn("MINIMUM_SHARED_SHADER:true", inspected.stdout)
 
+    @unittest.skipUnless(REFERENCE, "requires matching editor for independent scene verification")
+    def test_resource_member_columns_preserve_merge_transforms_and_refuse_corruption(self):
+        original = self.recipe('''local mesh=cooker.virtual_geometry(cooker.primitive("box",{size={2,4,2}}),{})
+local resource_pose={position={2,3,4},basis={{1,0,0},{0,2,0},{0,0,3}}}
+local collider={size={2,4,2},offset={0,1,0},blocking=true}
+local batch=cooker.scene({
+ {asset=mesh},
+ {asset=mesh,position={7,8,9},basis={{0,2,0},{-3,0,0},{0,0,4}},resource_id="tree_a",resource_kind="tree",resource_pose=resource_pose,resource_collider=collider},
+ {asset=mesh,position={2,0,0}},
+ {asset=mesh,position={1,2,3},resource_id="tree_a",resource_kind="tree",resource_stage=1,resource_pose=resource_pose,resource_collider=collider},
+ {asset=mesh,position={4,5,6},resource_id="shrub_b",resource_kind="shrub",resource_pose={position={0,0,0}},resource_collider={size={1,1,1},offset={0,0,0}}}
+})
+return cooker.scene({
+ {asset=batch,position={10,20,30},basis={{2,0,0},{.5,3,0},{0,0,-4}}},
+ {asset=batch,position={-10,0,0}}
+})''', output="res://assets/runtime/world/members/source.scn")
+        minimum_path = "res://assets/runtime/world/members/minimum.scn"
+        minimum = self.recipe('return cooker.minimum_visual("visual",{triangle_ratio=1})',
+                              inputs={"visual": original["output"]}, output=minimum_path)
+        script = self.project / "inspect_members.gd"
+        script.write_text('''extends SceneTree
+var failures := 0
+func check(value: bool, message: String) -> void:
+    if not value:
+        failures += 1
+        printerr(message)
+func identity(data: Dictionary, row: int) -> String:
+    return data.id_bytes.slice(data.id_offsets[row], data.id_offsets[row + 1]).get_string_from_utf8()
+func _initialize() -> void:
+    var source = load("res://assets/runtime/world/members/source.scn").instantiate()
+    var source_batches = source.find_children("*", "MultiMeshInstance3D", true, false)
+    check(source_batches.size() == 2, "two authored batches")
+    var data: Dictionary = source_batches[0].get_meta("veya_resources")
+    check(data.format == 2 and data.id_bytes is PackedByteArray and data.poses is PackedVector3Array, "typed format")
+    check(data.indices == PackedInt32Array([1,3,4]) and data.stages == PackedByteArray([0,1,0]), "index gaps and stages")
+    check(identity(data,0) == "tree_a" and identity(data,1) == "tree_a" and identity(data,2) == "shrub_b", "stable repeated stage identity")
+    check(data.kind_names == PackedStringArray(["tree","shrub"]) and data.kind_indices == PackedInt32Array([0,0,1]), "mixed unique kinds")
+    check(data.ground_pivots[0].is_equal_approx(Vector3(2,1,4)), "source collider ground pivot")
+    var minimum = load("res://assets/runtime/world/members/minimum.scn").instantiate()
+    var batches = minimum.find_children("*", "MultiMeshInstance3D", true, false)
+    check(batches.size() == 1 and batches[0].multimesh.instance_count == 10, "minimum merges both complete batches")
+    var merged: Dictionary = batches[0].get_meta("veya_resources")
+    check(merged.indices == PackedInt32Array([1,3,4,6,8,9]), "minimum offsets keep nonresource gaps")
+    check(merged.stages == PackedByteArray([0,1,0,0,1,0]), "minimum keeps both stages")
+    var expected := PackedVector3Array([Vector3(1,6,0),Vector3(-6,0,0),Vector3(0,0,-16),Vector3(28,44,-6)])
+    for column in 4:
+        check(merged.poses[column].is_equal_approx(expected[column]), "complete sheared reflected matrix column " + str(column))
+    check(merged.ground_pivots[0].is_equal_approx(Vector3(14.5,23,14)), "minimum transforms sapling pivot")
+    check(merged.poses[15].is_equal_approx(Vector3(-3,8,9)), "second source keeps its own transform")
+    for index in [3,8]:
+        for element in [0,1,2,4,5,6,8,9,10]:
+            check(batches[0].multimesh.buffer[index*12+element] == 0, "stage-one render basis remains hidden")
+    var invalid: Array = [[{"id":"legacy","index":0}]]
+    for change in [["format",1],["id_offsets",PackedInt32Array([0,1])],
+            ["indices",PackedInt32Array([1,1,4])],["stages",PackedByteArray([0,2,0])],
+            ["kind_indices",PackedInt32Array([0,2,1])]]:
+        var corrupted: Dictionary = data.duplicate(true)
+        corrupted[change[0]] = change[1]
+        invalid.append(corrupted)
+    for index in invalid.size():
+        var node := MultiMeshInstance3D.new()
+        node.multimesh = source_batches[0].multimesh
+        node.set_meta("veya_resources", invalid[index])
+        var scene := PackedScene.new()
+        check(scene.pack(node) == OK, "corrupt fixture packs")
+        check(ResourceSaver.save(scene, "res://assets/runtime/world/members/bad"+str(index)+".scn") == OK, "corrupt fixture saves")
+        node.free()
+    minimum.free()
+    source.free()
+    print("RESOURCE_MEMBERS_COLUMNS:", failures)
+    quit(0 if failures == 0 else 1)
+''', encoding="utf-8")
+        inspected = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                    "--script", "res://inspect_members.gd"], capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace", timeout=30)
+        self.assertEqual(inspected.returncode, 0, inspected.stdout + inspected.stderr)
+        self.assertIn("RESOURCE_MEMBERS_COLUMNS:0", inspected.stdout)
+        self.assertNotIn("ERROR:", inspected.stdout + inspected.stderr)
+        destination = self.project / minimum["output"].removeprefix("res://")
+        previous = destination.read_bytes()
+        for index in range(6):
+            self.recipe('return cooker.minimum_visual("visual",{triangle_ratio=1})', success=False,
+                        inputs={"visual": f"res://assets/runtime/world/members/bad{index}.scn"},
+                        output=minimum_path)
+            self.assertEqual(destination.read_bytes(), previous, "refusal preserves the complete publication")
+
     def test_prepared_shader_fields_follow_serialized_shader(self):
         self.assertIsNotNone(REFERENCE)
         (self.project / "foliage.tres").write_text('''[gd_resource type="ShaderMaterial" load_steps=2 format=3]

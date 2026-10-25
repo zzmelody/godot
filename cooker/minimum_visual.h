@@ -9,6 +9,7 @@
 #include "core/object/script_language.h"
 #include "lod_silhouette.h"
 #include "minimum_batching.h"
+#include "resource_members.h"
 #include "scene/resources/3d/virtual_geometry_mesh.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
@@ -603,6 +604,15 @@ class Builder {
   /*>>----- VEYA_COOKER */
   bool CopyTree(Node* source, Node3D* destination, const Transform3D& parent,
                 int depth) {
+    if (source->has_meta("veya_resources")) {
+      auto* multi = Object::cast_to<MultiMeshInstance3D>(source);
+      CookerResourceMembers::Columns members;
+      if (!multi || multi->get_multimesh().is_null() ||
+          members.Read(source->get_meta("veya_resources"),
+                       multi->get_multimesh()->get_instance_count()) != OK) {
+        return false;
+      }
+    }
     const Ref<Script> script = source->get_script();
     if (depth > 64 || script.is_valid() ||
         Object::cast_to<Skeleton3D>(source)) {

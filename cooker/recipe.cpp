@@ -12,6 +12,7 @@
 #include "minimum_visual.h"
 #include "virtual_geometry_minimum.h"
 #include "render_dependencies.h"
+#include "resource_members.h"
 #include "shared_inputs.h"
 #include "virtual_geometry_mesh.h"
 #include "virtual_geometry_validation.h"
@@ -1300,7 +1301,7 @@ struct Recipe {
 			Ref<Material> material;
 			real_t cull_margin;
 			Vector<Transform3D> transforms;
-			Array resources;
+			CookerResourceMembers::Columns resources;
 			Vector<Color> colors, custom_data;
 			bool has_colors = false, has_custom_data = false;
 		};
@@ -1366,24 +1367,20 @@ struct Recipe {
 					s.require(identity.length() <= 96 && identity.is_valid_identifier(), "invalid resource_id");
 					const String kind = s.string_field(item, "resource_kind", "");
 					s.require(!kind.is_empty() && kind.length() <= 48 && kind.is_valid_identifier(), "invalid resource_kind");
-					Dictionary record;
-					record["id"] = identity;
-					record["kind"] = kind;
-					record["index"] = batches[batch].transforms.size();
-					record["stage"] = int(s.number_field(item, "resource_stage", 0, 0, 1));
+					const int stage = static_cast<int>(s.number_field(item, "resource_stage", 0, 0, 1));
 					s.field(item, "resource_pose");
 					s.require(lua_istable(p_state, -1), "resource_pose requires a complete transform");
-					record["pose"] = s.transform(lua_absindex(p_state, -1));
+					const Transform3D resource_pose = s.transform(lua_absindex(p_state, -1));
 					lua_pop(p_state, 1);
 					s.field(item, "resource_collider");
 					s.require(lua_istable(p_state, -1), "resource_collider requires size and offset");
-					record["size"] = s.vector_field(-1, "size", Vector3(1, 1, 1));
-					record["offset"] = s.vector_field(-1, "offset", Vector3());
-					record["blocking"] = s.boolean_field(-1, "blocking", false);
+					const Vector3 size = s.vector_field(-1, "size", Vector3(1, 1, 1));
+					const Vector3 offset = s.vector_field(-1, "offset", Vector3());
+					s.boolean_field(-1, "blocking", false);
 					lua_pop(p_state, 1);
-					record["member_pose"] = transform;
-					batches[batch].resources.push_back(record);
-					if (int(record["stage"]) != 0) {
+					const Vector3 pivot = resource_pose.xform(offset - Vector3(0, size.y * .5, 0));
+					s.require(batches[batch].resources.Append(identity, kind, static_cast<int32_t>(batches[batch].transforms.size()), static_cast<uint8_t>(stage), transform, pivot) == OK, "resource member column allocation or transform failed");
+					if (stage != 0) {
 						transform.basis = Basis(Vector3(), Vector3(), Vector3());
 					}
 				}
@@ -1502,8 +1499,8 @@ struct Recipe {
 			node->set_multimesh(multi);
 			node->set_material_override(batch.material);
 			node->set_extra_cull_margin(batch.cull_margin);
-			if (!batch.resources.is_empty()) {
-				node->set_meta("veya_resources", batch.resources);
+			if (batch.resources.Size() != 0) {
+				node->set_meta("veya_resources", batch.resources.Encode());
 			}
 			root->add_child(node);
 			node->set_owner(root.get());

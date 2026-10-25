@@ -4522,9 +4522,33 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 void RendererSceneCull::update_dirty_instances() const {
 	GodotProfileZoneGroupedFirst(stage, "Render/SceneUpdate/dirty_instances");
+#ifdef GODOT_USE_TRACY
+	const bool count_dirty = TracyIsConnected;
+	uint64_t dirty_count = 0, aabb_count = 0, dependency_count = 0;
+	uint64_t multimesh_count = 0, mesh_count = 0, particle_count = 0;
+#endif
 	while (_instance_update_list.first()) {
-		_update_dirty_instance(_instance_update_list.first()->self());
+		Instance *instance = _instance_update_list.first()->self();
+#ifdef GODOT_USE_TRACY
+		if (count_dirty) {
+			++dirty_count;
+			aabb_count += instance->update_aabb;
+			dependency_count += instance->update_dependencies;
+			multimesh_count += instance->base_type == RSE::INSTANCE_MULTIMESH;
+			mesh_count += instance->base_type == RSE::INSTANCE_MESH;
+			particle_count += instance->base_type == RSE::INSTANCE_PARTICLES;
+		}
+#endif
+		_update_dirty_instance(instance);
 	}
+#ifdef GODOT_USE_TRACY
+	if (count_dirty) {
+		// One bounded record per dirty pass; avoid a trace zone per instance.
+		ZoneNamedN(counts, "Render/SceneUpdate/dirty_counts", true);
+		const CharString text = vformat("count=%d aabb=%d dependencies=%d multimesh=%d mesh=%d particles=%d", dirty_count, aabb_count, dependency_count, multimesh_count, mesh_count, particle_count).utf8();
+		counts.Text(text.get_data(), text.length());
+	}
+#endif
 
 	// Update dirty resources after dirty instances as instance updates may affect resources.
 	GodotProfileZoneGrouped(stage, "Render/SceneUpdate/dirty_resources");

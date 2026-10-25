@@ -10,6 +10,8 @@
 #include <tuple>
 #include <vector>
 
+#include "resource_members.h"
+
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/resources/3d/virtual_geometry_mesh.h"
 #include "scene/resources/material.h"
@@ -24,7 +26,7 @@ struct Source {
   MultiMeshInstance3D* node = nullptr;
   Ref<MultiMesh> mesh;
   Transform3D transform;
-  Array resources;
+  CookerResourceMembers::Columns resources;
   bool has_resources = false;
 };
 
@@ -48,18 +50,28 @@ class Coalescer {
       total_batches += node != nullptr;
       Source source;
       real_t cull_margin = 0;
+      if (node && node->has_meta("veya_resources")) {
+        source.has_resources = true;
+        if (node->get_multimesh().is_null() ||
+            source.resources.Read(
+                node->get_meta("veya_resources"),
+                node->get_multimesh()->get_instance_count()) != OK) {
+          return ERR_INVALID_DATA;
+        }
+      }
       if (!node || !ReadSource(*node, source, cull_margin)) {
         continue;
       }
       const Ref<Mesh> mesh = source.mesh->get_mesh();
       const Ref<Material> material = node->get_material_override();
-      const GroupKey key{
-          static_cast<uint64_t>(mesh->get_instance_id()),
-          material.is_valid()
-              ? static_cast<uint64_t>(material->get_instance_id())
-              : 0,
-          cull_margin, source.mesh->is_using_colors(),
-          source.mesh->is_using_custom_data(), source.mesh->is_local_to_scene()};
+      const GroupKey key{static_cast<uint64_t>(mesh->get_instance_id()),
+                         material.is_valid() ? static_cast<uint64_t>(
+                                                   material->get_instance_id())
+                                             : 0,
+                         cull_margin,
+                         source.mesh->is_using_colors(),
+                         source.mesh->is_using_custom_data(),
+                         source.mesh->is_local_to_scene()};
       auto found = indexes.find(key);
       if (found == indexes.end()) {
         found = indexes.emplace(key, groups.size()).first;
@@ -196,30 +208,8 @@ class Coalescer {
     }
     cull_margin = static_cast<real_t>(expanded);
     if (double(cull_margin) < expanded) {
-      cull_margin = std::nextafter(
-          cull_margin, std::numeric_limits<real_t>::infinity());
-    }
-    source.has_resources = node.has_meta("veya_resources");
-    if (source.has_resources) {
-      const Variant value = node.get_meta("veya_resources");
-      if (value.get_type() != Variant::ARRAY) {
-        return false;
-      }
-      source.resources = value;
-      for (const Variant& value : source.resources) {
-        if (value.get_type() != Variant::DICTIONARY) {
-          return false;
-        }
-        const Dictionary entry = value;
-        const Variant index = entry.get("index", Variant());
-        if (index.get_type() != Variant::INT || int64_t(index) < 0 ||
-            int64_t(index) >= source.mesh->get_instance_count() ||
-            entry.get("pose", Variant()).get_type() != Variant::TRANSFORM3D ||
-            entry.get("member_pose", Variant()).get_type() !=
-                Variant::TRANSFORM3D) {
-          return false;
-        }
-      }
+      cull_margin =
+          std::nextafter(cull_margin, std::numeric_limits<real_t>::infinity());
     }
     return true;
   }
@@ -232,7 +222,7 @@ class Coalescer {
       return allocation;
     }
     float* destination = output.ptrw();
-    Array resources;
+    CookerResourceMembers::Columns resources;
     bool has_resources = false;
     int first = 0;
     for (const Source& source : group.sources) {
@@ -267,13 +257,12 @@ class Coalescer {
         std::memcpy(target + 12, values + 12,
                     static_cast<size_t>(stride - 12) * sizeof(float));
       }
-      for (const Variant& value : source.resources) {
-        Dictionary entry = Dictionary(value).duplicate(false);
-        entry["index"] = first + int64_t(entry["index"]);
-        entry["pose"] = source.transform * Transform3D(entry["pose"]);
-        entry["member_pose"] =
-            source.transform * Transform3D(entry["member_pose"]);
-        resources.push_back(entry);
+      for (int64_t row = 0; row < source.resources.Size(); ++row) {
+        const Error error = resources.AppendTransformed(
+            source.resources, row, first, source.transform);
+        if (error != OK) {
+          return error;
+        }
       }
       has_resources |= source.has_resources;
       first += count;
@@ -295,7 +284,7 @@ class Coalescer {
     replacement->set_extra_cull_margin(group.cull_margin);
     replacement->set_name("MinimumBatch_" + String(original.node->get_name()));
     if (has_resources) {
-      replacement->set_meta("veya_resources", resources);
+      replacement->set_meta("veya_resources", resources.Encode());
     }
     const int index = original.node->get_index();
     root.add_child(replacement);
