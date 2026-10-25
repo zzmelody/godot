@@ -7,6 +7,11 @@ namespace RendererRD::GpuOcclusionDispatch {
 
 constexpr uint32_t WORKGROUP_SIZE = 64;
 constexpr uint32_t PARAMETER_BYTES = 128;
+struct Address {
+	uint32_t low = 0;
+	uint32_t high = 0;
+};
+static_assert(sizeof(Address) == 8);
 constexpr uint64_t MAX_METADATA_BYTES = 8 * 1024 * 1024;
 
 struct Source {
@@ -41,16 +46,16 @@ inline uint32_t capacity_for(uint32_t p_count) {
 	return capacity + 1;
 }
 
-inline uint64_t metadata_bytes(uint32_t p_parameter_capacity, uint32_t p_task_capacity) {
-	return uint64_t(p_parameter_capacity) * PARAMETER_BYTES * 2 + uint64_t(p_task_capacity) * sizeof(Task);
+inline uint64_t metadata_bytes(uint32_t p_parameter_capacity, uint32_t p_task_capacity, bool p_addresses) {
+	return uint64_t(p_parameter_capacity) * (PARAMETER_BYTES * 2 + (p_addresses ? sizeof(Address) : 0)) + uint64_t(p_task_capacity) * sizeof(Task);
 }
 
-inline bool fits_budget(uint32_t p_batches, uint32_t p_tasks, uint32_t p_parameter_capacity, uint32_t p_task_capacity) {
+inline bool fits_budget(uint32_t p_batches, uint32_t p_tasks, uint32_t p_parameter_capacity, uint32_t p_task_capacity, bool p_addresses) {
 	uint32_t parameters = capacity_for(p_batches);
 	uint32_t tasks = capacity_for(p_tasks);
 	parameters = parameters > p_parameter_capacity ? parameters : p_parameter_capacity;
 	tasks = tasks > p_task_capacity ? tasks : p_task_capacity;
-	return metadata_bytes(parameters, tasks) <= MAX_METADATA_BYTES;
+	return metadata_bytes(parameters, tasks, p_addresses) <= MAX_METADATA_BYTES;
 }
 
 // Caller owns all arrays. Sources retain original batch order; only tasks move.

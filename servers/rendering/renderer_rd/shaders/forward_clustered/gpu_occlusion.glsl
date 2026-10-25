@@ -4,6 +4,21 @@
 
 #VERSION_DEFINES
 
+#ifdef USE_DEVICE_ADDRESSES
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+// A GLSL reference type needs its semicolon without an instance declarator.
+// clang-format off
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer TransformReference {
+	vec4 data[];
+};
+// clang-format on
+layout(set = 0, binding = 7, std430) readonly buffer TransformAddresses {
+	uvec2 data[];
+}
+transform_addresses;
+#endif
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 0) uniform sampler2D hierarchy;
 layout(set = 0, binding = 1, std430) readonly buffer SourceTransforms {
@@ -44,13 +59,25 @@ layout(push_constant, std430) uniform Dispatch {
 dispatch;
 
 BatchParameters params;
+#ifdef USE_DEVICE_ADDRESSES
+uvec2 source_address;
+#endif
+
+vec4 source_transform(uint offset) {
+#ifdef USE_DEVICE_ADDRESSES
+	if (any(notEqual(source_address, uvec2(0u)))) {
+		return TransformReference(source_address).data[offset];
+	}
+#endif
+	return source.data[offset];
+}
 
 void instance_bounds(uint id, out vec3 object_min, out vec3 object_max) {
 	object_min = params.bounds_min_margin.xyz;
 	object_max = params.bounds_max_bias.xyz;
 	if (params.draw_info.w != 0u) {
 		uint offset = (id + params.source_info.z) * params.source_info.y;
-		mat4 transform = transpose(mat4(source.data[offset], source.data[offset + 1u], source.data[offset + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
+		mat4 transform = transpose(mat4(source_transform(offset), source_transform(offset + 1u), source_transform(offset + 2u), vec4(0.0, 0.0, 0.0, 1.0)));
 		// Halve before adding/subtracting to avoid overflowing finite bounds.
 		vec3 center = object_min * 0.5 + object_max * 0.5;
 		vec3 half_size = abs(object_max * 0.5 - object_min * 0.5);
@@ -127,6 +154,9 @@ void main() {
 	}
 	uvec2 task = tasks.data[dispatch.task_range.x + gl_WorkGroupID.x];
 	params = parameters.data[task.x];
+#ifdef USE_DEVICE_ADDRESSES
+	source_address = transform_addresses.data[task.x];
+#endif
 	uint id = task.y + gl_LocalInvocationIndex;
 	uint count = params.source_info.x;
 	if (id >= count) {

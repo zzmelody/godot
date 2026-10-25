@@ -4521,16 +4521,19 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 }
 
 void RendererSceneCull::update_dirty_instances() const {
+	GodotProfileZoneGroupedFirst(stage, "Render/SceneUpdate/dirty_instances");
 	while (_instance_update_list.first()) {
 		_update_dirty_instance(_instance_update_list.first()->self());
 	}
 
 	// Update dirty resources after dirty instances as instance updates may affect resources.
+	GodotProfileZoneGrouped(stage, "Render/SceneUpdate/dirty_resources");
 	RSG::utilities->update_dirty_resources();
 }
 
 void RendererSceneCull::update() {
 	//optimize bvhs
+	GodotProfileZoneGroupedFirst(stage, "Render/SceneUpdate/bvh");
 
 	uint32_t rid_count = scenario_owner.get_rid_count();
 	RID *rids = (RID *)alloca(sizeof(RID) * rid_count);
@@ -4540,12 +4543,16 @@ void RendererSceneCull::update() {
 		s->indexers[Scenario::INDEXER_GEOMETRY].optimize_incremental(indexer_update_iterations);
 		s->indexers[Scenario::INDEXER_VOLUMES].optimize_incremental(indexer_update_iterations);
 	}
+	GodotProfileZoneGrouped(stage, "Render/SceneUpdate/renderer");
 	scene_render->update();
+	GodotProfileZoneGrouped(stage, "Render/SceneUpdate/instances_and_resources");
 	update_dirty_instances();
 	// Snapshot material parameter sets are uploaded by update_dirty_instances().
 	// Capture only after that resource flush, so a fresh immutable material is
 	// not mistaken for a failed binding or captured before its values exist.
+	GodotProfileZoneGrouped(stage, "Render/SceneUpdate/sky_captures");
 	scene_render->update_sky_captures();
+	GodotProfileZoneGrouped(stage, "Render/SceneUpdate/particle_colliders");
 	render_particle_colliders();
 }
 

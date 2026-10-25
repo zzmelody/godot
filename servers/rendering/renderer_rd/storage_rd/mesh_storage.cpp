@@ -41,6 +41,15 @@
 
 using namespace RendererRD;
 
+static RID _create_multimesh_transform_buffer(uint32_t p_bytes) {
+	RD *rd = RD::get_singleton();
+	BitField<RD::BufferCreationBits> flags;
+	if (rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS)) {
+		flags = RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT;
+	}
+	return rd->storage_buffer_create(p_bytes, {}, 0, flags);
+}
+
 MeshStorage *MeshStorage::singleton = nullptr;
 
 MeshStorage *MeshStorage::get_singleton() {
@@ -1681,7 +1690,7 @@ void MeshStorage::_multimesh_allocate_data(RID p_multimesh, int p_instances, RSE
 
 	if (multimesh->instances) {
 		uint32_t buffer_size = multimesh->instances * multimesh->stride_cache * sizeof(float);
-		multimesh->buffer = RD::get_singleton()->storage_buffer_create(buffer_size);
+		multimesh->buffer = _create_multimesh_transform_buffer(buffer_size);
 	}
 
 	multimesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MULTIMESH);
@@ -1704,7 +1713,7 @@ void MeshStorage::_multimesh_enable_motion_vectors(MultiMesh *multimesh) {
 
 	uint32_t buffer_size = multimesh->instances * multimesh->stride_cache * sizeof(float);
 	uint32_t new_buffer_size = buffer_size * 2;
-	RID new_buffer = RD::get_singleton()->storage_buffer_create(new_buffer_size);
+	RID new_buffer = _create_multimesh_transform_buffer(new_buffer_size);
 
 	if (multimesh->buffer_set && multimesh->data_cache.is_empty()) {
 		// If the buffer was set but there's no data cached in the CPU, we copy the buffer directly on the GPU.

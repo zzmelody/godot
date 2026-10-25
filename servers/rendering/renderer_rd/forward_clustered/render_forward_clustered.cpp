@@ -2742,6 +2742,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			statistics["mode"] = rb->get_gpu_occlusion_mode();
 			statistics["batches"] = active_gpu_occlusion->batches.size();
 			statistics["dispatch_groups"] = active_gpu_occlusion->get_dispatch_group_count();
+			statistics["device_address_transforms"] = active_gpu_occlusion->uses_device_addresses();
+			statistics["transform_address_buffers"] = active_gpu_occlusion->get_addressed_buffer_count();
 			statistics["dispatches_per_phase"] = active_gpu_occlusion->get_dispatch_count();
 			statistics["workgroup_tasks"] = active_gpu_occlusion->get_workgroup_count();
 			statistics["metadata_bytes"] = active_gpu_occlusion->get_metadata_bytes();
