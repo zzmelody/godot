@@ -6,18 +6,44 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 0) uniform sampler2D hierarchy;
-layout(set = 0, binding = 1, std430) readonly buffer SourceTransforms { vec4 data[]; } source;
-layout(set = 0, binding = 2, std430) buffer VisibleIndices { uint data[]; } visible;
-layout(set = 0, binding = 3, std430) buffer PendingInstances { uint data[]; } pending;
-layout(set = 0, binding = 4, std430) buffer DrawCommands { uint data[]; } commands;
+layout(set = 0, binding = 1, std430) readonly buffer SourceTransforms {
+	vec4 data[];
+}
+source;
+layout(set = 0, binding = 2, std430) buffer VisibleIndices {
+	uint data[];
+}
+visible;
+layout(set = 0, binding = 3, std430) buffer PendingInstances {
+	uint data[];
+}
+pending;
+layout(set = 0, binding = 4, std430) buffer DrawCommands {
+	uint data[];
+}
+commands;
 
-layout(push_constant, std430) uniform Params {
+struct BatchParameters {
 	mat4 view_projection;
 	vec4 bounds_min_margin;
 	vec4 bounds_max_bias;
 	uvec4 source_info; // count, vec4 stride, transform offset, candidate offset
 	uvec4 draw_info; // command word offset, phase, test enabled, multimesh
-} params;
+};
+layout(set = 0, binding = 5, std430) readonly buffer Parameters {
+	BatchParameters data[];
+}
+parameters;
+layout(set = 0, binding = 6, std430) readonly buffer Tasks {
+	uvec2 data[];
+}
+tasks;
+layout(push_constant, std430) uniform Dispatch {
+	uvec4 task_range; // absolute first task, task count, reserved, reserved
+}
+dispatch;
+
+BatchParameters params;
 
 void instance_bounds(uint id, out vec3 object_min, out vec3 object_max) {
 	object_min = params.bounds_min_margin.xyz;
@@ -96,7 +122,12 @@ bool is_visible(uint id) {
 }
 
 void main() {
-	uint id = gl_GlobalInvocationID.x;
+	if (gl_WorkGroupID.x >= dispatch.task_range.y) {
+		return;
+	}
+	uvec2 task = tasks.data[dispatch.task_range.x + gl_WorkGroupID.x];
+	params = parameters.data[task.x];
+	uint id = task.y + gl_LocalInvocationIndex;
 	uint count = params.source_info.x;
 	if (id >= count) {
 		return;

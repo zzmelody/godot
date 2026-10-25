@@ -42,7 +42,7 @@ void GpuOcclusion::free_hierarchy() {
 
 GpuOcclusion::~GpuOcclusion() {
 	free_hierarchy();
-	for (RID rid : { indices, pending, commands, dummy_transform, sampler, cull_pipeline, cull_dynamic_pipeline, reduce_pipeline, reduce_msaa_pipeline }) {
+	for (RID rid : { indices, pending, commands, dummy_transform, sampler, cull_pipeline, cull_dynamic_pipeline, reduce_pipeline, reduce_msaa_pipeline, parameter_buffers[0], parameter_buffers[1], task_buffer }) {
 		if (rid.is_valid()) {
 			RD::get_singleton()->free_rid(rid);
 		}
@@ -60,12 +60,26 @@ void GpuOcclusion::begin(uint32_t p_elements) {
 		element_batches[i] = -1;
 	}
 	candidate_count = 0;
+	total_tasks = 0;
+	groups.clear();
+	sources.clear();
+	group_ranges.clear();
+	tasks.clear();
+	for (uint32_t phase = 0; phase < 2; ++phase) {
+		group_maps[phase].clear();
+		parameters[phase].clear();
+	}
 }
 
 void GpuOcclusion::add(uint32_t p_element, Batch p_batch) {
 	if (p_batch.count == 0 || p_batch.count > MAX_CANDIDATES - candidate_count) {
 		return; // The caller retains the original draw for every omitted batch.
 	}
+	uint32_t batch_tasks = GpuOcclusionDispatch::task_count(p_batch.count);
+	if (!GpuOcclusionDispatch::fits_budget(batches.size() + 1, total_tasks + batch_tasks, parameter_capacity, task_capacity)) {
+		return; // Keep the original draw when retained metadata would exceed 8 MiB.
+	}
+	total_tasks += batch_tasks;
 	p_batch.candidate_offset = candidate_count;
 	candidate_count += p_batch.count;
 	element_batches[p_element] = batches.size();
@@ -78,16 +92,18 @@ bool GpuOcclusion::prepare(const Size2i &p_size, uint64_t p_epoch, const Project
 		return false;
 	}
 	RD *rd = RD::get_singleton();
-	if (capacity < MAX(1u, candidate_count)) {
+	if (capacity < MAX(1u, candidate_count) || indices.is_null() || pending.is_null()) {
 		if (indices.is_valid()) {
 			rd->free_rid(indices);
+		}
+		if (pending.is_valid()) {
 			rd->free_rid(pending);
 		}
 		capacity = Math::next_power_of_2(MAX(1u, candidate_count));
 		indices = rd->storage_buffer_create(capacity * 3 * sizeof(uint32_t));
 		pending = rd->storage_buffer_create(capacity * sizeof(uint32_t));
 	}
-	if (command_capacity < MAX(1u, batches.size())) {
+	if (command_capacity < MAX(1u, batches.size()) || commands.is_null()) {
 		if (commands.is_valid()) {
 			rd->free_rid(commands);
 		}
@@ -96,6 +112,7 @@ bool GpuOcclusion::prepare(const Size2i &p_size, uint64_t p_epoch, const Project
 		initial_commands.resize(command_capacity * 15);
 	}
 	if (indices.is_null() || pending.is_null() || commands.is_null()) {
+		history_valid = false;
 		return false;
 	}
 	memset(initial_commands.ptrw(), 0, batches.size() * 15 * sizeof(uint32_t));
@@ -105,7 +122,10 @@ bool GpuOcclusion::prepare(const Size2i &p_size, uint64_t p_epoch, const Project
 		initial_commands.write[i * 15 + 10] = batches[i].color_vertices;
 	}
 	if (!batches.is_empty()) {
-		rd->buffer_update(commands, 0, batches.size() * 15 * sizeof(uint32_t), initial_commands.ptr());
+		if (rd->buffer_update(commands, 0, batches.size() * 15 * sizeof(uint32_t), initial_commands.ptr()) != OK) {
+			history_valid = false;
+			return false;
+		}
 	}
 	Size2i new_size(MAX(1, (p_size.x + 1) / 2), MAX(1, (p_size.y + 1) / 2));
 	if (size != new_size || !hierarchy[0].is_valid()) {
@@ -124,7 +144,12 @@ bool GpuOcclusion::prepare(const Size2i &p_size, uint64_t p_epoch, const Project
 				return false;
 			}
 			for (uint32_t level = 0; level < format.mipmaps; ++level) {
-				slices[i].push_back(rd->texture_create_shared_from_slice(RD::TextureView(), hierarchy[i], 0, level));
+				RID slice = rd->texture_create_shared_from_slice(RD::TextureView(), hierarchy[i], 0, level);
+				if (slice.is_null()) {
+					free_hierarchy();
+					return false;
+				}
+				slices[i].push_back(slice);
 			}
 		}
 	}
@@ -134,51 +159,121 @@ bool GpuOcclusion::prepare(const Size2i &p_size, uint64_t p_epoch, const Project
 	}
 	previous_lens = p_lens;
 	projection = p_projection;
-	return indices.is_valid() && pending.is_valid() && commands.is_valid() && hierarchy[0].is_valid() && hierarchy[1].is_valid();
+	if (!prepare_dispatches()) {
+		history_valid = false;
+		return false;
+	}
+	return true;
+}
+
+bool GpuOcclusion::prepare_dispatches() {
+	RD *rd = RD::get_singleton();
+	dispatch_limit = uint32_t(rd->limit_get(RD::LIMIT_MAX_COMPUTE_WORKGROUP_COUNT_X));
+	if (dispatch_limit == 0) {
+		return false;
+	}
+	if (parameter_capacity < MAX(1u, batches.size()) || parameter_buffers[0].is_null() || parameter_buffers[1].is_null()) {
+		parameter_capacity = GpuOcclusionDispatch::capacity_for(batches.size());
+		for (uint32_t phase = 0; phase < 2; ++phase) {
+			if (parameter_buffers[phase].is_valid()) {
+				rd->free_rid(parameter_buffers[phase]);
+			}
+			parameter_buffers[phase] = rd->storage_buffer_create(parameter_capacity * sizeof(BatchParameters));
+		}
+	}
+	if (task_capacity < MAX(1u, total_tasks) || task_buffer.is_null()) {
+		if (task_buffer.is_valid()) {
+			rd->free_rid(task_buffer);
+		}
+		task_capacity = GpuOcclusionDispatch::capacity_for(total_tasks);
+		task_buffer = rd->storage_buffer_create(task_capacity * sizeof(GpuOcclusionDispatch::Task));
+	}
+	if (parameter_buffers[0].is_null() || parameter_buffers[1].is_null() || task_buffer.is_null()) {
+		return false;
+	}
+	sources.resize(batches.size());
+	for (uint32_t i = 0; i < batches.size(); ++i) {
+		const Batch &batch = batches[i];
+		RID transforms = batch.multimesh ? batch.transforms : dummy_transform;
+		AHashMap<RID, uint32_t> &map = group_maps[batch.dynamic_transforms ? 1 : 0];
+		const uint32_t *existing = map.getptr(transforms);
+		uint32_t group = existing ? *existing : groups.size();
+		if (!existing) {
+			DispatchGroup entry;
+			entry.transforms = transforms;
+			entry.dynamic = batch.dynamic_transforms;
+			groups.push_back(entry);
+			map.insert(transforms, group);
+		}
+		sources[i] = { group, batch.count };
+	}
+	group_ranges.resize(groups.size());
+	tasks.resize(total_tasks);
+	GpuOcclusionDispatch::build_tasks(sources.ptr(), sources.size(), group_ranges.ptr(), group_ranges.size(), tasks.ptr());
+	if (!tasks.is_empty() && rd->buffer_update(task_buffer, 0, tasks.size() * sizeof(GpuOcclusionDispatch::Task), tasks.ptr()) != OK) {
+		return false;
+	}
+	// Prepare both phases before any prediction/depth draw. Recovery must not
+	// fail after part of this view has already switched to indirect commands.
+	for (uint32_t phase = 0; phase < 2; ++phase) {
+		parameters[phase].resize(batches.size());
+		for (uint32_t i = 0; i < batches.size(); ++i) {
+			const Batch &batch = batches[i];
+			BatchParameters &params = parameters[phase][i];
+			params = {};
+			Projection matrix = (phase == 0 && history_valid ? previous_projection : projection) * Projection(batch.model);
+			MaterialStorage::store_camera(matrix, params.view_projection);
+			for (uint32_t axis = 0; axis < 3; ++axis) {
+				params.minimum_margin[axis] = batch.bounds.position[axis];
+				params.maximum_bias[axis] = batch.bounds.get_end()[axis];
+			}
+			params.minimum_margin[3] = batch.margin;
+			params.maximum_bias[3] = 0.00001f;
+			params.source_info[0] = batch.count;
+			params.source_info[1] = batch.stride;
+			params.source_info[2] = batch.transform_offset;
+			params.source_info[3] = batch.candidate_offset;
+			params.draw_info[0] = i * 15;
+			params.draw_info[1] = phase;
+			params.draw_info[2] = phase != 0 || history_valid;
+			params.draw_info[3] = batch.multimesh;
+		}
+		if (!batches.is_empty() && rd->buffer_update(parameter_buffers[phase], 0, batches.size() * sizeof(BatchParameters), parameters[phase].ptr()) != OK) {
+			return false;
+		}
+		for (DispatchGroup &group : groups) {
+			RID shader = group.dynamic ? cull_dynamic_shader.version_get_shader(cull_dynamic_version, 0) : cull_shader.version_get_shader(cull_version, 0);
+			RD::Uniform u_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, { sampler, hierarchy[phase == 0 ? 1 - write_index : write_index] });
+			RD::Uniform u_source(group.dynamic ? RD::UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC : RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { group.transforms });
+			RD::Uniform u_visible(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { indices });
+			RD::Uniform u_pending(RD::UNIFORM_TYPE_STORAGE_BUFFER, 3, { pending });
+			RD::Uniform u_commands(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { commands });
+			RD::Uniform u_parameters(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { parameter_buffers[phase] });
+			RD::Uniform u_tasks(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { task_buffer });
+			group.uniform_sets[phase] = UniformSetCacheRD::get_singleton()->get_cache(shader, 0, u_depth, u_source, u_visible, u_pending, u_commands, u_parameters, u_tasks);
+			if (!rd->uniform_set_is_valid(group.uniform_sets[phase])) {
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 void GpuOcclusion::cull(uint32_t p_phase) {
-	struct PushConstant {
-		float view_projection[16];
-		float minimum_margin[4];
-		float maximum_bias[4];
-		uint32_t source_info[4];
-		uint32_t draw_info[4];
-	};
-	static_assert(sizeof(PushConstant) == 128);
 	RD *rd = RD::get_singleton();
-	RID depth = hierarchy[p_phase == 0 ? 1 - write_index : write_index];
 	RD::ComputeListID list = rd->compute_list_begin();
-	for (uint32_t i = 0; i < batches.size(); ++i) {
-		const Batch &batch = batches[i];
-		RID shader = batch.dynamic_transforms ? cull_dynamic_shader.version_get_shader(cull_dynamic_version, 0) : cull_shader.version_get_shader(cull_version, 0);
-		rd->compute_list_bind_compute_pipeline(list, batch.dynamic_transforms ? cull_dynamic_pipeline : cull_pipeline);
-		PushConstant push = {};
-		Projection matrix = (p_phase == 0 && history_valid ? previous_projection : projection) * Projection(batch.model);
-		MaterialStorage::store_camera(matrix, push.view_projection);
-		for (uint32_t axis = 0; axis < 3; ++axis) {
-			push.minimum_margin[axis] = batch.bounds.position[axis];
-			push.maximum_bias[axis] = batch.bounds.get_end()[axis];
+	for (uint32_t i = 0; i < groups.size(); ++i) {
+		const DispatchGroup &group = groups[i];
+		const GpuOcclusionDispatch::Range &range = group_ranges[i];
+		rd->compute_list_bind_compute_pipeline(list, group.dynamic ? cull_dynamic_pipeline : cull_pipeline);
+		rd->compute_list_bind_uniform_set(list, group.uniform_sets[p_phase], 0);
+		for (uint32_t offset = 0; offset < range.count;) {
+			uint32_t count = GpuOcclusionDispatch::dispatch_count(range.count - offset, dispatch_limit);
+			uint32_t push[4] = { range.offset + offset, count, 0, 0 };
+			rd->compute_list_set_push_constant(list, push, sizeof(push));
+			rd->compute_list_dispatch(list, count, 1, 1);
+			offset += count;
 		}
-		push.minimum_margin[3] = batch.margin;
-		push.maximum_bias[3] = 0.00001f;
-		push.source_info[0] = batch.count;
-		push.source_info[1] = batch.stride;
-		push.source_info[2] = batch.transform_offset;
-		push.source_info[3] = batch.candidate_offset;
-		push.draw_info[0] = i * 15;
-		push.draw_info[1] = p_phase;
-		push.draw_info[2] = p_phase != 0 || history_valid;
-		push.draw_info[3] = batch.multimesh;
-		RD::Uniform u_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, { sampler, depth });
-		RD::Uniform u_source(batch.dynamic_transforms ? RD::UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC : RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { batch.multimesh ? batch.transforms : dummy_transform });
-		RD::Uniform u_visible(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { indices });
-		RD::Uniform u_pending(RD::UNIFORM_TYPE_STORAGE_BUFFER, 3, { pending });
-		RD::Uniform u_commands(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { commands });
-		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache(shader, 0, u_depth, u_source, u_visible, u_pending, u_commands);
-		rd->compute_list_bind_uniform_set(list, uniform_set, 0);
-		rd->compute_list_set_push_constant(list, &push, sizeof(push));
-		rd->compute_list_dispatch(list, (batch.count + 63) / 64, 1, 1);
 	}
 	rd->compute_list_end();
 }

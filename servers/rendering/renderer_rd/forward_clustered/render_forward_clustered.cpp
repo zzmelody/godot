@@ -2729,6 +2729,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			Dictionary statistics = rb->get_gpu_occlusion_statistics();
 			statistics["mode"] = rb->get_gpu_occlusion_mode();
 			statistics["batches"] = active_gpu_occlusion->batches.size();
+			statistics["dispatch_groups"] = active_gpu_occlusion->get_dispatch_group_count();
+			statistics["dispatches_per_phase"] = active_gpu_occlusion->get_dispatch_count();
+			statistics["workgroup_tasks"] = active_gpu_occlusion->get_workgroup_count();
+			statistics["metadata_bytes"] = active_gpu_occlusion->get_metadata_bytes();
+			statistics["metadata_budget_bytes"] = RendererRD::GpuOcclusionDispatch::MAX_METADATA_BYTES;
 			statistics["buffer_bytes"] = active_gpu_occlusion->get_buffer_bytes();
 			statistics["hierarchy_bytes"] = active_gpu_occlusion->get_hierarchy_bytes();
 			statistics["max_candidates"] = RendererRD::GpuOcclusion::MAX_CANDIDATES;
