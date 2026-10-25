@@ -7,6 +7,7 @@
 #include "core/os/os.h"
 #include "core/templates/hash_set.h"
 #include "texture_policy.h"
+#include "shader_fields.h"
 #ifdef WINDOWS_ENABLED
 #include <windows.h>
 #endif
@@ -78,6 +79,7 @@ inline Error save_resource(const Ref<Resource> &p_resource, const String &p_path
 	Error texture_error = textures.Normalize(normalized);
 	ERR_FAIL_COND_V(texture_error != OK, texture_error);
 	const Ref<Resource> resource = normalized;
+	CookerShaderFields::Prepare(resource);
 	const String staging = staging_path(p_path);
 	discard_stale(staging);
 	Error error = DirAccess::make_dir_recursive_absolute(p_path.get_base_dir());

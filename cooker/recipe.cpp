@@ -2175,6 +2175,7 @@ Error run(const Dictionary &p_job, Dictionary &r_result) {
 	// An interrupted earlier run may leave this staging file; the per-output
 	// lock guarantees no live writer owns it.
 	CookerAtomicSave::discard_stale(temporary);
+	CookerShaderFields::Prepare(recipe.result);
 	error = ResourceSaver::save(recipe.result, temporary, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 	if (error == OK) {
 		Ref<FileAccess> saved = FileAccess::open(temporary, FileAccess::READ);

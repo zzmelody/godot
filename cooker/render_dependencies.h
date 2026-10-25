@@ -128,6 +128,7 @@ inline Error save(const Ref<PackedScene> &p_scene, const String &p_directory, Ar
 				CookerOutputLock::Guard lock(temporary);
 				ERR_FAIL_COND_V(!lock.acquired(), ERR_BUSY);
 				CookerAtomicSave::discard_stale(temporary);
+				CookerShaderFields::Prepare(resource);
 				error = ResourceSaver::save(resource, temporary, ResourceSaver::FLAG_COMPRESS | ResourceSaver::FLAG_RELATIVE_PATHS);
 				ERR_FAIL_COND_V(error != OK, error);
 				const Ref<FileAccess> file = FileAccess::open(temporary, FileAccess::READ);

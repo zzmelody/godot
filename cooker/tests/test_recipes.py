@@ -1937,6 +1937,49 @@ func _initialize():
         self.assertEqual(inspected.returncode, 0, inspected.stdout+inspected.stderr)
         self.assertIn("MINIMUM_SHARED_SHADER:true", inspected.stdout)
 
+    def test_prepared_shader_fields_follow_serialized_shader(self):
+        self.assertIsNotNone(REFERENCE)
+        (self.project / "foliage.tres").write_text('''[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+[sub_resource type="Shader" id="Shader_foliage"]
+code = "shader_type spatial; uniform float visibility_range_end=120.0; uniform bool foliage_cast_shadows=true; uniform float foliage_lod_bias=0.6; uniform float foliage_lod_scale=0.5; void fragment(){ ALBEDO=vec3(0.2); }"
+[resource]
+shader = SubResource("Shader_foliage")
+shader_parameter/visibility_range_end = 80.0
+''', encoding="utf-8")
+        material = self.job({"operation": "save-resource",
+                             "source": "res://foliage.tres",
+                             "output": "res://assets/runtime/material/foliage/foliage.res"})
+        scene = self.recipe('return cooker.scene({{asset=cooker.primitive("box",{}),material=cooker.input("material")}})',
+                            inputs={"material": material["output"]},
+                            output="res://assets/runtime/model/foliage/foliage.scn")
+        (self.project / "inspect_shader_fields.gd").write_text('''extends SceneTree
+func _initialize():
+    var resource = load("'''+scene["output"]+'''")
+    var scene = resource.instantiate()
+    var material = scene.get_child(0).material_override as ShaderMaterial
+    var fields = material.get_meta("veya_shader_fields", {}) if material != null else {}
+    var valid = not fields.is_empty() and material != null
+    if valid:
+        valid = fields.code == material.shader.code
+        valid = valid and fields.range and fields.shadow and fields.lod and fields.lod_scale
+        valid = valid and typeof(fields.shareable) == TYPE_BOOL and fields.shareable
+        valid = valid and is_equal_approx(fields.default_lod_bias, 0.6)
+        valid = valid and is_equal_approx(fields.default_lod_scale, 0.5)
+        valid = valid and is_equal_approx(material.get_shader_parameter("foliage_lod_bias"), 0.6)
+        valid = valid and is_equal_approx(material.get_shader_parameter("visibility_range_end"), 80.0)
+    if not valid:
+        print("PREPARED_SHADER_RECORDS:", fields)
+        print("PREPARED_SHADER_MATERIAL:", material)
+    scene.free()
+    print("PREPARED_SHADER_FIELDS:", valid)
+    quit(0 if valid else 1)
+''', encoding="utf-8")
+        inspected = subprocess.run([str(REFERENCE), "--headless", "--path", str(self.project),
+                                    "--script", "res://inspect_shader_fields.gd"],
+                                   capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(inspected.returncode, 0, inspected.stdout+inspected.stderr)
+        self.assertIn("PREPARED_SHADER_FIELDS:true", inspected.stdout)
+
     def test_shared_render_cache_checks_auxiliary_files(self):
         original = self.recipe('local mesh=cooker.primitive("box",{}); return cooker.scene({{asset=mesh}})',
                                output="res://content/worlds/fixture/generated/original.scn")

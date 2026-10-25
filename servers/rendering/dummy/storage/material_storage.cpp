@@ -161,6 +161,7 @@ void MaterialStorage::shader_free(RID p_rid) {
 void MaterialStorage::shader_set_code(RID p_shader, const String &p_code) {
 	DummyShader *shader = shader_owner.get_or_null(p_shader);
 	ERR_FAIL_NULL(shader);
+	shader->uniforms.clear();
 	if (p_code.is_empty()) {
 		return;
 	}
@@ -228,6 +229,19 @@ void MaterialStorage::get_shader_parameter_list(RID p_shader, List<PropertyInfo>
 		pi.name = uniform_name;
 		p_param_list->push_back(pi);
 	}
+}
+
+Variant MaterialStorage::shader_get_parameter_default(RID p_shader, const StringName &p_param) const {
+	const DummyShader *shader = shader_owner.get_or_null(p_shader);
+	ERR_FAIL_NULL_V(shader, Variant());
+	const ShaderLanguage::ShaderNode::Uniform *uniform = shader->uniforms.getptr(p_param);
+	if (!uniform) {
+		return Variant();
+	}
+	if (uniform->default_value.is_empty()) {
+		return ShaderLanguage::get_default_datatype_value(uniform->type, uniform->array_size, uniform->hint);
+	}
+	return ShaderLanguage::constant_value_to_variant(uniform->default_value, uniform->type, uniform->array_size, uniform->hint);
 }
 
 RID MaterialStorage::material_allocate() {

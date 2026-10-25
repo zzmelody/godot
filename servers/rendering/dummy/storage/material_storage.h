@@ -103,7 +103,7 @@ public:
 
 	virtual void shader_set_default_texture_parameter(RID p_shader, const StringName &p_name, RID p_texture, int p_index) override {}
 	virtual RID shader_get_default_texture_parameter(RID p_shader, const StringName &p_name, int p_index) const override { return RID(); }
-	virtual Variant shader_get_parameter_default(RID p_material, const StringName &p_param) const override { return Variant(); }
+	virtual Variant shader_get_parameter_default(RID p_shader, const StringName &p_param) const override;
 
 	virtual RenderingServerTypes::ShaderNativeSourceCode shader_get_native_source_code(RID p_shader) const override { return RenderingServerTypes::ShaderNativeSourceCode(); }
 	virtual void shader_embedded_set_lock() override {}
