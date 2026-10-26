@@ -11,9 +11,6 @@
 #include "virtual_geometry_raster_inc.glsl"
 #include "virtual_geometry_raster_cull_inc.glsl"
 #include "virtual_geometry_scene_inc.glsl"
-#ifdef VG_PROGRAMMABLE
-#include "virtual_geometry_raster_vertex_cache_inc.glsl"
-#endif
 /* clang-format on */
 
 // Programmable vertex evaluation retains its measured 64-lane layout.
@@ -63,34 +60,18 @@ void main() {
 	uint lane_maximum_edge = 0u;
 	uint lane_needs_hardware = 0u;
 	bool lane_active = false;
-#ifdef VG_PROGRAMMABLE
-	vg_cache_raster_vertices(selected, VG_BIN_GROUP_SIZE);
-#endif
 	for (uint triangle = lane; triangle < geometry.data[record + 5u]; triangle += VG_BIN_GROUP_SIZE) {
-#ifdef VG_PROGRAMMABLE
-		if (!vg_cached_triangle_active(triangle)) {
-#else
 		if (!vg_raster_material_active(selected, triangle)) {
-#endif
 			continue;
 		}
 		lane_active = true;
-#ifdef VG_PROGRAMMABLE
-		uvec3 vertices = vg_cached_triangle(triangle);
-#else
 		uvec3 vertices = vg_triangle(selected.y, triangle);
-#endif
 		vec3 points[3];
 		vec2 lower = vec2(3.402823e38);
 		vec2 upper = vec2(-3.402823e38);
 		for (uint corner = 0u; corner < 3u; ++corner) {
-#ifdef VG_PROGRAMMABLE
-			points[corner] = vg_cached_position[vertices[corner]];
-			vec4 clip = vg_cached_clip[vertices[corner]];
-#else
 			points[corner] = vg_raster_position(selected.x, selected.y, vertices[corner]);
 			vec4 clip = vg_project(selected.x, points[corner]);
-#endif
 			if (clip.w <= 0.0 || clip.z <= 0.0 || clip.z >= clip.w || any(isnan(clip)) || any(isinf(clip))) {
 				lane_needs_hardware = 1u;
 			} else {

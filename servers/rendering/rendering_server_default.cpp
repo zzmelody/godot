@@ -194,15 +194,17 @@ void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step) {
 		uint64_t ticks_elapsed = OS::get_singleton()->get_ticks_usec() - print_frame_profile_ticks_from;
 		print_frame_profile_frame_count++;
 		if (ticks_elapsed > 1000000) {
-			print_line("GPU PROFILE (total " + rtos(total_time) + "ms): ");
+			String report = "GPU PROFILE (total " + rtos(total_time) + "ms): ";
 
 			float print_threshold = 0.01;
 			for (const KeyValue<String, float> &E : print_gpu_profile_task_time) {
 				double time = E.value / double(print_frame_profile_frame_count);
 				if (time > print_threshold) {
-					print_line("\t-" + E.key + ": " + rtos(time) + "ms");
+					report += "\n\t-" + E.key + ": " + rtos(time) + "ms";
 				}
 			}
+			// Keep the complete report in one write: Debug terminal loggers flush each message.
+			print_line(report);
 			print_gpu_profile_task_time.clear();
 			print_frame_profile_ticks_from = OS::get_singleton()->get_ticks_usec();
 			print_frame_profile_frame_count = 0;

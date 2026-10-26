@@ -33,6 +33,7 @@
 
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/profiling/profiling.h"
 #include "scene/3d/skeleton_modifier_3d.h"
 #if !defined(DISABLE_DEPRECATED) && !defined(PHYSICS_3D_DISABLED)
 #include "scene/3d/physics/physical_bone_simulator_3d.h"
@@ -312,6 +313,7 @@ void Skeleton3D::_notification(int p_what) {
 		} break;
 #endif // TOOLS_ENABLED
 		case NOTIFICATION_UPDATE_SKELETON: {
+			GodotProfileZone("Skeleton3D::update_skeleton");
 			// Update bone transforms to apply unprocessed poses.
 			force_update_all_dirty_bones();
 

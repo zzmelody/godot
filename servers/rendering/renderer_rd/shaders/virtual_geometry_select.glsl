@@ -41,56 +41,75 @@ uint reserve_work(uint word, uint count, uint capacity) {
 		previous = observed;
 	}
 }
-shared uint group_scan[128];
-shared uint group_first;
+shared uvec2 group_scan[128];
+shared uvec2 group_first;
 shared uvec4 group_ranges[64];
 
 // Each lane retains at most four original branch requests. Only the leader
 // contends globally; the boundary path preserves each complete part request.
-uvec4 reserve_group_work(uint word, uvec4 counts, uint capacity) {
+void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, out uvec4 node_first, out uvec4 cluster_first) {
 	uint lane = gl_LocalInvocationIndex;
 	// Validated parts fit one page (at most 256 clusters). Four requests per
 	// lane and 64 lanes therefore sum to at most 65536, without uint overflow.
-	uint count = counts.x + counts.y + counts.z + counts.w;
+	uvec2 count = uvec2(node_counts.x + node_counts.y + node_counts.z + node_counts.w,
+			cluster_counts.x + cluster_counts.y + cluster_counts.z + cluster_counts.w);
 	group_scan[lane * 2u] = count;
 	barrier();
 	uint source = 0u;
 	for (uint step = 1u; step < 64u; step <<= 1u) {
-		uint sum = group_scan[lane * 2u + source];
+		uvec2 sum = group_scan[lane * 2u + source];
 		if (lane >= step) { sum += group_scan[(lane - step) * 2u + source]; }
 		group_scan[lane * 2u + 1u - source] = sum;
 		barrier();
 		source = 1u - source;
 	}
-	uint prefix = group_scan[lane * 2u + source] - count;
-	uint total = group_scan[126u + source];
-	if (lane == 0u) { group_first = total == 0u ? INVALID : reserve_work(word, total, capacity); }
-	barrier();
-	if (total == 0u) { return uvec4(INVALID); }
-	if (group_first != INVALID) {
-		uvec4 first = uvec4(INVALID);
-		for (uint branch = 0u; branch < 4u; ++branch) {
-			if (counts[branch] != 0u) { first[branch] = group_first + prefix; }
-			prefix += counts[branch];
-		}
-		// A following reservation may reuse group_first and the scan storage.
-		barrier();
-		return first;
-	}
-	group_ranges[lane] = counts;
-	barrier();
+	uvec2 prefix = group_scan[lane * 2u + source] - count;
+	uvec2 total = group_scan[126u + source];
+	uvec2 words = uvec2(1u - parity, 2u);
+	uvec2 capacities = params.limits.xy;
 	if (lane == 0u) {
-		for (uint member = 0u; member < 64u; ++member) {
-			for (uint branch = 0u; branch < 4u; ++branch) {
-				uint requested = group_ranges[member][branch];
-				group_ranges[member][branch] = requested == 0u ? INVALID : reserve_work(word, requested, capacity);
+		for (uint kind = 0u; kind < 2u; ++kind) {
+			group_first[kind] = total[kind] == 0u ? INVALID : reserve_work(words[kind], total[kind], capacities[kind]);
+		}
+	}
+	barrier();
+	node_first = uvec4(INVALID);
+	cluster_first = uvec4(INVALID);
+	for (uint branch = 0u; branch < 4u; ++branch) {
+		if (group_first.x != INVALID && node_counts[branch] != 0u) {
+			node_first[branch] = group_first.x + prefix.x;
+		}
+		if (group_first.y != INVALID && cluster_counts[branch] != 0u) {
+			cluster_first[branch] = group_first.y + prefix.y;
+		}
+		prefix += uvec2(node_counts[branch], cluster_counts[branch]);
+	}
+	// Both independent queues share one prefix scan. If either aggregate
+	// does not fit, retain ordered, whole-part admission for that queue only.
+	bvec2 partial = bvec2(total.x != 0u && group_first.x == INVALID, total.y != 0u && group_first.y == INVALID);
+	for (uint kind = 0u; kind < 2u; ++kind) {
+		if (!partial[kind]) {
+			continue;
+		}
+		group_ranges[lane] = kind == 0u ? node_counts : cluster_counts;
+		barrier();
+		if (lane == 0u) {
+			for (uint member = 0u; member < 64u; ++member) {
+				for (uint branch = 0u; branch < 4u; ++branch) {
+					uint requested = group_ranges[member][branch];
+					group_ranges[member][branch] = requested == 0u ? INVALID : reserve_work(words[kind], requested, capacities[kind]);
+				}
 			}
 		}
+		barrier();
+		if (kind == 0u) {
+			node_first = group_ranges[lane];
+		} else {
+			cluster_first = group_ranges[lane];
+		}
+		// A second saturated queue reuses this storage after all lanes read it.
+		barrier();
 	}
-	barrier();
-	uvec4 first = group_ranges[lane];
-	barrier();
-	return first;
 }
 uint reserve_result(uint word, uint capacity) {
 	uint previous = atomicOr(VG_SELECTION_WORK(word), 0u);
@@ -161,6 +180,10 @@ void initialize_instance(uint id) {
 	}
 	if (!valid || det == 0.0) {
 		for (uint word = 0u; word < 16u; ++word) { VG_SELECTION_WORK(base + word) = 0u; }
+		// Mode10 clears this source-owned header. Only initialization writes
+		// it; the dispatch barrier publishes an immutable admission result.
+		// Keep word4 atomic because later stages still report other failures.
+		atomicOr(VG_SELECTION_WORK(8u), 1u);
 		mark_failure(16u);
 		return;
 	}
@@ -262,7 +285,9 @@ void visit_node(uint id) {
 		uint task = queue_base(parity) + id * 4u;
 		vg_batch_index = work.data[task];
 		has_task = vg_batch_index != INVALID;
-		if (has_task) { has_task = (atomicOr(VG_SELECTION_WORK(4u), 0u) & 16u) == 0u; }
+		if (has_task) {
+			has_task = VG_SELECTION_WORK(8u) == 0u;
+		}
 		if (has_task) {
 			instance = work.data[task + 1u];
 			node = work.data[task + 2u];
@@ -314,7 +339,8 @@ void visit_node(uint id) {
 		references[child] = reference;
 		cluster_counts[child] = metadata.data[part_word + 3u];
 	}
-	uvec4 node_first = reserve_group_work(1u - parity, node_counts, params.limits.x);
+	uvec4 node_first, cluster_first;
+	reserve_group_work(parity, node_counts, cluster_counts, node_first, cluster_first);
 	for (uint child = 0u; child < 4u; ++child) {
 		if (node_counts[child] == 0u) { continue; }
 		if (node_first[child] == INVALID) { mark_failure(1u); continue; }
@@ -324,7 +350,6 @@ void visit_node(uint id) {
 		work.data[word + 2u] = nodes[child];
 		work.data[word + 3u] = 0u;
 	}
-	uvec4 cluster_first = reserve_group_work(2u, cluster_counts, params.limits.y);
 	for (uint child = 0u; child < 4u; ++child) {
 		if (cluster_counts[child] == 0u) { continue; }
 		if (cluster_first[child] == INVALID) { mark_failure(2u); continue; }
@@ -393,23 +418,26 @@ void select_cluster_group(uint id) {
 		instance = work.data[word + 1u];
 		reference = work.data[word + 2u];
 		vg_batch_index = source_index;
-		if ((atomicOr(VG_SELECTION_WORK(4u), 0u) & 16u) == 0u) {
+		if (VG_SELECTION_WORK(8u) == 0u) {
 			selected = cluster_visible(instance, reference, false);
 		}
 	}
-	group_scan[lane * 2u] = source_index;
-	group_scan[lane * 2u + 1u] = selected ? 1u : 0u;
+	group_scan[lane] = uvec2(source_index, selected ? 1u : 0u);
 	// Inactive lanes participate too. Root coverage keeps its independent
 	// per-cluster path because its page loops are not workgroup-uniform.
 	barrier();
 	if (lane == 0u) {
 		uint first_lane = 0u;
 		while (first_lane < 64u) {
-			uint source = group_scan[first_lane * 2u];
+			uint source = group_scan[first_lane].x;
 			uint last_lane = first_lane + 1u;
-			while (last_lane < 64u && group_scan[last_lane * 2u] == source) { ++last_lane; }
+			while (last_lane < 64u && group_scan[last_lane].x == source) {
+				++last_lane;
+			}
 			uint count = 0u;
-			for (uint member = first_lane; member < last_lane; ++member) { count += group_scan[member * 2u + 1u]; }
+			for (uint member = first_lane; member < last_lane; ++member) {
+				count += group_scan[member].y;
+			}
 			uvec2 range = uvec2(INVALID, 0u);
 			if (count != 0u) {
 				vg_batch_index = source;
@@ -417,8 +445,8 @@ void select_cluster_group(uint id) {
 			}
 			uint prefix = 0u;
 			for (uint member = first_lane; member < last_lane; ++member) {
-				uint valid = group_scan[member * 2u + 1u];
-				group_scan[member * 2u + 1u] = valid != 0u && prefix < range.y ? range.x + prefix : INVALID;
+				uint valid = group_scan[member].y;
+				group_scan[member].y = valid != 0u && prefix < range.y ? range.x + prefix : INVALID;
 				prefix += valid;
 			}
 			first_lane = last_lane;
@@ -428,7 +456,7 @@ void select_cluster_group(uint id) {
 	// The leader borrowed each segment's source while reserving its range.
 	vg_batch_index = source_index;
 	if (!selected) { return; }
-	uint index = group_scan[lane * 2u + 1u];
+	uint index = group_scan[lane].y;
 	if (index == INVALID) { mark_failure(2u); return; }
 	uint base = (16u + VG_SELECTION_INPUT.source.x * 16u) + index * 2u;
 	VG_SELECTION_WORK(base) = instance;
