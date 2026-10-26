@@ -34,6 +34,7 @@
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
+#include "core/templates/a_hash_map.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -2031,23 +2032,21 @@ Error RenderForwardClustered::_render_virtual_geometry_color(RenderDataRD *p_ren
 		// Virtual geometry resolves velocity in its own depth-tested pass. Keep
 		// that attachment out of the lighting framebuffer and shader interface.
 		const uint32_t lighting_flags = p_color_flags & ~COLOR_PASS_FLAG_MOTION_VECTORS;
-		const RID eye_framebuffer = multiview ? data->get_color_pass_fb(lighting_flags, eye) :
-				(p_color_flags != lighting_flags ? data->get_color_pass_fb(lighting_flags) : p_framebuffer);
+		const RID eye_framebuffer = multiview ? data->get_color_pass_fb(lighting_flags, eye) : (p_color_flags != lighting_flags ? data->get_color_pass_fb(lighting_flags) : p_framebuffer);
 		const auto &shading = raster->get_shading();
 		const auto materials = shading.get_materials();
+		GodotProfileZoneGroupedFirst(vg_color, "Render/VirtualGeometry/color");
+		GodotProfileZoneGroupedValue(vg_color, materials.size());
 		RD *rd = RD::get_singleton();
 		UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
 		virtual_geometry_color_work.resize(materials.size());
 		thread_local LocalVector<RD::Uniform> uniforms;
-		for (uint32_t index = 0; index < materials.size(); ++index) {
-			auto *material = static_cast<SceneShaderForwardClustered::MaterialData *>(RendererRD::MaterialStorage::get_singleton()->material_get_data(materials[index], RendererRD::MaterialStorage::SHADER_TYPE_3D));
-			ERR_FAIL_COND_V(material == nullptr || material->shader_data == nullptr, ERR_INVALID_DATA);
-			auto &work = virtual_geometry_color_work[index];
-			work.program = material->shader_data->get_virtual_geometry_composite_shader(p_separate_specular, multiview);
-			work.pipeline = material->shader_data->get_virtual_geometry_composite_pipeline(rd->framebuffer_get_format(eye_framebuffer), p_separate_specular, p_specialization, multiview, p_render_data->reflection_probe.is_valid());
-			ERR_FAIL_COND_V(work.program.is_null() || work.pipeline.is_null(), ERR_CANT_CREATE);
-			work.base = cache->get_cache_vec(work.program, SCENE_UNIFORM_SET, render_base_uniforms);
-			work.pass = _setup_render_pass_uniform_set(RENDER_LIST_OPAQUE, p_render_data, p_radiance, p_samplers, p_uniform_buffer, true, work.program);
+		thread_local AHashMap<RID, uint32_t> program_work;
+		{
+			GodotProfileZoneGroupedFirst(vg_color_prepare, "Render/VirtualGeometry/color_prepare");
+			// Retain scratch capacity, but derive all bindings again for this eye
+			// and pass. No resource or material pointer is cached across frames.
+			program_work.clear();
 			uniforms.clear();
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { scene_shader.default_vec4_xform_buffer }));
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { results[0].batch.geometry.geometry }));
@@ -2058,31 +2057,78 @@ Error RenderForwardClustered::_render_virtual_geometry_color(RenderDataRD *p_ren
 			for (uint32_t surface = 0; surface < 10; ++surface) {
 				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, surface == 9 ? 29 : 16 + surface, { shading.get_surface(surface) }));
 			}
-			if (material->shader_data->virtual_geometry_extension_words != 0) {
-				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 64, { shading.get_extensions() }));
+			const RD::FramebufferFormatID framebuffer_format = rd->framebuffer_get_format(eye_framebuffer);
+			for (uint32_t index = 0; index < materials.size(); ++index) {
+				auto *material = static_cast<SceneShaderForwardClustered::MaterialData *>(RendererRD::MaterialStorage::get_singleton()->material_get_data(materials[index], RendererRD::MaterialStorage::SHADER_TYPE_3D));
+				ERR_FAIL_COND_V(material == nullptr || material->shader_data == nullptr, ERR_INVALID_DATA);
+				auto *shader = material->shader_data;
+				auto &work = virtual_geometry_color_work[index];
+				work.program = shader->get_virtual_geometry_composite_shader(p_separate_specular, multiview);
+				ERR_FAIL_COND_V(work.program.is_null(), ERR_CANT_CREATE);
+				const uint32_t *shared_index = program_work.getptr(work.program);
+				if (shared_index) {
+					work = virtual_geometry_color_work[*shared_index];
+				} else {
+					work.pipeline = shader->get_virtual_geometry_composite_pipeline(framebuffer_format, p_separate_specular, p_specialization, multiview, p_render_data->reflection_probe.is_valid());
+					ERR_FAIL_COND_V(work.pipeline.is_null(), ERR_CANT_CREATE);
+					work.base = cache->get_cache_vec(work.program, SCENE_UNIFORM_SET, render_base_uniforms);
+					work.pass = _setup_render_pass_uniform_set(RENDER_LIST_OPAQUE, p_render_data, p_radiance, p_samplers, p_uniform_buffer, true, work.program);
+					if (shader->virtual_geometry_extension_words != 0) {
+						uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 64, { shading.get_extensions() }));
+					}
+					work.surfaces = cache->get_cache_vec(work.program, TRANSFORMS_UNIFORM_SET, uniforms);
+					if (shader->virtual_geometry_extension_words != 0) {
+						uniforms.resize(uniforms.size() - 1);
+					}
+					ERR_FAIL_COND_V(work.base.is_null() || work.pass.is_null() || work.surfaces.is_null(), ERR_CANT_CREATE);
+					program_work.insert(work.program, index);
+				}
+				// Parameters belong to the material even when its program and
+				// view bindings are shared with another material.
+				work.material = shader->virtual_geometry_uses_light ? material->get_parameters_uniform_set(work.program, MATERIAL_UNIFORM_SET, true, shader->texture_uniforms) : RID();
+				ERR_FAIL_COND_V(shader->virtual_geometry_uses_light && work.material.is_null() &&
+								(shader->ubo_size != 0 || !shader->texture_uniforms.is_empty()),
+						ERR_CANT_CREATE);
 			}
-			work.surfaces = cache->get_cache_vec(work.program, TRANSFORMS_UNIFORM_SET, uniforms);
-			work.material = material->shader_data->virtual_geometry_uses_light ? material->get_parameters_uniform_set(work.program, MATERIAL_UNIFORM_SET, true, material->shader_data->texture_uniforms) : RID();
-			ERR_FAIL_COND_V(material->shader_data->virtual_geometry_uses_light && work.material.is_null() &&
-						(material->shader_data->ubo_size != 0 || !material->shader_data->texture_uniforms.is_empty()), ERR_CANT_CREATE);
-			ERR_FAIL_COND_V(work.base.is_null() || work.pass.is_null() || work.surfaces.is_null(), ERR_CANT_CREATE);
+			GodotProfileZoneGroupedValue(vg_color_prepare, program_work.size());
+			program_work.clear();
 		}
 		RENDER_TIMESTAMP("Virtual Geometry Scene Lighting");
+		GodotProfileZoneGroupedFirst(vg_color_submit, "Render/VirtualGeometry/color_submit");
 		const RD::DrawListID list = rd->draw_list_begin(eye_framebuffer, RD::DRAW_DEFAULT_ALL, {}, 0.0f, 0, p_render_data->render_region);
+		VirtualGeometryColorWork previous;
+		uint32_t binding_calls = 0;
 		for (uint32_t index = 0; index < virtual_geometry_color_work.size(); ++index) {
 			const auto &work = virtual_geometry_color_work[index];
-			rd->draw_list_bind_render_pipeline(list, work.pipeline);
-			rd->draw_list_bind_uniform_set(list, work.base, SCENE_UNIFORM_SET);
-			rd->draw_list_bind_uniform_set(list, work.pass, RENDER_PASS_UNIFORM_SET);
-			rd->draw_list_bind_uniform_set(list, work.surfaces, TRANSFORMS_UNIFORM_SET);
-			if (work.material.is_valid()) {
-				rd->draw_list_bind_uniform_set(list, work.material, MATERIAL_UNIFORM_SET);
+			if (work.pipeline != previous.pipeline) {
+				rd->draw_list_bind_render_pipeline(list, work.pipeline);
+				++binding_calls;
 			}
+			// RD preserves selected sets and rebinds them after a pipeline
+			// layout change. Re-selecting an unchanged set would invalidate it.
+			if (work.base != previous.base) {
+				rd->draw_list_bind_uniform_set(list, work.base, SCENE_UNIFORM_SET);
+				++binding_calls;
+			}
+			if (work.pass != previous.pass) {
+				rd->draw_list_bind_uniform_set(list, work.pass, RENDER_PASS_UNIFORM_SET);
+				++binding_calls;
+			}
+			if (work.surfaces != previous.surfaces) {
+				rd->draw_list_bind_uniform_set(list, work.surfaces, TRANSFORMS_UNIFORM_SET);
+				++binding_calls;
+			}
+			if (work.material.is_valid() && work.material != previous.material) {
+				rd->draw_list_bind_uniform_set(list, work.material, MATERIAL_UNIFORM_SET);
+				++binding_calls;
+			}
+			previous = work;
 			const uint32_t push[8] = { index, uint32_t(materials.size()), shading.get_entries_word(), eye, shading.get_extension_stride(), 0, 0, 0 };
 			rd->draw_list_set_push_constant(list, push, sizeof(push));
 			rd->draw_list_draw_indirect(list, false, shading.get_draw_arguments(), index * 16);
 		}
 		rd->draw_list_end();
+		GodotProfileZoneGroupedValue(vg_color_submit, binding_calls);
 	}
 	return OK;
 }
