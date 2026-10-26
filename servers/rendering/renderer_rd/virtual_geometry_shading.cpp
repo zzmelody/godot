@@ -344,10 +344,8 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 	}
 	RD *rd = RD::get_singleton();
 	RENDER_TIMESTAMP("Virtual Geometry Material Sources Begin");
-	for (const HistoryCopy &copy : source_history_copies) {
-		const Error error = rd->buffer_copy(copy.source, previous_transforms, copy.source_byte, copy.destination_byte, copy.bytes);
-		ERR_FAIL_COND(error != OK);
-	}
+	const Error snapshot = snapshot_copies.record(previous_transforms, Span<const HistoryCopy>(source_history_copies.ptr(), source_history_copies.size()));
+	ERR_FAIL_COND(snapshot != OK);
 	RD::ComputeListID list = rd->compute_list_begin();
 	auto init_pass = [&](uint32_t p_mode, uint32_t p_items, bool p_indirect = false) {
 		const uint32_t push[4] = { uint32_t(p_sources.size()), p_mode, p_items, 0 };
@@ -817,7 +815,7 @@ uint64_t VirtualGeometryShading::get_buffer_bytes() const {
 	for (const KeyValue<RID, MaterialHistory> &entry : material_history) {
 		material_bytes += uint64_t(entry.value.bytes) * 2;
 	}
-	return material_bytes + (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + previous_transform_words + source_task_words + source_argument_words + batch_parameter_words + extension_words) * 4 +
+	return material_bytes + snapshot_copies.get_buffer_bytes() + (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + previous_transform_words + source_task_words + source_argument_words + batch_parameter_words + extension_words) * 4 +
 			uint64_t(global_history_words[0] + global_history_words[1]) * 4 +
 			(material_view.is_valid() ? 320 : 0) +
 			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;

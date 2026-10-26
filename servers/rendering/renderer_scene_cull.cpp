@@ -1584,6 +1584,28 @@ void RendererSceneCull::instance_geometry_set_lod_bias(RID p_instance, float p_l
 	}
 }
 
+void RendererSceneCull::_instance_invalidate_shadow_coverage(Instance *p_instance) const {
+	if (!p_instance->base_data || !((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK)) {
+		return;
+	}
+	const auto *geometry = static_cast<const InstanceGeometryData *>(p_instance->base_data);
+	if (!geometry->can_cast_shadows) {
+		return;
+	}
+#ifdef GODOT_USE_TRACY
+	if (TracyIsConnected) {
+		++shadow_coverage_notifications;
+		shadow_coverage_light_visits += geometry->lights.size();
+	}
+#endif
+	// Coverage changes neither bounds nor geometry/material structure. Retire
+	// exactly the paired positional shadows; directional shadows render per view.
+	for (const Instance *light_instance : geometry->lights) {
+		auto *light = static_cast<InstanceLightData *>(light_instance->base_data);
+		light->make_shadow_dirty();
+	}
+}
+
 void RendererSceneCull::instance_geometry_set_shader_parameter(RID p_instance, const StringName &p_parameter, const Variant &p_value) {
 	Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(instance);
@@ -1593,9 +1615,7 @@ void RendererSceneCull::instance_geometry_set_shader_parameter(RID p_instance, c
 	if (value_changed && instance->base_data && ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK)) {
 		const auto *geometry = static_cast<const InstanceGeometryData *>(instance->base_data);
 		if (geometry->material_uses_custom_shadow_coverage && geometry->can_cast_shadows) {
-			// Keep this update scoped to the owner. _update_instance invalidates
-			// its paired lights without rebuilding material dependency metadata.
-			_instance_queue_update(instance, false, false);
+			_instance_invalidate_shadow_coverage(instance);
 		}
 	}
 }
@@ -4545,9 +4565,11 @@ void RendererSceneCull::update_dirty_instances() const {
 	if (count_dirty) {
 		// One bounded record per dirty pass; avoid a trace zone per instance.
 		ZoneNamedN(counts, "Render/SceneUpdate/dirty_counts", true);
-		const CharString text = vformat("count=%d aabb=%d dependencies=%d multimesh=%d mesh=%d particles=%d", dirty_count, aabb_count, dependency_count, multimesh_count, mesh_count, particle_count).utf8();
+		const CharString text = vformat("count=%d aabb=%d dependencies=%d multimesh=%d mesh=%d particles=%d coverage=%d coverage_lights=%d", dirty_count, aabb_count, dependency_count, multimesh_count, mesh_count, particle_count, shadow_coverage_notifications, shadow_coverage_light_visits).utf8();
 		counts.Text(text.get_data(), text.length());
 	}
+	shadow_coverage_notifications = 0;
+	shadow_coverage_light_visits = 0;
 #endif
 
 	// Update dirty resources after dirty instances as instance updates may affect resources.

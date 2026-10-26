@@ -205,16 +205,12 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	memcpy(&view.offsets[3], &maximum_displacement, sizeof(float));
 	rd->buffer_update(view_parameters, 0, sizeof(view), &view);
 	rd->buffer_update(dispatch_inputs, 0, used * sizeof(Parameters), parameter_data.ptr());
-	// RD sees the original resources as transfer reads before any global
-	// traversal reads. Current page fixups and MultiMesh updates therefore
-	// precede this view's immutable metadata/transform snapshots.
-	for (const BufferCopy &copy : metadata_copies) {
-		const Error error = rd->buffer_copy(copy.source, metadata_buffer, copy.source_byte, copy.destination_byte, copy.bytes);
-		if (error != OK) { return error; }
-	}
-	for (const BufferCopy &copy : transform_copies) {
-		const Error error = rd->buffer_copy(copy.source, transforms_buffer, copy.source_byte, copy.destination_byte, copy.bytes);
-		if (error != OK) { return error; }
+	// Both transfer and device-address paths keep explicit RD source reads.
+	// Page fixups and live MultiMesh updates precede these immutable snapshots.
+	const Error copied = snapshot_copies.record(metadata_buffer, Span<const BufferCopy>(metadata_copies.ptr(), metadata_copies.size()),
+			transforms_buffer, Span<const BufferCopy>(transform_copies.ptr(), transform_copies.size()));
+	if (copied != OK) {
+		return copied;
 	}
 	rd->buffer_clear(scratch, 0, 64);
 	for (uint32_t index = 0; index < used; ++index) {
@@ -315,7 +311,7 @@ Error VirtualGeometrySelection::use_root_coverage() {
 }
 
 uint64_t VirtualGeometrySelection::get_buffer_bytes() const {
-	return (view_parameters.is_valid() ? 256 : 0) + (uint64_t(result_words) + metadata_words + transforms_words + feedback_words + dispatch_words + dispatch_input_words + scratch_words) * 4;
+	return snapshot_copies.get_buffer_bytes() + (view_parameters.is_valid() ? 256 : 0) + (uint64_t(result_words) + metadata_words + transforms_words + feedback_words + dispatch_words + dispatch_input_words + scratch_words) * 4;
 }
 
 } // namespace RendererRD

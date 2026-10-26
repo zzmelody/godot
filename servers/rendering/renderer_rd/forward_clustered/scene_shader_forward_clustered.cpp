@@ -961,19 +961,18 @@ void SceneShaderForwardClustered::MaterialData::set_next_pass(RID p_pass) {
 	next_pass = p_pass;
 }
 
-bool SceneShaderForwardClustered::MaterialData::update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty) {
+RendererRD::MaterialStorage::MaterialUpdateResult SceneShaderForwardClustered::MaterialData::update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty) {
 	if (shader_data->version.is_valid()) {
 		RID shader_rid = SceneShaderForwardClustered::singleton->shader.version_get_shader(shader_data->version, 0);
 
 		MutexLock lock(SceneShaderForwardClustered::singleton_mutex);
 		const bool bindings_changed = update_parameters_uniform_set(p_parameters, p_uniform_dirty, p_textures_dirty, shader_data->uniforms, shader_data->ubo_offsets.ptr(), shader_data->texture_uniforms, shader_data->default_texture_params, shader_data->ubo_size, uniform_set, shader_rid, RenderForwardClustered::MATERIAL_UNIFORM_SET, true, true);
-		// A numeric UBO upload can keep the same descriptor while changing WPO,
-		// masking or authored depth. Notify the existing scene dependencies so
-		// their paired lights retire the cached shadow at the next update.
+		// Numeric WPO, masking or DEPTH changes invalidate paired shadows, but
+		// do not rebuild geometry surfaces or material dependency metadata.
 		const bool coverage_changed = (p_uniform_dirty || p_textures_dirty) && shader_data->uses_custom_shadow_coverage();
-		return bindings_changed || coverage_changed;
+		return { bindings_changed, coverage_changed };
 	} else {
-		return false;
+		return {};
 	}
 }
 

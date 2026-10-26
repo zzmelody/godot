@@ -80,6 +80,7 @@ public:
 
 private:
 	VirtualGeometryWorkMemory memory;
+	VirtualGeometrySnapshotCopy snapshot_copies;
 	struct Source {
 		uint32_t first = 0;
 		uint32_t map = 0;
@@ -145,12 +146,7 @@ private:
 	uint32_t source_instances = 0;
 	RID source_uniforms, source_scan_uniforms;
 	LocalVector<ScanLevel> source_levels;
-	struct HistoryCopy {
-		RID source;
-		uint32_t source_byte;
-		uint32_t destination_byte;
-		uint32_t bytes;
-	};
+	using HistoryCopy = VirtualGeometrySnapshotCopy::Copy;
 	LocalVector<HistoryCopy> source_history_copies;
 	RID batch_parameters;
 	uint32_t batch_parameter_words = 0;

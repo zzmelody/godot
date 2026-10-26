@@ -32,6 +32,7 @@
 
 #include "core/math/dynamic_bvh.h"
 #include "core/math/transform_interpolator.h"
+#include "core/profiling/profiling.gen.h"
 #include "core/templates/bin_sorted_array.h"
 #include "core/templates/local_vector.h"
 #include "core/templates/paged_allocator.h"
@@ -492,6 +493,9 @@ public:
 		static void dependency_changed(Dependency::DependencyChangedNotification p_notification, DependencyTracker *tracker) {
 			Instance *instance = (Instance *)tracker->userdata;
 			switch (p_notification) {
+				case Dependency::DEPENDENCY_CHANGED_SHADOW_COVERAGE: {
+					singleton->_instance_invalidate_shadow_coverage(instance);
+				} break;
 				case Dependency::DEPENDENCY_CHANGED_SKELETON_DATA:
 				case Dependency::DEPENDENCY_CHANGED_SKELETON_BONES:
 				case Dependency::DEPENDENCY_CHANGED_AABB: {
@@ -619,6 +623,11 @@ public:
 
 	mutable SelfList<Instance>::List _instance_update_list;
 	void _instance_queue_update(Instance *p_instance, bool p_update_aabb, bool p_update_dependencies = false) const;
+	void _instance_invalidate_shadow_coverage(Instance *p_instance) const;
+#ifdef GODOT_USE_TRACY
+	mutable uint64_t shadow_coverage_notifications = 0;
+	mutable uint64_t shadow_coverage_light_visits = 0;
+#endif
 
 	struct InstanceGeometryData : public InstanceBaseData {
 		RenderGeometryInstance *geometry_instance = nullptr;

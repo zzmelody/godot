@@ -92,6 +92,11 @@ public:
 		static bool blend_mode_uses_blend_alpha(BlendMode p_mode);
 	};
 
+	struct MaterialUpdateResult {
+		bool bindings_changed = false;
+		bool shadow_coverage_changed = false;
+	};
+
 	struct MaterialData {
 		Vector<RendererRD::TextureStorage::RenderTarget *> render_target_cache;
 		bool uses_dynamic_textures = false;
@@ -102,7 +107,7 @@ public:
 
 		virtual void set_render_priority(int p_priority) = 0;
 		virtual void set_next_pass(RID p_pass) = 0;
-		virtual bool update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty) = 0;
+		virtual MaterialUpdateResult update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty) = 0;
 		virtual ~MaterialData();
 
 		//to be used internally by update_parameters, in the most common configuration of material parameters
@@ -186,7 +191,7 @@ public:
 
 		virtual void set_render_priority(int p_priority) {}
 		virtual void set_next_pass(RID p_pass) {}
-		virtual bool update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty);
+		virtual MaterialUpdateResult update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty);
 		virtual ~TexBlitMaterialData();
 	};
 

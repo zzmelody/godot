@@ -1418,6 +1418,19 @@ Error RenderingDevice::buffer_get_data_async(RID p_buffer, const Callable &p_cal
 	return OK;
 }
 
+bool RenderingDevice::buffer_get_info(RID p_buffer, BufferInfo &r_info) {
+	ERR_RENDER_THREAD_GUARD_V(false);
+	r_info = {};
+	Buffer *buffer = _get_buffer_from_owner(p_buffer);
+	if (buffer == nullptr) {
+		return false;
+	}
+	r_info.size = buffer->size;
+	r_info.storage = buffer->usage.has_flag(RDD::BUFFER_USAGE_STORAGE_BIT);
+	r_info.device_address = buffer->usage.has_flag(RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT);
+	return true;
+}
+
 uint64_t RenderingDevice::buffer_get_device_address(RID p_buffer) {
 	ERR_RENDER_THREAD_GUARD_V(0);
 

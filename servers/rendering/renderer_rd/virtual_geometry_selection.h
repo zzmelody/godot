@@ -8,6 +8,7 @@
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select_dispatch.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/virtual_geometry_storage.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_snapshot_copy.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_work_memory.h"
 
 class RenderGeometryInstance;
@@ -70,6 +71,7 @@ public:
 
 private:
 	VirtualGeometryWorkMemory memory;
+	VirtualGeometrySnapshotCopy snapshot_copies;
 	struct Parameters {
 		float model[16];
 		uint32_t source[4];
@@ -78,12 +80,7 @@ private:
 		uint32_t addresses[4];
 		uint32_t prefix[4];
 	};
-	struct BufferCopy {
-		RID source;
-		uint32_t source_byte;
-		uint32_t destination_byte;
-		uint32_t bytes;
-	};
+	using BufferCopy = VirtualGeometrySnapshotCopy::Copy;
 	// Fine traversal may fall back to complete roots. This queue target never
 	// limits admitted instances or the complete root coverage allocation.
 	static constexpr uint32_t FINE_WORK_TARGET = 1048576;

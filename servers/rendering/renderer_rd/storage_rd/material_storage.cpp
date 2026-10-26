@@ -34,6 +34,7 @@
 #include "core/config/project_settings.h"
 #include "core/io/resource_loader.h"
 #include "core/math/projection.h"
+#include "core/profiling/profiling.h"
 #include "core/templates/local_vector.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h"
@@ -1451,10 +1452,10 @@ MaterialStorage::ShaderData *MaterialStorage::_create_tex_blit_shader_func() {
 	return shader_data;
 }
 
-bool MaterialStorage::TexBlitMaterialData::update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty) {
+MaterialStorage::MaterialUpdateResult MaterialStorage::TexBlitMaterialData::update_parameters(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty) {
 	uniform_set_updated = true;
 
-	return update_parameters_uniform_set(p_parameters, p_uniform_dirty, p_textures_dirty, shader_data->uniforms, shader_data->ubo_offsets.ptr(), shader_data->texture_uniforms, shader_data->default_texture_params, shader_data->ubo_size, uniform_set, TextureStorage::get_singleton()->tex_blit_shader.shader.version_get_shader(shader_data->version, 0), 1, true, false);
+	return { update_parameters_uniform_set(p_parameters, p_uniform_dirty, p_textures_dirty, shader_data->uniforms, shader_data->ubo_offsets.ptr(), shader_data->texture_uniforms, shader_data->default_texture_params, shader_data->ubo_size, uniform_set, TextureStorage::get_singleton()->tex_blit_shader.shader.version_get_shader(shader_data->version, 0), 1, true, false), false };
 }
 
 MaterialStorage::TexBlitMaterialData::~TexBlitMaterialData() {
@@ -2208,14 +2209,28 @@ void MaterialStorage::_update_global_shader_uniforms() {
 	}
 	if (global_shader_uniforms.must_invalidate_buffer_shadows) {
 		global_shader_uniforms.must_invalidate_buffer_shadows = false;
+#ifdef GODOT_USE_TRACY
+		const bool count_notifications = TracyIsConnected;
+		uint64_t notified_materials = 0;
+#endif
 		// Reuse the registered global-buffer subscribers. Instance uniform writes
 		// share this buffer, but do not set this global-parameter event flag.
 		for (RID material_rid : global_shader_uniforms.materials_using_buffer) {
 			Material *material = material_owner.get_or_null(material_rid);
 			if (material && material->shader && material->shader->data && material->shader->data->uses_custom_shadow_coverage()) {
-				material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+				material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_SHADOW_COVERAGE);
+#ifdef GODOT_USE_TRACY
+				notified_materials += count_notifications;
+#endif
 			}
 		}
+#ifdef GODOT_USE_TRACY
+		if (count_notifications) {
+			ZoneNamedN(notifications, "Render/MaterialUpdate/global_shadow_notifications", true);
+			const CharString text = vformat("materials=%d", notified_materials).utf8();
+			notifications.Text(text.get_data(), text.length());
+		}
+#endif
 	}
 }
 
@@ -2515,7 +2530,7 @@ void MaterialStorage::_texture_changed(RID p_texture, bool p_bindings_changed, b
 			_material_queue_update(material, false, true);
 		}
 		if (material->shader && material->shader->data && material->shader->data->uses_custom_shadow_coverage()) {
-			material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+			material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_SHADOW_COVERAGE);
 		}
 	}
 }
@@ -2545,6 +2560,10 @@ void MaterialStorage::_material_queue_update(Material *material, bool p_uniform,
 }
 
 void MaterialStorage::_update_queued_materials() {
+#ifdef GODOT_USE_TRACY
+	const bool count_notifications = TracyIsConnected;
+	uint64_t binding_notifications = 0, coverage_notifications = 0;
+#endif
 	SelfList<Material>::List copy;
 	{
 		MutexLock lock(material_update_list_mutex);
@@ -2558,19 +2577,34 @@ void MaterialStorage::_update_queued_materials() {
 	while (SelfList<Material> *E = copy.first()) {
 		Material *material = E->self();
 		copy.remove(E);
-		bool uniforms_changed = false;
+		MaterialUpdateResult result;
 
 		if (material->data) {
-			uniforms_changed = material->data->update_parameters(material->params, material->uniform_dirty, material->texture_dirty);
+			result = material->data->update_parameters(material->params, material->uniform_dirty, material->texture_dirty);
 		}
 		material->texture_dirty = false;
 		material->uniform_dirty = false;
 
-		if (uniforms_changed) {
+		if (result.bindings_changed) {
 			//some implementations such as 3D renderer cache the material uniform set, so update is required
 			material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MATERIAL);
+#ifdef GODOT_USE_TRACY
+			binding_notifications += count_notifications;
+#endif
+		} else if (result.shadow_coverage_changed) {
+			material->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_SHADOW_COVERAGE);
+#ifdef GODOT_USE_TRACY
+			coverage_notifications += count_notifications;
+#endif
 		}
 	}
+#ifdef GODOT_USE_TRACY
+	if (count_notifications) {
+		ZoneNamedN(notifications, "Render/MaterialUpdate/parameter_notifications", true);
+		const CharString text = vformat("bindings=%d coverage=%d", binding_notifications, coverage_notifications).utf8();
+		notifications.Text(text.get_data(), text.length());
+	}
+#endif
 }
 
 RID MaterialStorage::material_allocate() {

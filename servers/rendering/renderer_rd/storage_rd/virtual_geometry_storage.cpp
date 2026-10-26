@@ -640,7 +640,12 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	for (const auto &command : root_paths) {
 		encode_uint32(command.value, gpu_data + command.word * 4);
 	}
-	const RID metadata = RD::get_singleton()->storage_buffer_create(gpu_bytes, gpu);
+	RD *rd = RD::get_singleton();
+	BitField<RD::BufferCreationBits> flags;
+	if (rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS)) {
+		flags = RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT;
+	}
+	const RID metadata = rd->storage_buffer_create(gpu_bytes, gpu, 0, flags);
 	if (metadata.is_null()) {
 		return ERR_CANT_CREATE;
 	}
