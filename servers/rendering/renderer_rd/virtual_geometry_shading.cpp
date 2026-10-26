@@ -712,6 +712,7 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 			raster_material_data[material_index * 4 + 2] = 1u | (data->shader_data->writes_fragment_depth ? 2u : 0u);
 			RasterMaterialWork raster;
 			raster.material = material_index;
+			raster.fused_software = !p_voxel && !data->shader_data->uses_alpha_clip && !data->shader_data->uses_discard && !data->shader_data->writes_fragment_depth;
 			for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {
 				raster.programs[mode] = p_voxel ? data->shader_data->get_virtual_geometry_voxel_shader() : data->shader_data->get_virtual_geometry_raster_shader(mode);
 				ERR_FAIL_COND_V(raster.programs[mode].is_null(), ERR_CANT_CREATE);

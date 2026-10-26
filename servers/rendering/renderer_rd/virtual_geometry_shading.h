@@ -61,6 +61,7 @@ public:
 	RID get_draw_arguments() const { return draw_arguments; }
 	struct RasterMaterialWork {
 		uint32_t material = 0;
+		bool fused_software = false;
 		RID programs[3];
 		RID pipelines[3];
 		RID parameters[3];

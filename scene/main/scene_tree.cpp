@@ -1257,16 +1257,24 @@ void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
 
 			if (p_physics) {
 				if (n->is_physics_processing_internal()) {
+					GodotProfileZoneGroupedFirst(notification, "SceneTree::process_group/internal_physics_callback");
+					GodotProfileZoneGroupedValue(notification, uint64_t(n->get_instance_id()));
 					n->notification(Node::NOTIFICATION_INTERNAL_PHYSICS_PROCESS);
 				}
 				if (n->is_physics_processing()) {
+					GodotProfileZoneGroupedFirst(notification, "SceneTree::process_group/physics_callback");
+					GodotProfileZoneGroupedValue(notification, uint64_t(n->get_instance_id()));
 					n->notification(Node::NOTIFICATION_PHYSICS_PROCESS);
 				}
 			} else {
 				if (n->is_processing_internal()) {
+					GodotProfileZoneGroupedFirst(notification, "SceneTree::process_group/internal_process_callback");
+					GodotProfileZoneGroupedValue(notification, uint64_t(n->get_instance_id()));
 					n->notification(Node::NOTIFICATION_INTERNAL_PROCESS);
 				}
 				if (n->is_processing()) {
+					GodotProfileZoneGroupedFirst(notification, "SceneTree::process_group/process_callback");
+					GodotProfileZoneGroupedValue(notification, uint64_t(n->get_instance_id()));
 					n->notification(Node::NOTIFICATION_PROCESS);
 				}
 			}

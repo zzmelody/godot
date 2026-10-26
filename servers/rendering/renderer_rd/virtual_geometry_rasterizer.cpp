@@ -206,7 +206,7 @@ Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Re
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { p_sources[0].parameters }));
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { candidates }));
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { classified }));
-			if (mode != 0 && !p_voxel) {
+			if ((mode != 0 || pass.work.fused_software) && !p_voxel) {
 				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { visibility }));
 			}
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() }));
@@ -454,7 +454,11 @@ Error VirtualGeometryRasterizer::_record_geometry(const VirtualGeometryShading::
 			{ float(p_view.jitter.x), float(p_view.jitter.y) }, bucket_count * 4, pass.work.material };
 		static_assert(sizeof(RasterParameters) == 32);
 		rd->draw_command_begin_label("Virtual Geometry Material Raster");
-		RENDER_TIMESTAMP("Virtual Geometry Raster Bins Begin");
+		if (pass.work.fused_software) {
+			RENDER_TIMESTAMP("Virtual Geometry Fused Raster Begin");
+		} else {
+			RENDER_TIMESTAMP("Virtual Geometry Raster Bins Begin");
+		}
 		RD::ComputeListID list = rd->compute_list_begin();
 		rd->compute_list_bind_compute_pipeline(list, pass.work.pipelines[0]);
 		rd->compute_list_bind_uniform_set(list, pass.uniforms[0], 0);
@@ -469,18 +473,24 @@ Error VirtualGeometryRasterizer::_record_geometry(const VirtualGeometryShading::
 		rd->compute_list_set_push_constant(list, dispatch_parameters, sizeof(dispatch_parameters));
 		dispatch_count(list, 1, 64);
 		rd->compute_list_end();
-		RENDER_TIMESTAMP("Virtual Geometry Raster Bins End");
-		RENDER_TIMESTAMP("Virtual Geometry Software Raster Begin");
-		list = rd->compute_list_begin();
-		rd->compute_list_bind_compute_pipeline(list, pass.work.pipelines[1]);
-		rd->compute_list_bind_uniform_set(list, pass.uniforms[1], 0);
-		if (pass.work.parameters[1].is_valid()) {
-			rd->compute_list_bind_uniform_set(list, pass.work.parameters[1], 3);
+		if (pass.work.fused_software) {
+			RENDER_TIMESTAMP("Virtual Geometry Fused Raster End");
+		} else {
+			RENDER_TIMESTAMP("Virtual Geometry Raster Bins End");
 		}
-		rd->compute_list_set_push_constant(list, &raster, sizeof(raster));
-		rd->compute_list_dispatch_indirect(list, arguments, bucket * 48 + 16);
-		rd->compute_list_end();
-		RENDER_TIMESTAMP("Virtual Geometry Software Raster End");
+		if (!pass.work.fused_software) {
+			RENDER_TIMESTAMP("Virtual Geometry Software Raster Begin");
+			list = rd->compute_list_begin();
+			rd->compute_list_bind_compute_pipeline(list, pass.work.pipelines[1]);
+			rd->compute_list_bind_uniform_set(list, pass.uniforms[1], 0);
+			if (pass.work.parameters[1].is_valid()) {
+				rd->compute_list_bind_uniform_set(list, pass.work.parameters[1], 3);
+			}
+			rd->compute_list_set_push_constant(list, &raster, sizeof(raster));
+			rd->compute_list_dispatch_indirect(list, arguments, bucket * 48 + 16);
+			rd->compute_list_end();
+			RENDER_TIMESTAMP("Virtual Geometry Software Raster End");
+		}
 		RENDER_TIMESTAMP("Virtual Geometry Hardware Raster Begin");
 		const RD::DrawListID draw = rd->draw_list_begin(framebuffer);
 		rd->draw_list_bind_render_pipeline(draw, pass.work.pipelines[2]);

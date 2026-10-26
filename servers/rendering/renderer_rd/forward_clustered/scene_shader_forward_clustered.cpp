@@ -744,6 +744,9 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 									? (mode == 1 ? generated : fragment_code)
 									: vertex_code;
 							Vector<String> raster_defines = raster_code.defines;
+							if (mode == 0 && !pixel_programmable) {
+								raster_defines.push_back("#define VG_FUSED_SOFTWARE\n");
+							}
 							if (writes_vertex_tangent && !raster_defines.has("#define VG_VERTEX_TANGENT_WRITE\n")) {
 								raster_defines.push_back("#define VG_VERTEX_TANGENT_WRITE\n");
 							}
