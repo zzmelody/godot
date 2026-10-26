@@ -163,9 +163,6 @@ void main() {
 		source_tasks.data[4u] = min(65535u, groups);
 		source_tasks.data[5u] = max(1u, (groups + 65534u) / 65535u);
 		source_tasks.data[6u] = 1u;
-		source_tasks.data[8u] = min(65535u, count);
-		source_tasks.data[9u] = max(1u, (count + 65534u) / 65535u);
-		source_tasks.data[10u] = 1u;
 		return;
 	}
 	if (phase.mode == 0u) {

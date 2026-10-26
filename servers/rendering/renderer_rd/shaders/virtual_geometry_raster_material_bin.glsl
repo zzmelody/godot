@@ -42,10 +42,10 @@ layout(push_constant, std430) uniform Parameters {
 	uint phase;
 }
 params;
-layout(set = 0, binding = 28, std430) readonly buffer SourceTasks { uint data[]; } source_tasks;
-shared uint pipeline_ids[64];
-shared bool draw_cluster;
-shared uint custom_depth;
+layout(set = 0, binding = 28, std430) readonly buffer SourceTasks {
+	uint data[];
+}
+source_tasks;
 
 bool vg_cluster_visible(uvec2 reference) {
 	if (occlusion.flags.x == 0u) {
@@ -96,71 +96,26 @@ bool vg_cluster_visible(uvec2 reference) {
 	return false;
 }
 
-void main() {
-	uint index = gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u;
-	if (index >= min(params.references, source_tasks.data[0])) {
-		return;
-	}
-	uvec2 reference = vg_visible_reference(index);
-	if (reference.x == 0xffffffffu || reference.y == 0xffffffffu) {
-		return;
-	}
-	uint lane = gl_LocalInvocationIndex;
-	if (lane == 0u) {
-		custom_depth = 0u;
-	}
-	barrier();
-	uint record = vg_record(reference.y);
-	uint count = geometry.data[record + 6u];
-	uint pipeline = 0xffffffffu;
-	if (count == 0u || count > 64u || reference.x >= (scene.data[1] - scene.data[0]) / 48u) {
+uint vg_palette_pipeline(uint source, uint palette, uint entry, out bool custom_depth) {
+	custom_depth = false;
+	uint slot = geometry.data[palette + entry];
+	if (slot >= vg_source_data(source, 52u)) {
 		atomicOr(status.data[0], 4u);
-		return; // Same admitted reference and condition for the complete group.
+		return 0xffffffffu;
 	}
-	if (lane < count) {
-		uint palette = (reference.y >> 8u) * 8192u + (geometry.data[record + 68u] >> 2u);
-		uint slot = geometry.data[palette + lane];
-		if (slot >= vg_source_data(reference.x, 52u)) {
-			atomicOr(status.data[0], 4u);
-		} else {
-			uint material = scene.data[scene.data[2] + vg_source_data(reference.x, 47u) + slot];
-			if (material >= scene.data[3]) {
-				atomicOr(status.data[0], 4u);
-			} else {
-				uint flags = materials.data[material * 4u + 2u];
-				pipeline = flags == 0u ? 0u : material + 1u;
-				if ((flags & 2u) != 0u) {
-					atomicOr(custom_depth, 1u);
-				}
-			}
-		}
+	uint material = scene.data[scene.data[2] + vg_source_data(source, 47u) + slot];
+	if (material >= scene.data[3]) {
+		atomicOr(status.data[0], 4u);
+		return 0xffffffffu;
 	}
-	pipeline_ids[lane] = pipeline;
-	barrier();
-	if (lane == 0u) {
-		// Absolute DEPTH may pull a geometrically hidden surface forward.
-		// Its original bounds cannot prove occlusion in either Hi-Z phase.
-		bool visible = custom_depth != 0u || vg_cluster_visible(reference);
-		if (params.phase == 0u) {
-			draw_cluster = visible;
-			if (params.scatter == 0u) {
-				pending.data[index] = visible ? 0u : 1u;
-			}
-		} else {
-			draw_cluster = pending.data[index] != 0u && visible;
-		}
-	}
-	barrier();
-	if (!draw_cluster) {
+	uint flags = materials.data[material * 4u + 2u];
+	custom_depth = (flags & 2u) != 0u;
+	return flags == 0u ? 0u : material + 1u;
+}
+
+void vg_emit_candidate(uint index, uint pipeline) {
+	if (pipeline >= params.buckets) {
 		return;
-	}
-	if (pipeline == 0xffffffffu || pipeline >= params.buckets) {
-		return;
-	}
-	for (uint previous = 0u; previous < lane; ++previous) {
-		if (pipeline_ids[previous] == pipeline) {
-			return;
-		}
 	}
 	if (params.scatter == 0u) {
 		atomicAdd(candidates.data[2u + pipeline], 1u);
@@ -171,6 +126,82 @@ void main() {
 		} else {
 			atomicOr(candidates.data[1], 1u);
 			atomicOr(status.data[0], 4u);
+		}
+	}
+}
+
+void main() {
+	uint index = (gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u) * 64u + gl_LocalInvocationIndex;
+	if (index >= min(params.references, source_tasks.data[0])) {
+		return;
+	}
+	// Each view owns this buffer. Count records visibility once; scatter uses
+	// that decision with the same geometry, transform and Hi-Z version.
+	// Recovery visits only primary-occluded entries and records recovered = 2.
+	if (params.phase != 0u) {
+		if (pending.data[index] != (params.scatter == 0u ? 1u : 2u)) {
+			return;
+		}
+	} else if (params.scatter != 0u) {
+		if (pending.data[index] != 0u) {
+			return;
+		}
+	} else {
+		pending.data[index] = 1u;
+	}
+	uvec2 reference = vg_visible_reference(index);
+	if (reference.x == 0xffffffffu || reference.y == 0xffffffffu) {
+		return;
+	}
+	uint record = vg_record(reference.y);
+	uint count = geometry.data[record + 6u];
+	if (count == 0u || count > 64u || reference.x >= (scene.data[1] - scene.data[0]) / 48u) {
+		atomicOr(status.data[0], 4u);
+		return;
+	}
+	uint palette = (reference.y >> 8u) * 8192u + (geometry.data[record + 68u] >> 2u);
+	uint first_pipeline = 0xffffffffu;
+	bool same_pipeline = true;
+	bool custom_depth = false;
+	for (uint entry = 0u; entry < count; ++entry) {
+		bool entry_depth;
+		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, entry_depth);
+		if (pipeline == 0xffffffffu) {
+			return;
+		}
+		if (entry == 0u) {
+			first_pipeline = pipeline;
+		} else {
+			same_pipeline = same_pipeline && pipeline == first_pipeline;
+		}
+		custom_depth = custom_depth || entry_depth;
+	}
+	if (params.scatter == 0u) {
+		// Absolute DEPTH may pull a geometrically hidden surface forward.
+		// Its original bounds cannot prove occlusion in either Hi-Z phase.
+		bool visible = custom_depth || vg_cluster_visible(reference);
+		pending.data[index] = visible ? (params.phase == 0u ? 0u : 2u) : 1u;
+		if (!visible) {
+			return;
+		}
+	}
+	// The common one-pipeline case needs no per-invocation palette array.
+	if (same_pipeline) {
+		vg_emit_candidate(index, first_pipeline);
+		return;
+	}
+	for (uint entry = 0u; entry < count; ++entry) {
+		bool entry_depth;
+		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, entry_depth);
+		bool duplicate = false;
+		for (uint previous = 0u; previous < entry; ++previous) {
+			if (vg_palette_pipeline(reference.x, palette, previous, entry_depth) == pipeline) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (!duplicate) {
+			vg_emit_candidate(index, pipeline);
 		}
 	}
 }

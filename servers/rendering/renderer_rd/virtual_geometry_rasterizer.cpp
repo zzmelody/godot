@@ -236,7 +236,7 @@ void VirtualGeometryRasterizer::_record_material_bins(uint32_t p_phase) {
 		rd->compute_list_bind_compute_pipeline(list, material_bin_pipeline.get_rid());
 		rd->compute_list_bind_uniform_set(list, candidate_uniforms, 0);
 		rd->compute_list_set_push_constant(list, push, sizeof(push));
-		rd->compute_list_dispatch_indirect(list, shading.get_source_arguments(), 16);
+		rd->compute_list_dispatch_indirect(list, shading.get_source_arguments(), 0);
 		rd->compute_list_add_barrier(list);
 	};
 	bin_pass(0);

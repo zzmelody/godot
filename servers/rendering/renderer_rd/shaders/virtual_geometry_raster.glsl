@@ -14,12 +14,17 @@ layout(location = 1) out float shadow_clip;
 
 void main() {
 #ifdef VG_GLOBAL_RASTER
+#ifdef VG_VOXEL_CAPTURE
+	// Voxel fragments write directly, outside the ordinary final refusal pass.
 	if (atomicOr(vg_status.data[0], 0u) != 0u) {
 		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 		pixel_value = 0u;
 		shadow_clip = -1.0;
 		return;
 	}
+#endif
+	// Ordinary indirect arguments already reject invalid input. A later
+	// raster fault invalidates the complete view at the final resolve.
 	uint index =
 #ifdef VG_VOXEL_CAPTURE
 			vg_raster_input(uint(gl_InstanceIndex));

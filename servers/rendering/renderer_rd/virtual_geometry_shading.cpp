@@ -295,13 +295,13 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	if (error != OK) {
 		return error;
 	}
-	const uint32_t tasks_header[16] = { 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0 };
+	const uint32_t tasks_header[16] = { 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 	rd->buffer_update(source_tasks, 0, sizeof(tasks_header), tasks_header);
-	error = ensure_words(memory, source_arguments, source_argument_words, 8, true);
+	error = ensure_words(memory, source_arguments, source_argument_words, 4, true);
 	if (error != OK) {
 		return error;
 	}
-	const uint32_t source_dispatch[8] = { 0, 1, 1, 0, 0, 1, 1, 0 };
+	const uint32_t source_dispatch[4] = { 0, 1, 1, 0 };
 	rd->buffer_update(source_arguments, 0, sizeof(source_dispatch), source_dispatch);
 	if (!p_sources.is_empty()) {
 		source_uniforms = cache->get_cache(init_shader.version_get_shader(init_version, 0), 0,
@@ -379,7 +379,7 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 	// Keep indirect parameters outside the storage buffer that the source
 	// pipeline writes. The transfer also records an explicit producer edge.
 	rd->compute_list_end();
-	const Error copy_error = rd->buffer_copy(source_tasks, source_arguments, 16, 0, 28);
+	const Error copy_error = rd->buffer_copy(source_tasks, source_arguments, 16, 0, 12);
 	ERR_FAIL_COND(copy_error != OK);
 	list = rd->compute_list_begin();
 	init_pass(1, source_instances);
