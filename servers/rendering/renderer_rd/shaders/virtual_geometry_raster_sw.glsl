@@ -13,6 +13,9 @@
 #include "virtual_geometry_raster_inc.glsl"
 #include "virtual_geometry_raster_cull_inc.glsl"
 #include "virtual_geometry_write_inc.glsl"
+#ifdef VG_PROGRAMMABLE
+#include "virtual_geometry_raster_vertex_cache_inc.glsl"
+#endif
 /* clang-format on */
 
 #ifdef VG_MASKED
@@ -40,17 +43,30 @@ int vg_bias(ivec2 a, ivec2 b) {
 
 
 void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
+#ifdef VG_PROGRAMMABLE
+	if (!vg_cached_triangle_active(triangle)) {
+#else
 	if (!vg_raster_material_active(selected, triangle)) {
+#endif
 		return;
 	}
+#ifdef VG_PROGRAMMABLE
+	uvec3 vertices = vg_cached_triangle(triangle);
+#else
 	uvec3 vertices = vg_triangle(selected.y, triangle);
+#endif
 	vec4 clip[3];
 	vec3 shadow_clips;
 	ivec2 fixed_position[3];
 	for (uint corner = 0u; corner < 3u; ++corner) {
+#ifdef VG_PROGRAMMABLE
+		clip[corner] = vg_cached_clip[vertices[corner]];
+		shadow_clips[corner] = vg_cached_shadow_clip[vertices[corner]];
+#else
 		vec3 point = vg_raster_position(selected.x, selected.y, vertices[corner]);
 		clip[corner] = vg_project(selected.x, point);
 		shadow_clips[corner] = vg_shadow_clip(selected.x, point);
+#endif
 		fixed_position[corner] = ivec2(floor(vg_screen(clip[corner]) * 256.0 + 0.5));
 	}
 	ivec2 lower = min(min(fixed_position[0], fixed_position[1]), fixed_position[2]);
@@ -162,6 +178,11 @@ void main() {
 	uint index = bins.data[4u + raster_info.raster.w + job];
 #endif
 	uvec2 selected = vg_selected(index);
+	// Every invocation participates before masked work returns to physical
+	// quads. Fragment derivatives still use the original per-quad evaluation.
+#ifdef VG_PROGRAMMABLE
+	vg_cache_raster_vertices(selected, 64u);
+#endif
 	uint count = geometry.data[vg_record(selected.y) + 5u];
 #ifdef VG_MASKED
 	for (uint triangle = quad % 16u; triangle < count; triangle += 16u) {

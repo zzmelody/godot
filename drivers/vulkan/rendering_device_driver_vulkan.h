@@ -238,6 +238,7 @@ public:
 	/*****************/
 	struct BufferInfo {
 		VkBuffer vk_buffer = VK_NULL_HANDLE;
+		VkDeviceAddress device_address = 0;
 		struct {
 			VmaAllocation handle = nullptr;
 			uint64_t size = UINT64_MAX;

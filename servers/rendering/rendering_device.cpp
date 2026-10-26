@@ -1427,7 +1427,9 @@ bool RenderingDevice::buffer_get_info(RID p_buffer, BufferInfo &r_info) {
 	}
 	r_info.size = buffer->size;
 	r_info.storage = buffer->usage.has_flag(RDD::BUFFER_USAGE_STORAGE_BIT);
-	r_info.device_address = buffer->usage.has_flag(RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT);
+	if (buffer->usage.has_flag(RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT)) {
+		r_info.device_address = driver->buffer_get_device_address(buffer->driver_id);
+	}
 	return true;
 }
 

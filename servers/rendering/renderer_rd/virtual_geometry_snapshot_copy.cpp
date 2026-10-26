@@ -94,10 +94,7 @@ Error VirtualGeometrySnapshotCopy::record(RID p_first_destination, Span<const Co
 				if (!rd->buffer_get_info(copy.source, info) || !info.storage || !info.device_address) {
 					continue;
 				}
-				source.address = rd->buffer_get_device_address(copy.source);
-				if (source.address == 0) {
-					continue;
-				}
+				source.address = info.device_address;
 				source.bytes = info.size;
 				sources.insert(copy.source, source);
 			}

@@ -2063,6 +2063,14 @@ RDD::BufferID RenderingDeviceDriverVulkan::buffer_create(uint64_t p_size, BitFie
 	buf_info->allocation.handle = allocation;
 	buf_info->allocation.size = alloc_info.size;
 	buf_info->size = original_size;
+	// VMA has bound the allocation above. This address belongs to this VkBuffer
+	// and allocation, not to an RD RID that can later own a different buffer.
+	if (p_usage.has_flag(BUFFER_USAGE_DEVICE_ADDRESS_BIT)) {
+		VkBufferDeviceAddressInfo address_info = {};
+		address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+		address_info.buffer = vk_buffer;
+		buf_info->device_address = vkGetBufferDeviceAddress(vk_device, &address_info);
+	}
 
 	return BufferID(buf_info);
 }
@@ -2178,11 +2186,7 @@ void RenderingDeviceDriverVulkan::buffer_flush(BufferID p_buffer) {
 
 uint64_t RenderingDeviceDriverVulkan::buffer_get_device_address(BufferID p_buffer) {
 	const BufferInfo *buf_info = (const BufferInfo *)p_buffer.id;
-	VkBufferDeviceAddressInfo address_info = {};
-	address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	address_info.pNext = nullptr;
-	address_info.buffer = buf_info->vk_buffer;
-	return vkGetBufferDeviceAddress(vk_device, &address_info);
+	return buf_info->device_address;
 }
 
 /*****************/

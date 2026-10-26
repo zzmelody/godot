@@ -271,7 +271,7 @@ public:
 	struct BufferInfo {
 		uint32_t size = 0;
 		bool storage = false;
-		bool device_address = false;
+		uint64_t device_address = 0;
 	};
 	// Internal capability query. It borrows no driver/owner pointers and does
 	// not log when an optional device-address copy path is unavailable.
