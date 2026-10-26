@@ -31,6 +31,14 @@
 #include "utilities.h"
 
 void Dependency::changed_notify(DependencyChangedNotification p_notification) {
+	if (p_notification == DEPENDENCY_CHANGED_SHADOW_COVERAGE) {
+		for (DependencyTracker *tracker : shadow_coverage_instances) {
+			if (tracker->changed_callback) {
+				tracker->changed_callback(p_notification, tracker);
+			}
+		}
+		return;
+	}
 	for (const KeyValue<DependencyTracker *, uint32_t> &E : instances) {
 		if (E.key->changed_callback) {
 			E.key->changed_callback(p_notification, E.key);
@@ -48,6 +56,7 @@ void Dependency::deleted_notify(const RID &p_rid) {
 		E.key->dependencies.erase(this);
 	}
 	instances.clear();
+	shadow_coverage_instances.clear();
 }
 
 Dependency::~Dependency() {

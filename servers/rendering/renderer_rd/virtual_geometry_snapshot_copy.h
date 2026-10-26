@@ -11,7 +11,7 @@
 
 namespace RendererRD {
 
-// View-owned small copies for the selection and material source snapshots.
+// View-owned tiled copies for the selection and material source snapshots.
 // Source RIDs are borrowed only while recording; RD tracks every device-address
 // read and the descriptor-backed writes. The buffers share the VG work budget.
 class VirtualGeometrySnapshotCopy {
@@ -37,7 +37,7 @@ private:
 		uint32_t destination_word;
 		uint32_t words;
 		uint32_t output;
-		uint32_t padding = 0;
+		uint32_t first_tile;
 	};
 	struct Selection {
 		uint32_t output;

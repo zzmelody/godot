@@ -390,13 +390,19 @@ MultiMesh::TransformFormat MultiMesh::get_transform_format() const {
 	return transform_format;
 }
 
-Error MultiMesh::prepare_virtual_geometry() const {
+Error MultiMesh::prepare_virtual_geometry(bool p_prepare_materials) const {
 	const Ref<VirtualGeometryMesh> geometry = mesh;
-	return geometry.is_valid() ? geometry->prepare_virtual_geometry() : OK;
+	return geometry.is_valid() ? geometry->prepare_virtual_geometry(p_prepare_materials) : OK;
+}
+
+TypedArray<Material> MultiMesh::get_virtual_geometry_materials() const {
+	const Ref<VirtualGeometryMesh> geometry = mesh;
+	return geometry.is_valid() ? geometry->get_virtual_geometry_materials() : TypedArray<Material>();
 }
 
 void MultiMesh::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry"), &MultiMesh::prepare_virtual_geometry);
+	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry", "prepare_materials"), &MultiMesh::prepare_virtual_geometry, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("get_virtual_geometry_materials"), &MultiMesh::get_virtual_geometry_materials);
 	ClassDB::bind_method(D_METHOD("set_mesh", "mesh"), &MultiMesh::set_mesh);
 	ClassDB::bind_method(D_METHOD("get_mesh"), &MultiMesh::get_mesh);
 	ClassDB::bind_method(D_METHOD("set_use_colors", "enable"), &MultiMesh::set_use_colors);

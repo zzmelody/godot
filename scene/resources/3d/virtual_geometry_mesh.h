@@ -56,7 +56,8 @@ public:
 	RID get_rid() const override;
 	bool is_render_ready() const;
 	Error get_streaming_error() const;
-	Error prepare_virtual_geometry() const;
+	Error prepare_virtual_geometry(bool p_prepare_materials = true) const;
+	TypedArray<Material> get_virtual_geometry_materials() const;
 	~VirtualGeometryMesh();
 };
 

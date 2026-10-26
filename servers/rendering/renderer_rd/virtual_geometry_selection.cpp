@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "virtual_geometry_selection.h"
 
+#include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
@@ -158,6 +159,15 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		maximum_displacement = MAX(maximum_displacement, batch.max_vertex_displacement);
 	}
 	ERR_FAIL_COND_V(root_tasks > UINT32_MAX || candidate_capacity > UINT32_MAX, ERR_OUT_OF_MEMORY);
+#ifdef GODOT_USE_TRACY
+	if (TracyIsConnected) {
+		ZoneNamedN(counts, "Render/VirtualGeometry/view_work", true);
+		// One value record per view, before allocation. These are admitted
+		// capacities and snapshot bytes, not visible primitives or GPU timings.
+		const CharString text = vformat("shadow_flags=%d root_only=%d batches=%d instances=%d metadata_sources=%d transform_sources=%d metadata_bytes=%d transform_bytes=%d root_tasks=%d candidate_capacity=%d node_capacity=%d", shadow_flags, int(p_root_only), used, instances_total, metadata_copies.size(), transform_copies.size(), metadata_size * 4, transform_size * 4, root_tasks, candidate_capacity, node_capacity).utf8();
+		counts.Text(text.get_data(), text.length());
+	}
+#endif
 	const uint64_t scratch_size = 16 + uint64_t(node_capacity) * 8 + candidate_capacity * 4;
 	struct Allocation { RID &buffer; uint32_t &words; uint64_t required; bool indirect = false; };
 	Allocation allocations[] = {

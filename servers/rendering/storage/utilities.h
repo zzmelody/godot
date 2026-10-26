@@ -72,6 +72,8 @@ public:
 private:
 	friend class DependencyTracker;
 	HashMap<DependencyTracker *, uint32_t> instances;
+	// Coverage has a narrower consumer set than structural resource changes.
+	HashSet<DependencyTracker *> shadow_coverage_instances;
 };
 
 class DependencyTracker {
@@ -83,6 +85,22 @@ public:
 	ChangedCallback changed_callback = nullptr;
 	DeletedCallback deleted_callback = nullptr;
 
+	// SceneCull enables this only while a caster has paired positional lights.
+	// New pairings dirty their shadows, so no inactive coverage history is needed.
+	void set_shadow_coverage_enabled(bool p_enabled) {
+		if (shadow_coverage_enabled == p_enabled) {
+			return;
+		}
+		shadow_coverage_enabled = p_enabled;
+		for (Dependency *dependency : dependencies) {
+			if (p_enabled) {
+				dependency->shadow_coverage_instances.insert(this);
+			} else {
+				dependency->shadow_coverage_instances.erase(this);
+			}
+		}
+	}
+
 	void update_begin() { // call before updating dependencies
 		instance_version++;
 	}
@@ -90,6 +108,9 @@ public:
 	void update_dependency(Dependency *p_dependency) { //called internally, can't be used directly, use update functions in Storage
 		dependencies.insert(p_dependency);
 		p_dependency->instances[this] = instance_version;
+		if (shadow_coverage_enabled) {
+			p_dependency->shadow_coverage_instances.insert(this);
+		}
 	}
 
 	void update_end() { //call after updating dependencies
@@ -109,6 +130,7 @@ public:
 
 		while (to_clean_up.size()) {
 			to_clean_up.front()->get().first->instances.erase(to_clean_up.front()->get().second);
+			to_clean_up.front()->get().first->shadow_coverage_instances.erase(this);
 			dependencies.erase(to_clean_up.front()->get().first);
 			to_clean_up.pop_front();
 		}
@@ -118,6 +140,7 @@ public:
 		for (Dependency *E : dependencies) {
 			Dependency *dep = E;
 			dep->instances.erase(this);
+			dep->shadow_coverage_instances.erase(this);
 		}
 		dependencies.clear();
 	}
@@ -127,6 +150,7 @@ public:
 private:
 	friend class Dependency;
 	uint32_t instance_version = 0;
+	bool shadow_coverage_enabled = false;
 	HashSet<Dependency *> dependencies;
 };
 

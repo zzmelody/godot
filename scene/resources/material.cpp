@@ -61,6 +61,7 @@ void Material::set_next_pass(const Ref<Material> &p_pass) {
 
 		RS::get_singleton()->material_set_next_pass(material, next_pass_rid);
 	}
+	emit_changed();
 }
 
 Ref<Material> Material::get_next_pass() const {
@@ -188,6 +189,7 @@ void Material::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_render_priority"), &Material::get_render_priority);
 	ClassDB::bind_method(D_METHOD("set_max_vertex_displacement", "maximum"), &Material::set_max_vertex_displacement);
 	ClassDB::bind_method(D_METHOD("get_max_vertex_displacement"), &Material::get_max_vertex_displacement);
+	ClassDB::bind_method(D_METHOD("get_shader_rid"), &Material::get_shader_rid);
 
 	ClassDB::bind_method(D_METHOD("inspect_native_shader_code"), &Material::inspect_native_shader_code);
 	ClassDB::set_method_flags(get_class_static(), StringName("inspect_native_shader_code"), METHOD_FLAGS_DEFAULT | METHOD_FLAG_EDITOR);

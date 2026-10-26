@@ -85,7 +85,8 @@ protected:
 public:
 	void set_mesh(const Ref<Mesh> &p_mesh);
 	Ref<Mesh> get_mesh() const;
-	Error prepare_virtual_geometry() const;
+	Error prepare_virtual_geometry(bool p_prepare_materials = true) const;
+	TypedArray<Material> get_virtual_geometry_materials() const;
 
 	void set_use_colors(bool p_enable);
 	bool is_using_colors() const;

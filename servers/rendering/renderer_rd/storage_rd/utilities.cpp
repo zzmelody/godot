@@ -30,6 +30,7 @@
 
 #include "utilities.h"
 
+#include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/environment/gi.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -250,13 +251,49 @@ String Utilities::get_captured_timestamp_name(uint32_t p_index) const {
 /* MISC */
 
 void Utilities::update_dirty_resources() {
-	MeshStorage::get_singleton()->update_virtual_geometry();
-	MaterialStorage::get_singleton()->_update_global_shader_uniforms(); //must do before materials, so it can queue them for update
-	MaterialStorage::get_singleton()->_update_queued_materials();
-	MeshStorage::get_singleton()->_update_dirty_multimeshes();
-	MeshStorage::get_singleton()->_update_dirty_skeletons();
-	TextureStorage::get_singleton()->update_decal_atlas();
-	TextureStorage::get_singleton()->update_area_light_atlas();
+	{
+#ifdef GODOT_USE_TRACY
+		ZoneNamedN(zone, "Render/DirtyResources/virtual_geometry", true);
+#endif
+		MeshStorage::get_singleton()->update_virtual_geometry();
+	}
+	{
+#ifdef GODOT_USE_TRACY
+		ZoneNamedN(zone, "Render/DirtyResources/global_uniforms", true);
+#endif
+		// Update globals before materials, so changed globals can queue them.
+		MaterialStorage::get_singleton()->_update_global_shader_uniforms();
+	}
+	{
+#ifdef GODOT_USE_TRACY
+		ZoneNamedN(zone, "Render/DirtyResources/materials", true);
+#endif
+		MaterialStorage::get_singleton()->_update_queued_materials();
+	}
+	{
+#ifdef GODOT_USE_TRACY
+		ZoneNamedN(zone, "Render/DirtyResources/multimeshes", true);
+#endif
+		MeshStorage::get_singleton()->_update_dirty_multimeshes();
+	}
+	{
+#ifdef GODOT_USE_TRACY
+		ZoneNamedN(zone, "Render/DirtyResources/skeletons", true);
+#endif
+		MeshStorage::get_singleton()->_update_dirty_skeletons();
+	}
+	{
+#ifdef GODOT_USE_TRACY
+		ZoneNamedN(zone, "Render/DirtyResources/decal_atlas", true);
+#endif
+		TextureStorage::get_singleton()->update_decal_atlas();
+	}
+	{
+#ifdef GODOT_USE_TRACY
+		ZoneNamedN(zone, "Render/DirtyResources/area_light_atlas", true);
+#endif
+		TextureStorage::get_singleton()->update_area_light_atlas();
+	}
 }
 
 bool Utilities::has_os_feature(const String &p_feature) const {

@@ -76,10 +76,14 @@ Error VirtualGeometrySnapshotCopy::record(RID p_first_destination, Span<const Co
 		}
 	}
 	uint64_t gathered_bytes = 0;
+	const uint32_t max_x = uint32_t(MIN(rd->limit_get(RD::LIMIT_MAX_COMPUTE_WORKGROUP_COUNT_X), uint64_t(VirtualGeometrySnapshotCopyPlan::MAX_DISPATCH_AXIS)));
+	const uint32_t max_y = uint32_t(MIN(rd->limit_get(RD::LIMIT_MAX_COMPUTE_WORKGROUP_COUNT_Y), uint64_t(VirtualGeometrySnapshotCopyPlan::MAX_DISPATCH_AXIS)));
+	const uint32_t max_tiles = max_x * max_y;
+	uint32_t tile_count = 0;
 	for (uint32_t output = 0; output < 2; ++output) {
 		for (uint32_t index = 0; index < lists[output].size(); ++index) {
 			const Copy &copy = lists[output][index];
-			if (!VirtualGeometrySnapshotCopyPlan::gatherable(copy.source_byte, copy.destination_byte, copy.bytes, jobs.size())) {
+			if (!VirtualGeometrySnapshotCopyPlan::gatherable(copy.source_byte, copy.destination_byte, copy.bytes, jobs.size(), tile_count, max_tiles)) {
 				continue;
 			}
 			SourceInfo source;
@@ -108,7 +112,9 @@ Error VirtualGeometrySnapshotCopy::record(RID p_first_destination, Span<const Co
 			job.destination_word = copy.destination_byte / 4;
 			job.words = copy.bytes / 4;
 			job.output = output;
+			job.first_tile = tile_count;
 			jobs.push_back(job);
+			tile_count += VirtualGeometrySnapshotCopyPlan::tiles(copy.bytes);
 			selected.push_back({ output, index });
 			gathered_bytes += copy.bytes;
 		}
@@ -172,12 +178,16 @@ Error VirtualGeometrySnapshotCopy::record(RID p_first_destination, Span<const Co
 		rd->compute_list_add_buffer_read(list, source.key);
 	}
 	rd->compute_list_bind_uniform_set(list, uniform_set, 0);
-	rd->compute_list_dispatch(list, jobs.size(), 1, 1);
+	const uint32_t push[2] = { jobs.size(), tile_count };
+	rd->compute_list_set_push_constant(list, push, sizeof(push));
+	const uint32_t groups_x = MIN(tile_count, max_x);
+	const uint32_t groups_y = uint32_t((uint64_t(tile_count) + groups_x - 1) / groups_x);
+	rd->compute_list_dispatch(list, groups_x, groups_y, 1);
 	rd->compute_list_end();
 #ifdef GODOT_USE_TRACY
 	if (TracyIsConnected) {
 		ZoneNamedN(counts, "Render/VirtualGeometry/snapshot_copy_counts", true);
-		const CharString text = vformat("gathered=%d direct=%d sources=%d bytes=%d", jobs.size(), direct_copies, sources.size(), gathered_bytes).utf8();
+		const CharString text = vformat("gathered=%d direct=%d sources=%d bytes=%d tiles=%d", jobs.size(), direct_copies, sources.size(), gathered_bytes, tile_count).utf8();
 		counts.Text(text.get_data(), text.length());
 	}
 #endif

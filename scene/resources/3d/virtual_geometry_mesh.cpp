@@ -274,7 +274,17 @@ Error VirtualGeometryMesh::get_streaming_error() const {
 	return VirtualGeometryStreaming::get_singleton()->get_status(mesh, ready);
 }
 
-Error VirtualGeometryMesh::prepare_virtual_geometry() const {
+TypedArray<Material> VirtualGeometryMesh::get_virtual_geometry_materials() const {
+	TypedArray<Material> result;
+	if (RS::get_singleton()->get_rendering_device() != nullptr) {
+		for (const Ref<Material> &material : materials) {
+			result.push_back(material);
+		}
+	}
+	return result;
+}
+
+Error VirtualGeometryMesh::prepare_virtual_geometry(bool p_prepare_materials) const {
 	if (!has_geometry()) {
 		return ERR_UNCONFIGURED;
 	}
@@ -291,16 +301,18 @@ Error VirtualGeometryMesh::prepare_virtual_geometry() const {
 	if (!streamed) {
 		return OK; // Dummy data preparation has no GPU readiness claim.
 	}
-	TypedArray<RID> material_rids;
-	for (const Ref<Material> &material : materials) {
-		material_rids.push_back(material.is_valid() ? material->get_rid() : RID());
-	}
-	const Error material_error = RS::get_singleton()->virtual_geometry_prepare_materials(material_rids);
-	if (material_error != OK) {
-		if (material_error != ERR_BUSY) {
-			ERR_PRINT(vformat("Virtual geometry material preparation failed: %s (error %d).", get_path(), int(material_error)));
+	if (p_prepare_materials) {
+		TypedArray<RID> material_rids;
+		for (const Ref<Material> &material : materials) {
+			material_rids.push_back(material.is_valid() ? material->get_rid() : RID());
 		}
-		return material_error;
+		const Error material_error = RS::get_singleton()->virtual_geometry_prepare_materials(material_rids);
+		if (material_error != OK) {
+			if (material_error != ERR_BUSY) {
+				ERR_PRINT(vformat("Virtual geometry material preparation failed: %s (error %d).", get_path(), int(material_error)));
+			}
+			return material_error;
+		}
 	}
 	bool ready = false;
 	const Error error = VirtualGeometryStreaming::get_singleton()->get_status(mesh, ready);
@@ -321,5 +333,6 @@ void VirtualGeometryMesh::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("has_geometry"), &VirtualGeometryMesh::has_geometry);
 	ClassDB::bind_method(D_METHOD("is_render_ready"), &VirtualGeometryMesh::is_render_ready);
 	ClassDB::bind_method(D_METHOD("get_streaming_error"), &VirtualGeometryMesh::get_streaming_error);
-	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry"), &VirtualGeometryMesh::prepare_virtual_geometry);
+	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry", "prepare_materials"), &VirtualGeometryMesh::prepare_virtual_geometry, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("get_virtual_geometry_materials"), &VirtualGeometryMesh::get_virtual_geometry_materials);
 }

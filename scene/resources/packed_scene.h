@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/io/resource.h"
+#include "core/variant/typed_array.h"
 #include "scene/main/node.h"
 
 class PackedScene;
@@ -165,7 +166,8 @@ public:
 	String get_path() const;
 
 	void clear();
-	Error prepare_virtual_geometry();
+	Error prepare_virtual_geometry(bool p_prepare_materials = true);
+	TypedArray<Material> get_virtual_geometry_materials() const;
 	Error copy_from(const Ref<SceneState> &p_scene_state);
 
 	bool can_instantiate() const;
@@ -277,7 +279,8 @@ public:
 	Error pack(Node *p_scene);
 
 	void clear();
-	Error prepare_virtual_geometry();
+	Error prepare_virtual_geometry(bool p_prepare_materials = true);
+	TypedArray<Material> get_virtual_geometry_materials() const;
 
 	bool can_instantiate() const;
 	Node *instantiate(GenEditState p_edit_state = GEN_EDIT_STATE_DISABLED) const;

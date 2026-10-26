@@ -1465,7 +1465,24 @@ String SceneState::get_path() const {
 	return path;
 }
 
-Error SceneState::prepare_virtual_geometry() {
+TypedArray<Material> SceneState::get_virtual_geometry_materials() const {
+	TypedArray<Material> result;
+#ifndef _3D_DISABLED
+	ERR_FAIL_COND_V_MSG(!virtual_geometry_collected, result, "Prepare virtual geometry roots before reading their material list.");
+	if (RS::get_singleton()->get_rendering_device() == nullptr) {
+		return result;
+	}
+	for (const Ref<Material> &material : virtual_geometry_materials) {
+		result.push_back(material);
+	}
+	for (const Ref<VirtualGeometryMesh> &mesh : virtual_geometry_meshes) {
+		result.append_array(mesh->get_virtual_geometry_materials());
+	}
+#endif
+	return result;
+}
+
+Error SceneState::prepare_virtual_geometry(bool p_prepare_materials) {
 #ifndef _3D_DISABLED
 	if (!virtual_geometry_collected) {
 		virtual_geometry_meshes.clear();
@@ -1595,7 +1612,7 @@ Error SceneState::prepare_virtual_geometry() {
 		virtual_geometry_collected = true;
 	}
 	ERR_FAIL_COND_V_MSG(virtual_geometry_overlay, ERR_UNAVAILABLE, "Virtual geometry does not support a material overlay.");
-	if (!virtual_geometry_materials.is_empty() && RS::get_singleton()->get_rendering_device() != nullptr) {
+	if (p_prepare_materials && !virtual_geometry_materials.is_empty() && RS::get_singleton()->get_rendering_device() != nullptr) {
 		TypedArray<RID> materials;
 		for (const Ref<Material> &material : virtual_geometry_materials) {
 			materials.push_back(material->get_rid());
@@ -1607,7 +1624,7 @@ Error SceneState::prepare_virtual_geometry() {
 	}
 	bool waiting = false;
 	for (const Ref<VirtualGeometryMesh> &mesh : virtual_geometry_meshes) {
-		const Error error = mesh->prepare_virtual_geometry();
+		const Error error = mesh->prepare_virtual_geometry(p_prepare_materials);
 		if (error == ERR_BUSY) {
 			waiting = true;
 		} else if (error != OK) {
@@ -2678,8 +2695,12 @@ Error PackedScene::pack(Node *p_scene) {
 	return state->pack(p_scene);
 }
 
-Error PackedScene::prepare_virtual_geometry() {
-	return state->prepare_virtual_geometry();
+Error PackedScene::prepare_virtual_geometry(bool p_prepare_materials) {
+	return state->prepare_virtual_geometry(p_prepare_materials);
+}
+
+TypedArray<Material> PackedScene::get_virtual_geometry_materials() const {
+	return state->get_virtual_geometry_materials();
 }
 
 void PackedScene::clear() {
@@ -2820,7 +2841,8 @@ void PackedScene::reset_state() {
 }
 void PackedScene::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("pack", "path"), &PackedScene::pack);
-	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry"), &PackedScene::prepare_virtual_geometry);
+	ClassDB::bind_method(D_METHOD("prepare_virtual_geometry", "prepare_materials"), &PackedScene::prepare_virtual_geometry, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("get_virtual_geometry_materials"), &PackedScene::get_virtual_geometry_materials);
 	ClassDB::bind_method(D_METHOD("instantiate", "edit_state"), &PackedScene::instantiate, DEFVAL(GEN_EDIT_STATE_DISABLED));
 	ClassDB::bind_method(D_METHOD("can_instantiate"), &PackedScene::can_instantiate);
 	ClassDB::bind_method(D_METHOD("_set_bundled_scene", "scene"), &PackedScene::_set_bundled_scene);

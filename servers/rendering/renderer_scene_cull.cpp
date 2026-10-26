@@ -195,6 +195,9 @@ void RendererSceneCull::_instance_pair(Instance *p_A, Instance *p_B) {
 
 		geom->lights.insert(B);
 		light->geometries.insert(A);
+		if (geom->lights.size() == 1) {
+			A->dependency_tracker.set_shadow_coverage_enabled(geom->can_cast_shadows);
+		}
 
 		if (geom->can_cast_shadows) {
 			light->make_shadow_dirty();
@@ -320,6 +323,9 @@ void RendererSceneCull::_instance_unpair(Instance *p_A, Instance *p_B) {
 
 		geom->lights.erase(B);
 		light->geometries.erase(A);
+		if (geom->lights.is_empty()) {
+			A->dependency_tracker.set_shadow_coverage_enabled(false);
+		}
 
 		if (geom->can_cast_shadows) {
 			light->make_shadow_dirty();
@@ -591,6 +597,7 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 		if (scenario && instance->indexer_id.is_valid()) {
 			_unpair_instance(instance);
 		}
+		instance->dependency_tracker.set_shadow_coverage_enabled(false);
 
 		if (instance->mesh_instance.is_valid()) {
 			RSG::mesh_storage->mesh_instance_free(instance->mesh_instance);
@@ -4495,6 +4502,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 				geom->can_cast_shadows = can_cast_shadows;
 			}
+			p_instance->dependency_tracker.set_shadow_coverage_enabled(can_cast_shadows && !geom->lights.is_empty());
 
 			geom->material_is_animated = is_animated;
 			geom->material_uses_custom_shadow_coverage = uses_custom_shadow_coverage;
