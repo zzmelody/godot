@@ -33,12 +33,14 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 			memory.free(snapshot);
 		}
 	}
-	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, material_view, frame_history, previous_sources, previous_transforms, source_tasks, source_arguments, batch_parameters, view_status, raster_material_buffer, extensions }) {
+	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, material_view, frame_history, previous_sources, previous_transforms, source_tasks, source_arguments, batch_parameters, view_status, raster_material_buffer, extensions, source_addresses }) {
 		if (rid.is_valid()) {
 			memory.free(rid);
 		}
 	}
-	init_pipeline.free();
+	for (auto &pipeline : init_pipelines) {
+		pipeline.free();
+	}
 	bin_pipeline.free();
 	scan_pipeline.free();
 	dispatch_pipeline.free();
@@ -69,6 +71,9 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	levels.clear();
 	source_levels.clear();
 	source_history_copies.clear();
+	source_reads.clear();
+	source_address_data.clear();
+	direct_sources = !p_sources.is_empty() && p_sources[0].direct_source_reads;
 	size = p_size;
 	uint64_t instances = 0, visible = 0;
 	MaterialStorage *storage = MaterialStorage::get_singleton();
@@ -190,20 +195,25 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	if (init_version.is_null()) {
 		Vector<String> modes;
 		modes.push_back("");
-		init_shader.initialize(modes);
 		bin_shader.initialize(modes);
 		scan_shader.initialize(modes);
 		dispatch_shader.initialize(modes);
+		modes.push_back("#define VG_DIRECT_SOURCE_READS\n");
+		init_shader.initialize(modes);
+		init_shader.set_variant_enabled(1, rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS));
 		init_version = init_shader.version_create();
 		bin_version = bin_shader.version_create();
 		scan_version = scan_shader.version_create();
 		dispatch_version = dispatch_shader.version_create();
-		init_pipeline.create_compute_pipeline(init_shader.version_get_shader(init_version, 0));
 		bin_pipeline.create_compute_pipeline(bin_shader.version_get_shader(bin_version, 0));
 		scan_pipeline.create_compute_pipeline(scan_shader.version_get_shader(scan_version, 0));
 		dispatch_pipeline.create_compute_pipeline(dispatch_shader.version_get_shader(dispatch_version, 0));
 	}
-	ERR_FAIL_COND_V(init_pipeline.get_rid().is_null() || bin_pipeline.get_rid().is_null() || scan_pipeline.get_rid().is_null() || dispatch_pipeline.get_rid().is_null(), ERR_CANT_CREATE);
+	const uint32_t init_mode = direct_sources ? 1 : 0;
+	if (init_pipelines[init_mode].get_rid().is_null()) {
+		init_pipelines[init_mode].create_compute_pipeline(init_shader.version_get_shader(init_version, init_mode));
+	}
+	ERR_FAIL_COND_V(init_pipelines[init_mode].get_rid().is_null() || bin_pipeline.get_rid().is_null() || scan_pipeline.get_rid().is_null() || dispatch_pipeline.get_rid().is_null(), ERR_CANT_CREATE);
 	UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
 	static_assert(sizeof(BatchParameters) == 264);
 	error = ensure_words(memory, batch_parameters, batch_parameter_words, MAX(uint64_t(1), uint64_t(p_sources.size()) * 66));
@@ -211,11 +221,16 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		return error;
 	}
 	batch_parameter_data.resize(p_sources.size());
+	if (direct_sources) {
+		source_address_data.resize(p_sources.size());
+	}
 	uint64_t history_words = 0;
 	for (uint32_t index = 0; index < p_sources.size(); ++index) {
 		const auto &source = p_sources[index];
 		const auto &batch = source.batch;
-		ERR_FAIL_COND_V(source.work != p_sources[0].work || source.transforms != p_sources[0].transforms, ERR_INVALID_PARAMETER);
+		ERR_FAIL_COND_V(source.work != p_sources[0].work || source.direct_source_reads != direct_sources ||
+						(!direct_sources && source.transforms != p_sources[0].transforms),
+				ERR_INVALID_PARAMETER);
 		BatchParameters &input = batch_parameter_data[index];
 		input = {};
 		MaterialStorage::store_transform(batch.model, input.model);
@@ -224,6 +239,15 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		input.source[2] = source.transform_offset;
 		input.source[3] = batch.geometry.root_pages;
 		memcpy(&input.displacement[0], &batch.max_vertex_displacement, sizeof(float));
+		if (direct_sources) {
+			SourceAddresses &addresses = source_address_data[index];
+			addresses = {};
+			if (batch.stride != 0) {
+				const uint64_t stride_bytes = uint64_t(batch.stride) * 16;
+				ERR_FAIL_COND_V(batch.count > UINT32_MAX / stride_bytes || batch.transform_offset > UINT32_MAX / stride_bytes, ERR_INVALID_PARAMETER);
+				ERR_FAIL_COND_V(!source_reads.resolve(rd, batch.transforms, uint64_t(batch.transform_offset) * stride_bytes, uint64_t(batch.count) * stride_bytes, addresses.current), ERR_INVALID_DATA);
+			}
+		}
 		if (record_history) {
 			MaterialStorage::store_transform(batch.previous_model, input.previous_model);
 			input.previous_info[0] = uint32_t(history_words / 4);
@@ -231,14 +255,18 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 			if (batch.stride != 0) {
 				if (batch.previous_transform_offset == batch.transform_offset) {
 					// Static MultiMeshes share the current and previous span. Keep
-					// the previous model, but borrow the existing local snapshot.
+					// the previous model, but reuse the same current local values.
 					input.previous_info[2] = 1;
 				} else {
 					const uint64_t bytes = uint64_t(batch.count) * batch.stride * 16;
 					const uint64_t source_byte = uint64_t(batch.previous_transform_offset) * batch.stride * 16;
 					ERR_FAIL_COND_V(bytes > UINT32_MAX || source_byte > UINT32_MAX || history_words + bytes / 4 > UINT32_MAX / 4, ERR_OUT_OF_MEMORY);
-					source_history_copies.push_back({ batch.transforms, uint32_t(source_byte), uint32_t(history_words * 4), uint32_t(bytes) });
-					history_words += bytes / 4;
+					if (direct_sources) {
+						ERR_FAIL_COND_V(!source_reads.resolve(rd, batch.transforms, source_byte, bytes, source_address_data[index].previous), ERR_INVALID_DATA);
+					} else {
+						source_history_copies.push_back({ batch.transforms, uint32_t(source_byte), uint32_t(history_words * 4), uint32_t(bytes) });
+						history_words += bytes / 4;
+					}
 				}
 			}
 		}
@@ -274,6 +302,13 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	if (!batch_parameter_data.is_empty()) {
 		rd->buffer_update(batch_parameters, 0, uint32_t(uint64_t(batch_parameter_data.size()) * sizeof(BatchParameters)), batch_parameter_data.ptr());
 	}
+	if (direct_sources) {
+		error = ensure_words(memory, source_addresses, source_address_words, MAX(uint64_t(1), uint64_t(source_address_data.size()) * 4));
+		if (error != OK) {
+			return error;
+		}
+		rd->buffer_update(source_addresses, 0, uint32_t(uint64_t(source_address_data.size()) * sizeof(SourceAddresses)), source_address_data.ptr());
+	}
 	source_instances = uint32_t(instances);
 	uint64_t task_scratch = 16 + uint64_t(p_sources.size()) * 2;
 	if (!p_sources.is_empty()) {
@@ -304,14 +339,19 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	const uint32_t source_dispatch[4] = { 0, 1, 1, 0 };
 	rd->buffer_update(source_arguments, 0, sizeof(source_dispatch), source_dispatch);
 	if (!p_sources.is_empty()) {
-		source_uniforms = cache->get_cache(init_shader.version_get_shader(init_version, 0), 0,
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { p_sources[0].transforms }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { p_sources[0].work }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 27, { batch_parameters }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 28, { source_tasks }),
-				RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 29, { previous_transforms }));
+		LocalVector<RD::Uniform> uniforms;
+		if (direct_sources) {
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 30, { source_addresses }));
+		} else {
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { p_sources[0].transforms }));
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 29, { previous_transforms }));
+		}
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { p_sources[0].work }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { scene_buffer }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 27, { batch_parameters }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 28, { source_tasks }));
+		source_uniforms = cache->get_cache_vec(init_shader.version_get_shader(init_version, init_mode), 0, uniforms);
 		source_scan_uniforms = cache->get_cache(scan_shader.version_get_shader(scan_version, 0), 0, RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, { source_tasks }));
 		ERR_FAIL_COND_V(source_uniforms.is_null() || source_scan_uniforms.is_null(), ERR_CANT_CREATE);
 	}
@@ -344,12 +384,14 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 	}
 	RD *rd = RD::get_singleton();
 	RENDER_TIMESTAMP("Virtual Geometry Material Sources Begin");
-	const Error snapshot = snapshot_copies.record(previous_transforms, Span<const HistoryCopy>(source_history_copies.ptr(), source_history_copies.size()));
-	ERR_FAIL_COND(snapshot != OK);
+	if (!direct_sources) {
+		const Error snapshot = snapshot_copies.record(previous_transforms, Span<const HistoryCopy>(source_history_copies.ptr(), source_history_copies.size()));
+		ERR_FAIL_COND(snapshot != OK);
+	}
 	RD::ComputeListID list = rd->compute_list_begin();
 	auto init_pass = [&](uint32_t p_mode, uint32_t p_items, bool p_indirect = false) {
 		const uint32_t push[4] = { uint32_t(p_sources.size()), p_mode, p_items, 0 };
-		rd->compute_list_bind_compute_pipeline(list, init_pipeline.get_rid());
+		rd->compute_list_bind_compute_pipeline(list, init_pipelines[direct_sources ? 1 : 0].get_rid());
 		rd->compute_list_bind_uniform_set(list, source_uniforms, 0);
 		rd->compute_list_set_push_constant(list, push, sizeof(push));
 		if (p_indirect) {
@@ -382,6 +424,9 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 	const Error copy_error = rd->buffer_copy(source_tasks, source_arguments, 16, 0, 12);
 	ERR_FAIL_COND(copy_error != OK);
 	list = rd->compute_list_begin();
+	if (direct_sources) {
+		source_reads.record(rd, list);
+	}
 	init_pass(1, source_instances);
 	init_pass(2, 0, true);
 	rd->compute_list_end();
@@ -821,7 +866,7 @@ uint64_t VirtualGeometryShading::get_buffer_bytes() const {
 	for (const KeyValue<RID, MaterialHistory> &entry : material_history) {
 		material_bytes += uint64_t(entry.value.bytes) * 2;
 	}
-	return material_bytes + snapshot_copies.get_buffer_bytes() + (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + previous_transform_words + source_task_words + source_argument_words + batch_parameter_words + extension_words) * 4 +
+	return material_bytes + snapshot_copies.get_buffer_bytes() + (uint64_t(scene_words) + bins_words + argument_words + draw_argument_words + raster_material_words + previous_source_words + previous_transform_words + source_task_words + source_argument_words + batch_parameter_words + extension_words + source_address_words) * 4 +
 			uint64_t(global_history_words[0] + global_history_words[1]) * 4 +
 			(material_view.is_valid() ? 320 : 0) +
 			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;

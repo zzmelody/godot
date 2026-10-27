@@ -11,12 +11,14 @@
 namespace RendererRD {
 
 VirtualGeometrySelection::~VirtualGeometrySelection() {
-	for (RID buffer : { scratch, result_buffer, metadata_buffer, transforms_buffer, feedback_buffer, dispatch_buffer, dispatch_inputs, view_parameters }) {
+	for (RID buffer : { scratch, result_buffer, metadata_buffer, transforms_buffer, feedback_buffer, dispatch_buffer, dispatch_inputs, view_parameters, source_addresses }) {
 		if (buffer.is_valid()) {
 			memory.free(buffer);
 		}
 	}
-	pipeline.free();
+	for (auto &pipeline : pipelines) {
+		pipeline.free();
+	}
 	dispatch_pipeline.free();
 	if (version.is_valid()) {
 		shader.version_free(version);
@@ -87,6 +89,31 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	metadata_copies.clear();
 	transform_copies.clear();
 	parameter_data.clear();
+	RD *rd = RD::get_singleton();
+	bool direct_sources = rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS);
+	source_reads.clear();
+	source_address_data.clear();
+	if (direct_sources) {
+		for (const Batch &batch : batches) {
+			if (batch.count == 0) {
+				continue;
+			}
+			SourceAddresses addresses;
+			direct_sources = source_reads.resolve(rd, batch.geometry.metadata, 0, uint64_t(batch.geometry.metadata_words) * 4, addresses.metadata);
+			if (direct_sources && batch.stride != 0) {
+				const uint64_t stride_bytes = uint64_t(batch.stride) * 16;
+				direct_sources = batch.count <= UINT32_MAX / stride_bytes && batch.transform_offset <= UINT32_MAX / stride_bytes &&
+						source_reads.resolve(rd, batch.transforms, uint64_t(batch.transform_offset) * stride_bytes, uint64_t(batch.count) * stride_bytes, addresses.transforms);
+			}
+			if (!direct_sources) {
+				// Optional BDA must not reject an otherwise valid legacy buffer.
+				source_reads.clear();
+				source_address_data.clear();
+				break;
+			}
+			source_address_data.push_back(addresses);
+		}
+	}
 	for (const Batch &batch : batches) {
 		if (batch.count == 0) {
 			continue;
@@ -107,7 +134,9 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 			ERR_FAIL_COND_V(metadata_size + batch.geometry.metadata_words > UINT32_MAX / 4, ERR_OUT_OF_MEMORY);
 			metadata_word = uint32_t(metadata_size);
 			metadata_offsets.insert(batch.geometry.metadata, metadata_word);
-			metadata_copies.push_back({ batch.geometry.metadata, 0, metadata_word * 4, batch.geometry.metadata_words * 4 });
+			if (!direct_sources) {
+				metadata_copies.push_back({ batch.geometry.metadata, 0, metadata_word * 4, batch.geometry.metadata_words * 4 });
+			}
 			metadata_size += batch.geometry.metadata_words;
 		}
 		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
@@ -140,7 +169,9 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 			const uint64_t words = uint64_t(batch.count) * batch.stride * 4;
 			const uint64_t source_byte = uint64_t(batch.transform_offset) * batch.stride * 16;
 			ERR_FAIL_COND_V(transform_size + words > UINT32_MAX / 4 || source_byte > UINT32_MAX, ERR_OUT_OF_MEMORY);
-			transform_copies.push_back({ batch.transforms, uint32_t(source_byte), uint32_t(transform_size * 4), uint32_t(words * 4) });
+			if (!direct_sources) {
+				transform_copies.push_back({ batch.transforms, uint32_t(source_byte), uint32_t(transform_size * 4), uint32_t(words * 4) });
+			}
 			transform_size += words;
 		}
 		if (used == results.size()) {
@@ -164,7 +195,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		ZoneNamedN(counts, "Render/VirtualGeometry/view_work", true);
 		// One value record per view, before allocation. These are admitted
 		// capacities and snapshot bytes, not visible primitives or GPU timings.
-		const CharString text = vformat("shadow_flags=%d root_only=%d batches=%d instances=%d metadata_sources=%d transform_sources=%d metadata_bytes=%d transform_bytes=%d root_tasks=%d candidate_capacity=%d node_capacity=%d", shadow_flags, int(p_root_only), used, instances_total, metadata_copies.size(), transform_copies.size(), metadata_size * 4, transform_size * 4, root_tasks, candidate_capacity, node_capacity).utf8();
+		const CharString text = vformat("shadow_flags=%d root_only=%d batches=%d instances=%d metadata_sources=%d transform_sources=%d metadata_bytes=%d transform_bytes=%d root_tasks=%d candidate_capacity=%d node_capacity=%d direct_sources=%d direct_buffers=%d metadata_span_bytes=%d transform_span_bytes=%d", shadow_flags, int(p_root_only), used, instances_total, metadata_copies.size(), transform_copies.size(), direct_sources ? 0 : metadata_size * 4, direct_sources ? 0 : transform_size * 4, root_tasks, candidate_capacity, node_capacity, int(direct_sources), source_reads.size(), metadata_size * 4, transform_size * 4).utf8();
 		counts.Text(text.get_data(), text.length());
 	}
 #endif
@@ -173,8 +204,9 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	Allocation allocations[] = {
 		{ result_buffer, result_words, result_size },
 		{ feedback_buffer, feedback_words, feedback_size },
-		{ metadata_buffer, metadata_words, metadata_size },
-		{ transforms_buffer, transforms_words, MAX(uint64_t(12), transform_size) },
+		{ metadata_buffer, metadata_words, direct_sources ? 1 : metadata_size },
+		{ transforms_buffer, transforms_words, direct_sources ? 12 : MAX(uint64_t(12), transform_size) },
+		{ source_addresses, source_address_words, MAX(uint64_t(1), uint64_t(source_address_data.size()) * 4) },
 		{ scratch, scratch_words, scratch_size },
 		{ dispatch_inputs, dispatch_input_words, uint64_t(used) * 36 },
 		{ dispatch_buffer, dispatch_words, 3, true }
@@ -185,7 +217,6 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 			return error;
 		}
 	}
-	RD *rd = RD::get_singleton();
 	if (view_parameters.is_null()) {
 		view_parameters = memory.uniform(256);
 	}
@@ -215,43 +246,60 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	memcpy(&view.offsets[3], &maximum_displacement, sizeof(float));
 	rd->buffer_update(view_parameters, 0, sizeof(view), &view);
 	rd->buffer_update(dispatch_inputs, 0, used * sizeof(Parameters), parameter_data.ptr());
-	// Both transfer and device-address paths keep explicit RD source reads.
-	// Page fixups and live MultiMesh updates precede these immutable snapshots.
-	const Error copied = snapshot_copies.record(metadata_buffer, Span<const BufferCopy>(metadata_copies.ptr(), metadata_copies.size()),
-			transforms_buffer, Span<const BufferCopy>(transform_copies.ptr(), transform_copies.size()));
-	if (copied != OK) {
-		return copied;
+	if (direct_sources) {
+		rd->buffer_update(source_addresses, 0, uint32_t(uint64_t(source_address_data.size()) * sizeof(SourceAddresses)), source_address_data.ptr());
+	}
+	// Source uploads precede this render boundary. Direct readers register the
+	// borrowed RIDs below; fallback retains immutable per-view snapshots.
+	if (!direct_sources) {
+		const Error copied = snapshot_copies.record(metadata_buffer, Span<const BufferCopy>(metadata_copies.ptr(), metadata_copies.size()),
+				transforms_buffer, Span<const BufferCopy>(transform_copies.ptr(), transform_copies.size()));
+		if (copied != OK) {
+			return copied;
+		}
 	}
 	rd->buffer_clear(scratch, 0, 64);
 	for (uint32_t index = 0; index < used; ++index) {
 		results[index].work = result_buffer;
 		results[index].parameters = view_parameters;
-		results[index].transforms = transforms_buffer;
+		results[index].transforms = direct_sources ? RID() : transforms_buffer;
+		results[index].direct_source_reads = direct_sources;
 		results[index].transform_offset = parameter_data[index].source[2];
 	}
 	if (version.is_null()) {
 		Vector<String> modes;
 		modes.push_back("");
+		modes.push_back("#define VG_DIRECT_SOURCE_READS\n");
 		shader.initialize(modes);
+		shader.set_variant_enabled(1, rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS));
 		version = shader.version_create();
-		pipeline.create_compute_pipeline(shader.version_get_shader(version, 0));
+		modes.resize(1);
 		dispatch_shader.initialize(modes);
 		dispatch_version = dispatch_shader.version_create();
 		dispatch_pipeline.create_compute_pipeline(dispatch_shader.version_get_shader(dispatch_version, 0));
 	}
-	const RID compute = pipeline.get_rid();
+	const uint32_t mode = direct_sources ? 1 : 0;
+	if (pipelines[mode].get_rid().is_null()) {
+		pipelines[mode].create_compute_pipeline(shader.version_get_shader(version, mode));
+	}
+	const RID compute = pipelines[mode].get_rid();
 	const RID prepare = dispatch_pipeline.get_rid();
 	ERR_FAIL_COND_V(compute.is_null() || prepare.is_null(), ERR_CANT_CREATE);
 	UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
-	const RID selection_uniforms = cache->get_cache(shader.version_get_shader(version, 0), 0,
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { metadata_buffer }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { geometry }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { transforms_buffer }),
-			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { view_parameters }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result_buffer }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { dispatch_inputs }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { feedback_buffer }));
+	LocalVector<RD::Uniform> uniforms;
+	if (!direct_sources) {
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, { metadata_buffer }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, { transforms_buffer }));
+	} else {
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, { source_addresses }));
+	}
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { geometry }));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { view_parameters }));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result_buffer }));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { dispatch_inputs }));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { feedback_buffer }));
+	const RID selection_uniforms = cache->get_cache_vec(shader.version_get_shader(version, mode), 0, uniforms);
 	const RID dispatch_uniforms = cache->get_cache(dispatch_shader.version_get_shader(dispatch_version, 0), 0,
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { view_parameters }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
@@ -259,6 +307,9 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	ERR_FAIL_COND_V(selection_uniforms.is_null() || dispatch_uniforms.is_null(), ERR_CANT_CREATE);
 	RENDER_TIMESTAMP("Virtual Geometry Selection Begin");
 	const RD::ComputeListID list = rd->compute_list_begin();
+	if (direct_sources) {
+		source_reads.record(rd, list);
+	}
 	auto dispatch = [&](uint32_t p_mode, uint32_t p_round, uint32_t p_items, bool p_indirect = false) {
 		const uint32_t phase[3] = { 0, p_mode, p_round };
 		rd->compute_list_bind_compute_pipeline(list, compute);
@@ -321,7 +372,7 @@ Error VirtualGeometrySelection::use_root_coverage() {
 }
 
 uint64_t VirtualGeometrySelection::get_buffer_bytes() const {
-	return snapshot_copies.get_buffer_bytes() + (view_parameters.is_valid() ? 256 : 0) + (uint64_t(result_words) + metadata_words + transforms_words + feedback_words + dispatch_words + dispatch_input_words + scratch_words) * 4;
+	return snapshot_copies.get_buffer_bytes() + (view_parameters.is_valid() ? 256 : 0) + (uint64_t(result_words) + metadata_words + transforms_words + feedback_words + dispatch_words + dispatch_input_words + scratch_words + source_address_words) * 4;
 }
 
 } // namespace RendererRD

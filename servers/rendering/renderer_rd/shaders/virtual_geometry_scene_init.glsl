@@ -4,8 +4,15 @@
 
 #VERSION_DEFINES
 
+#include "virtual_geometry_source_reads_inc.glsl"
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+#ifndef VG_DIRECT_SOURCE_READS
 layout(set = 0, binding = 2, std430) readonly buffer Transforms { vec4 data[]; } transforms;
+layout(set = 0, binding = 29, std430) readonly buffer PreviousTransforms { vec4 data[]; } previous_transforms;
+#else
+layout(set = 0, binding = 30, std430) readonly buffer SourceAddresses { uvec4 data[]; } source_addresses;
+#endif
 layout(set = 0, binding = 4, std430) readonly buffer Work { uint data[]; } work;
 #define VG_SCENE_WRITE
 #include "virtual_geometry_scene_inc.glsl"
@@ -15,6 +22,7 @@ layout(set = 0, binding = 26, std430) buffer PreviousSources {
 previous_sources;
 layout(set = 0, binding = 27, std430) readonly buffer BatchParameters { uint data[]; } batch_parameters;
 struct SourceParameters {
+	uint index;
 	uint first;
 	uint material_map;
 	uint has_color;
@@ -35,7 +43,6 @@ struct SourceParameters {
 SourceParameters source_info;
 
 layout(set = 0, binding = 28, std430) buffer SourceTasks { uint data[]; } source_tasks;
-layout(set = 0, binding = 29, std430) readonly buffer PreviousTransforms { vec4 data[]; } previous_transforms;
 layout(push_constant, std430) uniform Phase {
 	uint sources;
 	uint mode;
@@ -44,6 +51,7 @@ layout(push_constant, std430) uniform Phase {
 } phase;
 
 void vg_select_source(uint batch) {
+	source_info.index = batch;
 	uint word = phase.input_word + batch * 66u + 44u;
 	source_info.first = batch_parameters.data[word];
 	source_info.material_map = batch_parameters.data[word + 1u];
@@ -61,6 +69,24 @@ void vg_select_source(uint batch) {
 	source_info.identity = uvec4(batch_parameters.data[word + 16u], batch_parameters.data[word + 17u], batch_parameters.data[word + 18u], batch_parameters.data[word + 19u]);
 	source_info.batch_word = batch_parameters.data[word + 20u];
 	source_info.input_word = phase.input_word + batch * 66u;
+}
+
+vec4 vg_current_transform(uint word) {
+#ifdef VG_DIRECT_SOURCE_READS
+	uint origin = batch_parameters.data[source_info.input_word + 18u];
+	return VGTransformSource(source_addresses.data[source_info.index].xy).data[word - origin];
+#else
+	return transforms.data[word];
+#endif
+}
+
+vec4 vg_previous_transform(uint word) {
+#ifdef VG_DIRECT_SOURCE_READS
+	uint origin = batch_parameters.data[source_info.input_word + 40u];
+	return VGTransformSource(source_addresses.data[source_info.index].zw).data[word - origin];
+#else
+	return previous_transforms.data[word];
+#endif
 }
 
 uint vg_source_for_item(uint item, bool references) {
@@ -98,21 +124,21 @@ void vg_initialize_source(uint instance) {
 	vec4 previous_custom = vec4(0.0);
 	if (source.y != 0u) {
 		uint word = instance * source.y + source.z;
-		local = transpose(mat4(transforms.data[word], transforms.data[word + 1u], transforms.data[word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
-		if (source_info.has_color != 0u) { color = transforms.data[word + 3u]; }
-		if (source_info.has_custom != 0u) { custom = transforms.data[word + 3u + source_info.has_color]; }
+		local = transpose(mat4(vg_current_transform(word), vg_current_transform(word + 1u), vg_current_transform(word + 2u), vec4(0.0, 0.0, 0.0, 1.0)));
+		if (source_info.has_color != 0u) { color = vg_current_transform(word + 3u); }
+		if (source_info.has_custom != 0u) { custom = vg_current_transform(word + 3u + source_info.has_color); }
 		if (previous_info.y != 0u && previous_info.z != 0u) {
 			previous_local = local;
 			previous_color = color;
 			previous_custom = custom;
 		} else if (previous_info.y != 0u) {
 			uint previous_word = instance * source.y + previous_info.x;
-			previous_local = transpose(mat4(previous_transforms.data[previous_word], previous_transforms.data[previous_word + 1u], previous_transforms.data[previous_word + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
+			previous_local = transpose(mat4(vg_previous_transform(previous_word), vg_previous_transform(previous_word + 1u), vg_previous_transform(previous_word + 2u), vec4(0.0, 0.0, 0.0, 1.0)));
 			if (source_info.has_color != 0u) {
-				previous_color = previous_transforms.data[previous_word + 3u];
+				previous_color = vg_previous_transform(previous_word + 3u);
 			}
 			if (source_info.has_custom != 0u) {
-				previous_custom = previous_transforms.data[previous_word + 3u + source_info.has_color];
+				previous_custom = vg_previous_transform(previous_word + 3u + source_info.has_color);
 			}
 		}
 	}

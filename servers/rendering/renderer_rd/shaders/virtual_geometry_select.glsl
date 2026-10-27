@@ -4,10 +4,16 @@
 
 #VERSION_DEFINES
 
+#include "virtual_geometry_source_reads_inc.glsl"
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+#ifndef VG_DIRECT_SOURCE_READS
 layout(set = 0, binding = 0, std430) readonly buffer Metadata { uint data[]; } metadata;
-layout(set = 0, binding = 1, std430) readonly buffer Geometry { uint data[]; } geometry;
 layout(set = 0, binding = 2, std430) readonly buffer Transforms { vec4 data[]; } transforms;
+#else
+layout(set = 0, binding = 9, std430) readonly buffer SourceAddresses { uvec4 data[]; } source_addresses;
+#endif
+layout(set = 0, binding = 1, std430) readonly buffer Geometry { uint data[]; } geometry;
 layout(set = 0, binding = 3, std140) uniform Parameters {
 	mat4 model;
 	mat4 world_to_view;
@@ -22,6 +28,20 @@ layout(set = 0, binding = 6, std430) buffer Result { uint data[]; } result;
 layout(set = 0, binding = 8, std430) buffer RequestWork { uint data[]; } request_work;
 #include "virtual_geometry_selection_parameters_inc.glsl"
 #define VG_SELECTION_BATCH_PARAMETERS
+uint vg_metadata_word(uint word) {
+#ifdef VG_DIRECT_SOURCE_READS
+	return VGWordSource(source_addresses.data[vg_batch_index].xy).data[word - VG_SELECTION_INPUT.addresses.x];
+#else
+	return metadata.data[word];
+#endif
+}
+vec4 vg_transform_vector(uint word) {
+#ifdef VG_DIRECT_SOURCE_READS
+	return VGTransformSource(source_addresses.data[vg_batch_index].zw).data[word - VG_SELECTION_INPUT.source.z];
+#else
+	return transforms.data[word];
+#endif
+}
 const uint INVALID = 0xffffffffu;
 uint instance_base() { return 16u; }
 uint queue_base(uint parity) { return params.offsets[parity]; }
@@ -209,7 +229,7 @@ void initialize_instance(uint id) {
 	mat4 local = mat4(1.0);
 	if (VG_SELECTION_INPUT.source.y != 0u) {
 		uint offset = id * VG_SELECTION_INPUT.source.y + VG_SELECTION_INPUT.source.z;
-		local = transpose(mat4(transforms.data[offset], transforms.data[offset + 1u], transforms.data[offset + 2u], vec4(0.0, 0.0, 0.0, 1.0)));
+		local = transpose(mat4(vg_transform_vector(offset), vg_transform_vector(offset + 1u), vg_transform_vector(offset + 2u), vec4(0.0, 0.0, 0.0, 1.0)));
 	}
 	mat4 world = VG_SELECTION_INPUT.model * local;
 	mat3 basis = mat3(world);
@@ -320,8 +340,8 @@ bool in_frustum(vec3 lower, vec3 upper, mat4 transform) {
 	return true;
 }
 
-vec3 meta3(uint word) { return uintBitsToFloat(uvec3(metadata.data[word], metadata.data[word + 1u], metadata.data[word + 2u])); }
-vec4 meta4(uint word) { return vec4(meta3(word), uintBitsToFloat(metadata.data[word + 3u])); }
+vec3 meta3(uint word) { return uintBitsToFloat(uvec3(vg_metadata_word(word), vg_metadata_word(word + 1u), vg_metadata_word(word + 2u))); }
+vec4 meta4(uint word) { return vec4(meta3(word), uintBitsToFloat(vg_metadata_word(word + 3u))); }
 vec3 geom3(uint word) { return uintBitsToFloat(uvec3(geometry.data[word], geometry.data[word + 1u], geometry.data[word + 2u])); }
 vec4 geom4(uint word) { return vec4(geom3(word), uintBitsToFloat(geometry.data[word + 3u])); }
 
@@ -332,7 +352,7 @@ bool instance_in_frustum(mat4 transform) {
 	vec3 upper = vec3(-3.402823e38);
 	for (uint child = 0u; child < 4u; ++child) {
 		uint branch = VG_SELECTION_INPUT.addresses.x + 52u + child * 16u;
-		if (metadata.data[branch + 12u] == INVALID && metadata.data[branch + 13u] == INVALID) { continue; }
+		if (vg_metadata_word(branch + 12u) == INVALID && vg_metadata_word(branch + 13u) == INVALID) { continue; }
 		lower = min(lower, meta3(branch));
 		upper = max(upper, meta3(branch + 3u));
 	}
@@ -371,26 +391,26 @@ void visit_node(uint id) {
 	// Empty and refused lanes still reach every group reservation barrier.
 	for (uint child = 0u; child < 4u && has_task; ++child) {
 		uint branch = VG_SELECTION_INPUT.addresses.x + 52u + node * 64u + child * 16u;
-		uint child_node = metadata.data[branch + 12u];
-		uint part = metadata.data[branch + 13u];
+		uint child_node = vg_metadata_word(branch + 12u);
+		uint part = vg_metadata_word(branch + 13u);
 		if (child_node == INVALID && part == INVALID) { continue; }
 		float edge = projected_edge(instance, meta4(branch + 6u), transform);
-		float threshold = error_scale * uintBitsToFloat(metadata.data[branch + 11u]);
-		bool root_path = metadata.data[branch + 15u] != 0u;
+		float threshold = error_scale * uintBitsToFloat(vg_metadata_word(branch + 11u));
+		bool root_path = vg_metadata_word(branch + 15u) != 0u;
 		if ((!root_path && edge > threshold) || !in_frustum(meta3(branch), meta3(branch + 3u), transform)) { continue; }
 		if (child_node != INVALID) {
 			nodes[child] = child_node;
 			node_counts[child] = 1u;
 			continue;
 		}
-		uint reference = metadata.data[branch + 14u];
+		uint reference = vg_metadata_word(branch + 14u);
 		uint part_word = VG_SELECTION_INPUT.offsets.x + part * 8u;
-		uint group_word = VG_SELECTION_INPUT.offsets.z + metadata.data[part_word] * 2u;
-		uint page_first = metadata.data[group_word];
-		uint page_count = metadata.data[group_word + 1u];
+		uint group_word = VG_SELECTION_INPUT.offsets.z + vg_metadata_word(part_word) * 2u;
+		uint page_first = vg_metadata_word(group_word);
+		uint page_count = vg_metadata_word(group_word + 1u);
 		if (reference == INVALID) {
 			for (uint page = page_first; page < page_first + page_count; ++page) {
-				if (metadata.data[VG_SELECTION_INPUT.offsets.y + page] != INVALID) { continue; }
+				if (vg_metadata_word(VG_SELECTION_INPUT.offsets.y + page) != INVALID) { continue; }
 				uint index = reserve_request(5u, VG_SELECTION_INPUT.limits.w);
 				if (index < VG_SELECTION_INPUT.limits.w) {
 					VG_SELECTION_REQUEST(16u + index * 2u) = page;
@@ -407,7 +427,7 @@ void visit_node(uint id) {
 		hit_counts[child] = min(page_count, 128u - hit_count);
 		hit_count += hit_counts[child];
 		references[child] = reference;
-		cluster_counts[child] = metadata.data[part_word + 3u];
+		cluster_counts[child] = vg_metadata_word(part_word + 3u);
 	}
 	uvec4 node_first, cluster_first;
 	uvec2 hit_range;
@@ -579,7 +599,7 @@ void main() {
 		if ((flags & 16u) != 0u || (params.source.w == 0u && (flags & 3u) == 0u)) { return; }
 		uint local = id - VG_SELECTION_INPUT.prefix.x;
 		uint page = local % VG_SELECTION_INPUT.source.w;
-		uint slot = metadata.data[VG_SELECTION_INPUT.offsets.y + page];
+		uint slot = vg_metadata_word(VG_SELECTION_INPUT.offsets.y + page);
 		if (slot == INVALID) { mark_failure(8u); return; }
 		uint count = geometry.data[slot * 8192u + 3u];
 		for (uint cluster = 0u; cluster < count; ++cluster) {

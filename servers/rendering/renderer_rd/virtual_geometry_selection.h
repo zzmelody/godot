@@ -9,6 +9,7 @@
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select_dispatch.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/virtual_geometry_storage.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_snapshot_copy.h"
+#include "servers/rendering/renderer_rd/virtual_geometry_source_reads.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_work_memory.h"
 
 class RenderGeometryInstance;
@@ -51,8 +52,10 @@ public:
 		// Borrowed view arena; this result's header begins at work_word.
 		RID work;
 		RID parameters;
-		// Borrowed current-transform snapshot, with a vec4 offset per source.
+		// Fallback borrows one current-transform snapshot. Direct reads use
+		// batch.transforms instead; the logical vec4 offset still owns a span.
 		RID transforms;
+		bool direct_source_reads = false;
 		uint32_t transform_offset = 0;
 		uint32_t work_word = 0;
 		uint32_t selected_capacity = 0;
@@ -88,7 +91,7 @@ private:
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
 	RID version;
 	RID dispatch_version;
-	PipelineDeferredRD pipeline;
+	PipelineDeferredRD pipelines[2];
 	PipelineDeferredRD dispatch_pipeline;
 	RID scratch;
 	uint32_t scratch_words = 0;
@@ -105,6 +108,15 @@ private:
 	RID dispatch_inputs;
 	uint32_t dispatch_input_words = 0;
 	RID view_parameters;
+	RID source_addresses;
+	uint32_t source_address_words = 0;
+	struct SourceAddresses {
+		uint64_t metadata = 0;
+		uint64_t transforms = 0;
+	};
+	static_assert(sizeof(SourceAddresses) == 16);
+	LocalVector<SourceAddresses> source_address_data;
+	VirtualGeometrySourceReads source_reads;
 	LocalVector<Result> results;
 	LocalVector<Batch> batches;
 	LocalVector<Parameters> parameter_data;

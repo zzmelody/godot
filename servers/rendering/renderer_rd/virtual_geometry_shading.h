@@ -101,7 +101,8 @@ private:
 	VirtualGeometryShadeScanShaderRD scan_shader;
 	VirtualGeometryShadeDispatchShaderRD dispatch_shader;
 	RID init_version, bin_version, scan_version, dispatch_version;
-	PipelineDeferredRD init_pipeline, bin_pipeline, scan_pipeline, dispatch_pipeline;
+	PipelineDeferredRD init_pipelines[2];
+	PipelineDeferredRD bin_pipeline, scan_pipeline, dispatch_pipeline;
 	RID scene_buffer, bins_buffer, arguments;
 	RID draw_arguments;
 	uint32_t draw_argument_words = 0;
@@ -150,6 +151,16 @@ private:
 	LocalVector<ScanLevel> source_levels;
 	using HistoryCopy = VirtualGeometrySnapshotCopy::Copy;
 	LocalVector<HistoryCopy> source_history_copies;
+	bool direct_sources = false;
+	VirtualGeometrySourceReads source_reads;
+	RID source_addresses;
+	uint32_t source_address_words = 0;
+	struct SourceAddresses {
+		uint64_t current = 0;
+		uint64_t previous = 0;
+	};
+	static_assert(sizeof(SourceAddresses) == 16);
+	LocalVector<SourceAddresses> source_address_data;
 	RID batch_parameters;
 	uint32_t batch_parameter_words = 0;
 	struct BatchParameters {
