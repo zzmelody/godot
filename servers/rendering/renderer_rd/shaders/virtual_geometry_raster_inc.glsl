@@ -20,6 +20,9 @@ layout(push_constant, std430) uniform RasterParameters {
 	vec2 jitter;
 	uint source_base;
 	uint material;
+#ifdef VG_GLOBAL_RASTER
+	uint bucket;
+#endif
 } raster_info;
 
 uint instance_base() { return 16u; }
@@ -36,13 +39,13 @@ uint instance_base() { return 16u; }
 
 #ifdef VG_GLOBAL_RASTER
 uint vg_raster_bucket() {
-	return raster_info.material == 0xffffffffu ? 0u : raster_info.material + 1u;
+	return raster_info.bucket;
 }
 uint vg_raster_bucket_count() {
 	return work.data[2u + vg_raster_bucket()];
 }
 uint vg_raster_bucket_prefix() {
-	return work.data[3u + scene.data[3] + vg_raster_bucket()];
+	return work.data[2u + raster_info.source_base / 4u + vg_raster_bucket()];
 }
 uint vg_raster_bin_header() {
 	return vg_raster_bucket() * 4u;

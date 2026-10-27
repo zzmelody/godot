@@ -46,6 +46,7 @@ private:
 	VirtualGeometryWorkMemory memory;
 	struct Pass {
 		VirtualGeometryShading::RasterMaterialWork work;
+		uint32_t bucket = 0;
 		RID uniforms[3];
 	};
 	struct ScanLevel {

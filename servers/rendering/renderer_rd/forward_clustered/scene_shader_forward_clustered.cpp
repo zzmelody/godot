@@ -771,6 +771,15 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 							}
 							if (mode < 2) {
 								virtual_geometry_raster_compute[mode].create_compute_pipeline(raster_program);
+								if (mode == 0 && !pixel_programmable) {
+									RD::PipelineSpecializationConstant small;
+									small.constant_id = 0;
+									small.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_BOOL;
+									small.bool_value = true;
+									Vector<RD::PipelineSpecializationConstant> constants;
+									constants.push_back(small);
+									virtual_geometry_raster_small.create_compute_pipeline(raster_program, constants);
+								}
 								if (virtual_geometry_raster_compute[mode].get_rid().is_null()) {
 									virtual_geometry_error = "Virtual geometry programmable compute pipeline failed: " + path;
 									break;
@@ -809,6 +818,7 @@ void SceneShaderForwardClustered::ShaderData::_clear_virtual_geometry_raster() {
 	for (auto &pipeline : virtual_geometry_raster_compute) {
 		pipeline.free();
 	}
+	virtual_geometry_raster_small.free();
 	virtual_geometry_raster_hardware.clear();
 	virtual_geometry_voxel_pipeline.clear();
 	if (virtual_geometry_voxel_version.is_valid()) {

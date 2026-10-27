@@ -96,7 +96,7 @@ bool vg_cluster_visible(uvec2 reference) {
 	return false;
 }
 
-uint vg_palette_pipeline(uint source, uint palette, uint entry, out bool custom_depth) {
+uint vg_palette_pipeline(uint source, uint palette, uint entry, uint triangles, out bool custom_depth) {
 	custom_depth = false;
 	uint slot = geometry.data[palette + entry];
 	if (slot >= vg_source_data(source, 52u)) {
@@ -110,7 +110,9 @@ uint vg_palette_pipeline(uint source, uint palette, uint entry, out bool custom_
 	}
 	uint flags = materials.data[material * 4u + 2u];
 	custom_depth = (flags & 2u) != 0u;
-	return flags == 0u ? 0u : material + 1u;
+	// Only opaque programmable materials have the fused specialization.
+	// Each reference still enters exactly one bucket per distinct material.
+	return flags == 0u ? 0u : material + 1u + (((flags & 4u) != 0u && triangles > 64u) ? scene.data[3] : 0u);
 }
 
 void vg_emit_candidate(uint index, uint pipeline) {
@@ -154,6 +156,7 @@ void main() {
 		return;
 	}
 	uint record = vg_record(reference.y);
+	uint triangles = geometry.data[record + 5u];
 	uint count = geometry.data[record + 6u];
 	if (count == 0u || count > 64u || reference.x >= (scene.data[1] - scene.data[0]) / 48u) {
 		atomicOr(status.data[0], 4u);
@@ -165,7 +168,7 @@ void main() {
 	bool custom_depth = false;
 	for (uint entry = 0u; entry < count; ++entry) {
 		bool entry_depth;
-		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, entry_depth);
+		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, triangles, entry_depth);
 		if (pipeline == 0xffffffffu) {
 			return;
 		}
@@ -192,10 +195,10 @@ void main() {
 	}
 	for (uint entry = 0u; entry < count; ++entry) {
 		bool entry_depth;
-		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, entry_depth);
+		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, triangles, entry_depth);
 		bool duplicate = false;
 		for (uint previous = 0u; previous < entry; ++previous) {
-			if (vg_palette_pipeline(reference.x, palette, previous, entry_depth) == pipeline) {
+			if (vg_palette_pipeline(reference.x, palette, previous, triangles, entry_depth) == pipeline) {
 				duplicate = true;
 				break;
 			}

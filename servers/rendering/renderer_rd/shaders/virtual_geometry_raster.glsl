@@ -61,6 +61,9 @@ layout(push_constant, std430) uniform RasterParameters {
 	vec2 jitter;
 	uint source_base;
 	uint material;
+#ifdef VG_GLOBAL_RASTER
+	uint bucket;
+#endif
 }
 raster_info;
 layout(location = 0) flat in uint pixel_value;

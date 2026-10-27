@@ -126,7 +126,7 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 
 Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Result> p_sources, bool p_voxel) {
 	ERR_FAIL_COND_V(p_sources.is_empty(), ERR_INVALID_PARAMETER);
-	bucket_count = shading.get_materials().size() + 1;
+	bucket_count = shading.get_materials().size() * 2 + 1;
 	const uint64_t capacity = shading.get_raster_candidate_capacity(p_sources);
 	ERR_FAIL_COND_V(capacity == 0 || capacity > UINT32_MAX, ERR_OUT_OF_MEMORY);
 	candidate_capacity = capacity;
@@ -196,6 +196,13 @@ Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Re
 	for (const auto &work : shading.get_raster_work()) {
 		Pass pass;
 		pass.work = work;
+		pass.bucket = work.material + 1;
+		if (work.fused_software) {
+			pass.work.pipelines[0] = work.small_cluster_pipeline;
+			passes.push_back(pass);
+			pass.work.pipelines[0] = work.pipelines[0];
+			pass.bucket += shading.get_materials().size();
+		}
 		passes.push_back(pass);
 	}
 	for (Pass &pass : passes) {
@@ -325,7 +332,7 @@ Error VirtualGeometryRasterizer::record_sdfgi(const Size2i &p_size, const Virtua
 				RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, { p_facing }),
 				RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 4, { voxel_parameters }));
 		ERR_FAIL_COND_V(voxel_set.is_null(), ERR_CANT_CREATE);
-		const uint32_t bucket = pass.work.material + 1;
+		const uint32_t bucket = pass.bucket;
 		const uint32_t dispatch[4] = { 2, bucket_count, bucket, candidate_capacity };
 		const RD::ComputeListID list = rd->compute_list_begin();
 		rd->compute_list_bind_compute_pipeline(list, dispatch_pipeline.get_rid());
@@ -338,8 +345,9 @@ Error VirtualGeometryRasterizer::record_sdfgi(const Size2i &p_size, const Virtua
 			float jitter[2];
 			uint32_t header_words;
 			uint32_t material;
-		} raster = { { uint32_t(size.x), uint32_t(size.y), entries_word, candidate_capacity }, { 0, 0 }, bucket_count * 4, pass.work.material };
-		static_assert(sizeof(RasterParameters) == 32);
+			uint32_t bucket;
+		} raster = { { uint32_t(size.x), uint32_t(size.y), entries_word, candidate_capacity }, { 0, 0 }, bucket_count * 4, pass.work.material, bucket };
+		static_assert(sizeof(RasterParameters) == 36);
 		const RD::DrawListID draw = rd->draw_list_begin(framebuffer);
 		rd->draw_list_bind_render_pipeline(draw, pass.work.pipelines[2]);
 		rd->draw_list_bind_uniform_set(draw, pass.uniforms[2], 0);
@@ -443,16 +451,17 @@ Error VirtualGeometryRasterizer::_record_geometry(const VirtualGeometryShading::
 	RD *rd = RD::get_singleton();
 	_record_material_bins(p_phase);
 	for (const Pass &pass : passes) {
-		const uint32_t bucket = pass.work.material == UINT32_MAX ? 0 : pass.work.material + 1;
+		const uint32_t bucket = pass.bucket;
 		const uint32_t dispatch_parameters[4] = { 1, bucket_count, bucket, candidate_capacity };
 		struct RasterParameters {
 			uint32_t raster[4];
 			float jitter[2];
 			uint32_t header_words;
 			uint32_t material;
+			uint32_t bucket;
 		} raster = { { uint32_t(size.x), uint32_t(size.y), entries_word, candidate_capacity },
-			{ float(p_view.jitter.x), float(p_view.jitter.y) }, bucket_count * 4, pass.work.material };
-		static_assert(sizeof(RasterParameters) == 32);
+			{ float(p_view.jitter.x), float(p_view.jitter.y) }, bucket_count * 4, pass.work.material, bucket };
+		static_assert(sizeof(RasterParameters) == 36);
 		rd->draw_command_begin_label("Virtual Geometry Material Raster");
 		if (pass.work.fused_software) {
 			RENDER_TIMESTAMP("Virtual Geometry Fused Raster Begin");

@@ -21,6 +21,9 @@
 #include "virtual_geometry_raster_triangle_inc.glsl"
 /* clang-format on */
 shared bool group_software;
+// Specialization removes the second prepared triangle from small-cluster
+// pipelines. GPU material bins admit only clusters of at most 64 triangles.
+layout(constant_id = 0) const bool vg_small_cluster = false;
 #endif
 
 struct VGPreparedTriangle {
@@ -133,7 +136,11 @@ void main() {
 	// Admitted clusters have at most 128 triangles. Two explicit values avoid
 	// dynamically indexed per-lane storage across the classification barrier.
 	VGPreparedTriangle first = vg_classify_triangle(selected, count, lane, lane_maximum_edge, lane_needs_hardware);
-	VGPreparedTriangle second = vg_classify_triangle(selected, count, lane + 64u, lane_maximum_edge, lane_needs_hardware);
+	VGPreparedTriangle second;
+	second.has_triangle = false;
+	if (!vg_small_cluster) {
+		second = vg_classify_triangle(selected, count, lane + 64u, lane_maximum_edge, lane_needs_hardware);
+	}
 	lane_active = first.has_triangle || second.has_triangle;
 #else
 	for (uint triangle = lane; triangle < count; triangle += VG_BIN_GROUP_SIZE) {
@@ -205,7 +212,7 @@ void main() {
 		if (first.has_triangle) {
 			vg_raster_prepared_triangle(index, lane, 0u, first.clip0, first.clip1, first.clip2, first.shadow);
 		}
-		if (second.has_triangle) {
+		if (!vg_small_cluster && second.has_triangle) {
 			vg_raster_prepared_triangle(index, lane + 64u, 0u, second.clip0, second.clip1, second.clip2, second.shadow);
 		}
 	}

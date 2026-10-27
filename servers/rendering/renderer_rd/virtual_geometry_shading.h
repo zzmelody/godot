@@ -62,6 +62,7 @@ public:
 	struct RasterMaterialWork {
 		uint32_t material = 0;
 		bool fused_software = false;
+		RID small_cluster_pipeline;
 		RID programs[3];
 		RID pipelines[3];
 		RID parameters[3];
