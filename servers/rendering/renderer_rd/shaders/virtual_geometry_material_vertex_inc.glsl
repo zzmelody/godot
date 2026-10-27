@@ -138,22 +138,36 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 		}
 	} else {
 		float maximum = uintBitsToFloat(raster_materials.data[VG_MATERIAL_INDEX * 4u + 1u]);
+		// VG source initialization and history evaluation store the exact inverse
+		// transpose, including nonuniform scale and shear. This is not the
+		// ordinary renderer's uniform-scale normal-matrix shortcut.
+#if defined(VERTEX_WORLD_COORDS_USED) && !defined(SKIP_TRANSFORM_USED)
 		if (maximum > 0.0) {
 			offset = clamp(offset, vec3(-maximum), vec3(maximum));
 		}
-		value.position += inverse(mat3(read_model_matrix)) * offset;
+		value.position += transpose(model_normal_matrix) * offset;
+#else
+		if (maximum > 0.0 && any(greaterThan(abs(offset), vec3(maximum)))) {
+			offset = clamp(offset, vec3(-maximum), vec3(maximum));
+			value.position += transpose(model_normal_matrix) * offset;
+		} else {
+			// An admitted local displacement already has the required position.
+			// Avoid a world/local round trip unless the world-axis bound clips it.
+			value.position = vertex;
+		}
+#endif
 	}
 #if defined(VERTEX_WORLD_COORDS_USED) && !defined(SKIP_TRANSFORM_USED)
 	// Surface reconstruction applies the model normal matrix at each corner.
 	// Return the author's independent axes to that shared local-space contract.
-	mat3 local_normal_matrix = inverse(model_normal_matrix);
+	mat3 local_normal_matrix = transpose(mat3(read_model_matrix));
 	value.normal = local_normal_matrix * normal_highp;
 	value.tangent.xyz = local_normal_matrix * tangent;
 	value.binormal = local_normal_matrix * binormal;
 #elif defined(VG_MODELVIEW_NORMAL_WRITE) && !defined(SKIP_TRANSFORM_USED)
 	// The ordinary local-coordinate path uses the author's view normal matrix
 	// after vertex(). World-coordinate mode intentionally ignores this output.
-	mat3 local_frame = inverse(model_normal_matrix) * mat3(vg_camera) * modelview_normal;
+	mat3 local_frame = transpose(mat3(read_model_matrix)) * mat3(vg_camera) * modelview_normal;
 	value.normal = local_frame * normal_highp;
 	value.tangent.xyz = local_frame * tangent;
 	value.binormal = local_frame * binormal;
