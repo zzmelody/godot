@@ -44,16 +44,61 @@ uint reserve_work(uint word, uint count, uint capacity) {
 shared uvec2 group_scan[128];
 shared uvec2 group_first;
 shared uvec4 group_ranges[64];
+// Source, bounded lane demand, granted first record, granted count.
+shared uvec4 group_hits[64];
+
+uvec2 reserve_hit_prefix(uint count) {
+	uint previous = atomicOr(VG_SELECTION_REQUEST(12u), 0u);
+	for (;;) {
+		if (previous >= 128u) { return uvec2(INVALID, 0u); }
+		uint granted = min(count, 128u - previous);
+		uint observed = atomicCompSwap(VG_SELECTION_REQUEST(12u), previous, previous + granted);
+		if (observed == previous) { return uvec2(previous, granted); }
+		previous = observed;
+	}
+}
+
+// Called by lane zero between the existing reservation barriers. Hit traffic
+// remains bounded per source; missing-page requests keep their own contract.
+void reserve_group_hits() {
+	uint saved_source = vg_batch_index;
+	uint first = 0u;
+	while (first < 64u) {
+		uint source = group_hits[first].x;
+		uint end = first + 1u;
+		uint count = group_hits[first].y;
+		while (end < 64u && group_hits[end].x == source) {
+			count += group_hits[end].y;
+			++end;
+		}
+		uvec2 range = uvec2(INVALID, 0u);
+		if (count != 0u) {
+			vg_batch_index = source;
+			range = reserve_hit_prefix(count);
+		}
+		uint prefix = 0u;
+		for (uint member = first; member < end; ++member) {
+			uint demand = group_hits[member].y;
+			uint granted = prefix < range.y ? min(demand, range.y - prefix) : 0u;
+			group_hits[member].zw = uvec2(granted != 0u ? range.x + prefix : INVALID, granted);
+			prefix += demand;
+		}
+		first = end;
+	}
+	// The leader still publishes its own node/candidate work after this call.
+	vg_batch_index = saved_source;
+}
 
 // Each lane retains at most four original branch requests. Only the leader
 // contends globally; the boundary path preserves each complete part request.
-void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, out uvec4 node_first, out uvec4 cluster_first) {
+void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, uint hit_count, out uvec4 node_first, out uvec4 cluster_first, out uvec2 hit_range) {
 	uint lane = gl_LocalInvocationIndex;
 	// Validated parts fit one page (at most 256 clusters). Four requests per
 	// lane and 64 lanes therefore sum to at most 65536, without uint overflow.
 	uvec2 count = uvec2(node_counts.x + node_counts.y + node_counts.z + node_counts.w,
 			cluster_counts.x + cluster_counts.y + cluster_counts.z + cluster_counts.w);
 	group_scan[lane * 2u] = count;
+	group_hits[lane] = uvec4(vg_batch_index, hit_count, INVALID, 0u);
 	barrier();
 	uint source = 0u;
 	for (uint step = 1u; step < 64u; step <<= 1u) {
@@ -71,6 +116,7 @@ void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, ou
 		for (uint kind = 0u; kind < 2u; ++kind) {
 			group_first[kind] = total[kind] == 0u ? INVALID : reserve_work(words[kind], total[kind], capacities[kind]);
 		}
+		reserve_group_hits();
 	}
 	barrier();
 	node_first = uvec4(INVALID);
@@ -110,6 +156,7 @@ void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, ou
 		// A second saturated queue reuses this storage after all lanes read it.
 		barrier();
 	}
+	hit_range = group_hits[lane].zw;
 }
 uint reserve_result(uint word, uint capacity) {
 	uint previous = atomicOr(VG_SELECTION_WORK(word), 0u);
@@ -293,6 +340,7 @@ bool instance_in_frustum(mat4 transform) {
 }
 
 void visit_node(uint id) {
+	vg_batch_index = INVALID;
 	uint parity = phase.round & 1u;
 	bool has_task = id < min(work.data[parity], params.limits.x);
 	uint instance = 0u;
@@ -303,6 +351,9 @@ void visit_node(uint id) {
 	uvec4 node_counts = uvec4(0u);
 	uvec4 references = uvec4(INVALID);
 	uvec4 cluster_counts = uvec4(0u);
+	uvec4 hit_pages = uvec4(0u);
+	uvec4 hit_counts = uvec4(0u);
+	uint hit_count = 0u;
 	if (has_task) {
 		uint task = queue_base(parity) + id * 4u;
 		vg_batch_index = work.data[task];
@@ -350,19 +401,29 @@ void visit_node(uint id) {
 			}
 			continue;
 		}
-		for (uint page = page_first; page < page_first + page_count; ++page) {
-			uint hit = reserve_request(12u, 128u);
-			if (hit < 128u) {
-				uint word = 16u + VG_SELECTION_INPUT.limits.w * 2u + hit * 2u;
-				VG_SELECTION_REQUEST(word) = page;
-				VG_SELECTION_REQUEST(word + 1u) = floatBitsToUint(-1.0);
-			}
-		}
+		// A single lane cannot contribute more than the whole source capacity.
+		// Thus 64 lane demands sum to at most 8192 without uint overflow.
+		hit_pages[child] = page_first;
+		hit_counts[child] = min(page_count, 128u - hit_count);
+		hit_count += hit_counts[child];
 		references[child] = reference;
 		cluster_counts[child] = metadata.data[part_word + 3u];
 	}
 	uvec4 node_first, cluster_first;
-	reserve_group_work(parity, node_counts, cluster_counts, node_first, cluster_first);
+	uvec2 hit_range;
+	reserve_group_work(parity, node_counts, cluster_counts, hit_count, node_first, cluster_first, hit_range);
+	uint hit = hit_range.x;
+	uint remaining_hits = hit_range.y;
+	for (uint child = 0u; child < 4u && remaining_hits != 0u; ++child) {
+		uint count = min(hit_counts[child], remaining_hits);
+		for (uint page = 0u; page < count; ++page) {
+			uint word = 16u + VG_SELECTION_INPUT.limits.w * 2u + hit * 2u;
+			VG_SELECTION_REQUEST(word) = hit_pages[child] + page;
+			VG_SELECTION_REQUEST(word + 1u) = floatBitsToUint(-1.0);
+			++hit;
+		}
+		remaining_hits -= count;
+	}
 	for (uint child = 0u; child < 4u; ++child) {
 		if (node_counts[child] == 0u) { continue; }
 		if (node_first[child] == INVALID) { mark_failure(1u); continue; }
