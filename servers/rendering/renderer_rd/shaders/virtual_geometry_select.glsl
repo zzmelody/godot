@@ -223,6 +223,19 @@ void initialize_instance(uint id) {
 	} else { mark_failure(1u); }
 }
 
+bool outside_frustum_plane(vec4 plane, vec4 magnitude, vec3 lower, vec3 upper, vec4 coordinate_bound, float padding) {
+	vec3 support = mix(lower, upper, greaterThanEqual(plane.xyz, vec3(0.0)));
+	float maximum = dot(plane, vec4(support, 1.0)) + padding;
+	// Bound rounding from combining clip rows and evaluating the support point.
+	// Use the uncombined row magnitudes: abs(plane) would hide cancellation.
+	// Sixteen float epsilons cover both this dot and the former corner test.
+	// A nonfinite bound also retains the box instead of making a false rejection.
+	float error = 1.9073486328125e-6 * (dot(magnitude, coordinate_bound) + abs(padding));
+	// Keep an outward bound when the device flushes subnormal intermediates.
+	error = max(error, 3.76158192263132e-37);
+	return maximum < -error;
+}
+
 bool in_frustum(vec3 lower, vec3 upper, mat4 transform) {
 	if ((uint(params.lod.z) & 4u) != 0u) {
 		// The existing scene culler owns the hemisphere caster set. Linear clip
@@ -238,17 +251,26 @@ bool in_frustum(vec3 lower, vec3 upper, mat4 transform) {
 		displacement = maximum * (abs(world_to_clip[0]) + abs(world_to_clip[1]) + abs(world_to_clip[2]));
 	}
 	vec2 side_padding = displacement.xy + vec2((1.0 + params.lod.w) * displacement.w);
-	uint outside = 63u;
-	for (uint corner = 0u; corner < 8u; ++corner) {
-		vec3 point = mix(lower, upper, bvec3((corner & 1u) != 0u, (corner & 2u) != 0u, (corner & 4u) != 0u));
-		vec4 clip = params.projection * transform * vec4(point, 1.0);
-		float extent = (1.0 + params.lod.w) * clip.w;
-		uint mask = (clip.x < -extent - side_padding.x ? 1u : 0u) | (clip.x > extent + side_padding.x ? 2u : 0u) |
-				(clip.y < -extent - side_padding.y ? 4u : 0u) | (clip.y > extent + side_padding.y ? 8u : 0u) |
-				(clip.z < -displacement.z ? 16u : 0u) | ((uint(params.lod.z) & 2u) == 0u && clip.z > clip.w + displacement.z + displacement.w ? 32u : 0u);
-		outside &= mask;
+	// A linear plane reaches its AABB maximum at the support corner. Work in
+	// homogeneous coordinates so boxes crossing the eye plane keep the same rule.
+	mat4 rows = transpose(params.projection * transform);
+	vec4 extent = (1.0 + params.lod.w) * rows[3];
+	vec4 coordinate_bound = vec4(max(abs(lower), abs(upper)), 1.0);
+	for (uint axis = 0u; axis < 2u; ++axis) {
+		vec4 magnitude = abs(extent) + abs(rows[axis]);
+		if (outside_frustum_plane(extent + rows[axis], magnitude, lower, upper, coordinate_bound, side_padding[axis]) ||
+				outside_frustum_plane(extent - rows[axis], magnitude, lower, upper, coordinate_bound, side_padding[axis])) {
+			return false;
+		}
 	}
-	return outside == 0u;
+	if (outside_frustum_plane(rows[2], abs(rows[2]), lower, upper, coordinate_bound, displacement.z)) {
+		return false;
+	}
+	if ((uint(params.lod.z) & 2u) == 0u &&
+			outside_frustum_plane(rows[3] - rows[2], abs(rows[3]) + abs(rows[2]), lower, upper, coordinate_bound, displacement.z + displacement.w)) {
+		return false;
+	}
+	return true;
 }
 
 vec3 meta3(uint word) { return uintBitsToFloat(uvec3(metadata.data[word], metadata.data[word + 1u], metadata.data[word + 2u])); }
