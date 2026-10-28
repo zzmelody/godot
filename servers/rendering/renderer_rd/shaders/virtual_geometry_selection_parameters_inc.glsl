@@ -17,4 +17,3 @@ uint vg_batch_index;
 #define VG_SELECTION_INPUT selection_inputs.data[vg_batch_index]
 #define VG_SELECTION_WORK(index) result.data[VG_SELECTION_INPUT.addresses.z + (index)]
 #define VG_SELECTION_REQUEST(index) request_work.data[VG_SELECTION_INPUT.addresses.y + (index)]
-uint vg_selection_mode() { return phase.mode; }

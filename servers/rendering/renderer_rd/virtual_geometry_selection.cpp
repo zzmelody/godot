@@ -16,8 +16,10 @@ VirtualGeometrySelection::~VirtualGeometrySelection() {
 			memory.free(buffer);
 		}
 	}
-	for (auto &pipeline : pipelines) {
-		pipeline.free();
+	for (auto &variant : pipelines) {
+		for (auto &pipeline : variant) {
+			pipeline.free();
+		}
 	}
 	dispatch_pipeline.free();
 	if (version.is_valid()) {
@@ -269,32 +271,46 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		results[index].transform_offset = parameter_data[index].source[2];
 	}
 	if (version.is_null()) {
-		const uint32_t subgroup_operations = RD::SUBGROUP_BASIC_BIT | RD::SUBGROUP_ARITHMETIC_BIT;
-		subgroup_scan = (rd->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & subgroup_operations) == subgroup_operations &&
-				(rd->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) != 0;
 		const bool device_addresses = rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS);
 		Vector<String> modes;
 		modes.push_back("");
 		modes.push_back("#define VG_DIRECT_SOURCE_READS\n");
-		modes.push_back("#define VG_SUBGROUP_SCAN\n");
-		modes.push_back("#define VG_DIRECT_SOURCE_READS\n#define VG_SUBGROUP_SCAN\n");
 		shader.initialize(modes);
 		shader.set_variant_enabled(1, device_addresses);
-		shader.set_variant_enabled(2, subgroup_scan);
-		shader.set_variant_enabled(3, device_addresses && subgroup_scan);
 		version = shader.version_create();
 		modes.resize(1);
 		dispatch_shader.initialize(modes);
 		dispatch_version = dispatch_shader.version_create();
 		dispatch_pipeline.create_compute_pipeline(dispatch_shader.version_get_shader(dispatch_version, 0));
 	}
-	const uint32_t mode = (direct_sources ? 1 : 0) | (subgroup_scan ? 2 : 0);
-	if (pipelines[mode].get_rid().is_null()) {
-		pipelines[mode].create_compute_pipeline(shader.version_get_shader(version, mode));
+	const uint32_t mode = direct_sources ? 1 : 0;
+	const RID selection_shader = shader.version_get_shader(version, mode);
+	static constexpr uint32_t phases[] = { 0, 2, 4, 5, 6, 7, 10, 11 };
+	RID compute[12] = {};
+	for (uint32_t phase : phases) {
+		if ((p_root_only && phase != 0 && phase != 5 && phase != 7 && phase != 10) || (!p_root_only && phase == 7)) {
+			continue;
+		}
+		if (pipelines[mode][phase].get_rid().is_null()) {
+			RD::PipelineSpecializationConstant specialization;
+			specialization.constant_id = 0;
+			specialization.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT;
+			specialization.int_value = phase;
+			Vector<RD::PipelineSpecializationConstant> constants;
+			constants.push_back(specialization);
+			pipelines[mode][phase].create_compute_pipeline(selection_shader, constants);
+		}
 	}
-	const RID compute = pipelines[mode].get_rid();
+	// Complete every required pipeline before publishing any view commands.
+	for (uint32_t phase : phases) {
+		if ((p_root_only && phase != 0 && phase != 5 && phase != 7 && phase != 10) || (!p_root_only && phase == 7)) {
+			continue;
+		}
+		compute[phase] = pipelines[mode][phase].get_rid();
+		ERR_FAIL_COND_V(compute[phase].is_null(), ERR_CANT_CREATE);
+	}
 	const RID prepare = dispatch_pipeline.get_rid();
-	ERR_FAIL_COND_V(compute.is_null() || prepare.is_null(), ERR_CANT_CREATE);
+	ERR_FAIL_COND_V(prepare.is_null(), ERR_CANT_CREATE);
 	UniformSetCacheRD *cache = UniformSetCacheRD::get_singleton();
 	LocalVector<RD::Uniform> uniforms;
 	if (!direct_sources) {
@@ -309,11 +325,13 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { result_buffer }));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { dispatch_inputs }));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { feedback_buffer }));
-	const RID selection_uniforms = cache->get_cache_vec(shader.version_get_shader(version, mode), 0, uniforms);
+	const RID selection_uniforms = cache->get_cache_vec(selection_shader, 0, uniforms);
 	const RID dispatch_uniforms = cache->get_cache(dispatch_shader.version_get_shader(dispatch_version, 0), 0,
 			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { view_parameters }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { scratch }),
-			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { dispatch_buffer }));
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { dispatch_buffer }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { dispatch_inputs }),
+			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { feedback_buffer }));
 	ERR_FAIL_COND_V(selection_uniforms.is_null() || dispatch_uniforms.is_null(), ERR_CANT_CREATE);
 	RENDER_TIMESTAMP("Virtual Geometry Selection Begin");
 	const RD::ComputeListID list = rd->compute_list_begin();
@@ -322,7 +340,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	}
 	auto dispatch = [&](uint32_t p_mode, uint32_t p_round, uint32_t p_items, bool p_indirect = false) {
 		const uint32_t phase[3] = { 0, p_mode, p_round };
-		rd->compute_list_bind_compute_pipeline(list, compute);
+		rd->compute_list_bind_compute_pipeline(list, compute[p_mode]);
 		rd->compute_list_bind_uniform_set(list, selection_uniforms, 0);
 		rd->compute_list_set_push_constant(list, phase, sizeof(phase));
 		if (p_indirect) {
@@ -337,7 +355,8 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		rd->compute_list_bind_compute_pipeline(list, prepare);
 		rd->compute_list_bind_uniform_set(list, dispatch_uniforms, 0);
 		rd->compute_list_set_push_constant(list, phase, sizeof(phase));
-		rd->compute_list_dispatch(list, 1, 1, 1);
+		const uint32_t groups = p_mode == 1 ? uint32_t(MAX(uint64_t(1), (uint64_t(used) + 63) / 64)) : 1;
+		rd->compute_list_dispatch(list, MIN(65535u, groups), (groups + 65534u) / 65535u, 1);
 		rd->compute_list_add_barrier(list);
 	};
 	dispatch(10, 0, used);

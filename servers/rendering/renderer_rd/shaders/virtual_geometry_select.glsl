@@ -4,11 +4,6 @@
 
 #VERSION_DEFINES
 
-#ifdef VG_SUBGROUP_SCAN
-#extension GL_KHR_shader_subgroup_basic : require
-#extension GL_KHR_shader_subgroup_arithmetic : require
-#endif
-
 #include "virtual_geometry_source_reads_inc.glsl"
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
@@ -126,36 +121,13 @@ void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, ui
 			cluster_counts.x + cluster_counts.y + cluster_counts.z + cluster_counts.w);
 	uvec2 words = uvec2(1u - parity, 2u);
 	uvec2 capacities = params.limits.xy;
-#ifdef VG_SUBGROUP_SCAN
-	uvec2 prefix = subgroupExclusiveAdd(count);
-	uvec2 subtotal = subgroupAdd(count);
-	if (subgroupElect()) {
-		group_scan[gl_SubgroupID] = subtotal;
-	}
-	group_hits[lane] = uvec4(vg_batch_index, hit_count, INVALID, 0u);
-	barrier();
-	for (uint group = 0u; group < gl_SubgroupID; ++group) {
-		prefix += group_scan[group];
-	}
-	if (lane == 0u) {
-		uvec2 total = uvec2(0u);
-		for (uint group = 0u; group < gl_NumSubgroups; ++group) {
-			total += group_scan[group];
-		}
-		// At most 64 subgroups use slots 0..63. Reuse the existing scan
-		// storage for the aggregate; do not increase workgroup shared memory.
-		group_scan[127u] = total;
-		for (uint kind = 0u; kind < 2u; ++kind) {
-			group_first[kind] = total[kind] == 0u ? INVALID : reserve_work(words[kind], total[kind], capacities[kind]);
-		}
-		reserve_group_hits();
-	}
-	barrier();
-	uvec2 total = group_scan[127u];
-#else
 	group_scan[lane * 2u] = count;
 	group_hits[lane] = uvec4(vg_batch_index, hit_count, INVALID, 0u);
+	// This output slot is scratch until the leader grants feedback ranges.
+	// The existing scan barriers publish every flag atomic before it is read.
+	if (lane == 0u) { group_hits[0].z = 0u; }
 	barrier();
+	if (hit_count != 0u) { atomicOr(group_hits[0].z, 1u); }
 	uint source = 0u;
 	for (uint step = 1u; step < 64u; step <<= 1u) {
 		uvec2 sum = group_scan[lane * 2u + source];
@@ -170,10 +142,13 @@ void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, ui
 		for (uint kind = 0u; kind < 2u; ++kind) {
 			group_first[kind] = total[kind] == 0u ? INVALID : reserve_work(words[kind], total[kind], capacities[kind]);
 		}
-		reserve_group_hits();
+		if (group_hits[0].z != 0u) {
+			reserve_group_hits();
+		} else {
+			group_hits[0].z = INVALID;
+		}
 	}
 	barrier();
-#endif
 	node_first = uvec4(INVALID);
 	cluster_first = uvec4(INVALID);
 	for (uint branch = 0u; branch < 4u; ++branch) {
@@ -458,9 +433,14 @@ void visit_node(uint id) {
 		}
 		// A single lane cannot contribute more than the whole source capacity.
 		// Thus 64 lane demands sum to at most 8192 without uint overflow.
-		hit_pages[child] = page_first;
-		hit_counts[child] = min(page_count, 128u - hit_count);
-		hit_count += hit_counts[child];
+		// The preparer publishes saturation after the preceding node round.
+		// Closed sources cannot grant more hits; missing-page demand above is
+		// independent and still runs. This word is stable during this dispatch.
+		if (VG_SELECTION_REQUEST(13u) == 0u) {
+			hit_pages[child] = page_first;
+			hit_counts[child] = min(page_count, 128u - hit_count);
+			hit_count += hit_counts[child];
+		}
 		references[child] = reference;
 		cluster_counts[child] = vg_metadata_word(part_word + 3u);
 	}
@@ -602,9 +582,11 @@ void select_cluster_group(uint id) {
 	atomicOr(VG_SELECTION_WORK(instance_base() + instance * 16u + 15u), 2u);
 }
 
+layout(constant_id = 0) const uint vg_selection_phase = 0u;
+
 void main() {
 	uint id = (gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u) * 64u + gl_LocalInvocationIndex;
-	uint mode = vg_selection_mode();
+	uint mode = vg_selection_phase;
 	if (mode == 10u) {
 		if (id >= params.source.x) { return; }
 		vg_batch_index = id;

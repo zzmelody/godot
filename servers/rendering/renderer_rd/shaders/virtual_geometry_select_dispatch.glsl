@@ -16,9 +16,17 @@ layout(set = 0, binding = 3, std140) uniform Parameters {
 } params;
 layout(set = 0, binding = 4, std430) buffer Work { uint data[]; } work;
 layout(set = 0, binding = 5, std430) writeonly buffer Dispatch { uint groups[]; } dispatch;
-layout(push_constant, std430) uniform Phase { uint batch; uint mode; uint round; } phase;
+layout(set = 0, binding = 8, std430) buffer RequestWork { uint data[]; } request_work;
+#include "virtual_geometry_selection_parameters_inc.glsl"
 void main() {
-	if (gl_GlobalInvocationID.x != 0u) { return; }
+	uint id = (gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u) * 64u + gl_LocalInvocationIndex;
+	if (phase.mode == 1u && id < params.source.x) {
+		// The prior node dispatch has finished. Word13 is a view-local derived
+		// saturation observation, stable throughout the next node dispatch.
+		vg_batch_index = id;
+		VG_SELECTION_REQUEST(13u) = VG_SELECTION_REQUEST(12u) >= 128u ? 1u : 0u;
+	}
+	if (id != 0u) { return; }
 	uint count;
 	if (phase.mode == 1u) {
 		uint parity = phase.round & 1u;

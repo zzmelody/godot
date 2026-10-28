@@ -92,7 +92,9 @@ private:
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
 	RID version;
 	RID dispatch_version;
-	PipelineDeferredRD pipelines[4];
+	// The numeric phases retain the existing push-constant protocol. Each
+	// source variant owns only the phase pipelines its admitted route uses.
+	PipelineDeferredRD pipelines[2][12];
 	PipelineDeferredRD dispatch_pipeline;
 	RID scratch;
 	uint32_t scratch_words = 0;
@@ -131,7 +133,6 @@ private:
 	float lod_scale = 0;
 	float frustum_margin = 0;
 	bool orthographic = false;
-	bool subgroup_scan = false;
 	uint32_t shadow_flags = 0;
 };
 

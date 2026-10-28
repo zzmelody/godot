@@ -426,8 +426,7 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 	SceneShaderForwardClustered::ShaderData *shader = nullptr;
 	SceneShaderForwardClustered::ShaderData *prev_shader = nullptr;
 	SceneShaderForwardClustered::ShaderData::PipelineKey pipeline_key;
-	uint32_t pipeline_hash = 0;
-	uint32_t prev_pipeline_hash = 0;
+	SceneShaderForwardClustered::ShaderData::PipelineKey prev_pipeline_key = {};
 
 	bool shadow_pass = (p_pass_mode == PASS_MODE_SHADOW) || (p_pass_mode == PASS_MODE_SHADOW_DP);
 
@@ -630,16 +629,17 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 				pipeline_key.cull_mode = cull_mode;
 			}
 
-			pipeline_hash = pipeline_key.hash();
-
-			if (shader != prev_shader || pipeline_hash != prev_pipeline_hash) {
+			// Compare the complete state before hashing an already bound pipeline.
+			// Failed specializations are still polled before the ubershader path.
+			if (shader != prev_shader || !(pipeline_key == prev_pipeline_key)) {
+				const uint32_t pipeline_hash = pipeline_key.hash();
 				RSE::PipelineSource pipeline_source = pipeline_key.ubershader ? RSE::PIPELINE_SOURCE_DRAW : RSE::PIPELINE_SOURCE_SPECIALIZATION;
 				pipeline_rd = shader->pipeline_hash_map.get_pipeline(pipeline_key, pipeline_hash, pipeline_key.ubershader, pipeline_source);
 
 				if (pipeline_rd.is_valid()) {
 					pipeline_valid = true;
 					prev_shader = shader;
-					prev_pipeline_hash = pipeline_hash;
+					prev_pipeline_key = pipeline_key;
 					break;
 				} else {
 					pipeline_key.ubershader++;
