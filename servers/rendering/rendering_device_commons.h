@@ -1018,6 +1018,7 @@ public:
 		LIMIT_METALFX_TEMPORAL_SCALER_MIN_SCALE = 46,
 		LIMIT_METALFX_TEMPORAL_SCALER_MAX_SCALE,
 		LIMIT_MAX_SHADER_VARYINGS,
+		LIMIT_MAX_DRAW_INDIRECT_COUNT,
 	};
 
 	enum Features {
@@ -1040,6 +1041,8 @@ public:
 		SUPPORTS_GPU_MAPPABLE_BUFFER,
 		// Unsigned 64-bit storage-buffer min/max in both compute and fragment stages.
 		SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX,
+		// Multi-draw commands with the enabled vertex DrawIndex capability.
+		SUPPORTS_MULTIDRAW_INDIRECT,
 	};
 
 	enum SubgroupOperations {

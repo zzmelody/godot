@@ -5839,6 +5839,34 @@ void RenderingDevice::draw_list_bind_uniform_set(DrawListID p_list, RID p_unifor
 #endif
 }
 
+void RenderingDevice::draw_list_add_buffer_read(DrawListID p_list, RID p_buffer, const BufferInfo &p_info) {
+	ERR_RENDER_THREAD_GUARD();
+	ERR_FAIL_COND(!draw_list.active);
+	Buffer *buffer = nullptr;
+	switch (p_info.owner) {
+		case BufferOwnerType::STORAGE:
+			buffer = storage_buffer_owner.get_or_null(p_buffer);
+			break;
+		case BufferOwnerType::VERTEX:
+			buffer = vertex_buffer_owner.get_or_null(p_buffer);
+			break;
+		case BufferOwnerType::INDEX:
+			buffer = index_buffer_owner.get_or_null(p_buffer);
+			break;
+		case BufferOwnerType::UNIFORM:
+			buffer = uniform_buffer_owner.get_or_null(p_buffer);
+			break;
+		case BufferOwnerType::INVALID:
+			ERR_FAIL_MSG("Buffer read requires resolved source allocation info.");
+	}
+	ERR_FAIL_NULL(buffer);
+	ERR_FAIL_COND(!buffer->usage.has_flag(RDD::BUFFER_USAGE_STORAGE_BIT));
+	_check_transfer_worker_buffer(buffer);
+	if (buffer->draw_tracker != nullptr) {
+		draw_graph.add_draw_list_usage(buffer->draw_tracker, RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ);
+	}
+}
+
 void RenderingDevice::draw_list_bind_vertex_array(DrawListID p_list, RID p_vertex_array) {
 	ERR_RENDER_THREAD_GUARD();
 
@@ -9857,6 +9885,8 @@ void RenderingDevice::_bind_methods() {
 	BIND_ENUM_CONSTANT(SUPPORTS_BUFFER_DEVICE_ADDRESS);
 	BIND_ENUM_CONSTANT(SUPPORTS_IMAGE_ATOMIC_32_BIT);
 	BIND_ENUM_CONSTANT(SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX);
+	BIND_ENUM_CONSTANT(SUPPORTS_MULTIDRAW_INDIRECT);
+	BIND_ENUM_CONSTANT(LIMIT_MAX_DRAW_INDIRECT_COUNT);
 	BIND_ENUM_CONSTANT(SUPPORTS_RAY_QUERY);
 	BIND_ENUM_CONSTANT(SUPPORTS_RAYTRACING_PIPELINE);
 	BIND_ENUM_CONSTANT(SUPPORTS_HDR_OUTPUT);

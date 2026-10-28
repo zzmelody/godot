@@ -1570,6 +1570,8 @@ public:
 	void draw_list_set_blend_constants(DrawListID p_list, const Color &p_color);
 	void draw_list_bind_render_pipeline(DrawListID p_list, RID p_render_pipeline);
 	void draw_list_bind_uniform_set(DrawListID p_list, RID p_uniform_set, uint32_t p_index);
+	// Register storage reads made through device addresses at this draw boundary.
+	void draw_list_add_buffer_read(DrawListID p_list, RID p_buffer, const BufferInfo &p_info);
 	void draw_list_bind_vertex_array(DrawListID p_list, RID p_vertex_array);
 	void draw_list_bind_vertex_buffers_format(DrawListID p_list, VertexFormatID p_vertex_format, uint32_t p_vertex_count, const Span<RID> &p_vertex_buffers, const Span<uint64_t> &p_offsets = Vector<uint64_t>());
 	void draw_list_bind_index_array(DrawListID p_list, RID p_index_array);

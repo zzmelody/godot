@@ -43,6 +43,7 @@
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/best_fit_normal.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/integrate_dfg.glsl.gen.h"
+#include "servers/rendering/renderer_rd/storage_buffer_source_reads.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_rasterizer.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_selection.h"
 
@@ -237,6 +238,7 @@ private:
 		RendererRD::GpuOcclusion *gpu_occlusion = nullptr;
 		uint32_t gpu_occlusion_phase = 2;
 		bool gpu_occlusion_surface_lookup = false;
+		uint64_t multidraw_sources_address = 0;
 		GeometryInstanceSurfaceDataCache **elements = nullptr;
 		RenderElementInfo *element_info = nullptr;
 		int element_count = 0;
@@ -500,6 +502,23 @@ private:
 	void _fill_instance_data(RenderListType p_render_list, int *p_render_info = nullptr, uint32_t p_offset = 0, int32_t p_max_elements = -1, bool p_update_buffer = true);
 	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false);
 	RendererRD::GpuOcclusion *active_gpu_occlusion = nullptr;
+	// Rebuilt for one draw boundary. RIDs stay borrowed; uploads and graph reads
+	// order reuse of the table after every previous consumer.
+	struct MultiDrawSource {
+		uint64_t transforms = 0;
+		uint32_t instance_index = 0;
+		uint32_t visibility_offset = UINT32_MAX;
+		uint32_t current_offset = 0;
+		uint32_t previous_offset = 0;
+		uint32_t command_offset = 0;
+		uint32_t padding = 0;
+	};
+	static_assert(sizeof(MultiDrawSource) == 32);
+	LocalVector<MultiDrawSource> multidraw_sources;
+	RendererRD::StorageBufferSourceReads multidraw_source_reads;
+	RID multidraw_source_buffer;
+	uint32_t multidraw_source_capacity = 0;
+	void _prepare_multidraw_sources(RenderListParameters *p_params);
 	void _prepare_gpu_occlusion(RenderDataRD *p_render_data, PassMode p_depth_mode);
 	void _prepare_virtual_geometry(RenderDataRD *p_render_data);
 	Error virtual_geometry_prepare_materials(const TypedArray<RID> &p_materials) override;

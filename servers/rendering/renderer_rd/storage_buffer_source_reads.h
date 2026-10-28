@@ -9,7 +9,7 @@ namespace RendererRD {
 
 // Render-boundary borrow only. Reset before resolving a new view; no address
 // survives source uploads or resource retirement into the next boundary.
-class VirtualGeometrySourceReads {
+class StorageBufferSourceReads {
 	AHashMap<RID, RD::BufferInfo> buffers;
 
 	static bool _address(const RD::BufferInfo &p_info, uint64_t p_offset, uint64_t p_bytes, uint64_t &r_address) {
@@ -71,6 +71,13 @@ public:
 		GodotProfileZone("Render/VirtualGeometry/source_read_edges");
 		for (const KeyValue<RID, RD::BufferInfo> &buffer : buffers) {
 			p_device->compute_list_add_buffer_read(p_list, buffer.key, buffer.value);
+		}
+	}
+
+	void record_draw(RD *p_device, RD::DrawListID p_list) const {
+		GodotProfileZone("Render/MultiDraw/source_read_edges");
+		for (const KeyValue<RID, RD::BufferInfo> &buffer : buffers) {
+			p_device->draw_list_add_buffer_read(p_list, buffer.key, buffer.value);
 		}
 	}
 };

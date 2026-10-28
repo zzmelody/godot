@@ -152,7 +152,7 @@ private:
 	using HistoryCopy = VirtualGeometrySnapshotCopy::Copy;
 	LocalVector<HistoryCopy> source_history_copies;
 	bool direct_sources = false;
-	VirtualGeometrySourceReads source_reads;
+	StorageBufferSourceReads source_reads;
 	RID source_addresses;
 	uint32_t source_address_words = 0;
 	struct SourceAddresses {

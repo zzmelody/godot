@@ -7,9 +7,9 @@
 #include "core/templates/local_vector.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select_dispatch.glsl.gen.h"
+#include "servers/rendering/renderer_rd/storage_buffer_source_reads.h"
 #include "servers/rendering/renderer_rd/storage_rd/virtual_geometry_storage.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_snapshot_copy.h"
-#include "servers/rendering/renderer_rd/virtual_geometry_source_reads.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_work_memory.h"
 
 class RenderGeometryInstance;
@@ -56,7 +56,7 @@ public:
 		// batch.transforms instead; the logical vec4 offset still owns a span.
 		RID transforms;
 		bool direct_source_reads = false;
-		VirtualGeometrySourceReads::ResolvedBuffer transform_source;
+		StorageBufferSourceReads::ResolvedBuffer transform_source;
 		uint32_t transform_offset = 0;
 		uint32_t work_word = 0;
 		uint32_t selected_capacity = 0;
@@ -92,9 +92,7 @@ private:
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
 	RID version;
 	RID dispatch_version;
-	// The numeric phases retain the existing push-constant protocol. Each
-	// source variant owns only the phase pipelines its admitted route uses.
-	PipelineDeferredRD pipelines[2][12];
+	PipelineDeferredRD pipelines[2];
 	PipelineDeferredRD dispatch_pipeline;
 	RID scratch;
 	uint32_t scratch_words = 0;
@@ -119,7 +117,7 @@ private:
 	};
 	static_assert(sizeof(SourceAddresses) == 16);
 	LocalVector<SourceAddresses> source_address_data;
-	VirtualGeometrySourceReads source_reads;
+	StorageBufferSourceReads source_reads;
 	LocalVector<Result> results;
 	LocalVector<Batch> batches;
 	LocalVector<Parameters> parameter_data;

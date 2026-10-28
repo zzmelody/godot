@@ -903,6 +903,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 
 		void *next_features = nullptr;
 		VkPhysicalDeviceVulkan12Features device_features_vk_1_2 = {};
+		VkPhysicalDeviceShaderDrawParametersFeatures draw_parameters_features = {};
 		VkPhysicalDeviceShaderFloat16Int8FeaturesKHR shader_features = {};
 		VkPhysicalDeviceShaderAtomicInt64Features atomic_int64_features = {};
 		VkPhysicalDeviceBufferDeviceAddressFeaturesKHR buffer_device_address_features = {};
@@ -921,6 +922,9 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 
 		const bool use_1_2_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_2;
 		if (use_1_2_features) {
+			draw_parameters_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES;
+			draw_parameters_features.pNext = next_features;
+			next_features = &draw_parameters_features;
 			device_features_vk_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 			device_features_vk_1_2.pNext = next_features;
 			next_features = &device_features_vk_1_2;
@@ -1017,6 +1021,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		device_features_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 		device_features_2.pNext = next_features;
 		functions.GetPhysicalDeviceFeatures2(physical_device, &device_features_2);
+		shader_draw_parameters_support = use_1_2_features && draw_parameters_features.shaderDrawParameters;
 
 		if (use_1_2_features) {
 			buffer_atomic_int64_support = device_features_vk_1_2.shaderBufferInt64Atomics;
@@ -1476,7 +1481,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		vulkan_1_1_features.variablePointers = 0;
 		vulkan_1_1_features.protectedMemory = 0;
 		vulkan_1_1_features.samplerYcbcrConversion = 0;
-		vulkan_1_1_features.shaderDrawParameters = 0;
+		vulkan_1_1_features.shaderDrawParameters = shader_draw_parameters_support;
 		create_info_next = &vulkan_1_1_features;
 	} else {
 		// On Vulkan 1.0 and 1.1 we use our older structs to initialize these features.
@@ -7376,6 +7381,8 @@ uint64_t RenderingDeviceDriverVulkan::limit_get(Limit p_limit) {
 			// The Vulkan spec states that built in varyings like gl_FragCoord should count against this, but in
 			// practice, that doesn't seem to be the case. The validation layers don't even complain.
 			return MIN(limits.maxVertexOutputComponents / 4, limits.maxFragmentInputComponents / 4);
+		case LIMIT_MAX_DRAW_INDIRECT_COUNT:
+			return limits.maxDrawIndirectCount;
 		default: {
 #ifdef DEV_ENABLED
 			WARN_PRINT("Returning maximum value for unknown limit " + itos(p_limit) + ".");
@@ -7412,6 +7419,8 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 			return true;
 		case SUPPORTS_BUFFER_DEVICE_ADDRESS:
 			return buffer_device_address_support;
+		case SUPPORTS_MULTIDRAW_INDIRECT:
+			return shader_draw_parameters_support && requested_device_features.multiDrawIndirect;
 		case SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX:
 			return buffer_atomic_int64_support && requested_device_features.shaderInt64 && requested_device_features.fragmentStoresAndAtomics;
 		case SUPPORTS_IMAGE_ATOMIC_32_BIT:

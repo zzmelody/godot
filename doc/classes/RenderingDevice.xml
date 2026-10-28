@@ -2837,6 +2837,9 @@
 		<constant name="SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX" value="16" enum="Features">
 			Support for unsigned 64-bit atomic minimum and maximum on storage buffers in both compute and fragment shaders. The integer and atomic device features are enabled when this feature is reported. Portable shaders must discard the operation's return value and use device scope with relaxed memory order. Metal requires MSL 2.4 and an Apple8 macOS GPU or Apple9 or newer GPU. This does not imply support for 64-bit image atomics or threadgroup atomics.
 		</constant>
+		<constant name="SUPPORTS_MULTIDRAW_INDIRECT" value="17" enum="Features">
+			Support for multi-draw indirect commands and the enabled vertex shader DrawIndex capability. Currently available on Vulkan 1.2 or newer when both device features are supported. Use [constant LIMIT_MAX_DRAW_INDIRECT_COUNT] to bound the number of commands.
+		</constant>
 		<constant name="SUPPORTS_RAY_QUERY" value="11" enum="Features">
 			Support for ray query extension.
 
@@ -2849,6 +2852,9 @@
 		</constant>
 		<constant name="SUPPORTS_HDR_OUTPUT" value="13" enum="Features">
 			Support for high dynamic range (HDR) output.
+		</constant>
+		<constant name="LIMIT_MAX_DRAW_INDIRECT_COUNT" value="49" enum="Limit">
+			Maximum commands in one indirect draw when [constant SUPPORTS_MULTIDRAW_INDIRECT] is available.
 		</constant>
 		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
 			Maximum number of uniform sets that can be bound at a given time.

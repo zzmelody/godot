@@ -45,6 +45,7 @@ public:
 	void finish();
 	RID get_indices() const { return indices; }
 	RID get_commands() const { return commands; }
+	static constexpr uint32_t COMMAND_STRIDE = 15 * sizeof(uint32_t);
 	uint32_t get_index_offset(uint32_t p_batch, uint32_t p_phase) const;
 	uint32_t get_command_offset(uint32_t p_batch, uint32_t p_phase) const { return (p_batch * 15 + p_phase * 5) * sizeof(uint32_t); }
 	uint32_t get_candidate_count() const { return candidate_count; }

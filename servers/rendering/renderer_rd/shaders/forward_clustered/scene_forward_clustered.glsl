@@ -4,6 +4,29 @@
 
 #VERSION_DEFINES
 
+#if defined(MULTIMESH_MULTIDRAW) && !defined(VG_COMPOSITE)
+#extension GL_ARB_shader_draw_parameters : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+struct MultiDrawSource {
+	uvec2 transforms;
+	uint instance_index;
+	uint visibility_offset;
+	uint current_offset;
+	uint previous_offset;
+	uint command_offset;
+	uint padding;
+};
+// clang-format off
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MultiDrawSources {
+	MultiDrawSource data[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MultiDrawTransforms {
+	vec4 data[];
+};
+// clang-format on
+#endif
+
 /* Include half precision types. */
 #include "../half_inc.glsl"
 #include "scene_forward_clustered_inc.glsl"
@@ -237,8 +260,29 @@ vec3 double_add_vec3(vec3 base_a, vec3 prec_a, vec3 base_b, vec3 prec_b, out vec
 }
 #endif
 
+#ifdef MULTIMESH_MULTIDRAW
+MultiDrawSource multidraw_source() {
+	return MultiDrawSources(uvec2(draw_call.gpu_visibility_padding_1, draw_call.gpu_visibility_padding_2)).data[gl_DrawIDARB];
+}
+#endif
+
 uint source_instance_index() {
-	return draw_call.gpu_visibility_offset == 0xffffffffu ? uint(INSTANCE_INDEX) : gpu_visible_instances.indices[draw_call.gpu_visibility_offset + uint(INSTANCE_INDEX)];
+	uint offset = draw_call.gpu_visibility_offset;
+#ifdef MULTIMESH_MULTIDRAW
+	if (sc_multimesh_multidraw()) {
+		offset = multidraw_source().visibility_offset;
+	}
+#endif
+	return offset == 0xffffffffu ? uint(INSTANCE_INDEX) : gpu_visible_instances.indices[offset + uint(INSTANCE_INDEX)];
+}
+
+vec4 multimesh_transform(uint p_offset) {
+#ifdef MULTIMESH_MULTIDRAW
+	if (sc_multimesh_multidraw()) {
+		return MultiDrawTransforms(multidraw_source().transforms).data[p_offset];
+	}
+#endif
+	return transforms.data[p_offset];
 }
 
 uint multimesh_stride() {
@@ -342,22 +386,22 @@ void vertex_shader(vec3 vertex_input,
 		uint offset = stride * (source_instance_index() + multimesh_offset);
 
 		if (sc_multimesh_format_2d()) {
-			matrix = mat4(transforms.data[offset + 0], transforms.data[offset + 1], vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0));
+			matrix = mat4(multimesh_transform(offset + 0), multimesh_transform(offset + 1), vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0));
 			offset += 2;
 		} else {
-			matrix = mat4(transforms.data[offset + 0], transforms.data[offset + 1], transforms.data[offset + 2], vec4(0.0, 0.0, 0.0, 1.0));
+			matrix = mat4(multimesh_transform(offset + 0), multimesh_transform(offset + 1), multimesh_transform(offset + 2), vec4(0.0, 0.0, 0.0, 1.0));
 			offset += 3;
 		}
 
 		if (sc_multimesh_has_color()) {
 #ifdef COLOR_USED
-			color_interp *= transforms.data[offset];
+			color_interp *= multimesh_transform(offset);
 #endif
 			offset += 1;
 		}
 
 		if (sc_multimesh_has_custom_data()) {
-			instance_custom = transforms.data[offset];
+			instance_custom = multimesh_transform(offset);
 		}
 
 #endif
@@ -796,6 +840,16 @@ void _unpack_vertex_attributes(vec4 p_vertex_in, vec3 p_compressed_aabb_position
 
 void main() {
 	uint instance_index = draw_call.instance_index;
+	uint current_multimesh_offset = draw_call.multimesh_motion_vectors_current_offset;
+	uint previous_multimesh_offset = draw_call.multimesh_motion_vectors_previous_offset;
+#ifdef MULTIMESH_MULTIDRAW
+	if (sc_multimesh_multidraw()) {
+		MultiDrawSource source = multidraw_source();
+		instance_index = source.instance_index;
+		current_multimesh_offset = source.current_offset;
+		previous_multimesh_offset = source.previous_offset;
+	}
+#endif
 	if (!sc_multimesh()) {
 		instance_index += source_instance_index();
 	}
@@ -837,7 +891,7 @@ void main() {
 			prev_tangent,
 			prev_binormal,
 #endif
-			instance_index, draw_call.multimesh_motion_vectors_previous_offset, scene_data_block.prev_data, instances.data[instance_index].prev_transform,
+			instance_index, previous_multimesh_offset, scene_data_block.prev_data, instances.data[instance_index].prev_transform,
 #ifdef USE_DOUBLE_PRECISION
 			instances.data[instance_index].prev_model_precision.xyz,
 #endif
@@ -880,7 +934,7 @@ void main() {
 			tangent,
 			binormal,
 #endif
-			instance_index, draw_call.multimesh_motion_vectors_current_offset, scene_data_block.data, instances.data[instance_index].transform,
+			instance_index, current_multimesh_offset, scene_data_block.data, instances.data[instance_index].transform,
 #ifdef USE_DOUBLE_PRECISION
 			instances.data[instance_index].model_precision.xyz,
 #endif

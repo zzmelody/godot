@@ -78,6 +78,14 @@ uint sc_packed_1() {
 
 #endif
 
+bool sc_multimesh_multidraw() {
+#ifdef MULTIMESH_MULTIDRAW
+	return ((sc_packed_1() >> 6) & 1U) != 0;
+#else
+	return false;
+#endif
+}
+
 bool sc_use_forward_gi() {
 	return ((sc_packed_0() >> 0) & 1U) != 0;
 }
