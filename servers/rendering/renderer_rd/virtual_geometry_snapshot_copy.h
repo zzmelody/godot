@@ -8,6 +8,7 @@
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_snapshot_copy.glsl.gen.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_snapshot_copy_plan.h"
 #include "servers/rendering/renderer_rd/virtual_geometry_work_memory.h"
+#include "servers/rendering/rendering_device.h"
 
 namespace RendererRD {
 
@@ -28,10 +29,6 @@ public:
 	~VirtualGeometrySnapshotCopy();
 
 private:
-	struct SourceInfo {
-		uint64_t address = 0;
-		uint32_t bytes = 0;
-	};
 	struct Job {
 		uint32_t source[2];
 		uint32_t destination_word;
@@ -52,7 +49,7 @@ private:
 	uint32_t job_capacity = 0;
 	LocalVector<Job> jobs;
 	LocalVector<Selection> selected;
-	AHashMap<RID, SourceInfo> sources;
+	AHashMap<RID, RD::BufferInfo> sources;
 	Error _record_direct(RID p_first_destination, Span<const Copy> p_first, RID p_second_destination, Span<const Copy> p_second);
 };
 

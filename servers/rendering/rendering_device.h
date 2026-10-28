@@ -181,6 +181,14 @@ private:
 	StagingBuffers upload_staging_buffers;
 	StagingBuffers download_staging_buffers;
 
+	enum class BufferOwnerType : uint8_t {
+		INVALID,
+		STORAGE,
+		VERTEX,
+		INDEX,
+		UNIFORM,
+	};
+
 	struct Buffer {
 		RDD::BufferID driver_id;
 		uint32_t size = 0;
@@ -190,7 +198,7 @@ private:
 		uint64_t transfer_worker_operation = 0;
 	};
 
-	Buffer *_get_buffer_from_owner(RID p_buffer);
+	Buffer *_get_buffer_from_owner(RID p_buffer, BufferOwnerType *r_owner = nullptr);
 	Error _buffer_initialize(Buffer *p_buffer, Span<uint8_t> p_data, uint32_t p_required_align = 32);
 
 	void update_perf_report();
@@ -269,9 +277,15 @@ public:
 	Error buffer_get_data_async(RID p_buffer, const Callable &p_callback, uint32_t p_offset = 0, uint32_t p_size = 0);
 	uint64_t buffer_get_device_address(RID p_buffer);
 	struct BufferInfo {
+		uint64_t device_address = 0;
 		uint32_t size = 0;
 		bool storage = false;
-		uint64_t device_address = 0;
+
+	private:
+		// A value-only owner hint. The read boundary still resolves the live
+		// RID and checks its generation; no Buffer pointer is retained here.
+		BufferOwnerType owner = BufferOwnerType::INVALID;
+		friend class RenderingDevice;
 	};
 	// Internal capability query. It borrows no driver/owner pointers and does
 	// not log when an optional device-address copy path is unavailable.
@@ -1684,7 +1698,7 @@ public:
 	void compute_list_bind_uniform_set(ComputeListID p_list, RID p_uniform_set, uint32_t p_index);
 	// Register reads performed through physical device addresses. Such buffers
 	// are not necessarily present in a shader's descriptor sets.
-	void compute_list_add_buffer_read(ComputeListID p_list, RID p_buffer);
+	void compute_list_add_buffer_read(ComputeListID p_list, RID p_buffer, const BufferInfo &p_info);
 	void compute_list_set_push_constant(ComputeListID p_list, const void *p_data, uint32_t p_data_size);
 	void compute_list_dispatch(ComputeListID p_list, uint32_t p_x_groups, uint32_t p_y_groups, uint32_t p_z_groups);
 	void compute_list_dispatch_threads(ComputeListID p_list, uint32_t p_x_threads, uint32_t p_y_threads, uint32_t p_z_threads);

@@ -839,21 +839,29 @@ Error RenderingDevice::hit_sbt_range_update(RID p_hit_sbt, HitShaderBindingTable
 /**** BUFFER MANAGEMENT ****/
 /***************************/
 
-RenderingDevice::Buffer *RenderingDevice::_get_buffer_from_owner(RID p_buffer) {
+RenderingDevice::Buffer *RenderingDevice::_get_buffer_from_owner(RID p_buffer, BufferOwnerType *r_owner) {
 	Buffer *buffer = nullptr;
+	BufferOwnerType owner = BufferOwnerType::INVALID;
 	// Storage sources dominate compute reads. Each thread-safe owns() takes
 	// its owner's lock, so do not probe unrelated owners for this hot case.
 	if (storage_buffer_owner.owns(p_buffer)) {
 		buffer = storage_buffer_owner.get_or_null(p_buffer);
+		owner = BufferOwnerType::STORAGE;
 	} else if (vertex_buffer_owner.owns(p_buffer)) {
 		buffer = vertex_buffer_owner.get_or_null(p_buffer);
+		owner = BufferOwnerType::VERTEX;
 	} else if (index_buffer_owner.owns(p_buffer)) {
 		buffer = index_buffer_owner.get_or_null(p_buffer);
+		owner = BufferOwnerType::INDEX;
 	} else if (uniform_buffer_owner.owns(p_buffer)) {
 		buffer = uniform_buffer_owner.get_or_null(p_buffer);
+		owner = BufferOwnerType::UNIFORM;
 	} else if (texture_buffer_owner.owns(p_buffer)) {
 		DEV_ASSERT(false && "FIXME: Broken.");
 		//buffer = texture_buffer_owner.get_or_null(p_buffer)->buffer;
+	}
+	if (r_owner != nullptr) {
+		*r_owner = buffer != nullptr ? owner : BufferOwnerType::INVALID;
 	}
 	return buffer;
 }
@@ -1423,7 +1431,7 @@ Error RenderingDevice::buffer_get_data_async(RID p_buffer, const Callable &p_cal
 bool RenderingDevice::buffer_get_info(RID p_buffer, BufferInfo &r_info) {
 	ERR_RENDER_THREAD_GUARD_V(false);
 	r_info = {};
-	Buffer *buffer = _get_buffer_from_owner(p_buffer);
+	Buffer *buffer = _get_buffer_from_owner(p_buffer, &r_info.owner);
 	if (buffer == nullptr) {
 		return false;
 	}
@@ -6800,11 +6808,30 @@ void RenderingDevice::compute_list_bind_uniform_set(ComputeListID p_list, RID p_
 #endif
 }
 
-void RenderingDevice::compute_list_add_buffer_read(ComputeListID p_list, RID p_buffer) {
+void RenderingDevice::compute_list_add_buffer_read(ComputeListID p_list, RID p_buffer, const BufferInfo &p_info) {
 	ERR_RENDER_THREAD_GUARD();
 	ERR_FAIL_COND(p_list != ID_TYPE_COMPUTE_LIST);
 	ERR_FAIL_COND(!compute_list.active);
-	Buffer *buffer = _get_buffer_from_owner(p_buffer);
+	// Preflight already established the owner kind. Look up the current RID
+	// in that owner instead of repeating locked owns() probes. get_or_null()
+	// still validates the generation, and the tracker is borrowed only here.
+	Buffer *buffer = nullptr;
+	switch (p_info.owner) {
+		case BufferOwnerType::STORAGE:
+			buffer = storage_buffer_owner.get_or_null(p_buffer);
+			break;
+		case BufferOwnerType::VERTEX:
+			buffer = vertex_buffer_owner.get_or_null(p_buffer);
+			break;
+		case BufferOwnerType::INDEX:
+			buffer = index_buffer_owner.get_or_null(p_buffer);
+			break;
+		case BufferOwnerType::UNIFORM:
+			buffer = uniform_buffer_owner.get_or_null(p_buffer);
+			break;
+		case BufferOwnerType::INVALID:
+			ERR_FAIL_MSG("Buffer read requires resolved source allocation info.");
+	}
 	ERR_FAIL_NULL(buffer);
 	ERR_FAIL_COND(!buffer->usage.has_flag(RDD::BUFFER_USAGE_STORAGE_BIT));
 	_check_transfer_worker_buffer(buffer);

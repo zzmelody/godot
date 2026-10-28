@@ -9,6 +9,7 @@
 #include "core/templates/local_vector.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/gpu_occlusion.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/gpu_occlusion_reduce.glsl.gen.h"
+#include "servers/rendering/rendering_device.h"
 
 namespace RendererRD {
 
@@ -60,7 +61,7 @@ public:
 	}
 	uint32_t get_dispatch_group_count() const { return groups.size(); }
 	bool uses_device_addresses() const { return device_addresses; }
-	uint32_t get_addressed_buffer_count() const { return addressed_buffers.size(); }
+	uint32_t get_addressed_buffer_count() const { return source_buffers.size(); }
 	uint64_t get_metadata_bytes() const { return GpuOcclusionDispatch::metadata_bytes(parameter_capacity, task_capacity, device_addresses); }
 	uint64_t get_buffer_bytes() const { return uint64_t(capacity) * 16 + uint64_t(command_capacity) * 60 + get_metadata_bytes(); }
 	uint64_t get_hierarchy_bytes() const;
@@ -92,8 +93,7 @@ private:
 	LocalVector<GpuOcclusionDispatch::Task> tasks;
 	LocalVector<BatchParameters> parameters[2];
 	LocalVector<GpuOcclusionDispatch::Address> addresses;
-	AHashMap<RID, GpuOcclusionDispatch::Address> buffer_addresses;
-	LocalVector<RID> addressed_buffers;
+	AHashMap<RID, RD::BufferInfo> source_buffers;
 	RID parameter_buffers[2], task_buffer, address_buffer;
 	uint32_t parameter_capacity = 0, task_capacity = 0, total_tasks = 0;
 	uint32_t address_capacity = 0;

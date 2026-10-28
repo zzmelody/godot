@@ -70,7 +70,7 @@ public:
 	void record(RD *p_device, RD::ComputeListID p_list) const {
 		GodotProfileZone("Render/VirtualGeometry/source_read_edges");
 		for (const KeyValue<RID, RD::BufferInfo> &buffer : buffers) {
-			p_device->compute_list_add_buffer_read(p_list, buffer.key);
+			p_device->compute_list_add_buffer_read(p_list, buffer.key, buffer.value);
 		}
 	}
 };

@@ -2,6 +2,7 @@
 #include "gpu_occlusion.h"
 
 #include "core/io/image.h"
+#include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 
@@ -74,8 +75,7 @@ void GpuOcclusion::begin(uint32_t p_elements) {
 	group_ranges.clear();
 	tasks.clear();
 	addresses.clear();
-	buffer_addresses.clear();
-	addressed_buffers.clear();
+	source_buffers.clear();
 	for (uint32_t phase = 0; phase < 2; ++phase) {
 		group_maps[phase].clear();
 		parameters[phase].clear();
@@ -218,18 +218,17 @@ bool GpuOcclusion::prepare_dispatches() {
 		const bool addressed = device_addresses && !batch.dynamic_transforms;
 		addresses[i] = {};
 		if (addressed && batch.multimesh) {
-			const GpuOcclusionDispatch::Address *cached = buffer_addresses.getptr(batch.transforms);
+			RD::BufferInfo info;
+			const RD::BufferInfo *cached = source_buffers.getptr(batch.transforms);
 			if (cached) {
-				addresses[i] = *cached;
+				info = *cached;
 			} else {
-				const uint64_t address = rd->buffer_get_device_address(batch.transforms);
-				if (address == 0) {
+				if (!rd->buffer_get_info(batch.transforms, info) || !info.storage || info.device_address == 0) {
 					return false;
 				}
-				addresses[i] = { uint32_t(address), uint32_t(address >> 32) };
-				buffer_addresses.insert(batch.transforms, addresses[i]);
-				addressed_buffers.push_back(batch.transforms);
+				source_buffers.insert(batch.transforms, info);
 			}
+			addresses[i] = { uint32_t(info.device_address), uint32_t(info.device_address >> 32) };
 		}
 		RID transforms = batch.multimesh && !addressed ? batch.transforms : dummy_transform;
 		AHashMap<RID, uint32_t> &map = group_maps[batch.dynamic_transforms ? 1 : 0];
@@ -310,8 +309,11 @@ void GpuOcclusion::cull(uint32_t p_phase) {
 	RD::ComputeListID list = rd->compute_list_begin();
 	// Physical-address reads are not visible in uniform-set reflection. Include
 	// every borrowed source in RD's transfer and render-graph dependency tracking.
-	for (RID buffer : addressed_buffers) {
-		rd->compute_list_add_buffer_read(list, buffer);
+	{
+		GodotProfileZone("Render/Occlusion/source_read_edges");
+		for (const KeyValue<RID, RD::BufferInfo> &source : source_buffers) {
+			rd->compute_list_add_buffer_read(list, source.key, source.value);
+		}
 	}
 	for (uint32_t i = 0; i < groups.size(); ++i) {
 		const DispatchGroup &group = groups[i];

@@ -86,23 +86,20 @@ Error VirtualGeometrySnapshotCopy::record(RID p_first_destination, Span<const Co
 			if (!VirtualGeometrySnapshotCopyPlan::gatherable(copy.source_byte, copy.destination_byte, copy.bytes, jobs.size(), tile_count, max_tiles)) {
 				continue;
 			}
-			SourceInfo source;
-			if (const SourceInfo *cached = sources.getptr(copy.source)) {
+			RD::BufferInfo source;
+			if (const RD::BufferInfo *cached = sources.getptr(copy.source)) {
 				source = *cached;
 			} else {
-				RD::BufferInfo info;
-				if (!rd->buffer_get_info(copy.source, info) || !info.storage || !info.device_address) {
+				if (!rd->buffer_get_info(copy.source, source) || !source.storage || !source.device_address) {
 					continue;
 				}
-				source.address = info.device_address;
-				source.bytes = info.size;
 				sources.insert(copy.source, source);
 			}
-			ERR_FAIL_COND_V_MSG(!VirtualGeometrySnapshotCopyPlan::valid_range(copy.source_byte, copy.bytes, source.bytes) ||
+			ERR_FAIL_COND_V_MSG(!VirtualGeometrySnapshotCopyPlan::valid_range(copy.source_byte, copy.bytes, source.size) ||
 							!VirtualGeometrySnapshotCopyPlan::valid_range(copy.destination_byte, copy.bytes, output_sizes[output]),
 					ERR_INVALID_PARAMETER, "Virtual geometry snapshot copy range exceeds its source or destination.");
-			ERR_FAIL_COND_V(source.address > UINT64_MAX - (uint64_t(copy.source_byte) + copy.bytes), ERR_INVALID_PARAMETER);
-			const uint64_t address = source.address + copy.source_byte;
+			ERR_FAIL_COND_V(source.device_address > UINT64_MAX - (uint64_t(copy.source_byte) + copy.bytes), ERR_INVALID_PARAMETER);
+			const uint64_t address = source.device_address + copy.source_byte;
 			Job job = {};
 			job.source[0] = uint32_t(address);
 			job.source[1] = uint32_t(address >> 32);
@@ -171,8 +168,8 @@ Error VirtualGeometrySnapshotCopy::record(RID p_first_destination, Span<const Co
 	ERR_FAIL_COND_V(uniform_set.is_null(), ERR_CANT_CREATE);
 	const RD::ComputeListID list = rd->compute_list_begin();
 	rd->compute_list_bind_compute_pipeline(list, pipeline.get_rid());
-	for (const KeyValue<RID, SourceInfo> &source : sources) {
-		rd->compute_list_add_buffer_read(list, source.key);
+	for (const KeyValue<RID, RD::BufferInfo> &source : sources) {
+		rd->compute_list_add_buffer_read(list, source.key, source.value);
 	}
 	rd->compute_list_bind_uniform_set(list, uniform_set, 0);
 	const uint32_t push[2] = { jobs.size(), tile_count };

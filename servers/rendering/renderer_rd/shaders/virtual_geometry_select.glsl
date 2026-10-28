@@ -4,11 +4,9 @@
 
 #VERSION_DEFINES
 
-#ifdef VG_SUBGROUP_RESERVATIONS
+#ifdef VG_SUBGROUP_SCAN
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
-#extension GL_KHR_shader_subgroup_ballot : require
-#extension GL_KHR_shader_subgroup_shuffle : require
 #endif
 
 #include "virtual_geometry_source_reads_inc.glsl"
@@ -70,14 +68,9 @@ uint reserve_work(uint word, uint count, uint capacity) {
 }
 shared uvec2 group_first;
 shared uvec4 group_ranges[64];
-#ifdef VG_SUBGROUP_RESERVATIONS
-shared uvec2 subgroup_totals[64];
-shared uvec2 group_total;
-#else
 shared uvec2 group_scan[128];
 // Source, bounded lane demand, granted first record, granted count.
 shared uvec4 group_hits[64];
-#endif
 
 uvec2 reserve_hit_prefix(uint count) {
 	uint previous = atomicOr(VG_SELECTION_REQUEST(12u), 0u);
@@ -92,39 +85,6 @@ uvec2 reserve_hit_prefix(uint count) {
 
 uvec2 reserve_result_prefix(uint count, uint capacity);
 
-#ifdef VG_SUBGROUP_RESERVATIONS
-// All active invocations execute every subgroup operation, including empty
-// work lanes. Use active masks rather than assuming contiguous local IDs,
-// a fixed subgroup size, or a fully populated final subgroup.
-uvec2 reserve_source_segment(uint source, uint count, bool hits) {
-	uvec4 active_mask = subgroupBallot(true);
-	uvec4 before = active_mask & gl_SubgroupLtMask;
-	bool first_active = all(equal(before, uvec4(0u)));
-	uint previous = first_active ? gl_SubgroupInvocationID : subgroupBallotFindMSB(before);
-	uint previous_source = subgroupShuffle(source, previous);
-	uvec4 starts = subgroupBallot(first_active || previous_source != source);
-	uint first = subgroupBallotFindMSB(starts & gl_SubgroupLeMask);
-	uvec4 following = starts & gl_SubgroupGtMask;
-	bool has_next = any(notEqual(following, uvec4(0u)));
-	uint next = has_next ? subgroupBallotFindLSB(following) : first;
-	uint prefix = subgroupExclusiveAdd(count);
-	uint total = subgroupAdd(count);
-	uint initial = subgroupShuffle(prefix, first);
-	uint end_prefix = subgroupShuffle(prefix, next);
-	uint demand = (has_next ? end_prefix : total) - initial;
-	uvec2 range = uvec2(INVALID, 0u);
-	if (gl_SubgroupInvocationID == first && demand != 0u) {
-		vg_batch_index = source;
-		range = hits ? reserve_hit_prefix(demand) : reserve_result_prefix(demand, VG_SELECTION_INPUT.limits.y);
-	}
-	// Shuffle IDs may differ per segment. No dynamic-uniform broadcast or
-	// value from an inactive invocation is required here.
-	range = subgroupShuffle(range, first);
-	uint offset = prefix - initial;
-	uint granted = offset < range.y ? min(count, range.y - offset) : 0u;
-	return uvec2(granted != 0u ? range.x + offset : INVALID, granted);
-}
-#else
 // Called by lane zero between the existing reservation barriers. Hit traffic
 // remains bounded per source; missing-page requests keep their own contract.
 void reserve_group_hits() {
@@ -155,7 +115,6 @@ void reserve_group_hits() {
 	// The leader still publishes its own node/candidate work after this call.
 	vg_batch_index = saved_source;
 }
-#endif
 
 // Each lane retains at most four original branch requests. Only the leader
 // contends globally; the boundary path preserves each complete part request.
@@ -167,29 +126,32 @@ void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, ui
 			cluster_counts.x + cluster_counts.y + cluster_counts.z + cluster_counts.w);
 	uvec2 words = uvec2(1u - parity, 2u);
 	uvec2 capacities = params.limits.xy;
-#ifdef VG_SUBGROUP_RESERVATIONS
+#ifdef VG_SUBGROUP_SCAN
 	uvec2 prefix = subgroupExclusiveAdd(count);
 	uvec2 subtotal = subgroupAdd(count);
 	if (subgroupElect()) {
-		subgroup_totals[gl_SubgroupID] = subtotal;
+		group_scan[gl_SubgroupID] = subtotal;
 	}
+	group_hits[lane] = uvec4(vg_batch_index, hit_count, INVALID, 0u);
 	barrier();
 	for (uint group = 0u; group < gl_SubgroupID; ++group) {
-		prefix += subgroup_totals[group];
+		prefix += group_scan[group];
 	}
 	if (lane == 0u) {
 		uvec2 total = uvec2(0u);
 		for (uint group = 0u; group < gl_NumSubgroups; ++group) {
-			total += subgroup_totals[group];
+			total += group_scan[group];
 		}
-		group_total = total;
+		// At most 64 subgroups use slots 0..63. Reuse the existing scan
+		// storage for the aggregate; do not increase workgroup shared memory.
+		group_scan[127u] = total;
 		for (uint kind = 0u; kind < 2u; ++kind) {
 			group_first[kind] = total[kind] == 0u ? INVALID : reserve_work(words[kind], total[kind], capacities[kind]);
 		}
+		reserve_group_hits();
 	}
-	hit_range = reserve_source_segment(vg_batch_index, hit_count, true);
 	barrier();
-	uvec2 total = group_total;
+	uvec2 total = group_scan[127u];
 #else
 	group_scan[lane * 2u] = count;
 	group_hits[lane] = uvec4(vg_batch_index, hit_count, INVALID, 0u);
@@ -249,9 +211,7 @@ void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, ui
 		// A second saturated queue reuses this storage after all lanes read it.
 		barrier();
 	}
-#ifndef VG_SUBGROUP_RESERVATIONS
 	hit_range = group_hits[lane].zw;
-#endif
 }
 uint reserve_result(uint word, uint capacity) {
 	uint previous = atomicOr(VG_SELECTION_WORK(word), 0u);
@@ -600,11 +560,6 @@ void select_cluster_group(uint id) {
 			selected = cluster_visible(instance, reference, false);
 		}
 	}
-#ifdef VG_SUBGROUP_RESERVATIONS
-	vg_batch_index = source_index;
-	uvec2 range = reserve_source_segment(source_index, selected ? 1u : 0u, false);
-	uint index = range.x;
-#else
 	group_scan[lane] = uvec2(source_index, selected ? 1u : 0u);
 	// Inactive lanes participate too. Root coverage keeps its independent
 	// per-cluster path because its page loops are not workgroup-uniform.
@@ -637,7 +592,6 @@ void select_cluster_group(uint id) {
 	}
 	barrier();
 	uint index = group_scan[lane].y;
-#endif
 	// The leader borrowed each segment's source while reserving its range.
 	vg_batch_index = source_index;
 	if (!selected) { return; }

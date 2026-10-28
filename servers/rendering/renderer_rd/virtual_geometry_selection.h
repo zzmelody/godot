@@ -131,7 +131,7 @@ private:
 	float lod_scale = 0;
 	float frustum_margin = 0;
 	bool orthographic = false;
-	bool subgroup_reservations = false;
+	bool subgroup_scan = false;
 	uint32_t shadow_flags = 0;
 };
 

@@ -269,26 +269,26 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		results[index].transform_offset = parameter_data[index].source[2];
 	}
 	if (version.is_null()) {
-		const uint32_t subgroup_operations = RD::SUBGROUP_BASIC_BIT | RD::SUBGROUP_ARITHMETIC_BIT | RD::SUBGROUP_BALLOT_BIT | RD::SUBGROUP_SHUFFLE_BIT;
-		subgroup_reservations = (rd->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & subgroup_operations) == subgroup_operations &&
+		const uint32_t subgroup_operations = RD::SUBGROUP_BASIC_BIT | RD::SUBGROUP_ARITHMETIC_BIT;
+		subgroup_scan = (rd->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & subgroup_operations) == subgroup_operations &&
 				(rd->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) != 0;
 		const bool device_addresses = rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS);
 		Vector<String> modes;
 		modes.push_back("");
 		modes.push_back("#define VG_DIRECT_SOURCE_READS\n");
-		modes.push_back("#define VG_SUBGROUP_RESERVATIONS\n");
-		modes.push_back("#define VG_DIRECT_SOURCE_READS\n#define VG_SUBGROUP_RESERVATIONS\n");
+		modes.push_back("#define VG_SUBGROUP_SCAN\n");
+		modes.push_back("#define VG_DIRECT_SOURCE_READS\n#define VG_SUBGROUP_SCAN\n");
 		shader.initialize(modes);
 		shader.set_variant_enabled(1, device_addresses);
-		shader.set_variant_enabled(2, subgroup_reservations);
-		shader.set_variant_enabled(3, device_addresses && subgroup_reservations);
+		shader.set_variant_enabled(2, subgroup_scan);
+		shader.set_variant_enabled(3, device_addresses && subgroup_scan);
 		version = shader.version_create();
 		modes.resize(1);
 		dispatch_shader.initialize(modes);
 		dispatch_version = dispatch_shader.version_create();
 		dispatch_pipeline.create_compute_pipeline(dispatch_shader.version_get_shader(dispatch_version, 0));
 	}
-	const uint32_t mode = (direct_sources ? 1 : 0) | (subgroup_reservations ? 2 : 0);
+	const uint32_t mode = (direct_sources ? 1 : 0) | (subgroup_scan ? 2 : 0);
 	if (pipelines[mode].get_rid().is_null()) {
 		pipelines[mode].create_compute_pipeline(shader.version_get_shader(version, mode));
 	}
