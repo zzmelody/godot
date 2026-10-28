@@ -73,13 +73,6 @@ public:
 			p_device->compute_list_add_buffer_read(p_list, buffer.key, buffer.value);
 		}
 	}
-
-	void record_draw(RD *p_device, RD::DrawListID p_list) const {
-		GodotProfileZone("Render/MultiDraw/source_read_edges");
-		for (const KeyValue<RID, RD::BufferInfo> &buffer : buffers) {
-			p_device->draw_list_add_buffer_read(p_list, buffer.key, buffer.value);
-		}
-	}
 };
 
 } // namespace RendererRD

@@ -10,15 +10,13 @@
 #extension GL_EXT_buffer_reference_uvec2 : require
 struct MultiDrawSource {
 	uvec2 transforms;
-	uint instance_index;
 	uint visibility_offset;
+	uint visibility_stride;
 	uint current_offset;
 	uint previous_offset;
-	uint command_offset;
-	uint padding;
 };
 // clang-format off
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MultiDrawSources {
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer MultiDrawSources {
 	MultiDrawSource data[];
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MultiDrawTransforms {
@@ -270,7 +268,8 @@ uint source_instance_index() {
 	uint offset = draw_call.gpu_visibility_offset;
 #ifdef MULTIMESH_MULTIDRAW
 	if (sc_multimesh_multidraw()) {
-		offset = multidraw_source().visibility_offset;
+		MultiDrawSource source = multidraw_source();
+		offset = source.visibility_offset + draw_call.gpu_visibility_padding_0 * source.visibility_stride;
 	}
 #endif
 	return offset == 0xffffffffu ? uint(INSTANCE_INDEX) : gpu_visible_instances.indices[offset + uint(INSTANCE_INDEX)];
@@ -845,7 +844,9 @@ void main() {
 #ifdef MULTIMESH_MULTIDRAW
 	if (sc_multimesh_multidraw()) {
 		MultiDrawSource source = multidraw_source();
-		instance_index = source.instance_index;
+		// A batch contains consecutive elements of this render list, even when
+		// its command sources came from a different list (for example motion).
+		instance_index += uint(gl_DrawIDARB);
 		current_multimesh_offset = source.current_offset;
 		previous_multimesh_offset = source.previous_offset;
 	}

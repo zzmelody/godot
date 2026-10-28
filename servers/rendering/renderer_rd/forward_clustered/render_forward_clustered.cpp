@@ -431,6 +431,7 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 	bool shadow_pass = (p_pass_mode == PASS_MODE_SHADOW) || (p_pass_mode == PASS_MODE_SHADOW_DP);
 
 	SceneState::PushConstant push_constant;
+	push_constant.gpu_visibility_padding[0] = p_params->gpu_occlusion_phase;
 
 	if constexpr (p_pass_mode == PASS_MODE_DEPTH_MATERIAL) {
 		push_constant.uv_offset = Math::make_half_float(p_params->uv_offset.y) << 16;
@@ -605,13 +606,19 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 
 		bool emulate_point_size = shader->uses_point_size && scene_shader.emulate_point_size;
 		uint32_t multidraw_count = 1;
-		if (multidraw_limit > 1 && multidraw_sources[i].transforms != 0 && !emulate_point_size) {
+		if (multidraw_limit > 1 && gpu_batch >= 0 && (surf->owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH) && element_info.repeat == 1 && !emulate_point_size) {
 			const uint32_t multimesh_flags = INSTANCE_DATA_FLAG_MULTIMESH | INSTANCE_DATA_FLAG_MULTIMESH_FORMAT_2D | INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR | INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA;
 			for (uint32_t next = i + 1; next < p_to_element && multidraw_count < multidraw_limit; next++) {
 				const GeometryInstanceSurfaceDataCache *candidate = p_params->elements[next];
 				const bool depth = shadow_pass || p_pass_mode == PASS_MODE_DEPTH;
-				if (multidraw_sources[next].transforms == 0 ||
-						multidraw_sources[next].command_offset != multidraw_sources[i].command_offset + multidraw_count * RendererRD::GpuOcclusion::COMMAND_STRIDE ||
+				int32_t next_batch = next < p_params->gpu_occlusion->element_batches.size() ? p_params->gpu_occlusion->element_batches[next] : -1;
+				if (p_params->gpu_occlusion_surface_lookup) {
+					const uint32_t *batch = p_params->gpu_occlusion->surface_batches.getptr(candidate);
+					next_batch = batch ? int32_t(*batch) : -1;
+				}
+				if (next_batch != gpu_batch + int32_t(multidraw_count) ||
+						!(candidate->owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH) ||
+						(p_pass_mode == PASS_MODE_COLOR && candidate->color_pass_inclusion_mask && (p_color_pass_flags & candidate->color_pass_inclusion_mask) == 0) ||
 						p_params->element_info[next].value != element_info.value ||
 						candidate->primitive != surf->primitive || candidate->flags != surf->flags ||
 						candidate->owner->mirror != surf->owner->mirror ||
@@ -627,7 +634,7 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 		pipeline_specialization.multimesh_multidraw = multidraw_count > 1;
 		if (multidraw_count > 1) {
 			xforms_uniform_set = scene_shader.default_vec4_xform_uniform_set;
-			const uint64_t source_address = p_params->multidraw_sources_address + uint64_t(i) * sizeof(MultiDrawSource);
+			const uint64_t source_address = p_params->gpu_occlusion->get_multidraw_source_address(gpu_batch);
 			push_constant.gpu_visibility_padding[1] = uint32_t(source_address);
 			push_constant.gpu_visibility_padding[2] = uint32_t(source_address >> 32);
 		}
@@ -835,79 +842,19 @@ void RenderForwardClustered::_render_list(RenderingDevice::DrawListID p_draw_lis
 	}
 }
 
-void RenderForwardClustered::_prepare_multidraw_sources(RenderListParameters *p_params) {
-	p_params->multidraw_sources_address = 0;
-	multidraw_source_reads.clear();
-	RD *rd = RD::get_singleton();
-	if (p_params->gpu_occlusion == nullptr || !rd->has_feature(RD::SUPPORTS_MULTIDRAW_INDIRECT) ||
-			!rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS) || p_params->element_count == 0 ||
-			(p_params->pass_mode == PASS_MODE_COLOR && (p_params->color_pass_flags & COLOR_PASS_FLAG_TRANSPARENT))) {
-		return;
-	}
-	GodotProfileZone("Render/MultiDraw/prepare_sources");
-	multidraw_sources.resize(p_params->element_count);
-	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
-	bool any_sources = false;
-	for (uint32_t i = 0; i < uint32_t(p_params->element_count); i++) {
-		MultiDrawSource &source = multidraw_sources[i];
-		source = {};
-		const GeometryInstanceSurfaceDataCache *surf = p_params->elements[i];
-		const auto *owner = surf->owner;
-		if (!(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH) || (owner->base_flags & INSTANCE_DATA_FLAG_PARTICLES) ||
-				owner->mesh_instance.is_valid() || owner->instance_count == 0 || p_params->element_info[i].repeat != 1) {
-			continue;
-		}
-		if (p_params->pass_mode == PASS_MODE_COLOR && surf->color_pass_inclusion_mask &&
-				(p_params->color_pass_flags & surf->color_pass_inclusion_mask) == 0) {
-			continue;
-		}
-		const bool depth = p_params->pass_mode == PASS_MODE_DEPTH || p_params->pass_mode == PASS_MODE_SHADOW || p_params->pass_mode == PASS_MODE_SHADOW_DP;
-		const auto *shader = depth ? surf->shader_shadow : surf->shader;
-		if (shader == nullptr || (shader->uses_point_size && scene_shader.emulate_point_size)) {
-			continue;
-		}
-		int32_t batch_index = i < p_params->gpu_occlusion->element_batches.size() ? p_params->gpu_occlusion->element_batches[i] : -1;
-		if (p_params->gpu_occlusion_surface_lookup) {
-			const uint32_t *batch = p_params->gpu_occlusion->surface_batches.getptr(surf);
-			batch_index = batch ? int32_t(*batch) : -1;
-		}
-		if (batch_index < 0) {
-			continue;
-		}
-		const RendererRD::GpuOcclusion::Batch &batch = p_params->gpu_occlusion->batches[batch_index];
-		mesh_storage->_multimesh_get_motion_vectors_offsets(owner->data->base, source.current_offset, source.previous_offset);
-		const uint64_t source_bytes = (uint64_t(MAX(source.current_offset, source.previous_offset)) + batch.count) * batch.stride * sizeof(float) * 4;
-		ERR_FAIL_COND_MSG(!multidraw_source_reads.resolve(rd, batch.transforms, 0, source_bytes, source.transforms), "Multi-draw transform source does not match its prepared allocation.");
-		source.instance_index = i + p_params->element_offset;
-		source.visibility_offset = p_params->gpu_occlusion->get_index_offset(batch_index, p_params->gpu_occlusion_phase);
-		source.command_offset = p_params->gpu_occlusion->get_command_offset(batch_index, p_params->gpu_occlusion_phase);
-		any_sources = true;
-	}
-	if (!any_sources) {
-		return;
-	}
-	if (uint32_t(p_params->element_count) > multidraw_source_capacity) {
-		if (multidraw_source_buffer.is_valid()) {
-			rd->free_rid(multidraw_source_buffer);
-		}
-		multidraw_source_capacity = Math::nearest_power_of_2_templated(uint32_t(p_params->element_count));
-		multidraw_source_buffer = rd->storage_buffer_create(multidraw_source_capacity * sizeof(MultiDrawSource), Vector<uint8_t>(), BitField<RD::StorageBufferUsage>(), RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
-	}
-	const uint32_t bytes = multidraw_sources.size() * sizeof(MultiDrawSource);
-	ERR_FAIL_COND(rd->buffer_update(multidraw_source_buffer, 0, bytes, multidraw_sources.ptr()) != OK);
-	ERR_FAIL_COND(!multidraw_source_reads.resolve(rd, multidraw_source_buffer, 0, bytes, p_params->multidraw_sources_address));
-}
-
 void RenderForwardClustered::_render_list_with_draw_list(RenderListParameters *p_params, RID p_framebuffer, BitField<RD::DrawFlags> p_draw_flags, const Vector<Color> &p_clear_color_values, float p_clear_depth_value, uint32_t p_clear_stencil_value, const Rect2 &p_region) {
 	GodotProfileZoneGroupedFirst(draw_stage, "Render/DrawList/begin");
 	GodotProfileZoneGroupedValue(draw_stage, p_params->element_count);
 	RD::FramebufferFormatID fb_format = RD::get_singleton()->framebuffer_get_format(p_framebuffer);
 	p_params->framebuffer_format = fb_format;
-	_prepare_multidraw_sources(p_params);
+	p_params->multidraw_sources_address = p_params->gpu_occlusion &&
+					!(p_params->pass_mode == PASS_MODE_COLOR && (p_params->color_pass_flags & COLOR_PASS_FLAG_TRANSPARENT))
+			? p_params->gpu_occlusion->get_multidraw_sources_address()
+			: 0;
 
 	RD::DrawListID draw_list = RD::get_singleton()->draw_list_begin(p_framebuffer, p_draw_flags, p_clear_color_values, p_clear_depth_value, p_clear_stencil_value, p_region);
 	if (p_params->multidraw_sources_address != 0) {
-		multidraw_source_reads.record_draw(RD::get_singleton(), draw_list);
+		p_params->gpu_occlusion->record_multidraw_source_reads(draw_list);
 	}
 	GodotProfileZoneGrouped(draw_stage, "Render/DrawList/commands");
 	GodotProfileZoneGroupedValue(draw_stage, p_params->element_count);
@@ -2307,8 +2254,7 @@ void RenderForwardClustered::_prepare_gpu_occlusion(RenderDataRD *p_render_data,
 			}
 			batch.count = storage->multimesh_get_instances_to_draw(owner->data->base);
 			batch.stride = 3 + bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR) + bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA);
-			uint32_t previous_offset;
-			storage->_multimesh_get_motion_vectors_offsets(owner->data->base, batch.transform_offset, previous_offset);
+			storage->_multimesh_get_motion_vectors_offsets(owner->data->base, batch.transform_offset, batch.previous_transform_offset);
 		} else if (info.repeat > 1) {
 			bool supported = true;
 			for (uint32_t member = element; member < element + info.repeat; ++member) {
@@ -6476,9 +6422,6 @@ RenderForwardClustered::RenderForwardClustered() {
 }
 
 RenderForwardClustered::~RenderForwardClustered() {
-	if (multidraw_source_buffer.is_valid()) {
-		RD::get_singleton()->free_rid(multidraw_source_buffer);
-	}
 	if (virtual_geometry_sdfgi_raster != nullptr) {
 		memdelete(virtual_geometry_sdfgi_raster);
 	}

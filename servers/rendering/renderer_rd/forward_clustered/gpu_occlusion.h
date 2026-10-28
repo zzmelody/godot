@@ -25,6 +25,7 @@ public:
 		uint32_t count = 1;
 		uint32_t stride = 0;
 		uint32_t transform_offset = 0;
+		uint32_t previous_transform_offset = 0;
 		uint32_t candidate_offset = 0;
 		uint32_t depth_vertices = 0;
 		uint32_t color_vertices = 0;
@@ -45,6 +46,9 @@ public:
 	void finish();
 	RID get_indices() const { return indices; }
 	RID get_commands() const { return commands; }
+	uint64_t get_multidraw_sources_address() const { return multidraw_sources_address; }
+	uint64_t get_multidraw_source_address(uint32_t p_batch) const { return multidraw_sources_address + uint64_t(p_batch) * sizeof(MultiDrawSource); }
+	void record_multidraw_source_reads(RD::DrawListID p_list) const;
 	static constexpr uint32_t COMMAND_STRIDE = 15 * sizeof(uint32_t);
 	uint32_t get_index_offset(uint32_t p_batch, uint32_t p_phase) const;
 	uint32_t get_command_offset(uint32_t p_batch, uint32_t p_phase) const { return (p_batch * 15 + p_phase * 5) * sizeof(uint32_t); }
@@ -64,7 +68,7 @@ public:
 	bool uses_device_addresses() const { return device_addresses; }
 	uint32_t get_addressed_buffer_count() const { return source_buffers.size(); }
 	uint64_t get_metadata_bytes() const { return GpuOcclusionDispatch::metadata_bytes(parameter_capacity, task_capacity, device_addresses); }
-	uint64_t get_buffer_bytes() const { return uint64_t(capacity) * 16 + uint64_t(command_capacity) * 60 + get_metadata_bytes(); }
+	uint64_t get_buffer_bytes() const { return uint64_t(capacity) * 16 + uint64_t(command_capacity) * 60 + get_metadata_bytes() + uint64_t(multidraw_source_capacity) * sizeof(MultiDrawSource); }
 	uint64_t get_hierarchy_bytes() const;
 	bool has_history() const { return history_valid; }
 	RID get_hierarchy(bool p_previous) const { return hierarchy[p_previous ? 1 - write_index : write_index]; }
@@ -95,6 +99,22 @@ private:
 	LocalVector<BatchParameters> parameters[2];
 	LocalVector<GpuOcclusionDispatch::Address> addresses;
 	AHashMap<RID, RD::BufferInfo> source_buffers;
+	// One table per prepared view, shared by prediction, recovery and color.
+	// Command order identifies the source; render-list indices remain draw-local.
+	struct MultiDrawSource {
+		uint64_t transforms = 0;
+		uint32_t visibility_offset = 0;
+		uint32_t visibility_stride = 0;
+		uint32_t current_offset = 0;
+		uint32_t previous_offset = 0;
+	};
+	static_assert(sizeof(MultiDrawSource) == 24);
+	LocalVector<MultiDrawSource> multidraw_sources;
+	RID multidraw_source_buffer;
+	RD::BufferInfo multidraw_source_info;
+	uint64_t multidraw_sources_address = 0;
+	uint32_t multidraw_source_capacity = 0;
+	bool multidraw_supported = false;
 	RID parameter_buffers[2], task_buffer, address_buffer;
 	uint32_t parameter_capacity = 0, task_capacity = 0, total_tasks = 0;
 	uint32_t address_capacity = 0;
