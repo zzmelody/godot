@@ -94,6 +94,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	source_reads.clear();
 	source_address_data.clear();
 	if (direct_sources) {
+		GodotProfileZone("Render/VirtualGeometry/source_resolve");
 		for (const Batch &batch : batches) {
 			if (batch.count == 0) {
 				continue;
@@ -264,21 +265,30 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		results[index].parameters = view_parameters;
 		results[index].transforms = direct_sources ? RID() : transforms_buffer;
 		results[index].direct_source_reads = direct_sources;
+		results[index].transform_source = direct_sources && results[index].batch.stride != 0 ? source_reads.get_resolved(results[index].batch.transforms) : VirtualGeometrySourceReads::ResolvedBuffer{};
 		results[index].transform_offset = parameter_data[index].source[2];
 	}
 	if (version.is_null()) {
+		const uint32_t subgroup_operations = RD::SUBGROUP_BASIC_BIT | RD::SUBGROUP_ARITHMETIC_BIT | RD::SUBGROUP_BALLOT_BIT | RD::SUBGROUP_SHUFFLE_BIT;
+		subgroup_reservations = (rd->limit_get(RD::LIMIT_SUBGROUP_OPERATIONS) & subgroup_operations) == subgroup_operations &&
+				(rd->limit_get(RD::LIMIT_SUBGROUP_IN_SHADERS) & RD::SHADER_STAGE_COMPUTE_BIT) != 0;
+		const bool device_addresses = rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS);
 		Vector<String> modes;
 		modes.push_back("");
 		modes.push_back("#define VG_DIRECT_SOURCE_READS\n");
+		modes.push_back("#define VG_SUBGROUP_RESERVATIONS\n");
+		modes.push_back("#define VG_DIRECT_SOURCE_READS\n#define VG_SUBGROUP_RESERVATIONS\n");
 		shader.initialize(modes);
-		shader.set_variant_enabled(1, rd->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS));
+		shader.set_variant_enabled(1, device_addresses);
+		shader.set_variant_enabled(2, subgroup_reservations);
+		shader.set_variant_enabled(3, device_addresses && subgroup_reservations);
 		version = shader.version_create();
 		modes.resize(1);
 		dispatch_shader.initialize(modes);
 		dispatch_version = dispatch_shader.version_create();
 		dispatch_pipeline.create_compute_pipeline(dispatch_shader.version_get_shader(dispatch_version, 0));
 	}
-	const uint32_t mode = direct_sources ? 1 : 0;
+	const uint32_t mode = (direct_sources ? 1 : 0) | (subgroup_reservations ? 2 : 0);
 	if (pipelines[mode].get_rid().is_null()) {
 		pipelines[mode].create_compute_pipeline(shader.version_get_shader(version, mode));
 	}

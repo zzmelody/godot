@@ -841,7 +841,11 @@ Error RenderingDevice::hit_sbt_range_update(RID p_hit_sbt, HitShaderBindingTable
 
 RenderingDevice::Buffer *RenderingDevice::_get_buffer_from_owner(RID p_buffer) {
 	Buffer *buffer = nullptr;
-	if (vertex_buffer_owner.owns(p_buffer)) {
+	// Storage sources dominate compute reads. Each thread-safe owns() takes
+	// its owner's lock, so do not probe unrelated owners for this hot case.
+	if (storage_buffer_owner.owns(p_buffer)) {
+		buffer = storage_buffer_owner.get_or_null(p_buffer);
+	} else if (vertex_buffer_owner.owns(p_buffer)) {
 		buffer = vertex_buffer_owner.get_or_null(p_buffer);
 	} else if (index_buffer_owner.owns(p_buffer)) {
 		buffer = index_buffer_owner.get_or_null(p_buffer);
@@ -850,8 +854,6 @@ RenderingDevice::Buffer *RenderingDevice::_get_buffer_from_owner(RID p_buffer) {
 	} else if (texture_buffer_owner.owns(p_buffer)) {
 		DEV_ASSERT(false && "FIXME: Broken.");
 		//buffer = texture_buffer_owner.get_or_null(p_buffer)->buffer;
-	} else if (storage_buffer_owner.owns(p_buffer)) {
-		buffer = storage_buffer_owner.get_or_null(p_buffer);
 	}
 	return buffer;
 }
@@ -9869,8 +9871,21 @@ void RenderingDevice::_bind_methods() {
 	BIND_ENUM_CONSTANT(LIMIT_MAX_COMPUTE_WORKGROUP_SIZE_Z);
 	BIND_ENUM_CONSTANT(LIMIT_MAX_VIEWPORT_DIMENSIONS_X);
 	BIND_ENUM_CONSTANT(LIMIT_MAX_VIEWPORT_DIMENSIONS_Y);
+	BIND_ENUM_CONSTANT(LIMIT_SUBGROUP_SIZE);
+	BIND_ENUM_CONSTANT(LIMIT_SUBGROUP_MIN_SIZE);
+	BIND_ENUM_CONSTANT(LIMIT_SUBGROUP_MAX_SIZE);
+	BIND_ENUM_CONSTANT(LIMIT_SUBGROUP_IN_SHADERS);
+	BIND_ENUM_CONSTANT(LIMIT_SUBGROUP_OPERATIONS);
 	BIND_ENUM_CONSTANT(LIMIT_METALFX_TEMPORAL_SCALER_MIN_SCALE);
 	BIND_ENUM_CONSTANT(LIMIT_METALFX_TEMPORAL_SCALER_MAX_SCALE);
+	BIND_BITFIELD_FLAG(SUBGROUP_BASIC_BIT);
+	BIND_BITFIELD_FLAG(SUBGROUP_VOTE_BIT);
+	BIND_BITFIELD_FLAG(SUBGROUP_ARITHMETIC_BIT);
+	BIND_BITFIELD_FLAG(SUBGROUP_BALLOT_BIT);
+	BIND_BITFIELD_FLAG(SUBGROUP_SHUFFLE_BIT);
+	BIND_BITFIELD_FLAG(SUBGROUP_SHUFFLE_RELATIVE_BIT);
+	BIND_BITFIELD_FLAG(SUBGROUP_CLUSTERED_BIT);
+	BIND_BITFIELD_FLAG(SUBGROUP_QUAD_BIT);
 
 	BIND_ENUM_CONSTANT(MEMORY_TEXTURES);
 	BIND_ENUM_CONSTANT(MEMORY_BUFFERS);

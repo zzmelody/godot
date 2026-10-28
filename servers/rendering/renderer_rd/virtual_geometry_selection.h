@@ -56,6 +56,7 @@ public:
 		// batch.transforms instead; the logical vec4 offset still owns a span.
 		RID transforms;
 		bool direct_source_reads = false;
+		VirtualGeometrySourceReads::ResolvedBuffer transform_source;
 		uint32_t transform_offset = 0;
 		uint32_t work_word = 0;
 		uint32_t selected_capacity = 0;
@@ -91,7 +92,7 @@ private:
 	VirtualGeometrySelectDispatchShaderRD dispatch_shader;
 	RID version;
 	RID dispatch_version;
-	PipelineDeferredRD pipelines[2];
+	PipelineDeferredRD pipelines[4];
 	PipelineDeferredRD dispatch_pipeline;
 	RID scratch;
 	uint32_t scratch_words = 0;
@@ -130,6 +131,7 @@ private:
 	float lod_scale = 0;
 	float frustum_margin = 0;
 	bool orthographic = false;
+	bool subgroup_reservations = false;
 	uint32_t shadow_flags = 0;
 };
 

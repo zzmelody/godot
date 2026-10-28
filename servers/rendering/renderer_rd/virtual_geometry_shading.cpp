@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 #include "virtual_geometry_shading.h"
 
+#include "core/profiling/profiling.h"
 #include "core/templates/hashfuncs.h"
+#include "servers/rendering/renderer_compositor.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
-#include "servers/rendering/renderer_compositor.h"
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/utilities.h"
 
@@ -59,6 +60,7 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 }
 
 Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only, bool p_motion) {
+	GodotProfileZone("Render/VirtualGeometry/source_parameters");
 	depth_only = p_depth_only;
 	const bool record_history = !depth_only && p_motion;
 	materials.clear();
@@ -245,7 +247,11 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 			if (batch.stride != 0) {
 				const uint64_t stride_bytes = uint64_t(batch.stride) * 16;
 				ERR_FAIL_COND_V(batch.count > UINT32_MAX / stride_bytes || batch.transform_offset > UINT32_MAX / stride_bytes, ERR_INVALID_PARAMETER);
-				ERR_FAIL_COND_V(!source_reads.resolve(rd, batch.transforms, uint64_t(batch.transform_offset) * stride_bytes, uint64_t(batch.count) * stride_bytes, addresses.current), ERR_INVALID_DATA);
+				// Selection validated this allocation before packing the same view.
+				// Keep the source RID in this list's read edges, but borrow its value
+				// record rather than repeat the owner and address queries per batch.
+				ERR_FAIL_COND_V(source.transform_source.buffer != batch.transforms, ERR_INVALID_PARAMETER);
+				ERR_FAIL_COND_V(!source_reads.resolve(source.transform_source, uint64_t(batch.transform_offset) * stride_bytes, uint64_t(batch.count) * stride_bytes, addresses.current), ERR_INVALID_DATA);
 			}
 		}
 		if (record_history) {
