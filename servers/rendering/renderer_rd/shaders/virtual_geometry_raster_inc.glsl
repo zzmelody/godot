@@ -85,16 +85,26 @@ uint vg_pixel_payload(uint index, uint triangle) {
 #define VG_GLOBALS_BINDING 14
 #define VG_MATERIAL_INDEX raster_info.material
 #include "virtual_geometry_material_vertex_inc.glsl"
+#ifdef VG_RASTER_REUSE_SOURCE
+bool vg_raster_source_ready = false;
+#endif
 #endif
 vec3 vg_raster_position(uint instance, uint reference, uint vertex_index) {
 #ifdef VG_PROGRAMMABLE
-	vg_setup_vertex(
+#ifdef VG_RASTER_REUSE_SOURCE
+	if (!vg_raster_source_ready) {
+#endif
+		vg_setup_vertex(
 #ifdef VG_GLOBAL_RASTER
-			instance
+				instance
 #else
 			raster_info.source_base + instance
 #endif
-	);
+		);
+#ifdef VG_RASTER_REUSE_SOURCE
+		vg_raster_source_ready = true;
+	}
+#endif
 	VGVertex value = vg_vertex(reference, vertex_index);
 	vg_evaluate_vertex(value, vg_source, 0u);
 	return value.position;

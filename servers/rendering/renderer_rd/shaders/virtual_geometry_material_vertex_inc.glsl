@@ -141,7 +141,13 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 		if (maximum > 0.0) {
 			offset = clamp(offset, vec3(-maximum), vec3(maximum));
 		}
+#ifdef VG_RASTER_REUSE_SOURCE
+		// Source initialization already stores inverse-transpose(model).
+		// MODEL_NORMAL_MATRIX is read-only; mutable normal outputs reset above.
+		value.position += transpose(model_normal_matrix) * offset;
+#else
 		value.position += inverse(mat3(read_model_matrix)) * offset;
+#endif
 	}
 #if defined(VERTEX_WORLD_COORDS_USED) && !defined(SKIP_TRANSFORM_USED)
 	// Surface reconstruction applies the model normal matrix at each corner.

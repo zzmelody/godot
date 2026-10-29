@@ -81,15 +81,14 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	MaterialStorage *storage = MaterialStorage::get_singleton();
 	for (const auto &result : p_sources) {
 		const auto &batch = result.batch;
-		const auto slots = MeshStorage::get_singleton()->mesh_get_virtual_geometry_materials(batch.mesh);
-		ERR_FAIL_COND_V(slots.rids.size() != slots.identities.size() || slots.rids.is_empty(), ERR_INVALID_DATA);
+		ERR_FAIL_COND_V(batch.materials.is_empty(), ERR_INVALID_DATA);
 		ERR_FAIL_COND_V(instances > 0xffffffu || material_map.size() > UINT32_MAX, ERR_OUT_OF_MEMORY);
-		sources.push_back({ uint32_t(instances), uint32_t(material_map.size()), uint32_t(visible), uint32_t(slots.rids.size()) });
+		sources.push_back({ uint32_t(instances), uint32_t(material_map.size()), uint32_t(visible), uint32_t(batch.materials.size()) });
 		instances += batch.count;
 		visible += result.selected_capacity;
 		ERR_FAIL_COND_V(instances > 0xffffffu, ERR_OUT_OF_MEMORY);
-		for (uint32_t slot = 0; slot < slots.rids.size(); ++slot) {
-			const RID material = slots.resolve(slot, batch.surface_materials, batch.material_override, p_default_material);
+		for (const RID &requested : batch.materials) {
+			const RID material = requested.is_valid() ? requested : p_default_material;
 			ERR_FAIL_COND_V(!storage->owns_material(material), ERR_INVALID_DATA);
 			const uint32_t two_sided = depth_only && batch.shadow_double_sided ? 1 : 0;
 			const uint32_t *found = material_ids[two_sided].getptr(material);

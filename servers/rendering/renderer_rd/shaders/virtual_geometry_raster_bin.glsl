@@ -7,7 +7,13 @@
 #VERSION_DEFINES
 
 #define VG_BIN_BUILD
+#if !defined(VG_FUSED_SOFTWARE) || !defined(VG_GLOBAL_RASTER)
 #define VG_SCENE_WRITE
+#else
+// One fused invocation evaluates only one source. Global raster never writes
+// the source table; keep its immutable inputs available across active vertices.
+#define VG_RASTER_REUSE_SOURCE
+#endif
 #define VG_MATERIAL_LOOKUP
 #if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
 layout(constant_id = 1) const bool vg_direct_software = false;

@@ -35,8 +35,9 @@ public:
 		uint32_t stride = 0;
 		uint32_t transform_offset = 0;
 		uint32_t previous_transform_offset = 0;
-		RID material_override;
-		Vector<RID> surface_materials;
+		// Resolved at the owner's dirty boundary. Empty RID uses the view default.
+		Vector<RID> materials;
+		bool uses_sss = false;
 		uint32_t layer_mask = 1;
 		uint32_t render_flags = 0;
 		uint32_t gi_offset = UINT32_MAX;
@@ -65,8 +66,6 @@ public:
 
 	void begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size, uint32_t p_shadow_flags = 0, float p_shadow_far = 0);
 	void add_batch(const Batch &p_batch) { batches.push_back(p_batch); }
-	// Borrowed current-view inputs, including zero-instance batches.
-	Span<Batch> get_batches() const { return Span<Batch>(batches.ptr(), batches.size()); }
 	// SDFGI captures the complete resident root proxy without requesting fine
 	// pages; its dirty regions do not track ordinary page-residency changes.
 	Error record(bool p_root_only = false);

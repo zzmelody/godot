@@ -35,7 +35,6 @@
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
 #include "core/templates/a_hash_map.h"
-#include "core/templates/hash_set.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -1908,8 +1907,8 @@ bool RenderForwardClustered::_virtual_geometry_batch(RenderGeometryInstance *p_i
 	r_batch.history_instance_id = owner->history_instance_id;
 	r_batch.model = owner->transform;
 	r_batch.previous_model = owner->prev_transform;
-	r_batch.material_override = owner->data->material_override;
-	r_batch.surface_materials = owner->data->surface_materials;
+	r_batch.materials = owner->virtual_geometry_materials;
+	r_batch.uses_sss = owner->virtual_geometry_uses_sss;
 	r_batch.layer_mask = owner->layer_mask;
 	r_batch.render_flags = owner->flags_cache;
 	r_batch.gi_offset = owner->gi_offset_cache;
@@ -2009,34 +2008,11 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 				selection->begin(camera, projection, scene->flip_y, buffers->get_internal_size());
 			}
 			selection->add_batch(batch);
+			if (eye == 0) {
+				scene_state.used_sss |= batch.uses_sss;
+			}
 		}
 		if (selection) {
-			if (eye == 0 && !scene_state.used_sss) {
-				ZoneScopedN("Render/VG/material_features");
-				// The shading table is prepared later. Inspect current batches here
-				// so virtual-only SSS can select the shared framebuffer in time.
-				// Retain scratch capacity, never feature results across views/frames.
-				thread_local HashSet<RID> checked_materials;
-				checked_materials.clear();
-				for (const auto &batch : selection->get_batches()) {
-					const auto slots = RendererRD::MeshStorage::get_singleton()->mesh_get_virtual_geometry_materials(batch.mesh);
-					for (uint32_t slot = 0; slot < slots.rids.size(); ++slot) {
-						const RID material = slots.resolve(slot, batch.surface_materials, batch.material_override, scene_shader.default_material);
-						if (checked_materials.has(material)) {
-							continue;
-						}
-						checked_materials.insert(material);
-						auto *material_data = static_cast<SceneShaderForwardClustered::MaterialData *>(RendererRD::MaterialStorage::get_singleton()->material_get_data(material, RendererRD::MaterialStorage::SHADER_TYPE_3D));
-						if (material_data && material_data->shader_data && material_data->shader_data->uses_sss) {
-							scene_state.used_sss = true;
-							break;
-						}
-					}
-					if (scene_state.used_sss) {
-						break;
-					}
-				}
-			}
 			RD::get_singleton()->draw_command_begin_label("VG/MainView");
 			Error error = selection->record();
 			if (error == ERR_OUT_OF_MEMORY) {
@@ -5309,6 +5285,38 @@ void RenderForwardClustered::_geometry_instance_add_surface(GeometryInstanceForw
 	}
 }
 
+void RenderForwardClustered::_geometry_instance_update_virtual_materials(GeometryInstanceForwardClustered *p_instance, RID p_mesh) {
+	p_instance->virtual_geometry_uses_sss = false;
+	auto *mesh_storage = RendererRD::MeshStorage::get_singleton();
+	if (p_mesh.is_null() || mesh_storage->mesh_get_virtual_geometry(p_mesh) == nullptr) {
+		p_instance->virtual_geometry_materials.clear();
+		return;
+	}
+	const auto slots = mesh_storage->mesh_get_virtual_geometry_materials(p_mesh);
+	if (slots.rids.is_empty() || slots.rids.size() != slots.identities.size()) {
+		// Keep malformed preparation visible to the shading admission check.
+		p_instance->virtual_geometry_materials.clear();
+		return;
+	}
+	p_instance->virtual_geometry_materials.resize(slots.rids.size());
+	RID *materials = p_instance->virtual_geometry_materials.ptrw();
+	auto *storage = RendererRD::MaterialStorage::get_singleton();
+	for (uint32_t slot = 0; slot < slots.rids.size(); ++slot) {
+		materials[slot] = slots.resolve(slot, p_instance->data->surface_materials, p_instance->data->material_override, RID());
+		const RID material = materials[slot].is_valid() ? materials[slot] : scene_shader.default_material;
+		if (!storage->owns_material(material)) {
+			continue;
+		}
+		// Track even a non-spatial material: a later shader type change must
+		// rebuild this cache. Never retain MaterialData or ShaderData pointers.
+		if (p_instance->data->dirty_dependencies) {
+			storage->material_update_dependency(material, &p_instance->data->dependency_tracker);
+		}
+		auto *data = static_cast<SceneShaderForwardClustered::MaterialData *>(storage->material_get_data(material, RendererRD::MaterialStorage::SHADER_TYPE_3D));
+		p_instance->virtual_geometry_uses_sss |= data && data->shader_data && data->shader_data->uses_sss;
+	}
+}
+
 void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p_geometry_instance) {
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	RendererRD::ParticlesStorage *particles_storage = RendererRD::ParticlesStorage::get_singleton();
@@ -5328,12 +5336,14 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 		RSG::utilities->base_update_dependency(ginstance->data->base, &ginstance->data->dependency_tracker);
 	}
 
+	RID material_mesh;
 	//add geometry for drawing
 	switch (ginstance->data->base_type) {
 		case RSE::INSTANCE_MESH: {
 			const RID *materials = nullptr;
 			uint32_t surface_count;
 			RID mesh = ginstance->data->base;
+			material_mesh = mesh;
 
 			materials = mesh_storage->mesh_get_surface_count_and_materials(mesh, surface_count);
 			if (materials) {
@@ -5353,6 +5363,7 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 
 		case RSE::INSTANCE_MULTIMESH: {
 			RID mesh = mesh_storage->multimesh_get_mesh(ginstance->data->base);
+			material_mesh = mesh;
 			if (mesh.is_valid()) {
 				const RID *materials = nullptr;
 				uint32_t surface_count;
@@ -5471,6 +5482,7 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 		}
 	}
 
+	_geometry_instance_update_virtual_materials(ginstance, material_mesh);
 	if (ginstance->data->dirty_dependencies) {
 		ginstance->data->dependency_tracker.update_end();
 		ginstance->data->dirty_dependencies = false;
