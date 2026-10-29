@@ -5,7 +5,7 @@ struct SelectionParameters {
 	uvec4 limits; // reserved, selected capacity, root capacity, request capacity
 	uvec4 offsets; // absolute parts, page table, groups, displacement bits
 	uvec4 addresses; // metadata, feedback header, result header, first instance
-	uvec4 prefix; // first root-page task, depth, reserved, reserved
+	uvec4 prefix; // first root-page task, depth, optional absolute fine-LOD bound, reserved
 };
 layout(set = 0, binding = 7, std430) readonly buffer SelectionInputs { SelectionParameters data[]; } selection_inputs;
 layout(push_constant, std430) uniform Phase {

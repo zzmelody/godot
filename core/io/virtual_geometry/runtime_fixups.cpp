@@ -1,12 +1,15 @@
 #include "runtime_fixups.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <new>
 #include <utility>
 
 namespace VirtualGeometry {
 
 GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, uint32_t p_metadata_words,
-		std::vector<GeometryGpuFixup> &r_commands) {
+		std::vector<GeometryGpuFixup> &r_commands, GeometryFineLodBounds &r_fine_bounds) {
 	const auto &hierarchy = p_root.hierarchy;
 	const uint64_t nodes_end = MODEL_ROOT_HEADER_BYTES / 4 + uint64_t(hierarchy.nodes.size()) * (MODEL_NODE_BYTES / 4);
 	if (hierarchy.nodes.empty() || nodes_end > p_metadata_words) {
@@ -15,6 +18,10 @@ GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, u
 	try {
 		std::vector<uint8_t> contains_root(hierarchy.nodes.size(), 0);
 		std::vector<GeometryGpuFixup> commands;
+		GeometryFineLodBounds fine_bounds;
+		std::array<double, 3> lower = { INFINITY, INFINITY, INFINITY };
+		std::array<double, 3> upper = { -INFINITY, -INFINITY, -INFINITY };
+		bool has_fine_branch = false;
 		// The admitted spatial tree has forward child indices, one incoming
 		// edge per node and one visit per part. DAG links are not tree edges.
 		for (size_t end = hierarchy.nodes.size(); end > 0; --end) {
@@ -25,10 +32,31 @@ GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, u
 				if (root) {
 					contains_root[node] = 1;
 					commands.push_back({ 0, MODEL_ROOT_HEADER_BYTES / 4 + node * (MODEL_NODE_BYTES / 4) + child * 16 + 15, 1, 0 });
+				} else if (branch.node != UINT32_MAX || branch.part != UINT32_MAX) {
+					has_fine_branch = true;
+					fine_bounds.max_error = std::max(fine_bounds.max_error, branch.max_error);
+					for (uint32_t axis = 0; axis < 3; ++axis) {
+						lower[axis] = std::min(lower[axis], std::nextafter(double(branch.lod_bounds[axis]) - double(branch.lod_bounds[3]), -std::numeric_limits<double>::infinity()));
+						upper[axis] = std::max(upper[axis], std::nextafter(double(branch.lod_bounds[axis]) + double(branch.lod_bounds[3]), std::numeric_limits<double>::infinity()));
+					}
 				}
 			}
 		}
+		if (has_fine_branch) {
+			// Use the rounded float center when deriving the outward radius.
+			// This covers descendant errors and LOD balls independently of any
+			// parent monotonicity or geometric AABB containment assumption.
+			double radius_squared = 0;
+			for (uint32_t axis = 0; axis < 3; ++axis) {
+				fine_bounds.sphere[axis] = float((lower[axis] + upper[axis]) * 0.5);
+				const double extent = std::max(upper[axis] - double(fine_bounds.sphere[axis]), double(fine_bounds.sphere[axis]) - lower[axis]);
+				radius_squared += extent * extent;
+			}
+			fine_bounds.sphere[3] = std::nextafter(float(std::sqrt(radius_squared)), std::numeric_limits<float>::infinity());
+			fine_bounds.valid = std::isfinite(fine_bounds.sphere[3]);
+		}
 		r_commands = std::move(commands);
+		r_fine_bounds = fine_bounds;
 		return GpuFixupError::OK;
 	} catch (const std::bad_alloc &) {
 		return GpuFixupError::MEMORY;

@@ -120,9 +120,11 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 			continue;
 		}
 		ERR_FAIL_COND_V(batch.geometry.metadata.is_null() || batch.geometry.geometry.is_null() || batch.geometry.metadata_words == 0 || batch.geometry.root_pages == 0 ||
-				(batch.stride != 0 && (batch.stride < 3 || batch.transforms.is_null())) ||
-				!batch.model.is_finite() || batch.model.basis.determinant() == 0 || lod_scale <= 0 ||
-				!Math::is_finite(batch.max_vertex_displacement) || batch.max_vertex_displacement < 0, ERR_INVALID_PARAMETER);
+						(batch.geometry.fine_lod_word != 0 && (batch.geometry.fine_lod_word > batch.geometry.metadata_words || batch.geometry.metadata_words - batch.geometry.fine_lod_word < 5)) ||
+						(batch.stride != 0 && (batch.stride < 3 || batch.transforms.is_null())) ||
+						!batch.model.is_finite() || batch.model.basis.determinant() == 0 || lod_scale <= 0 ||
+						!Math::is_finite(batch.max_vertex_displacement) || batch.max_vertex_displacement < 0,
+				ERR_INVALID_PARAMETER);
 		if (geometry.is_null()) {
 			geometry = batch.geometry.geometry;
 		}
@@ -165,6 +167,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 		input.addresses[3] = uint32_t(first_instance);
 		input.prefix[0] = uint32_t(root_tasks);
 		input.prefix[1] = batch.geometry.hierarchy_depth;
+		input.prefix[2] = batch.geometry.fine_lod_word != 0 ? metadata_word + batch.geometry.fine_lod_word : 0;
 		parameter_data.push_back(input);
 		if (batch.stride != 0) {
 			const uint64_t words = uint64_t(batch.count) * batch.stride * 4;

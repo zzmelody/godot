@@ -63,7 +63,7 @@ uint reserve_work(uint word, uint count, uint capacity) {
 }
 shared uvec2 group_scan[128];
 shared uvec2 group_first;
-shared uvec2 group_ranges[64];
+shared uvec4 group_ranges[64];
 // Source, bounded lane demand, granted first record, granted count.
 shared uvec4 group_hits[64];
 
@@ -109,12 +109,14 @@ void reserve_group_hits() {
 	vg_batch_index = saved_source;
 }
 
-// Each lane owns one branch. Only the leader contends globally; the boundary
-// path preserves each complete part request in logical node/branch order.
-void reserve_group_work(uint parity, uvec2 count, uint hit_count, out uvec2 first, out uvec2 hit_range) {
+// Each lane retains at most four original branch requests. Only the leader
+// contends globally; the boundary path preserves each complete part request.
+void reserve_group_work(uint parity, uvec4 node_counts, uvec4 cluster_counts, uint hit_count, out uvec4 node_first, out uvec4 cluster_first, out uvec2 hit_range) {
 	uint lane = gl_LocalInvocationIndex;
-	// Validated parts fit one page (at most 256 clusters). The 64 branch
-	// demands therefore sum to at most 16384, without uint overflow.
+	// Validated parts fit one page (at most 256 clusters). Four requests per
+	// lane and 64 lanes therefore sum to at most 65536, without uint overflow.
+	uvec2 count = uvec2(node_counts.x + node_counts.y + node_counts.z + node_counts.w,
+			cluster_counts.x + cluster_counts.y + cluster_counts.z + cluster_counts.w);
 	group_scan[lane * 2u] = count;
 	group_hits[lane] = uvec4(vg_batch_index, hit_count, INVALID, 0u);
 	barrier();
@@ -139,35 +141,42 @@ void reserve_group_work(uint parity, uvec2 count, uint hit_count, out uvec2 firs
 		reserve_group_hits();
 	}
 	barrier();
-	first = uvec2(INVALID);
-	for (uint kind = 0u; kind < 2u; ++kind) {
-		if (group_first[kind] != INVALID && count[kind] != 0u) {
-			first[kind] = group_first[kind] + prefix[kind];
+	node_first = uvec4(INVALID);
+	cluster_first = uvec4(INVALID);
+	for (uint branch = 0u; branch < 4u; ++branch) {
+		if (group_first.x != INVALID && node_counts[branch] != 0u) {
+			node_first[branch] = group_first.x + prefix.x;
 		}
+		if (group_first.y != INVALID && cluster_counts[branch] != 0u) {
+			cluster_first[branch] = group_first.y + prefix.y;
+		}
+		prefix += uvec2(node_counts[branch], cluster_counts[branch]);
 	}
 	// Both independent queues share one prefix scan. If either aggregate
 	// does not fit, retain ordered, whole-part admission for that queue only.
 	bvec2 partial = bvec2(total.x != 0u && group_first.x == INVALID, total.y != 0u && group_first.y == INVALID);
-	if (any(partial)) {
-		group_ranges[lane] = count;
+	for (uint kind = 0u; kind < 2u; ++kind) {
+		if (!partial[kind]) {
+			continue;
+		}
+		group_ranges[lane] = kind == 0u ? node_counts : cluster_counts;
 		barrier();
 		if (lane == 0u) {
-			for (uint kind = 0u; kind < 2u; ++kind) {
-				if (!partial[kind]) {
-					continue;
-				}
-				for (uint member = 0u; member < 64u; ++member) {
-					uint requested = group_ranges[member][kind];
-					group_ranges[member][kind] = requested == 0u ? INVALID : reserve_work(words[kind], requested, capacities[kind]);
+			for (uint member = 0u; member < 64u; ++member) {
+				for (uint branch = 0u; branch < 4u; ++branch) {
+					uint requested = group_ranges[member][branch];
+					group_ranges[member][branch] = requested == 0u ? INVALID : reserve_work(words[kind], requested, capacities[kind]);
 				}
 			}
 		}
 		barrier();
-		for (uint kind = 0u; kind < 2u; ++kind) {
-			if (partial[kind]) {
-				first[kind] = group_ranges[lane][kind];
-			}
+		if (kind == 0u) {
+			node_first = group_ranges[lane];
+		} else {
+			cluster_first = group_ranges[lane];
 		}
+		// A second saturated queue reuses this storage after all lanes read it.
+		barrier();
 	}
 	hit_range = group_hits[lane].zw;
 }
@@ -217,6 +226,7 @@ float norm_bound(mat3 value) {
 }
 
 bool instance_in_frustum(mat4 transform);
+bool fine_branches_rejected(mat4 transform, float minimum, float maximum);
 
 void initialize_instance(uint id) {
 	uint task = VG_SELECTION_INPUT.addresses.w + id;
@@ -278,7 +288,7 @@ void initialize_instance(uint id) {
 	VG_SELECTION_WORK(base + 12u) = floatBitsToUint(minimum);
 	VG_SELECTION_WORK(base + 13u) = floatBitsToUint(maximum);
 	VG_SELECTION_WORK(base + 14u) = floatBitsToUint(sign(det));
-	VG_SELECTION_WORK(base + 15u) = 0u;
+	VG_SELECTION_WORK(base + 15u) = fine_branches_rejected(view_transform, minimum, maximum) ? 4u : 0u;
 	if (params.source.w != 0u) { return; }
 	if (task < params.limits.x) {
 		uint word = queue_base(0u) + task * 4u;
@@ -344,6 +354,47 @@ vec4 meta4(uint word) { return vec4(meta3(word), uintBitsToFloat(vg_metadata_wor
 vec3 geom3(uint word) { return uintBitsToFloat(uvec3(geometry.data[word], geometry.data[word + 1u], geometry.data[word + 2u])); }
 vec4 geom4(uint word) { return vec4(geom3(word), uintBitsToFloat(geometry.data[word + 3u])); }
 
+bool fine_branches_rejected(mat4 transform, float minimum, float maximum) {
+	uint word = VG_SELECTION_INPUT.prefix.z;
+	uint flags = uint(params.lod.z);
+	if (word == 0u || params.source.w != 0u || (flags & 4u) != 0u) {
+		return false;
+	}
+	float threshold = params.lod.y * minimum * uintBitsToFloat(vg_metadata_word(word + 4u));
+	if (isnan(threshold) || isinf(threshold) || threshold < 0.0) {
+		return false;
+	}
+	if ((flags & 1u) != 0u) {
+		return 1.0 > threshold * 1.0001 + 0.000001;
+	}
+	vec4 sphere = meta4(word);
+	vec3 center = (transform * vec4(sphere.xyz, 1.0)).xyz;
+	// A single scale bounds both transformed center offsets and the radius
+	// used by projected_edge, including a nonorthogonal camera or instance.
+	float scale = max(maximum, norm_bound(mat3(transform)));
+	float radius = sphere.w * scale + uintBitsToFloat(VG_SELECTION_INPUT.offsets.w) * 1.7320509;
+	vec3 magnitude = abs(transform[0].xyz) * abs(sphere.x) + abs(transform[1].xyz) * abs(sphere.y) +
+			abs(transform[2].xyz) * abs(sphere.z) + abs(transform[3].xyz);
+	// Enclose float center/radius arithmetic and subnormal flushes outward.
+	// Ill-conditioned, near-plane and extreme inputs retain ordinary tests.
+	radius += max(1e-30, 0.0001 * (max(max(magnitude.x, magnitude.y), magnitude.z) + radius));
+	float z = -center.z;
+	float upper = length(center) + radius;
+	float lower_z = z - radius;
+	if (any(isnan(center)) || any(isinf(center)) || isnan(radius) || isinf(radius) ||
+			isnan(upper) || isinf(upper) || radius < 0.0 || radius >= z * 0.125 ||
+			lower_z <= max(params.lod.x, 0.0) * 1.0001 + 0.000001 || upper <= 0.0) {
+		return false;
+	}
+	// Every point of every fine LOD ball has z>=lower_z and length<=upper.
+	// Thus projected_edge >= lower_z^2/upper. The strict radius/z bound
+	// avoids cancellation in its tangent formula. Keep a further factor-four
+	// margin for that formula's float operations, rather than testing an
+	// approximate enclosing sphere as if its edge were an exact minimum.
+	float lower_edge = 0.25 * (lower_z / upper) * lower_z;
+	return lower_edge > threshold * 1.0001 + 0.000001;
+}
+
 bool instance_in_frustum(mat4 transform) {
 	// The hierarchy root encloses every part, including nonresident detail.
 	// Use the existing view-specific displacement and shadow-plane rules.
@@ -358,119 +409,131 @@ bool instance_in_frustum(mat4 transform) {
 	return in_frustum(lower, upper, transform);
 }
 
-struct NodeBranchWork {
-	uint instance;
-	uint node;
-	uint reference;
-	uint page_first;
-	uvec2 count;
-	uint hit_count;
-};
-
-NodeBranchWork read_node_branch(uint id, uint count) {
-	NodeBranchWork branch_work = NodeBranchWork(0u, INVALID, INVALID, 0u, uvec2(0u), 0u);
+void visit_node(uint id) {
 	vg_batch_index = INVALID;
 	uint parity = phase.round & 1u;
-	if (id >= count) {
-		return branch_work;
-	}
-	uint task = queue_base(parity) + id * 4u;
-	vg_batch_index = work.data[task];
-	if (vg_batch_index == INVALID) {
-		return branch_work;
-	}
-	if (VG_SELECTION_WORK(8u) != 0u) {
-		return branch_work;
-	}
-	branch_work.instance = work.data[task + 1u];
-	uint node = work.data[task + 2u];
-	uint child = gl_LocalInvocationIndex % 4u;
-	uint branch = VG_SELECTION_INPUT.addresses.x + 52u + node * 64u + child * 16u;
-	uint child_node = vg_metadata_word(branch + 12u);
-	uint part = vg_metadata_word(branch + 13u);
-	if (child_node == INVALID && part == INVALID) {
-		return branch_work;
-	}
-	mat4 transform = instance_transform(branch_work.instance);
-	float error_scale = params.lod.y * uintBitsToFloat(VG_SELECTION_WORK(instance_base() + branch_work.instance * 16u + 12u));
-	float threshold = error_scale * uintBitsToFloat(vg_metadata_word(branch + 11u));
-	float edge = projected_edge(branch_work.instance, meta4(branch + 6u), transform);
-	if (vg_metadata_word(branch + 15u) == 0u && edge > threshold) {
-		return branch_work;
-	}
-	if (!in_frustum(meta3(branch), meta3(branch + 3u), transform)) {
-		return branch_work;
-	}
-	if (child_node != INVALID) {
-		branch_work.node = child_node;
-		branch_work.count.x = 1u;
-		return branch_work;
-	}
-	uint reference = vg_metadata_word(branch + 14u);
-	uint part_word = VG_SELECTION_INPUT.offsets.x + part * 8u;
-	uint group_word = VG_SELECTION_INPUT.offsets.z + vg_metadata_word(part_word) * 2u;
-	uint page_first = vg_metadata_word(group_word);
-	uint page_count = vg_metadata_word(group_word + 1u);
-	if (reference == INVALID) {
-		for (uint page = page_first; page < page_first + page_count; ++page) {
-			if (vg_metadata_word(VG_SELECTION_INPUT.offsets.y + page) != INVALID) {
-				continue;
-			}
-			uint index = reserve_request(5u, VG_SELECTION_INPUT.limits.w);
-			if (index < VG_SELECTION_INPUT.limits.w) {
-				VG_SELECTION_REQUEST(16u + index * 2u) = page;
-				// Preserve finite priority for a camera inside the LOD sphere.
-				VG_SELECTION_REQUEST(17u + index * 2u) = floatBitsToUint(min(threshold / max(edge, 1e-20), 3.402823e38));
-			} else {
-				mark_failure(4u);
-			}
+	bool has_task = id < min(work.data[parity], params.limits.x);
+	uint instance = 0u;
+	uint node = 0u;
+	mat4 transform = mat4(1.0);
+	float error_scale = 0.0;
+	bool far_fine = false;
+	uvec4 nodes = uvec4(INVALID);
+	uvec4 node_counts = uvec4(0u);
+	uvec4 references = uvec4(INVALID);
+	uvec4 cluster_counts = uvec4(0u);
+	uvec4 hit_pages = uvec4(0u);
+	uvec4 hit_counts = uvec4(0u);
+	uint hit_count = 0u;
+	if (has_task) {
+		uint task = queue_base(parity) + id * 4u;
+		vg_batch_index = work.data[task];
+		has_task = vg_batch_index != INVALID;
+		if (has_task) {
+			has_task = VG_SELECTION_WORK(8u) == 0u;
 		}
-		return branch_work;
+		if (has_task) {
+			instance = work.data[task + 1u];
+			node = work.data[task + 2u];
+			transform = instance_transform(instance);
+			error_scale = params.lod.y * uintBitsToFloat(VG_SELECTION_WORK(instance_base() + instance * 16u + 12u));
+			far_fine = (VG_SELECTION_WORK(instance_base() + instance * 16u + 15u) & 4u) != 0u;
+		}
 	}
-	branch_work.page_first = page_first;
-	branch_work.hit_count = min(page_count, 128u);
-	branch_work.reference = reference;
-	branch_work.count.y = vg_metadata_word(part_word + 3u);
-	return branch_work;
-}
-
-void visit_node() {
-	uint parity = phase.round & 1u;
-	uint count = min(work.data[parity], params.limits.x);
-	uint group = gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u;
-	// This condition is uniform for the whole workgroup. Padded 2D groups
-	// leave before any barrier or potentially wrapped logical task index.
-	if (group >= count / 16u + uint(count % 16u != 0u)) {
-		return;
+	// Empty and refused lanes still reach every group reservation barrier.
+	for (uint child = 0u; child < 4u && has_task; ++child) {
+		uint branch = VG_SELECTION_INPUT.addresses.x + 52u + node * 64u + child * 16u;
+		uint child_node = vg_metadata_word(branch + 12u);
+		uint part = vg_metadata_word(branch + 13u);
+		if (child_node == INVALID && part == INVALID) {
+			continue;
+		}
+		bool root_path = vg_metadata_word(branch + 15u) != 0u;
+		if (far_fine && !root_path) {
+			continue;
+		}
+		float edge = projected_edge(instance, meta4(branch + 6u), transform);
+		float threshold = error_scale * uintBitsToFloat(vg_metadata_word(branch + 11u));
+		if ((!root_path && edge > threshold) || !in_frustum(meta3(branch), meta3(branch + 3u), transform)) {
+			continue;
+		}
+		if (child_node != INVALID) {
+			nodes[child] = child_node;
+			node_counts[child] = 1u;
+			continue;
+		}
+		uint reference = vg_metadata_word(branch + 14u);
+		uint part_word = VG_SELECTION_INPUT.offsets.x + part * 8u;
+		uint group_word = VG_SELECTION_INPUT.offsets.z + vg_metadata_word(part_word) * 2u;
+		uint page_first = vg_metadata_word(group_word);
+		uint page_count = vg_metadata_word(group_word + 1u);
+		if (reference == INVALID) {
+			for (uint page = page_first; page < page_first + page_count; ++page) {
+				if (vg_metadata_word(VG_SELECTION_INPUT.offsets.y + page) != INVALID) {
+					continue;
+				}
+				uint index = reserve_request(5u, VG_SELECTION_INPUT.limits.w);
+				if (index < VG_SELECTION_INPUT.limits.w) {
+					VG_SELECTION_REQUEST(16u + index * 2u) = page;
+					// A camera inside the LOD sphere yields edge zero. Saturate the
+					// ratio so the CPU's finite-priority admission keeps this demand.
+					VG_SELECTION_REQUEST(17u + index * 2u) = floatBitsToUint(min(threshold / max(edge, 1e-20), 3.402823e38));
+				} else {
+					mark_failure(4u);
+				}
+			}
+			continue;
+		}
+		// A single lane cannot contribute more than the whole source capacity.
+		// Thus 64 lane demands sum to at most 8192 without uint overflow.
+		hit_pages[child] = page_first;
+		hit_counts[child] = min(page_count, 128u - hit_count);
+		hit_count += hit_counts[child];
+		references[child] = reference;
+		cluster_counts[child] = vg_metadata_word(part_word + 3u);
 	}
-	NodeBranchWork task = read_node_branch(group * 16u + gl_LocalInvocationIndex / 4u, count);
-	uvec2 first, hit_range;
-	// Empty, culled and refused branch lanes all reach reservation barriers.
-	reserve_group_work(parity, task.count, task.hit_count, first, hit_range);
-	for (uint page = 0u; page < hit_range.y; ++page) {
-		uint word = 16u + VG_SELECTION_INPUT.limits.w * 2u + (hit_range.x + page) * 2u;
-		VG_SELECTION_REQUEST(word) = task.page_first + page;
-		VG_SELECTION_REQUEST(word + 1u) = floatBitsToUint(-1.0);
+	uvec4 node_first, cluster_first;
+	uvec2 hit_range;
+	reserve_group_work(parity, node_counts, cluster_counts, hit_count, node_first, cluster_first, hit_range);
+	uint hit = hit_range.x;
+	uint remaining_hits = hit_range.y;
+	for (uint child = 0u; child < 4u && remaining_hits != 0u; ++child) {
+		uint count = min(hit_counts[child], remaining_hits);
+		for (uint page = 0u; page < count; ++page) {
+			uint word = 16u + VG_SELECTION_INPUT.limits.w * 2u + hit * 2u;
+			VG_SELECTION_REQUEST(word) = hit_pages[child] + page;
+			VG_SELECTION_REQUEST(word + 1u) = floatBitsToUint(-1.0);
+			++hit;
+		}
+		remaining_hits -= count;
 	}
-	if (task.count.x != 0u && first.x == INVALID) {
-		mark_failure(1u);
-	}
-	if (task.count.x != 0u && first.x != INVALID) {
-		uint word = queue_base(1u - parity) + first.x * 4u;
+	for (uint child = 0u; child < 4u; ++child) {
+		if (node_counts[child] == 0u) {
+			continue;
+		}
+		if (node_first[child] == INVALID) {
+			mark_failure(1u);
+			continue;
+		}
+		uint word = queue_base(1u - parity) + node_first[child] * 4u;
 		work.data[word] = vg_batch_index;
-		work.data[word + 1u] = task.instance;
-		work.data[word + 2u] = task.node;
+		work.data[word + 1u] = instance;
+		work.data[word + 2u] = nodes[child];
 		work.data[word + 3u] = 0u;
 	}
-	if (task.count.y != 0u && first.y == INVALID) {
-		mark_failure(2u);
-	}
-	if (task.count.y != 0u && first.y != INVALID) {
-		for (uint cluster = 0u; cluster < task.count.y; ++cluster) {
-			uint word = candidate_base() + (first.y + cluster) * 4u;
+	for (uint child = 0u; child < 4u; ++child) {
+		if (cluster_counts[child] == 0u) {
+			continue;
+		}
+		if (cluster_first[child] == INVALID) {
+			mark_failure(2u);
+			continue;
+		}
+		for (uint cluster = 0u; cluster < cluster_counts[child]; ++cluster) {
+			uint word = candidate_base() + (cluster_first[child] + cluster) * 4u;
 			work.data[word] = vg_batch_index;
-			work.data[word + 1u] = task.instance;
-			work.data[word + 2u] = task.reference + cluster;
+			work.data[word + 1u] = instance;
+			work.data[word + 2u] = references[child] + cluster;
 			work.data[word + 3u] = 0u;
 		}
 	}
@@ -593,7 +656,7 @@ void main() {
 		vg_batch_index = source_for_task(id, false);
 		initialize_instance(id - VG_SELECTION_INPUT.addresses.w);
 	} else if (mode == 2u) {
-		visit_node();
+		visit_node(id);
 	} else if (mode == 11u) {
 		uint parity = 1u - (phase.round & 1u);
 		if (id >= min(work.data[parity], params.limits.x)) { return; }

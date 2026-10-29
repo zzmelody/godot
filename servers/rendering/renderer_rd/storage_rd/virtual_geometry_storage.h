@@ -40,6 +40,7 @@ public:
 		uint32_t root_clusters = 0;
 		uint32_t pages = 0;
 		uint32_t metadata_words = 0;
+		uint32_t fine_lod_word = 0;
 	};
 
 private:

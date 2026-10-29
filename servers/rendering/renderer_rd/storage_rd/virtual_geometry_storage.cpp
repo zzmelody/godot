@@ -620,7 +620,8 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 		}
 	}
 	const uint32_t table_byte = (uint32_t(p_root.size()) + 15) & ~15u;
-	const uint64_t gpu_bytes = table_byte + uint64_t(root.hierarchy.pages.size()) * 4;
+	const uint64_t fine_lod_byte = table_byte + uint64_t(root.hierarchy.pages.size()) * 4;
+	const uint64_t gpu_bytes = fine_lod_byte + 5 * sizeof(float);
 	const uint64_t charge = sizeof(Asset) + root_memory(root) + uint64_t(p_materials.size()) * sizeof(RID) + uint64_t(root.hierarchy.pages.size()) * (9 + sizeof(Error));
 	if (charge + gpu_bytes > _available(metadata_budget, metadata_reserved) || gpu_bytes > UINT32_MAX || pool.is_null() || (!automatic_pool && uint64_t(root.hierarchy.root_pages) * UNIT_BYTES > pool_bytes)) {
 		return ERR_OUT_OF_MEMORY;
@@ -631,14 +632,22 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	}
 	uint8_t *gpu_data = gpu.ptrw();
 	memset(gpu_data + p_root.size(), 0, table_byte - p_root.size());
-	memset(gpu_data + table_byte, 0xff, gpu_bytes - table_byte);
+	memset(gpu_data + table_byte, 0xff, fine_lod_byte - table_byte);
+	memset(gpu_data + fine_lod_byte, 0, gpu_bytes - fine_lod_byte);
 	std::vector<VirtualGeometry::GeometryGpuFixup> root_paths;
-	const auto paths = VirtualGeometry::resolve_geometry_gpu_root_paths(root, gpu_bytes / 4, root_paths);
+	VirtualGeometry::GeometryFineLodBounds fine_bounds;
+	const auto paths = VirtualGeometry::resolve_geometry_gpu_root_paths(root, gpu_bytes / 4, root_paths, fine_bounds);
 	if (paths != VirtualGeometry::GpuFixupError::OK) {
 		return paths == VirtualGeometry::GpuFixupError::MEMORY ? ERR_OUT_OF_MEMORY : ERR_INVALID_DATA;
 	}
 	for (const auto &command : root_paths) {
 		encode_uint32(command.value, gpu_data + command.word * 4);
+	}
+	if (fine_bounds.valid) {
+		for (uint32_t word = 0; word < 4; ++word) {
+			encode_float(fine_bounds.sphere[word], gpu_data + fine_lod_byte + word * 4);
+		}
+		encode_float(fine_bounds.max_error, gpu_data + fine_lod_byte + 16);
 	}
 	RD *rd = RD::get_singleton();
 	BitField<RD::BufferCreationBits> flags;
@@ -661,6 +670,7 @@ Error VirtualGeometryStorage::register_mesh(RID p_mesh, uint64_t p_generation, c
 	asset->gpu_bytes = gpu_bytes;
 	asset->bindings = { metadata, pool, table_byte / 4, p_generation };
 	asset->bindings.metadata_words = gpu_bytes / 4;
+	asset->bindings.fine_lod_word = fine_bounds.valid ? fine_lod_byte / 4 : 0;
 	asset->bindings.parts_word = decode_uint64(p_root.ptr() + 144) / 4;
 	asset->bindings.groups_word = decode_uint64(p_root.ptr() + 192) / 4;
 	asset->bindings.nodes = asset->root.hierarchy.nodes.size();

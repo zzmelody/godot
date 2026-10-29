@@ -33,10 +33,7 @@ void main() {
 	} else {
 		count = min(work.data[2u], params.limits.y);
 	}
-	// Four branch lanes visit each logical node; other phases keep one item
-	// per lane. Quotient/remainder ceil also avoids overflowing count + width.
-	uint width = phase.mode == 1u ? 16u : 64u;
-	uint groups = max(1u, count / width + uint(count % width != 0u));
+	uint groups = max(1u, count / 64u + uint(count % 64u != 0u));
 	dispatch.groups[0] = min(groups, 65535u);
 	dispatch.groups[1] = max(1u, (groups + 65534u) / 65535u);
 	dispatch.groups[2] = 1u;

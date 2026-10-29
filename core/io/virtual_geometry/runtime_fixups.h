@@ -3,6 +3,8 @@
 
 #include "model_codec.h"
 
+#include <array>
+
 namespace VirtualGeometry {
 
 // Runtime-only std430 transfer record, explicitly encoded as four LE words.
@@ -26,12 +28,21 @@ enum class GpuFixupError { OK,
 	INVALID_REFERENCE,
 	MEMORY };
 
+// One-time derived bound of every active branch outside logical-root paths.
+// The sphere encloses their LOD spheres, not only their geometry. A model
+// whose enclosing sphere cannot be represented keeps the ordinary GPU path.
+struct GeometryFineLodBounds {
+	std::array<float, 4> sphere = {};
+	float max_error = 0;
+	bool valid = false;
+};
+
 // One-time GPU metadata initialization, borrowing a validated model root.
 // Branch word 15 marks paths containing the logical root group. Such paths
 // have no parent LOD cutoff (UE encodes its root sentinel as half-float Inf).
-// Disk metadata stays finite and unchanged. Old output survives refusal.
+// Disk metadata stays finite and unchanged. Both old outputs survive refusal.
 GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, uint32_t p_metadata_words,
-		std::vector<GeometryGpuFixup> &r_commands);
+		std::vector<GeometryGpuFixup> &r_commands, GeometryFineLodBounds &r_fine_bounds);
 
 // Resolve admitted logical fixups through the installer's slot snapshot.
 // Slots use 32 KiB units; UINT32_MAX means no physical allocation. A runtime
