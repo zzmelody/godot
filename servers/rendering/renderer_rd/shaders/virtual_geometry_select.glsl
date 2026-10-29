@@ -394,10 +394,14 @@ void visit_node(uint id) {
 		uint child_node = vg_metadata_word(branch + 12u);
 		uint part = vg_metadata_word(branch + 13u);
 		if (child_node == INVALID && part == INVALID) { continue; }
-		float edge = projected_edge(instance, meta4(branch + 6u), transform);
 		float threshold = error_scale * uintBitsToFloat(vg_metadata_word(branch + 11u));
 		bool root_path = vg_metadata_word(branch + 15u) != 0u;
-		if ((!root_path && edge > threshold) || !in_frustum(meta3(branch), meta3(branch + 3u), transform)) { continue; }
+		float edge = 0.0;
+		if (!root_path) {
+			edge = projected_edge(instance, meta4(branch + 6u), transform);
+			if (edge > threshold) { continue; }
+		}
+		if (!in_frustum(meta3(branch), meta3(branch + 3u), transform)) { continue; }
 		if (child_node != INVALID) {
 			nodes[child] = child_node;
 			node_counts[child] = 1u;
@@ -409,6 +413,11 @@ void visit_node(uint id) {
 		uint page_first = vg_metadata_word(group_word);
 		uint page_count = vg_metadata_word(group_word + 1u);
 		if (reference == INVALID) {
+			// Root branches bypass the LOD test. Their projected edge is only
+			// needed here to preserve the original missing-page priority.
+			if (root_path) {
+				edge = projected_edge(instance, meta4(branch + 6u), transform);
+			}
 			for (uint page = page_first; page < page_first + page_count; ++page) {
 				if (vg_metadata_word(VG_SELECTION_INPUT.offsets.y + page) != INVALID) { continue; }
 				uint index = reserve_request(5u, VG_SELECTION_INPUT.limits.w);
