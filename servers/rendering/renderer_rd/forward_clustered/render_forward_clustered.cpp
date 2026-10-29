@@ -5288,10 +5288,12 @@ void RenderForwardClustered::_geometry_instance_add_surface(GeometryInstanceForw
 void RenderForwardClustered::_geometry_instance_update_virtual_materials(GeometryInstanceForwardClustered *p_instance, RID p_mesh) {
 	p_instance->virtual_geometry_uses_sss = false;
 	auto *mesh_storage = RendererRD::MeshStorage::get_singleton();
-	if (p_mesh.is_null() || mesh_storage->mesh_get_virtual_geometry(p_mesh) == nullptr) {
+	if (p_mesh.is_null()) {
 		p_instance->virtual_geometry_materials.clear();
 		return;
 	}
+	// Registration owns the slot table before GPU root pages are published.
+	// Page residency must not invalidate an otherwise complete material cache.
 	const auto slots = mesh_storage->mesh_get_virtual_geometry_materials(p_mesh);
 	if (slots.rids.is_empty() || slots.rids.size() != slots.identities.size()) {
 		// Keep malformed preparation visible to the shading admission check.
