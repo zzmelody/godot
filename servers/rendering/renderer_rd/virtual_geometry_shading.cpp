@@ -677,7 +677,8 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 	if (!depth_only) {
 		for (RID material : materials) {
 			auto *data = static_cast<SceneShader::MaterialData *>(storage->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
-			ERR_FAIL_COND_V(data == nullptr || data->shader_data == nullptr, ERR_INVALID_DATA);
+			ERR_FAIL_COND_V_MSG(data == nullptr || data->shader_data == nullptr, ERR_INVALID_DATA,
+					"Virtual geometry material requires an unsupported coverage, vertex input or shading feature: non-spatial or missing shader.");
 			String message;
 			ERR_FAIL_COND_V_MSG(data->shader_data->get_virtual_geometry_shader(message).is_null(), ERR_UNAVAILABLE, message);
 			extension_stride = MAX(extension_stride, data->shader_data->virtual_geometry_extension_words);
@@ -756,7 +757,8 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 		raster_material_data[material_index * 4 + 3] = p_view.reverse_cull ? 1u : 0u;
 		RID material = materials[material_index];
 		auto *data = static_cast<SceneShader::MaterialData *>(storage->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
-		ERR_FAIL_COND_V(data == nullptr || data->shader_data == nullptr, ERR_INVALID_DATA);
+		ERR_FAIL_COND_V_MSG(data == nullptr || data->shader_data == nullptr, ERR_INVALID_DATA,
+				"Virtual geometry material requires an unsupported coverage, vertex input or shading feature: non-spatial or missing shader.");
 		String message;
 		RID program = data->shader_data->get_virtual_geometry_shader(message);
 		ERR_FAIL_COND_V_MSG(program.is_null(), ERR_UNAVAILABLE, message);
