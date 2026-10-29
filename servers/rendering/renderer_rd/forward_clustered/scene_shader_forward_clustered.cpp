@@ -779,6 +779,8 @@ RID SceneShaderForwardClustered::ShaderData::get_virtual_geometry_shader(String 
 									Vector<RD::PipelineSpecializationConstant> constants;
 									constants.push_back(small);
 									virtual_geometry_raster_small.create_compute_pipeline(raster_program, constants);
+									constants.write[0].constant_id = 1;
+									virtual_geometry_raster_direct.create_compute_pipeline(raster_program, constants);
 								}
 								if (virtual_geometry_raster_compute[mode].get_rid().is_null()) {
 									virtual_geometry_error = "Virtual geometry programmable compute pipeline failed: " + path;
@@ -819,6 +821,7 @@ void SceneShaderForwardClustered::ShaderData::_clear_virtual_geometry_raster() {
 		pipeline.free();
 	}
 	virtual_geometry_raster_small.free();
+	virtual_geometry_raster_direct.free();
 	virtual_geometry_raster_hardware.clear();
 	virtual_geometry_voxel_pipeline.clear();
 	if (virtual_geometry_voxel_version.is_valid()) {

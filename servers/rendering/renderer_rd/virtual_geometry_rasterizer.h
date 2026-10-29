@@ -47,6 +47,7 @@ private:
 	struct Pass {
 		VirtualGeometryShading::RasterMaterialWork work;
 		uint32_t bucket = 0;
+		bool direct_software = false;
 		RID uniforms[3];
 	};
 	struct ScanLevel {
@@ -78,6 +79,7 @@ private:
 	RID pending, occlusion_parameters;
 	RID voxel_parameters;
 	RID geometry_buffer; // Borrowed for the current prepared view only.
+	RID view_parameters; // Borrowed from the same selection view.
 	uint32_t pending_words = 0;
 	RID candidate_uniforms, scan_uniforms, dispatch_uniforms;
 	uint32_t candidate_words = 0, classified_words = 0, argument_words = 0;

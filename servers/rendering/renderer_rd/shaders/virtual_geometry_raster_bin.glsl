@@ -25,58 +25,9 @@ shared bool group_software;
 // pipelines. GPU material bins admit only clusters of at most 64 triangles.
 layout(constant_id = 0) const bool vg_small_cluster = false;
 #ifdef VG_GLOBAL_RASTER
-shared bool group_direct_software;
-
-bool vg_bounds_prove_software(uvec2 selected, uint record) {
-	// The original classifier remains authoritative when a bound cannot
-	// prove both its clipping/extent and longest-edge conditions.
-	if ((uint(params.lod.z) & 6u) != 0u) {
-		return false;
-	}
-	vec3 lower = uintBitsToFloat(uvec3(geometry.data[record + 18u], geometry.data[record + 19u], geometry.data[record + 20u]));
-	vec3 upper = uintBitsToFloat(uvec3(geometry.data[record + 21u], geometry.data[record + 22u], geometry.data[record + 23u]));
-	float displacement = uintBitsToFloat(vg_source_data(selected.x, 48u));
-	float minimum_scale = uintBitsToFloat(vg_source_data(selected.x, 49u));
-	float maximum_scale = uintBitsToFloat(vg_source_data(selected.x, 50u));
-	if (minimum_scale <= 0.0 || maximum_scale > minimum_scale * 16.0) {
-		return false;
-	}
-	// Keep ill-conditioned inverse deformation on the original classifier.
-	displacement *= 1.0001;
-	// Authored displacement is clamped per world axis. The stored minimum
-	// singular-value bound converts it to a conservative local edge bound.
-	float edge_bound = length(upper - lower) + 3.464102 * displacement / minimum_scale;
-	vec4 sphere = uintBitsToFloat(uvec4(geometry.data[record + 12u], geometry.data[record + 13u], geometry.data[record + 14u], geometry.data[record + 15u]));
-	float threshold = maximum_scale * edge_bound * params.lod.y / 32.0;
-	if (!(projected_edge(selected.x, sphere, instance_transform(selected.x)) > threshold * 1.0001 + 0.000001)) {
-		return false;
-	}
-	mat4 world_to_clip = params.projection * params.world_to_view;
-	for (uint column = 0u; column < 4u; ++column) {
-		world_to_clip[column].xy += raster_info.jitter * world_to_clip[column].w;
-	}
-	vec4 padding = (abs(world_to_clip[0]) + abs(world_to_clip[1]) + abs(world_to_clip[2])) * displacement;
-	mat4 transform = instance_transform(selected.x);
-	vec2 rect_min = vec2(3.402823e38), rect_max = vec2(-3.402823e38);
-	for (uint corner = 0u; corner < 8u; ++corner) {
-		vec3 point = mix(lower, upper, bvec3((corner & 1u) != 0u, (corner & 2u) != 0u, (corner & 4u) != 0u));
-		vec4 clip = vg_project(selected.x, point);
-		vec3 view_bound = abs(transform[0].xyz) * abs(point.x) + abs(transform[1].xyz) * abs(point.y) + abs(transform[2].xyz) * abs(point.z) + abs(transform[3].xyz);
-		vec4 clip_bound = abs(params.projection[0]) * view_bound.x + abs(params.projection[1]) * view_bound.y + abs(params.projection[2]) * view_bound.z + abs(params.projection[3]);
-		clip_bound.xy += abs(raster_info.jitter) * clip_bound.w;
-		vec4 guard = (clip_bound + padding + vec4(1.0)) * 0.000004;
-		vec4 lo = clip - padding - guard, hi = clip + padding + guard;
-		if (any(isnan(lo)) || any(isinf(lo)) || any(isnan(hi)) || any(isinf(hi)) || lo.w <= 0.0 || lo.z <= 0.0 || hi.z >= lo.w) {
-			return false;
-		}
-		rect_min = min(rect_min, min(lo.xy / lo.w, lo.xy / hi.w));
-		rect_max = max(rect_max, max(hi.xy / lo.w, hi.xy / hi.w));
-	}
-	vec2 size = vec2(raster_info.raster.xy);
-	vec2 pixel_min = (rect_min * 0.5 + 0.5) * size - vec2(0.015625);
-	vec2 pixel_max = (rect_max * 0.5 + 0.5) * size + vec2(0.015625);
-	return all(lessThan(abs(pixel_min), vec2(1048576.0))) && all(lessThan(abs(pixel_max), vec2(1048576.0))) && all(lessThan(pixel_max - pixel_min, vec2(63.0)));
-}
+// The material bucket proves this before dispatch. Specialization keeps the
+// classifier and its prepared values out of the direct software pipeline.
+layout(constant_id = 1) const bool vg_direct_software = false;
 #endif
 #endif
 
@@ -174,9 +125,6 @@ void main() {
 		active_triangles = 0u;
 #ifdef VG_FUSED_SOFTWARE
 		group_software = false;
-#ifdef VG_GLOBAL_RASTER
-		group_direct_software = !group_refused && vg_bounds_prove_software(selected, record);
-#endif
 #endif
 	}
 	barrier();
@@ -190,7 +138,7 @@ void main() {
 	bool lane_active = false;
 	uint count = geometry.data[record + 5u];
 #if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
-	if (group_direct_software) {
+	if (vg_direct_software) {
 		// Proven software groups need no per-triangle classification or clip
 		// values live across its reduction barriers. Vertex/material evaluation
 		// and pixel coverage are exactly the ordinary software entry point.

@@ -767,7 +767,8 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 			if (raster.fused_software) {
 				raster_material_data[material_index * 4 + 2] |= 4u;
 				raster.small_cluster_pipeline = data->shader_data->virtual_geometry_raster_small.get_rid();
-				ERR_FAIL_COND_V(raster.small_cluster_pipeline.is_null(), ERR_CANT_CREATE);
+				raster.direct_software_pipeline = data->shader_data->virtual_geometry_raster_direct.get_rid();
+				ERR_FAIL_COND_V(raster.small_cluster_pipeline.is_null() || raster.direct_software_pipeline.is_null(), ERR_CANT_CREATE);
 			}
 			for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {
 				raster.programs[mode] = p_voxel ? data->shader_data->get_virtual_geometry_voxel_shader() : data->shader_data->get_virtual_geometry_raster_shader(mode);

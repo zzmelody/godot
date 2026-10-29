@@ -11,6 +11,18 @@ layout(set = 0, binding = 1, std430) readonly buffer Geometry {
 geometry;
 #define VG_MATERIAL_LOOKUP
 #include "virtual_geometry_scene_inc.glsl"
+#define VG_GLOBAL_RASTER
+layout(set = 0, binding = 3, std140) uniform ViewParameters {
+	mat4 model;
+	mat4 world_to_view;
+	mat4 projection;
+	vec4 lod;
+	uvec4 source;
+	uvec4 limits;
+	uvec4 offsets;
+}
+params;
+#include "virtual_geometry_view_inc.glsl"
 layout(set = 0, binding = 9, std430) buffer Candidates {
 	uint data[];
 }
@@ -31,8 +43,10 @@ layout(set = 0, binding = 30) uniform sampler2D hierarchy;
 layout(set = 0, binding = 31, std140) uniform Occlusion {
 	mat4 world_to_clip;
 	uvec4 flags;
+	vec4 raster_view; // jitter xy and raster dimensions zw
 }
 occlusion;
+#include "virtual_geometry_raster_bounds_inc.glsl"
 layout(push_constant, std430) uniform Parameters {
 	uint references;
 	uint buckets;
@@ -41,7 +55,7 @@ layout(push_constant, std430) uniform Parameters {
 	uint scatter;
 	uint phase;
 }
-params;
+bin_info;
 layout(set = 0, binding = 28, std430) readonly buffer SourceTasks {
 	uint data[];
 }
@@ -96,8 +110,9 @@ bool vg_cluster_visible(uvec2 reference) {
 	return false;
 }
 
-uint vg_palette_pipeline(uint source, uint palette, uint entry, uint triangles, out bool custom_depth) {
+uint vg_palette_pipeline(uint source, uint palette, uint entry, uint triangles, out bool custom_depth, out bool fused) {
 	custom_depth = false;
+	fused = false;
 	uint slot = geometry.data[palette + entry];
 	if (slot >= vg_source_data(source, 52u)) {
 		atomicOr(status.data[0], 4u);
@@ -110,21 +125,25 @@ uint vg_palette_pipeline(uint source, uint palette, uint entry, uint triangles, 
 	}
 	uint flags = materials.data[material * 4u + 2u];
 	custom_depth = (flags & 2u) != 0u;
+	fused = (flags & 4u) != 0u;
 	// Only opaque programmable materials have the fused specialization.
 	// Each reference still enters exactly one bucket per distinct material.
 	return flags == 0u ? 0u : material + 1u + (((flags & 4u) != 0u && triangles > 64u) ? scene.data[3] : 0u);
 }
 
-void vg_emit_candidate(uint index, uint pipeline) {
-	if (pipeline >= params.buckets) {
+void vg_emit_candidate(uint index, uint pipeline, bool fused) {
+	if ((pending.data[index] & 4u) != 0u && fused) {
+		pipeline += pipeline > scene.data[3] ? scene.data[3] : scene.data[3] * 2u;
+	}
+	if (pipeline >= bin_info.buckets) {
 		return;
 	}
-	if (params.scatter == 0u) {
+	if (bin_info.scatter == 0u) {
 		atomicAdd(candidates.data[2u + pipeline], 1u);
 	} else {
-		uint offset = candidates.data[2u + params.buckets + pipeline] + atomicAdd(candidates.data[2u + params.buckets * 2u + pipeline], 1u);
-		if (offset < params.capacity) {
-			candidates.data[params.entries_word + offset] = index;
+		uint offset = candidates.data[2u + bin_info.buckets + pipeline] + atomicAdd(candidates.data[2u + bin_info.buckets * 2u + pipeline], 1u);
+		if (offset < bin_info.capacity) {
+			candidates.data[bin_info.entries_word + offset] = index;
 		} else {
 			atomicOr(candidates.data[1], 1u);
 			atomicOr(status.data[0], 4u);
@@ -134,18 +153,18 @@ void vg_emit_candidate(uint index, uint pipeline) {
 
 void main() {
 	uint index = (gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u) * 64u + gl_LocalInvocationIndex;
-	if (index >= min(params.references, source_tasks.data[0])) {
+	if (index >= min(bin_info.references, source_tasks.data[0])) {
 		return;
 	}
 	// Each view owns this buffer. Count records visibility once; scatter uses
 	// that decision with the same geometry, transform and Hi-Z version.
 	// Recovery visits only primary-occluded entries and records recovered = 2.
-	if (params.phase != 0u) {
-		if (pending.data[index] != (params.scatter == 0u ? 1u : 2u)) {
+	if (bin_info.phase != 0u) {
+		if ((pending.data[index] & 3u) != (bin_info.scatter == 0u ? 1u : 2u)) {
 			return;
 		}
-	} else if (params.scatter != 0u) {
-		if (pending.data[index] != 0u) {
+	} else if (bin_info.scatter != 0u) {
+		if ((pending.data[index] & 3u) != 0u) {
 			return;
 		}
 	} else {
@@ -164,47 +183,59 @@ void main() {
 	}
 	uint palette = (reference.y >> 8u) * 8192u + (geometry.data[record + 68u] >> 2u);
 	uint first_pipeline = 0xffffffffu;
+	bool first_fused = false;
 	bool same_pipeline = true;
 	bool custom_depth = false;
+	bool has_fused = false;
 	for (uint entry = 0u; entry < count; ++entry) {
 		bool entry_depth;
-		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, triangles, entry_depth);
+		bool entry_fused;
+		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, triangles, entry_depth, entry_fused);
 		if (pipeline == 0xffffffffu) {
 			return;
 		}
 		if (entry == 0u) {
 			first_pipeline = pipeline;
+			first_fused = entry_fused;
 		} else {
 			same_pipeline = same_pipeline && pipeline == first_pipeline;
 		}
 		custom_depth = custom_depth || entry_depth;
+		has_fused = has_fused || entry_fused;
 	}
-	if (params.scatter == 0u) {
+	if (bin_info.scatter == 0u) {
 		// Absolute DEPTH may pull a geometrically hidden surface forward.
 		// Its original bounds cannot prove occlusion in either Hi-Z phase.
 		bool visible = custom_depth || vg_cluster_visible(reference);
-		pending.data[index] = visible ? (params.phase == 0u ? 0u : 2u) : 1u;
+		pending.data[index] = visible ? (bin_info.phase == 0u ? 0u : 2u) : 1u;
 		if (!visible) {
 			return;
+		}
+		// Count proves this once. Scatter reuses the decision and the same
+		// source/view generation, including primary versus recovered state.
+		if (has_fused && vg_bounds_prove_software(reference, record)) {
+			pending.data[index] |= 4u;
 		}
 	}
 	// The common one-pipeline case needs no per-invocation palette array.
 	if (same_pipeline) {
-		vg_emit_candidate(index, first_pipeline);
+		vg_emit_candidate(index, first_pipeline, first_fused);
 		return;
 	}
 	for (uint entry = 0u; entry < count; ++entry) {
 		bool entry_depth;
-		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, triangles, entry_depth);
+		bool entry_fused;
+		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, triangles, entry_depth, entry_fused);
 		bool duplicate = false;
 		for (uint previous = 0u; previous < entry; ++previous) {
-			if (vg_palette_pipeline(reference.x, palette, previous, triangles, entry_depth) == pipeline) {
+			bool previous_depth, previous_fused;
+			if (vg_palette_pipeline(reference.x, palette, previous, triangles, previous_depth, previous_fused) == pipeline) {
 				duplicate = true;
 				break;
 			}
 		}
 		if (!duplicate) {
-			vg_emit_candidate(index, pipeline);
+			vg_emit_candidate(index, pipeline, entry_fused);
 		}
 	}
 }

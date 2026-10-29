@@ -126,7 +126,7 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 
 Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Result> p_sources, bool p_voxel) {
 	ERR_FAIL_COND_V(p_sources.is_empty(), ERR_INVALID_PARAMETER);
-	bucket_count = shading.get_materials().size() * 2 + 1;
+	bucket_count = shading.get_materials().size() * 3 + 1;
 	const uint64_t capacity = shading.get_raster_candidate_capacity(p_sources);
 	ERR_FAIL_COND_V(capacity == 0 || capacity > UINT32_MAX, ERR_OUT_OF_MEMORY);
 	candidate_capacity = capacity;
@@ -164,11 +164,12 @@ Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Re
 		return error;
 	}
 	if (occlusion_parameters.is_null()) {
-		occlusion_parameters = memory.uniform(80);
+		occlusion_parameters = memory.uniform(96);
 	}
 	ERR_FAIL_COND_V(occlusion_parameters.is_null(), ERR_OUT_OF_MEMORY);
 	const RID geometry = p_sources[0].batch.geometry.geometry;
 	geometry_buffer = geometry;
+	view_parameters = p_sources[0].parameters;
 	for (const auto &source : p_sources) {
 		ERR_FAIL_COND_V(source.batch.geometry.geometry != geometry, ERR_INVALID_DATA);
 	}
@@ -204,6 +205,12 @@ Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Re
 			pass.bucket += shading.get_materials().size();
 		}
 		passes.push_back(pass);
+		if (work.fused_software) {
+			pass.direct_software = true;
+			pass.bucket = work.material + 1 + shading.get_materials().size() * 2;
+			pass.work.pipelines[0] = work.direct_software_pipeline;
+			passes.push_back(pass);
+		}
 	}
 	for (Pass &pass : passes) {
 		const bool programmable = pass.work.material != UINT32_MAX;
@@ -422,15 +429,21 @@ Error VirtualGeometryRasterizer::_prepare_candidates(const VirtualGeometryShadin
 	struct Occlusion {
 		float projection[16];
 		uint32_t flags[4];
+		float raster_view[4];
 	} occlusion = {};
-	static_assert(sizeof(Occlusion) == 80);
+	static_assert(sizeof(Occlusion) == 96);
 	MaterialStorage::store_camera(p_view.occlusion_projection, occlusion.projection);
 	occlusion.flags[0] = p_view.occlusion.is_valid();
+	occlusion.raster_view[0] = p_view.jitter.x;
+	occlusion.raster_view[1] = p_view.jitter.y;
+	occlusion.raster_view[2] = size.x;
+	occlusion.raster_view[3] = size.y;
 	rd->buffer_update(occlusion_parameters, 0, sizeof(occlusion), &occlusion);
 	RID hierarchy = p_view.occlusion.is_valid() ? p_view.occlusion : TextureStorage::get_singleton()->texture_rd_get_default(TextureStorage::DEFAULT_RD_TEXTURE_WHITE);
 	RID sampler = MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 	candidate_uniforms = UniformSetCacheRD::get_singleton()->get_cache(material_bin_shader.version_get_shader(material_bin_version, 0), 0,
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { geometry_buffer }),
+			RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { view_parameters }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, { candidates }),
 			RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 10, { pending }),
@@ -477,15 +490,21 @@ Error VirtualGeometryRasterizer::_record_geometry(const VirtualGeometryShading::
 		rd->compute_list_set_push_constant(list, &raster, sizeof(raster));
 		rd->compute_list_dispatch_indirect(list, arguments, bucket * 48);
 		rd->compute_list_add_barrier(list);
-		rd->compute_list_bind_compute_pipeline(list, dispatch_pipeline.get_rid());
-		rd->compute_list_bind_uniform_set(list, dispatch_uniforms, 0);
-		rd->compute_list_set_push_constant(list, dispatch_parameters, sizeof(dispatch_parameters));
-		dispatch_count(list, 1, 64);
+		if (!pass.direct_software) {
+			rd->compute_list_bind_compute_pipeline(list, dispatch_pipeline.get_rid());
+			rd->compute_list_bind_uniform_set(list, dispatch_uniforms, 0);
+			rd->compute_list_set_push_constant(list, dispatch_parameters, sizeof(dispatch_parameters));
+			dispatch_count(list, 1, 64);
+		}
 		rd->compute_list_end();
 		if (pass.work.fused_software) {
 			RENDER_TIMESTAMP("Virtual Geometry Fused Raster End");
 		} else {
 			RENDER_TIMESTAMP("Virtual Geometry Raster Bins End");
+		}
+		if (pass.direct_software) {
+			rd->draw_command_end_label();
+			continue;
 		}
 		if (!pass.work.fused_software) {
 			RENDER_TIMESTAMP("Virtual Geometry Software Raster Begin");
@@ -550,7 +569,7 @@ Error VirtualGeometryRasterizer::record_reactivity(RID p_depth, RID p_scene_reac
 uint64_t VirtualGeometryRasterizer::get_buffer_bytes() const {
 	uint64_t bytes = visibility.is_valid() ? uint64_t(size.x) * size.y * 8 : 0;
 	bytes += uint64_t(candidate_words + classified_words + argument_words + pending_words) * 4;
-	return bytes + shading.get_buffer_bytes() + (occlusion_parameters.is_valid() ? 80 : 0) + (voxel_parameters.is_valid() ? 96 : 0);
+	return bytes + shading.get_buffer_bytes() + (occlusion_parameters.is_valid() ? 96 : 0) + (voxel_parameters.is_valid() ? 96 : 0);
 }
 
 Error VirtualGeometryRasterizer::record_depth(RID p_framebuffer, DepthMode p_mode, RID p_fitting_table, const Rect2i &p_region) {
