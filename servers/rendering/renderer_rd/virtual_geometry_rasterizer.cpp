@@ -205,7 +205,7 @@ Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Re
 			pass.bucket += shading.get_materials().size();
 		}
 		passes.push_back(pass);
-		if (work.fused_software) {
+		if (work.fused_software && work.direct_material == work.material) {
 			pass.direct_software = true;
 			pass.bucket = work.material + 1 + shading.get_materials().size() * 2;
 			pass.work.pipelines[0] = work.direct_software_pipeline;

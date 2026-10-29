@@ -119,6 +119,10 @@ public:
 		RID get_uniform_buffer(bool p_use_linear_color) const { return uniform_buffer[p_use_linear_color]; }
 		const Vector<uint8_t> &get_uniform_data(bool p_use_linear_color) const { return ubo_data[p_use_linear_color]; }
 		uint64_t get_texture_revision() const { return texture_revision; }
+		// Current render-boundary values only. A hash match always needs the
+		// exact comparison; neither result owns or extends a texture lifetime.
+		uint32_t get_parameters_hash(bool p_use_linear_color) const;
+		bool has_same_parameters(const MaterialData &p_other, bool p_use_linear_color) const;
 
 	private:
 		friend class MaterialStorage;

@@ -61,6 +61,7 @@ public:
 	RID get_draw_arguments() const { return draw_arguments; }
 	struct RasterMaterialWork {
 		uint32_t material = 0;
+		uint32_t direct_material = 0;
 		bool fused_software = false;
 		RID small_cluster_pipeline;
 		RID direct_software_pipeline;
@@ -175,6 +176,8 @@ private:
 	LocalVector<BatchParameters> batch_parameter_data;
 	RID view_status;
 	LocalVector<RasterMaterialWork> raster_work;
+	HashMap<uint32_t, uint32_t> direct_material_heads;
+	LocalVector<uint32_t> direct_material_next;
 	RID raster_material_buffer;
 	uint32_t raster_material_words = 0;
 	LocalVector<uint32_t> raster_material_data;

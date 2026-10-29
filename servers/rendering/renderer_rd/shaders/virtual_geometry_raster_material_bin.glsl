@@ -131,10 +131,20 @@ uint vg_palette_pipeline(uint source, uint palette, uint entry, uint triangles, 
 	return flags == 0u ? 0u : material + 1u + (((flags & 4u) != 0u && triangles > 64u) ? scene.data[3] : 0u);
 }
 
-void vg_emit_candidate(uint index, uint pipeline, bool fused) {
+uint vg_candidate_pipeline(uint index, uint pipeline, bool fused) {
 	if ((pending.data[index] & 4u) != 0u && fused) {
-		pipeline += pipeline > scene.data[3] ? scene.data[3] : scene.data[3] * 2u;
+		uint material = pipeline > scene.data[3] ? pipeline - scene.data[3] - 1u : pipeline - 1u;
+		uint owner = materials.data[scene.data[3] * 4u + material];
+		if (owner >= scene.data[3] || (materials.data[owner * 4u + 2u] & 4u) == 0u || materials.data[scene.data[3] * 4u + owner] != owner) {
+			atomicOr(status.data[0], 4u);
+			return 0xffffffffu;
+		}
+		return owner + 1u + scene.data[3] * 2u;
 	}
+	return pipeline;
+}
+
+void vg_emit_candidate(uint index, uint pipeline) {
 	if (pipeline >= bin_info.buckets) {
 		return;
 	}
@@ -219,23 +229,25 @@ void main() {
 	}
 	// The common one-pipeline case needs no per-invocation palette array.
 	if (same_pipeline) {
-		vg_emit_candidate(index, first_pipeline, first_fused);
+		vg_emit_candidate(index, vg_candidate_pipeline(index, first_pipeline, first_fused));
 		return;
 	}
 	for (uint entry = 0u; entry < count; ++entry) {
 		bool entry_depth;
 		bool entry_fused;
 		uint pipeline = vg_palette_pipeline(reference.x, palette, entry, triangles, entry_depth, entry_fused);
+		pipeline = vg_candidate_pipeline(index, pipeline, entry_fused);
 		bool duplicate = false;
 		for (uint previous = 0u; previous < entry; ++previous) {
 			bool previous_depth, previous_fused;
-			if (vg_palette_pipeline(reference.x, palette, previous, triangles, previous_depth, previous_fused) == pipeline) {
+			uint previous_pipeline = vg_palette_pipeline(reference.x, palette, previous, triangles, previous_depth, previous_fused);
+			if (vg_candidate_pipeline(index, previous_pipeline, previous_fused) == pipeline) {
 				duplicate = true;
 				break;
 			}
 		}
 		if (!duplicate) {
-			vg_emit_candidate(index, pipeline, entry_fused);
+			vg_emit_candidate(index, pipeline);
 		}
 	}
 }

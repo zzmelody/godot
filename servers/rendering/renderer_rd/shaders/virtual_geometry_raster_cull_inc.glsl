@@ -36,6 +36,11 @@ bool vg_raster_material_active(uvec2 selected, uint triangle) {
 												  selected.y),
 			triangle);
 	if (raster_info.material != 0xffffffffu) {
+#if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
+		if (vg_direct_software) {
+			return material < scene.data[3] && raster_materials.data[scene.data[3] * 4u + material] == raster_info.material;
+		}
+#endif
 		return material == raster_info.material;
 	}
 	return material >= scene.data[3] || raster_materials.data[material * 4u + 2u] == 0u;

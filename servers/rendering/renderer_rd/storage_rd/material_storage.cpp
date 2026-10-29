@@ -1291,6 +1291,22 @@ RID MaterialStorage::MaterialData::get_parameters_uniform_set(RID p_shader, uint
 	return uniforms.is_empty() ? RID() : UniformSetCacheRD::get_singleton()->get_cache_vec(p_shader, p_set, uniforms);
 }
 
+uint32_t MaterialStorage::MaterialData::get_parameters_hash(bool p_use_linear_color) const {
+	const Vector<uint8_t> &bytes = ubo_data[p_use_linear_color];
+	uint32_t hash = hash_murmur3_one_32(bytes.size());
+	if (!bytes.is_empty()) {
+		hash = hash_murmur3_buffer(bytes.ptr(), bytes.size(), hash);
+	}
+	for (RID texture : texture_cache) {
+		hash = hash_murmur3_one_64(texture.get_id(), hash);
+	}
+	return hash_fmix32(hash);
+}
+
+bool MaterialStorage::MaterialData::has_same_parameters(const MaterialData &p_other, bool p_use_linear_color) const {
+	return ubo_data[p_use_linear_color] == p_other.ubo_data[p_use_linear_color] && texture_cache == p_other.texture_cache;
+}
+
 void MaterialStorage::MaterialData::set_as_used() {
 	for (int i = 0; i < render_target_cache.size(); i++) {
 		render_target_cache[i]->was_used = true;

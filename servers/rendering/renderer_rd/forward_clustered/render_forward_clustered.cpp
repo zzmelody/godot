@@ -2299,6 +2299,7 @@ void RenderForwardClustered::_prepare_gpu_occlusion(RenderDataRD *p_render_data,
 void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) {
 	active_gpu_occlusion = nullptr;
 	GodotProfileZone("Render/ForwardClustered");
+	GodotProfileZoneGroupedFirst(scene_cpu, "Render/Scene/setup");
 	scene_state.used_uniform_buffer_count = 0;
 
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
@@ -2512,6 +2513,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	_update_render_base_uniform_set();
 
 	_fill_render_list(RENDER_LIST_OPAQUE, p_render_data, PASS_MODE_COLOR, using_sdfgi, using_sdfgi || using_voxelgi, using_motion_pass);
+	GodotProfileZoneGrouped(scene_cpu, "Render/Scene/geometry_prepare");
 	_prepare_virtual_geometry(p_render_data);
 	{
 		GodotProfileZoneGroupedFirst(sort, "Render/List/sort_opaque");
@@ -2711,6 +2713,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	RSE::ViewportMSAA msaa = rb->get_msaa_3d();
+	GodotProfileZoneGrouped(scene_cpu, "Render/Scene/depth_prepare_and_submit");
 	bool use_msaa = msaa != RSE::VIEWPORT_MSAA_DISABLED;
 
 	bool ce_pre_opaque_resolved_color = use_msaa && _compositor_effects_has_flag(p_render_data, RSE::COMPOSITOR_EFFECT_FLAG_ACCESS_RESOLVED_COLOR, RSE::COMPOSITOR_EFFECT_CALLBACK_TYPE_PRE_OPAQUE);
@@ -2902,6 +2905,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	RENDER_TIMESTAMP("Render Opaque Pass");
+	GodotProfileZoneGrouped(scene_cpu, "Render/Scene/opaque_and_sky");
 
 	RD::get_singleton()->draw_command_begin_label("Render Opaque Pass");
 
@@ -3145,6 +3149,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	RENDER_TIMESTAMP("Render 3D Transparent Pass");
+	GodotProfileZoneGrouped(scene_cpu, "Render/Scene/transparent_and_resolve");
 
 	RD::get_singleton()->draw_command_begin_label("Render 3D Transparent Pass");
 
@@ -3198,6 +3203,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	Vector<RID> vg_reactivity;
+	GodotProfileZoneGrouped(scene_cpu, "Render/Scene/temporal_and_tonemap");
 	if (has_virtual_geometry && (using_upscaling || using_taa)) {
 		vg_reactivity.resize(rb->get_view_count());
 		for (uint32_t eye = 0; eye < rb->get_view_count(); ++eye) {

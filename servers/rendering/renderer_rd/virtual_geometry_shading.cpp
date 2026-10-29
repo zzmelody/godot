@@ -126,6 +126,11 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		raster_material_data.push_back(0);
 		raster_material_data.push_back(0);
 	}
+	// Four existing words per material, followed by one direct-software owner
+	// per material. This view's preparation resets every owner before use.
+	for (uint32_t index = 0; index < materials.size(); ++index) {
+		raster_material_data.push_back(index);
+	}
 	Error cull_error = ensure_words(memory, raster_material_buffer, raster_material_words, raster_material_data.size());
 	if (cull_error != OK) {
 		return cull_error;
@@ -744,7 +749,11 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 	view.eye_offset[2] = p_view.eye_offset.z;
 	view.eye_offset[3] = p_view.view_index;
 	rd->buffer_update(material_view, 0, sizeof(view), &view);
+	direct_material_heads.clear();
+	direct_material_next.resize(materials.size());
 	for (uint32_t material_index = 0; material_index < materials.size(); ++material_index) {
+		raster_material_data[materials.size() * 4 + material_index] = material_index;
+		direct_material_next[material_index] = UINT32_MAX;
 		raster_material_data[material_index * 4 + 3] = p_view.reverse_cull ? 1u : 0u;
 		RID material = materials[material_index];
 		auto *data = static_cast<SceneShader::MaterialData *>(storage->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
@@ -763,12 +772,34 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 			raster_material_data[material_index * 4 + 2] = 1u | (data->shader_data->writes_fragment_depth ? 2u : 0u);
 			RasterMaterialWork raster;
 			raster.material = material_index;
+			raster.direct_material = material_index;
 			raster.fused_software = !p_voxel && !data->shader_data->uses_alpha_clip && !data->shader_data->uses_discard && !data->shader_data->writes_fragment_depth;
 			if (raster.fused_software) {
 				raster_material_data[material_index * 4 + 2] |= 4u;
 				raster.small_cluster_pipeline = data->shader_data->virtual_geometry_raster_small.get_rid();
 				raster.direct_software_pipeline = data->shader_data->virtual_geometry_raster_direct.get_rid();
 				ERR_FAIL_COND_V(raster.small_cluster_pipeline.is_null() || raster.direct_software_pipeline.is_null(), ERR_CANT_CREATE);
+				if (!data->uses_dynamic_textures) {
+					uint32_t hash = hash_murmur3_one_64(program.get_id(), data->get_parameters_hash(true));
+					hash = hash_fmix32(hash_murmur3_one_32(raster_material_data[material_index * 4 + 1], hash));
+					const uint32_t *head = direct_material_heads.getptr(hash);
+					for (uint32_t previous = head != nullptr ? *head : UINT32_MAX; previous != UINT32_MAX; previous = direct_material_next[previous]) {
+						auto *other = static_cast<SceneShader::MaterialData *>(storage->material_get_data(materials[previous], MaterialStorage::SHADER_TYPE_3D));
+						// Shader identity includes its live generation and all compile
+						// modes. Exact bytes/RIDs resolve every hash collision.
+						if (other != nullptr && other->shader_data == data->shader_data &&
+								raster_material_data[previous * 4 + 1] == raster_material_data[material_index * 4 + 1] &&
+								data->has_same_parameters(*other, true)) {
+							raster.direct_material = previous;
+							break;
+						}
+					}
+					if (raster.direct_material == material_index) {
+						direct_material_next[material_index] = head != nullptr ? *head : UINT32_MAX;
+						direct_material_heads.insert(hash, material_index);
+					}
+				}
+				raster_material_data[materials.size() * 4 + material_index] = raster.direct_material;
 			}
 			for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {
 				raster.programs[mode] = p_voxel ? data->shader_data->get_virtual_geometry_voxel_shader() : data->shader_data->get_virtual_geometry_raster_shader(mode);
@@ -837,6 +868,16 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 		data->set_as_used();
 		material_work.push_back({ data->shader_data->get_virtual_geometry_pipeline(), scene, parameters });
 	}
+#ifdef GODOT_USE_TRACY
+	int64_t direct_passes = 0;
+	int64_t fused_materials = 0;
+	for (const auto &work : raster_work) {
+		fused_materials += work.fused_software;
+		direct_passes += work.fused_software && work.direct_material == work.material;
+	}
+	TracyPlot("Render/Geometry/fused_materials_per_view", fused_materials);
+	TracyPlot("Render/Geometry/direct_passes_per_view", direct_passes);
+#endif
 	rd->buffer_update(raster_material_buffer, 0, raster_material_data.size() * 4, raster_material_data.ptr());
 	return OK;
 }

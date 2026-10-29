@@ -9,6 +9,9 @@
 #define VG_BIN_BUILD
 #define VG_SCENE_WRITE
 #define VG_MATERIAL_LOOKUP
+#if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
+layout(constant_id = 1) const bool vg_direct_software = false;
+#endif
 /* clang-format off */
 #include "virtual_geometry_raster_inc.glsl"
 #include "virtual_geometry_raster_cull_inc.glsl"
@@ -24,11 +27,6 @@ shared bool group_software;
 // Specialization removes the second prepared triangle from small-cluster
 // pipelines. GPU material bins admit only clusters of at most 64 triangles.
 layout(constant_id = 0) const bool vg_small_cluster = false;
-#ifdef VG_GLOBAL_RASTER
-// The material bucket proves this before dispatch. Specialization keeps the
-// classifier and its prepared values out of the direct software pipeline.
-layout(constant_id = 1) const bool vg_direct_software = false;
-#endif
 #endif
 
 struct VGPreparedTriangle {
@@ -114,6 +112,23 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	uvec2 selected = vg_selected(index);
 	uint record = vg_record(selected.y);
+#if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
+	if (vg_direct_software) {
+		// No group reduction or barrier follows this specialized path. Each
+		// invocation may refuse independently, including a partial final group.
+		if (atomicOr(vg_status.data[0], 0u) != 0u) {
+			return;
+		}
+		uint count = geometry.data[record + 5u];
+		if (lane < count) {
+			vg_raster_triangle(index, selected, lane, 0u);
+		}
+		if (!vg_small_cluster && lane + 64u < count) {
+			vg_raster_triangle(index, selected, lane + 64u, 0u);
+		}
+		return;
+	}
+#endif
 	if (lane == 0u) {
 #ifdef VG_GLOBAL_RASTER
 		// Other groups can set this flag during the dispatch. Sample it once
@@ -137,20 +152,6 @@ void main() {
 	uint lane_needs_hardware = 0u;
 	bool lane_active = false;
 	uint count = geometry.data[record + 5u];
-#if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
-	if (vg_direct_software) {
-		// Proven software groups need no per-triangle classification or clip
-		// values live across its reduction barriers. Vertex/material evaluation
-		// and pixel coverage are exactly the ordinary software entry point.
-		if (lane < count) {
-			vg_raster_triangle(index, selected, lane, 0u);
-		}
-		if (!vg_small_cluster && lane + 64u < count) {
-			vg_raster_triangle(index, selected, lane + 64u, 0u);
-		}
-		return;
-	}
-#endif
 #ifdef VG_FUSED_SOFTWARE
 	// Admitted clusters have at most 128 triangles. Two explicit values avoid
 	// dynamically indexed per-lane storage across the classification barrier.
