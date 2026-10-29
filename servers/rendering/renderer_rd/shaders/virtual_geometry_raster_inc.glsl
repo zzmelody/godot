@@ -1,5 +1,17 @@
 // GPU-page random access and the current view's selected source instances.
-layout(set = 0, binding = 1, std430) readonly buffer Geometry { uint data[]; } geometry;
+#ifdef VG_RASTER_REUSE_SOURCE
+// MeshStorage's page pool has an independent full-buffer allocation. Fused
+// inputs never access it through Scene, writable scratch or physical pointers.
+layout(set = 0, binding = 1, std430) restrict readonly buffer Geometry {
+	uint data[];
+}
+geometry;
+#else
+layout(set = 0, binding = 1, std430) readonly buffer Geometry {
+	uint data[];
+}
+geometry;
+#endif
 layout(set = 0, binding = 3, std140) uniform Parameters {
 	mat4 model;
 	mat4 world_to_view;
@@ -8,7 +20,8 @@ layout(set = 0, binding = 3, std140) uniform Parameters {
 	uvec4 source;
 	uvec4 limits;
 	uvec4 offsets;
-} params;
+}
+params;
 layout(set = 0, binding = 4, std430) readonly buffer Work { uint data[]; } work;
 #ifdef VG_BIN_BUILD
 layout(set = 0, binding = 5, std430) buffer Bins { uint data[]; } bins;

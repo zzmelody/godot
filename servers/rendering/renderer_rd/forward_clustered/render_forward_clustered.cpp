@@ -5298,7 +5298,10 @@ void RenderForwardClustered::_geometry_instance_update_virtual_materials(Geometr
 		p_instance->virtual_geometry_materials.clear();
 		return;
 	}
-	p_instance->virtual_geometry_materials.resize(slots.rids.size());
+	if (p_instance->virtual_geometry_materials.resize(slots.rids.size()) != OK) {
+		p_instance->virtual_geometry_materials.clear();
+		ERR_FAIL_MSG("Virtual geometry material slot allocation failed.");
+	}
 	RID *materials = p_instance->virtual_geometry_materials.ptrw();
 	auto *storage = RendererRD::MaterialStorage::get_singleton();
 	for (uint32_t slot = 0; slot < slots.rids.size(); ++slot) {

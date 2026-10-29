@@ -3,6 +3,7 @@
 
 #include "core/math/projection.h"
 #include "core/math/transform_3d.h"
+#include "core/templates/fixed_vector.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_select.glsl.gen.h"
@@ -15,6 +16,34 @@
 class RenderGeometryInstance;
 
 namespace RendererRD {
+
+// Small resolved slot lists are values, not per-instance heap allocations.
+// Larger authored material sets retain the existing shared-vector lifetime.
+class VirtualGeometryMaterialSlots {
+	FixedVector<RID, 2> inline_slots;
+	Vector<RID> overflow_slots;
+
+public:
+	void clear() {
+		inline_slots.clear();
+		overflow_slots.clear();
+	}
+	Error resize(uint32_t p_count) {
+		if (p_count <= 2) {
+			overflow_slots.clear();
+			return inline_slots.resize_initialized(p_count);
+		} else {
+			inline_slots.clear();
+			return overflow_slots.resize(p_count);
+		}
+	}
+	uint32_t size() const { return overflow_slots.is_empty() ? inline_slots.size() : uint32_t(overflow_slots.size()); }
+	bool is_empty() const { return size() == 0; }
+	RID *ptrw() { return overflow_slots.is_empty() ? inline_slots.ptr() : overflow_slots.ptrw(); }
+	const RID *ptr() const { return overflow_slots.is_empty() ? inline_slots.ptr() : overflow_slots.ptr(); }
+	const RID *begin() const { return ptr(); }
+	const RID *end() const { return ptr() + size(); }
+};
 
 // One view owns the reusable work buffers. MeshStorage lends published model
 // buffers and live MultiMesh transforms for the current render boundary only.
@@ -36,7 +65,7 @@ public:
 		uint32_t transform_offset = 0;
 		uint32_t previous_transform_offset = 0;
 		// Resolved at the owner's dirty boundary. Empty RID uses the view default.
-		Vector<RID> materials;
+		VirtualGeometryMaterialSlots materials;
 		bool uses_sss = false;
 		uint32_t layer_mask = 1;
 		uint32_t render_flags = 0;

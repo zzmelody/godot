@@ -8,9 +8,22 @@
 #define VG_SCENE_SET 0
 #endif
 #ifdef VG_SCENE_WRITE
-layout(set = VG_SCENE_SET, binding = 8, std430) buffer Scene { uint data[]; } scene;
+layout(set = VG_SCENE_SET, binding = 8, std430) buffer Scene {
+	uint data[];
+}
+scene;
+#elif defined(VG_RASTER_REUSE_SOURCE)
+// Shading owns a separate full storage allocation. This fused entry reads it
+// only through this block; page geometry and writable scratch cannot alias it.
+layout(set = VG_SCENE_SET, binding = 8, std430) restrict readonly buffer Scene {
+	uint data[];
+}
+scene;
 #else
-layout(set = VG_SCENE_SET, binding = 8, std430) readonly buffer Scene { uint data[]; } scene;
+layout(set = VG_SCENE_SET, binding = 8, std430) readonly buffer Scene {
+	uint data[];
+}
+scene;
 #endif
 
 uint vg_source_word(uint index) {

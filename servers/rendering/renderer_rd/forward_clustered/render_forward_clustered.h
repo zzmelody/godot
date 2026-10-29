@@ -664,7 +664,7 @@ private:
 		// History belongs to this allocation, not its shared Mesh/MultiMesh RID.
 		uint64_t history_instance_id = 0;
 		// RID values only; the existing dependency tracker invalidates both.
-		Vector<RID> virtual_geometry_materials;
+		RendererRD::VirtualGeometryMaterialSlots virtual_geometry_materials;
 		bool virtual_geometry_uses_sss = false;
 		LocalVector<SurfacePrewarmKey> surface_prewarm_keys;
 		uint32_t surface_prewarm_count = 0;
