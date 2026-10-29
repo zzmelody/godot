@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "core/templates/a_hash_map.h"
 #include "servers/rendering/renderer_rd/pipeline_cache_rd.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_depth.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/virtual_geometry_raster.glsl.gen.h"
@@ -74,6 +75,9 @@ private:
 	RID framebuffer;
 	RID visibility;
 	LocalVector<Pass> passes;
+	// Borrowed uniform sets for one preparation only. Mode separates layouts
+	// which include visibility from classification-only layouts.
+	AHashMap<RID, RID> pass_uniforms[3];
 	LocalVector<ScanLevel> scan_levels;
 	RID candidates, classified, arguments;
 	RID pending, occlusion_parameters;

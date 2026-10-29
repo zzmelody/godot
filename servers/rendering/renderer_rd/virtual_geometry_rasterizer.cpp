@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "virtual_geometry_rasterizer.h"
 
+#include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
@@ -125,6 +126,10 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 }
 
 Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Result> p_sources, bool p_voxel) {
+	GodotProfileZone("Render/VirtualGeometry/prepare_raster_bins");
+	for (auto &uniforms : pass_uniforms) {
+		uniforms.clear();
+	}
 	ERR_FAIL_COND_V(p_sources.is_empty(), ERR_INVALID_PARAMETER);
 	bucket_count = shading.get_materials().size() * 3 + 1;
 	const uint64_t capacity = shading.get_raster_candidate_capacity(p_sources);
@@ -212,31 +217,54 @@ Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Re
 			passes.push_back(pass);
 		}
 	}
-	for (Pass &pass : passes) {
-		const bool programmable = pass.work.material != UINT32_MAX;
-		for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {
-			LocalVector<RD::Uniform> uniforms;
-			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { geometry }));
-			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { p_sources[0].parameters }));
-			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { candidates }));
-			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { classified }));
-			if ((mode != 0 || pass.work.fused_software) && !p_voxel) {
-				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { visibility }));
+	int64_t assembled = 0;
+	int64_t reused = 0;
+	int64_t skipped = 0;
+	{
+		GodotProfileZone("Render/VirtualGeometry/prepare_pass_bindings");
+		for (Pass &pass : passes) {
+			const bool programmable = pass.work.material != UINT32_MAX;
+			for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {
+				if ((pass.direct_software && mode != 0) || (pass.work.fused_software && mode == 1)) {
+					++skipped;
+					continue;
+				}
+				const RID program = pass.work.programs[mode];
+				if (const RID *prepared = pass_uniforms[mode].getptr(program)) {
+					pass.uniforms[mode] = *prepared;
+					++reused;
+					continue;
+				}
+				LocalVector<RD::Uniform> uniforms;
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, { geometry }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 3, { p_sources[0].parameters }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, { candidates }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, { classified }));
+				if ((mode != 0 || pass.work.fused_software) && !p_voxel) {
+					uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, { visibility }));
+				}
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { shading.get_raster_materials() }));
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 15, { shading.get_status() }));
+				if (programmable) {
+					uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { shading.get_previous_globals() }));
+					uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 12, { shading.get_material_view() }));
+					uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 14, { MaterialStorage::get_singleton()->global_shader_uniforms_get_storage_buffer() }));
+					uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 28, { shading.get_frame_history() }));
+					MaterialStorage::get_singleton()->samplers_rd_get_default().append_uniforms(uniforms, 32);
+				}
+				pass.uniforms[mode] = cache->get_cache_vec(pass.work.programs[mode], 0, uniforms);
+				ERR_FAIL_COND_V(pass.uniforms[mode].is_null(), ERR_CANT_CREATE);
+				pass_uniforms[mode].insert(program, pass.uniforms[mode]);
+				++assembled;
 			}
-			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 8, { shading.get_scene() }));
-			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 11, { shading.get_raster_materials() }));
-			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 15, { shading.get_status() }));
-			if (programmable) {
-				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, { shading.get_previous_globals() }));
-				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 12, { shading.get_material_view() }));
-				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 14, { MaterialStorage::get_singleton()->global_shader_uniforms_get_storage_buffer() }));
-				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 28, { shading.get_frame_history() }));
-				MaterialStorage::get_singleton()->samplers_rd_get_default().append_uniforms(uniforms, 32);
-			}
-			pass.uniforms[mode] = cache->get_cache_vec(pass.work.programs[mode], 0, uniforms);
-			ERR_FAIL_COND_V(pass.uniforms[mode].is_null(), ERR_CANT_CREATE);
 		}
 	}
+#ifdef GODOT_USE_TRACY
+	TracyPlot("Render/Geometry/raster_set0_assembled_per_view", assembled);
+	TracyPlot("Render/Geometry/raster_set0_reused_per_view", reused);
+	TracyPlot("Render/Geometry/raster_modes_skipped_per_view", skipped);
+#endif
 	return OK;
 }
 

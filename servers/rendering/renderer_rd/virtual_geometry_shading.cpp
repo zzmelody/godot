@@ -802,6 +802,11 @@ Error VirtualGeometryShading::prepare_materials(const Ref<RenderSceneBuffersRD> 
 				raster_material_data[materials.size() * 4 + material_index] = raster.direct_material;
 			}
 			for (uint32_t mode = p_voxel ? 2 : 0; mode < 3; ++mode) {
+				// Fused opaque clusters finish software work in mode0. Only
+				// their original hardware fallback still needs mode2 parameters.
+				if (raster.fused_software && mode == 1) {
+					continue;
+				}
 				raster.programs[mode] = p_voxel ? data->shader_data->get_virtual_geometry_voxel_shader() : data->shader_data->get_virtual_geometry_raster_shader(mode);
 				ERR_FAIL_COND_V(raster.programs[mode].is_null(), ERR_CANT_CREATE);
 				raster.pipelines[mode] = p_voxel ? data->shader_data->get_virtual_geometry_voxel_pipeline(p_raster_format) : data->shader_data->get_virtual_geometry_raster_pipeline(mode, p_raster_format);

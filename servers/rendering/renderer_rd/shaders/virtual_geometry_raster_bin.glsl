@@ -112,23 +112,6 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	uvec2 selected = vg_selected(index);
 	uint record = vg_record(selected.y);
-#if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
-	if (vg_direct_software) {
-		// No group reduction or barrier follows this specialized path. Each
-		// invocation may refuse independently, including a partial final group.
-		if (atomicOr(vg_status.data[0], 0u) != 0u) {
-			return;
-		}
-		uint count = geometry.data[record + 5u];
-		if (lane < count) {
-			vg_raster_triangle(index, selected, lane, 0u);
-		}
-		if (!vg_small_cluster && lane + 64u < count) {
-			vg_raster_triangle(index, selected, lane + 64u, 0u);
-		}
-		return;
-	}
-#endif
 	if (lane == 0u) {
 #ifdef VG_GLOBAL_RASTER
 		// Other groups can set this flag during the dispatch. Sample it once
@@ -148,10 +131,22 @@ void main() {
 		return;
 	}
 #endif
+	uint count = geometry.data[record + 5u];
+#if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
+	if (vg_direct_software) {
+		// Keep one source-level status read per admitted group.
+		if (lane < count) {
+			vg_raster_triangle(index, selected, lane, 0u);
+		}
+		if (!vg_small_cluster && lane + 64u < count) {
+			vg_raster_triangle(index, selected, lane + 64u, 0u);
+		}
+		return;
+	}
+#endif
 	uint lane_maximum_edge = 0u;
 	uint lane_needs_hardware = 0u;
 	bool lane_active = false;
-	uint count = geometry.data[record + 5u];
 #ifdef VG_FUSED_SOFTWARE
 	// Admitted clusters have at most 128 triangles. Two explicit values avoid
 	// dynamically indexed per-lane storage across the classification barrier.
