@@ -35,6 +35,7 @@
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
 #include "core/templates/a_hash_map.h"
+#include "core/templates/hash_set.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -2003,18 +2004,6 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 				batch.previous_model = batch.model;
 				batch.previous_transform_offset = batch.transform_offset;
 			}
-			if (eye == 0) {
-				// Virtual meshes have no ordinary surface-cache draws to request
-				// the shared SSS pass on their behalf.
-				const auto slots = RendererRD::MeshStorage::get_singleton()->mesh_get_virtual_geometry_materials(batch.mesh);
-				for (uint32_t slot = 0; slot < slots.rids.size(); ++slot) {
-					const RID material = slots.resolve(slot, batch.surface_materials, batch.material_override, scene_shader.default_material);
-					auto *material_data = static_cast<SceneShaderForwardClustered::MaterialData *>(RendererRD::MaterialStorage::get_singleton()->material_get_data(material, RendererRD::MaterialStorage::SHADER_TYPE_3D));
-					if (material_data && material_data->shader_data) {
-						scene_state.used_sss |= material_data->shader_data->uses_sss;
-					}
-				}
-			}
 			if (!selection) {
 				selection = memnew(RendererRD::VirtualGeometrySelection);
 				selection->begin(camera, projection, scene->flip_y, buffers->get_internal_size());
@@ -2022,6 +2011,32 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 			selection->add_batch(batch);
 		}
 		if (selection) {
+			if (eye == 0 && !scene_state.used_sss) {
+				ZoneScopedN("Render/VG/material_features");
+				// The shading table is prepared later. Inspect current batches here
+				// so virtual-only SSS can select the shared framebuffer in time.
+				// Retain scratch capacity, never feature results across views/frames.
+				thread_local HashSet<RID> checked_materials;
+				checked_materials.clear();
+				for (const auto &batch : selection->get_batches()) {
+					const auto slots = RendererRD::MeshStorage::get_singleton()->mesh_get_virtual_geometry_materials(batch.mesh);
+					for (uint32_t slot = 0; slot < slots.rids.size(); ++slot) {
+						const RID material = slots.resolve(slot, batch.surface_materials, batch.material_override, scene_shader.default_material);
+						if (checked_materials.has(material)) {
+							continue;
+						}
+						checked_materials.insert(material);
+						auto *material_data = static_cast<SceneShaderForwardClustered::MaterialData *>(RendererRD::MaterialStorage::get_singleton()->material_get_data(material, RendererRD::MaterialStorage::SHADER_TYPE_3D));
+						if (material_data && material_data->shader_data && material_data->shader_data->uses_sss) {
+							scene_state.used_sss = true;
+							break;
+						}
+					}
+					if (scene_state.used_sss) {
+						break;
+					}
+				}
+			}
 			RD::get_singleton()->draw_command_begin_label("VG/MainView");
 			Error error = selection->record();
 			if (error == ERR_OUT_OF_MEMORY) {

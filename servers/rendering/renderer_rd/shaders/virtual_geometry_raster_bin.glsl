@@ -19,6 +19,18 @@ layout(constant_id = 1) const bool vg_direct_software = false;
 /* clang-format on */
 
 #ifdef VG_FUSED_SOFTWARE
+// Only vertices referenced by this material's active triangles may run its
+// authored program. Unused vertices can lie outside that program's domain.
+shared uint vertex_usage[8];
+shared uint invalid_vertex;
+shared float vertex_position_x[256];
+shared float vertex_position_y[256];
+shared float vertex_position_z[256];
+
+vec3 vg_cached_raster_position(uint instance, uint reference, uint vertex_index) {
+	return vec3(vertex_position_x[vertex_index], vertex_position_y[vertex_index], vertex_position_z[vertex_index]);
+}
+#define VG_RASTER_POSITION vg_cached_raster_position
 /* clang-format off */
 #include "virtual_geometry_write_inc.glsl"
 #include "virtual_geometry_raster_triangle_inc.glsl"
@@ -27,6 +39,9 @@ shared bool group_software;
 // Specialization removes the second prepared triangle from small-cluster
 // pipelines. GPU material bins admit only clusters of at most 64 triangles.
 layout(constant_id = 0) const bool vg_small_cluster = false;
+#endif
+#ifndef VG_RASTER_POSITION
+#define VG_RASTER_POSITION vg_raster_position
 #endif
 
 struct VGPreparedTriangle {
@@ -53,7 +68,7 @@ VGPreparedTriangle vg_classify_triangle(uvec2 selected, uint count, uint triangl
 	vec2 lower = vec2(3.402823e38);
 	vec2 upper = vec2(-3.402823e38);
 	for (uint corner = 0u; corner < 3u; ++corner) {
-		points[corner] = vg_raster_position(selected.x, selected.y, vertices[corner]);
+		points[corner] = VG_RASTER_POSITION(selected.x, selected.y, vertices[corner]);
 		vec4 clip = vg_project(selected.x, points[corner]);
 		clips[corner] = clip;
 #ifdef VG_FUSED_SOFTWARE
@@ -132,6 +147,50 @@ void main() {
 	}
 #endif
 	uint count = geometry.data[record + 5u];
+#ifdef VG_FUSED_SOFTWARE
+	uint vertex_count = geometry.data[record + 4u];
+	if (lane < 8u) {
+		vertex_usage[lane] = 0u;
+	}
+	if (lane == 0u) {
+		invalid_vertex = uint(vertex_count > 256u || count > 128u);
+	}
+	barrier();
+	for (uint triangle = lane; triangle < min(count, 128u); triangle += 64u) {
+		if (!vg_raster_material_active(selected, triangle)) {
+			continue;
+		}
+		uvec3 vertices = vg_triangle(selected.y, triangle);
+		for (uint corner = 0u; corner < 3u; ++corner) {
+			uint vertex_index = vertices[corner];
+			if (vertex_index < vertex_count && vertex_index < 256u) {
+				atomicOr(vertex_usage[vertex_index >> 5u], 1u << (vertex_index & 31u));
+			} else {
+				atomicOr(invalid_vertex, 1u);
+			}
+		}
+	}
+	barrier();
+	if (invalid_vertex != 0u) {
+		if (lane == 0u) {
+#ifdef VG_GLOBAL_RASTER
+			atomicOr(vg_status.data[0], 1u);
+#else
+			atomicOr(bins.data[2], 1u);
+#endif
+		}
+		return;
+	}
+	for (uint vertex_index = lane; vertex_index < vertex_count; vertex_index += 64u) {
+		if ((vertex_usage[vertex_index >> 5u] & (1u << (vertex_index & 31u))) != 0u) {
+			vec3 point = vg_raster_position(selected.x, selected.y, vertex_index);
+			vertex_position_x[vertex_index] = point.x;
+			vertex_position_y[vertex_index] = point.y;
+			vertex_position_z[vertex_index] = point.z;
+		}
+	}
+	barrier();
+#endif
 #if defined(VG_FUSED_SOFTWARE) && defined(VG_GLOBAL_RASTER)
 	if (vg_direct_software) {
 		// Keep one source-level status read per admitted group.
