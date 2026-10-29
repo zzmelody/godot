@@ -27,21 +27,6 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 shared bool group_refused;
 #endif
 
-void vg_raster_triangle(uint index, uvec2 selected, uint triangle, uint lane) {
-	if (!vg_raster_material_active(selected, triangle)) {
-		return;
-	}
-	uvec3 vertices = vg_triangle(selected.y, triangle);
-	vec4 clip[3];
-	vec3 shadow_clips;
-	for (uint corner = 0u; corner < 3u; ++corner) {
-		vec3 point = vg_raster_position(selected.x, selected.y, vertices[corner]);
-		clip[corner] = vg_project(selected.x, point);
-		shadow_clips[corner] = vg_shadow_clip(selected.x, point);
-	}
-	vg_raster_prepared_triangle(index, triangle, lane, clip[0], clip[1], clip[2], shadow_clips);
-}
-
 void main() {
 #ifdef VG_MASKED
 	uint quad, lane;
