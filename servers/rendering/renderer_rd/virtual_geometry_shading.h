@@ -149,6 +149,10 @@ private:
 	RID source_arguments;
 	uint32_t source_argument_words = 0;
 	uint32_t source_instances = 0;
+	RID source_groups;
+	uint32_t source_group_words = 0;
+	uint32_t source_group_count = 0;
+	LocalVector<uint32_t> source_group_data;
 	RID source_uniforms, source_scan_uniforms;
 	LocalVector<ScanLevel> source_levels;
 	using HistoryCopy = VirtualGeometrySnapshotCopy::Copy;

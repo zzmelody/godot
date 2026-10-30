@@ -51,27 +51,6 @@ layout(set = 0, binding = 65, std140) uniform PreviousMaterialUniforms {
 /* clang-format on */
 #endif
 
-#ifdef VG_RASTER_REUSE_SOURCE
-// One fused group has one source. Only immutable inputs live here; authored
-// matrices and vertex outputs remain private to each invocation.
-struct VGRasterSourceInputs {
-	mat4 model;
-	mat4 modelview;
-	mat3 normal;
-	vec4 custom;
-	vec4 color;
-};
-shared VGRasterSourceInputs vg_raster_source_inputs;
-
-void vg_prepare_raster_source(uint source) {
-	vg_raster_source_inputs.model = vg_source_matrix(source, 0u);
-	vg_raster_source_inputs.modelview = vg_source_matrix(source, 12u);
-	vg_raster_source_inputs.normal = mat3(vg_source_matrix(source, 24u));
-	vg_raster_source_inputs.custom = vg_source_vector(source, 40u);
-	vg_raster_source_inputs.color = vg_source_vector(source, 36u);
-}
-#endif
-
 uint vg_source;
 bool vg_killed;
 bool vg_front_facing;
@@ -197,19 +176,11 @@ void vg_evaluate_vertex(inout VGVertex value, uint source, uint corner) {
 }
 void vg_setup_vertex(uint source) {
 	vg_source = source;
-#ifdef VG_RASTER_REUSE_SOURCE
-	read_model_matrix = vg_raster_source_inputs.model;
-	modelview = vg_raster_source_inputs.modelview;
-	model_normal_matrix = vg_raster_source_inputs.normal;
-	instance_custom = vg_raster_source_inputs.custom;
-	vg_instance_color = vg_raster_source_inputs.color;
-#else
 	read_model_matrix = vg_source_matrix(source, 0u);
 	modelview = vg_source_matrix(source, 12u);
 	model_normal_matrix = mat3(vg_source_matrix(source, 24u));
 	instance_custom = vg_source_vector(source, 40u);
 	vg_instance_color = vg_source_vector(source, 36u);
-#endif
 	modelview_normal = mat3(vg_view.view) * model_normal_matrix;
 	projection_matrix = vg_view.projection;
 	inverse_projection_matrix = vg_view.inverse_projection;

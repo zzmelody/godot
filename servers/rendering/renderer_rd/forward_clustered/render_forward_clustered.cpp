@@ -1923,6 +1923,12 @@ bool RenderForwardClustered::_virtual_geometry_batch(RenderGeometryInstance *p_i
 		r_batch.transforms = storage->_multimesh_get_buffer_rd_rid(owner->data->base);
 		r_batch.stride = 3 + uint32_t(r_batch.has_color) + uint32_t(r_batch.has_custom);
 		storage->_multimesh_get_motion_vectors_offsets(owner->data->base, r_batch.transform_offset, r_batch.previous_transform_offset);
+	} else {
+		r_batch.count = 1;
+		r_batch.transforms = RID();
+		r_batch.stride = 0;
+		r_batch.transform_offset = 0;
+		r_batch.previous_transform_offset = 0;
 	}
 	return true;
 }
@@ -1998,8 +2004,8 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		{
 			GodotProfileZoneGroupedFirst(source_batches, "Render/VirtualGeometry/main_source_batches");
 			GodotProfileZoneGroupedValue(source_batches, p_render_data->instances->size());
+			RendererRD::VirtualGeometrySelection::Batch batch;
 			for (uint32_t index = 0; index < p_render_data->instances->size(); ++index) {
-				RendererRD::VirtualGeometrySelection::Batch batch;
 				if (!_virtual_geometry_batch((*p_render_data->instances)[index], batch)) {
 					continue;
 				}
@@ -3673,8 +3679,8 @@ void RenderForwardClustered::_render_shadow_append(RID p_framebuffer, const Page
 		shadow_pass.virtual_geometry_view.shadow_far = p_zfar;
 		shadow_pass.virtual_geometry_view.shadow_flags = 1u | (p_use_pancake ? 2u : 0u) | (p_use_dp ? 4u : 0u) | (p_use_dp_flip ? 8u : 0u);
 		shadow_pass.virtual_geometry_view.reverse_cull = flip_cull;
+		RendererRD::VirtualGeometrySelection::Batch batch;
 		for (uint32_t index = 0; index < p_instances.size(); ++index) {
-			RendererRD::VirtualGeometrySelection::Batch batch;
 			if (_virtual_geometry_batch(p_instances[index], batch)) {
 				shadow_pass.virtual_geometry_batches.push_back(batch);
 			}
@@ -3964,8 +3970,8 @@ void RenderForwardClustered::_render_sdfgi(Ref<RenderSceneBuffersRD> p_render_bu
 	_fill_instance_data(RENDER_LIST_SECONDARY);
 
 	LocalVector<RendererRD::VirtualGeometrySelection::Batch> virtual_batches;
+	RendererRD::VirtualGeometrySelection::Batch batch;
 	for (uint32_t index = 0; index < p_instances.size(); ++index) {
-		RendererRD::VirtualGeometrySelection::Batch batch;
 		if (_virtual_geometry_batch(p_instances[index], batch)) {
 			virtual_batches.push_back(batch);
 		}
