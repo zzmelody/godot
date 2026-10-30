@@ -1960,6 +1960,7 @@ Ref<RenderForwardClustered::RenderBufferDataForwardClustered> RenderForwardClust
 }
 
 void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_data) {
+	GodotProfileZone("Render/VirtualGeometry/main_prepare");
 	Ref<RenderSceneBuffersRD> buffers = p_render_data->render_buffers;
 	ERR_FAIL_COND(buffers.is_null());
 	Ref<RenderBufferDataForwardClustered> data = _virtual_geometry_data(buffers);
@@ -1994,25 +1995,30 @@ void RenderForwardClustered::_prepare_virtual_geometry(RenderDataRD *p_render_da
 		if (selection) {
 			selection->begin(camera, projection, scene->flip_y, buffers->get_internal_size());
 		}
-		for (uint32_t index = 0; index < p_render_data->instances->size(); ++index) {
-			RendererRD::VirtualGeometrySelection::Batch batch;
-			if (!_virtual_geometry_batch((*p_render_data->instances)[index], batch)) {
-				continue;
-			}
-			if (!history_valid) {
-				batch.previous_model = batch.model;
-				batch.previous_transform_offset = batch.transform_offset;
-			}
-			if (!selection) {
-				selection = memnew(RendererRD::VirtualGeometrySelection);
-				selection->begin(camera, projection, scene->flip_y, buffers->get_internal_size());
-			}
-			selection->add_batch(batch);
-			if (eye == 0) {
-				scene_state.used_sss |= batch.uses_sss;
+		{
+			GodotProfileZoneGroupedFirst(source_batches, "Render/VirtualGeometry/main_source_batches");
+			GodotProfileZoneGroupedValue(source_batches, p_render_data->instances->size());
+			for (uint32_t index = 0; index < p_render_data->instances->size(); ++index) {
+				RendererRD::VirtualGeometrySelection::Batch batch;
+				if (!_virtual_geometry_batch((*p_render_data->instances)[index], batch)) {
+					continue;
+				}
+				if (!history_valid) {
+					batch.previous_model = batch.model;
+					batch.previous_transform_offset = batch.transform_offset;
+				}
+				if (!selection) {
+					selection = memnew(RendererRD::VirtualGeometrySelection);
+					selection->begin(camera, projection, scene->flip_y, buffers->get_internal_size());
+				}
+				selection->add_batch(batch);
+				if (eye == 0) {
+					scene_state.used_sss |= batch.uses_sss;
+				}
 			}
 		}
 		if (selection) {
+			GodotProfileZone("Render/VirtualGeometry/main_selection_record");
 			RD::get_singleton()->draw_command_begin_label("VG/MainView");
 			Error error = selection->record();
 			if (error == ERR_OUT_OF_MEMORY) {

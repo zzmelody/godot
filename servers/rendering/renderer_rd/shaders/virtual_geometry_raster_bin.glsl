@@ -10,8 +10,8 @@
 #if !defined(VG_FUSED_SOFTWARE) || !defined(VG_GLOBAL_RASTER)
 #define VG_SCENE_WRITE
 #else
-// One fused invocation evaluates only one source. Global raster never writes
-// the source table; keep its immutable inputs available across active vertices.
+// One fused group evaluates one source. Global raster never writes the source
+// table; immutable group inputs feed each invocation's private material state.
 #define VG_RASTER_REUSE_SOURCE
 #endif
 #define VG_MATERIAL_LOOKUP
@@ -187,6 +187,20 @@ void main() {
 		}
 		return;
 	}
+#if defined(VG_RASTER_REUSE_SOURCE) && defined(VG_PROGRAMMABLE)
+	if (lane == 0u) {
+		uint used = 0u;
+		for (uint word = 0u; word < 8u; ++word) {
+			used |= vertex_usage[word];
+		}
+		if (used != 0u) {
+			vg_prepare_raster_source(selected.x);
+		}
+	}
+	// Invalid groups returned uniformly above. Empty material domains perform
+	// no source preparation or authored evaluation, but still join this barrier.
+	barrier();
+#endif
 	for (uint vertex_index = lane; vertex_index < vertex_count; vertex_index += 64u) {
 		if ((vertex_usage[vertex_index >> 5u] & (1u << (vertex_index & 31u))) != 0u) {
 			vec3 point = vg_raster_position(selected.x, selected.y, vertex_index);
