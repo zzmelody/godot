@@ -29,9 +29,9 @@ public:
 		DEPTH_MOTION,
 		DEPTH_MODE_MAX,
 	};
-	Error record(const Ref<RenderSceneBuffersRD> &p_buffers, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material);
-	Error record_shadow(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material);
-	Error record_sdfgi(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material,
+	Error record(const Ref<RenderSceneBuffersRD> &p_buffers, const VirtualGeometryShading::ViewParameters &p_view, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material);
+	Error record_shadow(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material);
+	Error record_sdfgi(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material,
 			const AABB &p_bounds, const Vector3i &p_from, const Vector3i &p_grid_size, RID p_albedo, RID p_emission, RID p_emission_aniso, RID p_facing);
 	Error recover(const VirtualGeometryShading::ViewParameters &p_view);
 	Error record_reactivity(RID p_depth, RID p_scene_reactivity, bool p_combine_scene);
@@ -92,12 +92,12 @@ private:
 	bool ready = false;
 	VirtualGeometryShading shading;
 
-	Error _prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow, bool p_motion);
-	Error _prepare_bins(Span<VirtualGeometrySelection::Result> p_sources, bool p_voxel = false);
+	Error _prepare(const Size2i &p_size, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow, bool p_motion);
+	Error _prepare_bins(Span<const VirtualGeometrySelection::Result> p_sources, bool p_voxel = false);
 	Error _prepare_candidates(const VirtualGeometryShading::ViewParameters &p_view);
 	void _record_material_bins(uint32_t p_phase);
 	Error _record_geometry(const VirtualGeometryShading::ViewParameters &p_view, uint32_t p_phase);
-	Error _record(const Ref<RenderSceneBuffersRD> &p_buffers, const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow);
+	Error _record(const Ref<RenderSceneBuffersRD> &p_buffers, const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow);
 };
 
 } // namespace RendererRD

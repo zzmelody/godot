@@ -30,7 +30,7 @@ VirtualGeometrySelection::~VirtualGeometrySelection() {
 
 void VirtualGeometrySelection::begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size, uint32_t p_shadow_flags, float p_shadow_far) {
 	used = 0;
-	batches.clear();
+	input_count = 0;
 	camera_inverse = p_camera.affine_inverse();
 	Projection correction;
 	correction.set_depth_correction(p_flip_y);
@@ -60,10 +60,8 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	uint64_t instances_total = 0;
 	uint64_t desired_nodes = 0;
 	uint32_t maximum_depth = 0;
-	for (const Batch &batch : batches) {
-		if (batch.count == 0) {
-			continue;
-		}
+	for (uint32_t index = 0; index < input_count; ++index) {
+		const Batch &batch = results[index].batch;
 		const uint64_t roots = uint64_t(batch.count) * batch.geometry.root_clusters;
 		ERR_FAIL_COND_V(roots == 0 || roots > UINT32_MAX, ERR_OUT_OF_MEMORY);
 		const uint64_t desired = p_root_only ? roots : MAX(roots, MIN(uint64_t(FINE_WORK_TARGET), uint64_t(batch.count) * batch.geometry.clusters));
@@ -95,10 +93,8 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 	source_address_data.clear();
 	if (direct_sources) {
 		GodotProfileZone("Render/VirtualGeometry/source_resolve");
-		for (const Batch &batch : batches) {
-			if (batch.count == 0) {
-				continue;
-			}
+		for (uint32_t index = 0; index < input_count; ++index) {
+			const Batch &batch = results[index].batch;
 			SourceAddresses addresses;
 			direct_sources = source_reads.resolve(rd, batch.geometry.metadata, 0, uint64_t(batch.geometry.metadata_words) * 4, addresses.metadata);
 			if (direct_sources && batch.stride != 0) {
@@ -115,10 +111,8 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 			source_address_data.push_back(addresses);
 		}
 	}
-	for (const Batch &batch : batches) {
-		if (batch.count == 0) {
-			continue;
-		}
+	for (uint32_t index = 0; index < input_count; ++index) {
+		const Batch &batch = results[index].batch;
 		ERR_FAIL_COND_V(batch.geometry.metadata.is_null() || batch.geometry.geometry.is_null() || batch.geometry.metadata_words == 0 || batch.geometry.root_pages == 0 ||
 						(batch.geometry.fine_lod_word != 0 && (batch.geometry.fine_lod_word > batch.geometry.metadata_words || batch.geometry.metadata_words - batch.geometry.fine_lod_word < 5)) ||
 						(batch.stride != 0 && (batch.stride < 3 || batch.transforms.is_null())) ||
@@ -178,11 +172,7 @@ Error VirtualGeometrySelection::record(bool p_root_only) {
 			}
 			transform_size += words;
 		}
-		if (used == results.size()) {
-			results.push_back(Result());
-		}
 		Result &result = results[used++];
-		result.batch = batch;
 		result.work_word = uint32_t(result_size);
 		result.selected_capacity = clusters;
 		result.root_capacity = uint32_t(roots);

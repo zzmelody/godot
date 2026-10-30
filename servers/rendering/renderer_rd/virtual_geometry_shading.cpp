@@ -59,7 +59,7 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 	}
 }
 
-Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only, bool p_motion) {
+Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material, RID p_visibility, RID p_geometry, bool p_depth_only, bool p_motion) {
 	GodotProfileZone("Render/VirtualGeometry/source_parameters");
 	depth_only = p_depth_only;
 	const bool record_history = !depth_only && p_motion;
@@ -388,7 +388,7 @@ void VirtualGeometryShading::clear_view() {
 	}
 }
 
-void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Result> p_sources) {
+void VirtualGeometryShading::record_sources(Span<const VirtualGeometrySelection::Result> p_sources) {
 	if (p_sources.is_empty()) {
 		return;
 	}
@@ -926,7 +926,7 @@ uint64_t VirtualGeometryShading::get_buffer_bytes() const {
 			(frame_history.is_valid() ? 272 : 0) + (view_status.is_valid() ? 4 : 0) + uint64_t(surface_size.x) * surface_size.y * 72 + uint64_t(motion_size.x) * motion_size.y * 8 + uint64_t(temporal_key_words[0] + temporal_key_words[1]) * 4;
 }
 
-uint64_t VirtualGeometryShading::get_raster_candidate_capacity(Span<VirtualGeometrySelection::Result> p_sources) {
+uint64_t VirtualGeometryShading::get_raster_candidate_capacity(Span<const VirtualGeometrySelection::Result> p_sources) {
 	const uint32_t buckets = materials.size() + 1;
 	if (raster_bucket_marks.size() < buckets) {
 		raster_bucket_marks.resize(buckets);

@@ -62,7 +62,7 @@ VirtualGeometryRasterizer::~VirtualGeometryRasterizer() {
 	}
 }
 
-Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow, bool p_motion) {
+Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow, bool p_motion) {
 	RD *rd = RD::get_singleton();
 	ERR_FAIL_COND_V(!rd->has_feature(RD::SUPPORTS_BUFFER_ATOMIC_UINT64_MIN_MAX), ERR_UNAVAILABLE);
 	ERR_FAIL_COND_V(p_size.x <= 0 || p_size.y <= 0 || uint64_t(p_size.x) * p_size.y > UINT32_MAX / 8, ERR_INVALID_PARAMETER);
@@ -125,7 +125,7 @@ Error VirtualGeometryRasterizer::_prepare(const Size2i &p_size, Span<VirtualGeom
 	return OK;
 }
 
-Error VirtualGeometryRasterizer::_prepare_bins(Span<VirtualGeometrySelection::Result> p_sources, bool p_voxel) {
+Error VirtualGeometryRasterizer::_prepare_bins(Span<const VirtualGeometrySelection::Result> p_sources, bool p_voxel) {
 	GodotProfileZone("Render/VirtualGeometry/prepare_raster_bins");
 	for (auto &uniforms : pass_uniforms) {
 		uniforms.clear();
@@ -306,15 +306,15 @@ void VirtualGeometryRasterizer::_record_material_bins(uint32_t p_phase) {
 	rd->compute_list_end();
 }
 
-Error VirtualGeometryRasterizer::record(const Ref<RenderSceneBuffersRD> &p_buffers, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material) {
+Error VirtualGeometryRasterizer::record(const Ref<RenderSceneBuffersRD> &p_buffers, const VirtualGeometryShading::ViewParameters &p_view, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material) {
 	return _record(p_buffers, p_buffers->get_internal_size(), p_view, p_sources, p_default_material, false);
 }
 
-Error VirtualGeometryRasterizer::record_shadow(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material) {
+Error VirtualGeometryRasterizer::record_shadow(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material) {
 	return _record(Ref<RenderSceneBuffersRD>(), p_size, p_view, p_sources, p_default_material, true);
 }
 
-Error VirtualGeometryRasterizer::record_sdfgi(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material,
+Error VirtualGeometryRasterizer::record_sdfgi(const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material,
 		const AABB &p_bounds, const Vector3i &p_from, const Vector3i &p_grid_size, RID p_albedo, RID p_emission, RID p_emission_aniso, RID p_facing) {
 	ready = false;
 	if (p_sources.is_empty()) {
@@ -397,7 +397,7 @@ Error VirtualGeometryRasterizer::record_sdfgi(const Size2i &p_size, const Virtua
 	return MeshStorage::get_singleton()->record_virtual_geometry_diagnostics(shading.get_status(), shading.get_bins());
 }
 
-Error VirtualGeometryRasterizer::_record(const Ref<RenderSceneBuffersRD> &p_buffers, const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow) {
+Error VirtualGeometryRasterizer::_record(const Ref<RenderSceneBuffersRD> &p_buffers, const Size2i &p_size, const VirtualGeometryShading::ViewParameters &p_view, Span<const VirtualGeometrySelection::Result> p_sources, RID p_default_material, bool p_shadow) {
 	ready = false;
 	if (p_sources.is_empty()) {
 		return OK;

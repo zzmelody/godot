@@ -94,12 +94,21 @@ public:
 	};
 
 	void begin(const Transform3D &p_camera, const Projection &p_projection, bool p_flip_y, const Size2i &p_size, uint32_t p_shadow_flags = 0, float p_shadow_far = 0);
-	void add_batch(const Batch &p_batch) { batches.push_back(p_batch); }
+	void add_batch(const Batch &p_batch) {
+		// Zero-instance inputs were already ignored before record validation.
+		if (p_batch.count == 0) {
+			return;
+		}
+		if (input_count == results.size()) {
+			results.push_back(Result());
+		}
+		results[input_count++].batch = p_batch;
+	}
 	// SDFGI captures the complete resident root proxy without requesting fine
 	// pages; its dirty regions do not track ordinary page-residency changes.
 	Error record(bool p_root_only = false);
 	Error use_root_coverage();
-	Span<Result> get_results() const { return Span<Result>(results.ptr(), used); }
+	Span<const Result> get_results() const { return Span<const Result>(results.ptr(), used); }
 	uint64_t get_buffer_bytes() const;
 	~VirtualGeometrySelection();
 
@@ -148,12 +157,15 @@ private:
 	static_assert(sizeof(SourceAddresses) == 16);
 	LocalVector<SourceAddresses> source_address_data;
 	StorageBufferSourceReads source_reads;
+	// The current inputs also own their output slots. record() never overwrites
+	// a Batch, so a failed fine pass can retry the same inputs as root coverage.
+	// Inactive retained slots are storage only and are never read by a new view.
 	LocalVector<Result> results;
-	LocalVector<Batch> batches;
 	LocalVector<Parameters> parameter_data;
 	HashMap<RID, uint32_t> metadata_offsets;
 	LocalVector<BufferCopy> metadata_copies;
 	LocalVector<BufferCopy> transform_copies;
+	uint32_t input_count = 0;
 	uint32_t used = 0;
 	Transform3D camera_inverse;
 	Projection projection;
