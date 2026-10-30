@@ -1739,11 +1739,33 @@ void MeshStorage::_multimesh_enable_motion_vectors(MultiMesh *multimesh) {
 void MeshStorage::_multimesh_get_motion_vectors_offsets(RID p_multimesh, uint32_t &r_current_offset, uint32_t &r_prev_offset) {
 	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
 	ERR_FAIL_NULL(multimesh);
-	r_current_offset = multimesh->motion_vectors_current_offset;
-	if (!_multimesh_uses_motion_vectors(multimesh)) {
-		multimesh->motion_vectors_previous_offset = multimesh->motion_vectors_current_offset;
+	_multimesh_get_motion_vectors_offsets(multimesh, r_current_offset, r_prev_offset);
+}
+
+void MeshStorage::_multimesh_get_motion_vectors_offsets(MultiMesh *p_multimesh, uint32_t &r_current_offset, uint32_t &r_prev_offset) {
+	r_current_offset = p_multimesh->motion_vectors_current_offset;
+	if (!_multimesh_uses_motion_vectors(p_multimesh)) {
+		p_multimesh->motion_vectors_previous_offset = p_multimesh->motion_vectors_current_offset;
 	}
-	r_prev_offset = multimesh->motion_vectors_previous_offset;
+	r_prev_offset = p_multimesh->motion_vectors_previous_offset;
+}
+
+const VirtualGeometryStorage::Bindings *MeshStorage::multimesh_get_virtual_geometry_source(RID p_multimesh, VirtualGeometrySource &r_source) {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL_V(multimesh, nullptr);
+	const VirtualGeometryStorage::Bindings *bindings = virtual_geometry.get_bindings(multimesh->mesh);
+	if (bindings == nullptr) {
+		return nullptr;
+	}
+	ERR_FAIL_COND_V_MSG(multimesh->xform_format != RSE::MULTIMESH_TRANSFORM_3D || multimesh->indirect, nullptr,
+			"Virtual geometry requires a 3D MultiMesh with an explicit instance count.");
+	r_source.mesh = multimesh->mesh;
+	r_source.count = multimesh->visible_instances >= 0 ? multimesh->visible_instances : multimesh->instances;
+	// Match the renderer's internal buffer read. The public RD getter exposes
+	// writable storage and invalidates interpolation state, which this must not do.
+	r_source.transforms = multimesh->buffer;
+	_multimesh_get_motion_vectors_offsets(multimesh, r_source.transform_offset, r_source.previous_transform_offset);
+	return bindings;
 }
 
 bool MeshStorage::_multimesh_uses_motion_vectors_offsets(RID p_multimesh) {

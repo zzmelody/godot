@@ -280,6 +280,7 @@ private:
 	_FORCE_INLINE_ void _multimesh_enable_motion_vectors(MultiMesh *multimesh);
 	_FORCE_INLINE_ void _multimesh_update_motion_vectors_data_cache(MultiMesh *multimesh);
 	_FORCE_INLINE_ bool _multimesh_uses_motion_vectors(MultiMesh *multimesh);
+	_FORCE_INLINE_ void _multimesh_get_motion_vectors_offsets(MultiMesh *p_multimesh, uint32_t &r_current_offset, uint32_t &r_prev_offset);
 	_FORCE_INLINE_ void _multimesh_mark_dirty(MultiMesh *multimesh, int p_index, bool p_aabb);
 	_FORCE_INLINE_ void _multimesh_mark_all_dirty(MultiMesh *multimesh, bool p_data, bool p_aabb);
 	_FORCE_INLINE_ void _multimesh_re_create_aabb(MultiMesh *multimesh, const float *p_data, int p_instances);
@@ -682,6 +683,18 @@ public:
 	virtual void update_mesh_instances() override;
 
 	/* MULTIMESH API */
+
+	struct VirtualGeometrySource {
+		RID mesh;
+		RID transforms;
+		uint32_t count = 1;
+		uint32_t transform_offset = 0;
+		uint32_t previous_transform_offset = 0;
+	};
+
+	// Render-thread use only. The binding is borrowed until storage changes;
+	// consume it immediately. The output contains current values, not a cache.
+	const VirtualGeometryStorage::Bindings *multimesh_get_virtual_geometry_source(RID p_multimesh, VirtualGeometrySource &r_source);
 
 	bool owns_multimesh(RID p_rid) { return multimesh_owner.owns(p_rid); }
 

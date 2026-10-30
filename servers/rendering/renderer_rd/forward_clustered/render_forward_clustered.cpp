@@ -1893,15 +1893,19 @@ bool RenderForwardClustered::_virtual_geometry_batch(RenderGeometryInstance *p_i
 		return false;
 	}
 	RendererRD::MeshStorage *storage = RendererRD::MeshStorage::get_singleton();
-	const RID mesh = multimesh ? storage->multimesh_get_mesh(owner->data->base) : owner->data->base;
-	const auto *bindings = storage->mesh_get_virtual_geometry(mesh);
+	RendererRD::MeshStorage::VirtualGeometrySource source;
+	const RendererRD::VirtualGeometryStorage::Bindings *bindings;
+	if (multimesh) {
+		bindings = storage->multimesh_get_virtual_geometry_source(owner->data->base, source);
+	} else {
+		source.mesh = owner->data->base;
+		bindings = storage->mesh_get_virtual_geometry(source.mesh);
+	}
 	if (bindings == nullptr) {
 		return false;
 	}
-	ERR_FAIL_COND_V_MSG(multimesh && (owner->base_flags & (INSTANCE_DATA_FLAG_MULTIMESH_FORMAT_2D | INSTANCE_DATA_FLAG_MULTIMESH_INDIRECT)), false,
-			"Virtual geometry requires a 3D MultiMesh with an explicit instance count.");
 	r_batch.geometry = *bindings;
-	r_batch.mesh = mesh;
+	r_batch.mesh = source.mesh;
 	r_batch.source = owner->data->base;
 	r_batch.source_instance = p_instance;
 	r_batch.history_instance_id = owner->history_instance_id;
@@ -1918,18 +1922,11 @@ bool RenderForwardClustered::_virtual_geometry_batch(RenderGeometryInstance *p_i
 	r_batch.has_color = bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR);
 	r_batch.has_custom = bool(owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA);
 	r_batch.shadow_double_sided = owner->data->cast_double_sided_shadows;
-	if (multimesh) {
-		r_batch.count = storage->multimesh_get_instances_to_draw(owner->data->base);
-		r_batch.transforms = storage->_multimesh_get_buffer_rd_rid(owner->data->base);
-		r_batch.stride = 3 + uint32_t(r_batch.has_color) + uint32_t(r_batch.has_custom);
-		storage->_multimesh_get_motion_vectors_offsets(owner->data->base, r_batch.transform_offset, r_batch.previous_transform_offset);
-	} else {
-		r_batch.count = 1;
-		r_batch.transforms = RID();
-		r_batch.stride = 0;
-		r_batch.transform_offset = 0;
-		r_batch.previous_transform_offset = 0;
-	}
+	r_batch.count = source.count;
+	r_batch.transforms = source.transforms;
+	r_batch.stride = multimesh ? 3 + uint32_t(r_batch.has_color) + uint32_t(r_batch.has_custom) : 0;
+	r_batch.transform_offset = source.transform_offset;
+	r_batch.previous_transform_offset = source.previous_transform_offset;
 	return true;
 }
 
