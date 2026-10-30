@@ -37,9 +37,16 @@ struct GeometryFineLodBounds {
 	bool valid = false;
 };
 
+enum GeometryGpuRootPathFlags : uint32_t {
+	GPU_ROOT_PATH = 1u,
+	GPU_ROOT_PATH_SINGLE_INTERNAL = 2u,
+};
+
 // One-time GPU metadata initialization, borrowing a validated model root.
-// Branch word 15 marks paths containing the logical root group. Such paths
-// have no parent LOD cutoff (UE encodes its root sentinel as half-float Inf).
+// Branch word 15 bit 0 marks paths containing the logical root group. Bit 1
+// marks the node's sole root branch when it points to an internal child.
+// Far instances can follow that edge while retaining its frustum test.
+// Root paths have no parent LOD cutoff (UE uses a half-float Inf sentinel).
 // Disk metadata stays finite and unchanged. Both old outputs survive refusal.
 GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, uint32_t p_metadata_words,
 		std::vector<GeometryGpuFixup> &r_commands, GeometryFineLodBounds &r_fine_bounds);

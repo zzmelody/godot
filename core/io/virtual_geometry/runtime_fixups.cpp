@@ -26,12 +26,20 @@ GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, u
 		// edge per node and one visit per part. DAG links are not tree edges.
 		for (size_t end = hierarchy.nodes.size(); end > 0; --end) {
 			const uint32_t node = uint32_t(end - 1);
+			uint32_t root_count = 0;
+			size_t single_internal = 0;
+			bool has_internal = false;
 			for (uint32_t child = 0; child < HIERARCHY_FANOUT; ++child) {
 				const auto &branch = hierarchy.nodes[node].children[child];
 				const bool root = branch.node != UINT32_MAX ? contains_root[branch.node] != 0 : branch.part != UINT32_MAX && hierarchy.parts[branch.part].group == p_root.root_group;
 				if (root) {
 					contains_root[node] = 1;
-					commands.push_back({ 0, MODEL_ROOT_HEADER_BYTES / 4 + node * (MODEL_NODE_BYTES / 4) + child * 16 + 15, 1, 0 });
+					++root_count;
+					if (branch.node != UINT32_MAX) {
+						single_internal = commands.size();
+						has_internal = true;
+					}
+					commands.push_back({ 0, MODEL_ROOT_HEADER_BYTES / 4 + node * (MODEL_NODE_BYTES / 4) + child * 16 + 15, GPU_ROOT_PATH, 0 });
 				} else if (branch.node != UINT32_MAX || branch.part != UINT32_MAX) {
 					has_fine_branch = true;
 					fine_bounds.max_error = std::max(fine_bounds.max_error, branch.max_error);
@@ -40,6 +48,9 @@ GpuFixupError resolve_geometry_gpu_root_paths(const GeometryModelRoot &p_root, u
 						upper[axis] = std::max(upper[axis], std::nextafter(double(branch.lod_bounds[axis]) + double(branch.lod_bounds[3]), std::numeric_limits<double>::infinity()));
 					}
 				}
+			}
+			if (root_count == 1 && has_internal) {
+				commands[single_internal].value |= GPU_ROOT_PATH_SINGLE_INTERNAL;
 			}
 		}
 		if (has_fine_branch) {

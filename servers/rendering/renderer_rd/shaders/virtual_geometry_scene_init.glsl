@@ -21,9 +21,6 @@ layout(set = 0, binding = 26, std430) buffer PreviousSources {
 }
 previous_sources;
 layout(set = 0, binding = 27, std430) readonly buffer BatchParameters { uint data[]; } batch_parameters;
-// Total group count followed by each source's first group. One source owns
-// every lane in a group; padding lanes retain the instance-count guard.
-layout(set = 0, binding = 31, std430) readonly buffer SourceGroups { uint data[]; } source_groups;
 struct SourceParameters {
 	uint index;
 	uint first;
@@ -97,7 +94,7 @@ uint vg_source_for_item(uint item, bool references) {
 	uint upper = phase.sources;
 	while (lower < upper) {
 		uint middle = lower + (upper - lower) / 2u;
-		uint first = references ? source_tasks.data[16u + phase.sources + middle] : source_groups.data[1u + middle];
+		uint first = references ? source_tasks.data[16u + phase.sources + middle] : batch_parameters.data[phase.input_word + middle * 66u + 44u];
 		if (first <= item) { lower = middle + 1u; }
 		else { upper = middle; }
 	}
@@ -213,12 +210,9 @@ void main() {
 		uint flags = work.data[source_info.work_word + 4u];
 		source_tasks.data[16u + index] = (flags & 16u) != 0u ? 0u : min(work.data[source_info.work_word + 7u], source_info.visible_capacity);
 	} else if (phase.mode == 1u) {
-		uint group = gl_WorkGroupID.x + gl_WorkGroupID.y * 65535u;
-		if (group >= source_groups.data[0]) { return; }
-		uint batch = vg_source_for_item(group, false);
-		vg_select_source(batch);
-		uint instance = (group - source_groups.data[1u + batch]) * 64u + gl_LocalInvocationIndex;
-		vg_initialize_source(instance);
+		if (index >= phase.items) { return; }
+		vg_select_source(vg_source_for_item(index, false));
+		if (index >= source_info.first) { vg_initialize_source(index - source_info.first); }
 	} else if (phase.mode == 2u) {
 		if (index >= source_tasks.data[0]) { return; }
 		uint batch = vg_source_for_item(index, true);

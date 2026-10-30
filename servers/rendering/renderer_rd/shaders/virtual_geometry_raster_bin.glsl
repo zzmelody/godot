@@ -58,7 +58,7 @@ struct VGPreparedTriangle {
 	bool has_triangle;
 };
 
-VGPreparedTriangle vg_classify_triangle(uvec2 selected, uint count, uint triangle, inout uint edge_bits, inout uint hardware) {
+VGPreparedTriangle vg_classify_triangle(uvec2 selected, uint count, uint triangle, inout uint edge_squared_bits, inout uint hardware) {
 	VGPreparedTriangle prepared;
 	prepared.has_triangle = triangle < count;
 	if (!prepared.has_triangle) {
@@ -94,8 +94,11 @@ VGPreparedTriangle vg_classify_triangle(uvec2 selected, uint count, uint triangl
 	prepared.clip0 = clips[0];
 	prepared.clip1 = clips[1];
 	prepared.clip2 = clips[2];
-	float edge = max(max(length(points[1] - points[0]), length(points[2] - points[1])), length(points[0] - points[2]));
-	edge_bits = max(edge_bits, floatBitsToUint(edge));
+	vec3 edge0 = points[1] - points[0];
+	vec3 edge1 = points[2] - points[1];
+	vec3 edge2 = points[0] - points[2];
+	float edge_squared = max(max(dot(edge0, edge0), dot(edge1, edge1)), dot(edge2, edge2));
+	edge_squared_bits = max(edge_squared_bits, floatBitsToUint(edge_squared));
 	// Any clipped or large triangle routes the complete cluster to hardware.
 	if (any(greaterThan(upper - lower, vec2(63.0)))) {
 		hardware = 1u;
@@ -111,7 +114,7 @@ VGPreparedTriangle vg_classify_triangle(uvec2 selected, uint count, uint triangl
 #define VG_BIN_GROUP_SIZE 32
 #endif
 layout(local_size_x = VG_BIN_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
-shared uint maximum_edge;
+shared uint maximum_edge_squared;
 shared uint needs_hardware;
 shared uint active_triangles;
 #ifdef VG_GLOBAL_RASTER
@@ -139,7 +142,7 @@ void main() {
 		// for the whole group so no invocation abandons the later barriers.
 		group_refused = atomicOr(vg_status.data[0], 0u) != 0u;
 #endif
-		maximum_edge = 0u;
+		maximum_edge_squared = 0u;
 		needs_hardware = 0u;
 		active_triangles = 0u;
 #ifdef VG_FUSED_SOFTWARE
@@ -209,28 +212,28 @@ void main() {
 		return;
 	}
 #endif
-	uint lane_maximum_edge = 0u;
+	uint lane_maximum_edge_squared = 0u;
 	uint lane_needs_hardware = 0u;
 	bool lane_active = false;
 #ifdef VG_FUSED_SOFTWARE
 	// Admitted clusters have at most 128 triangles. Two explicit values avoid
 	// dynamically indexed per-lane storage across the classification barrier.
-	VGPreparedTriangle first = vg_classify_triangle(selected, count, lane, lane_maximum_edge, lane_needs_hardware);
+	VGPreparedTriangle first = vg_classify_triangle(selected, count, lane, lane_maximum_edge_squared, lane_needs_hardware);
 	VGPreparedTriangle second;
 	second.has_triangle = false;
 	if (!vg_small_cluster) {
-		second = vg_classify_triangle(selected, count, lane + 64u, lane_maximum_edge, lane_needs_hardware);
+		second = vg_classify_triangle(selected, count, lane + 64u, lane_maximum_edge_squared, lane_needs_hardware);
 	}
 	lane_active = first.has_triangle || second.has_triangle;
 #else
 	for (uint triangle = lane; triangle < count; triangle += VG_BIN_GROUP_SIZE) {
-		VGPreparedTriangle prepared = vg_classify_triangle(selected, count, triangle, lane_maximum_edge, lane_needs_hardware);
+		VGPreparedTriangle prepared = vg_classify_triangle(selected, count, triangle, lane_maximum_edge_squared, lane_needs_hardware);
 		lane_active = lane_active || prepared.has_triangle;
 	}
 #endif
 	if (lane_active) {
 		atomicOr(active_triangles, 1u);
-		atomicMax(maximum_edge, lane_maximum_edge);
+		atomicMax(maximum_edge_squared, lane_maximum_edge_squared);
 	}
 	if (lane_needs_hardware != 0u) {
 		atomicOr(needs_hardware, lane_needs_hardware);
@@ -253,7 +256,9 @@ void main() {
 		// UE SmallEnoughToDraw hardware threshold, default MinPixelsPerEdgeHW=32.
 		// Prototype derives maximum edge from decoded geometry on the GPU;
 		// it is not a per-cluster CPU draw or a stored UE half-float field.
-		bool hardware = needs_hardware != 0u || projected_edge(selected.x, sphere, instance_transform(selected.x)) < scale * uintBitsToFloat(maximum_edge) * params.lod.y / 32.0;
+		// Nonnegative square root is monotonic. Reduce squared lengths first
+		// and perform one square root after the complete group reduction.
+		bool hardware = needs_hardware != 0u || projected_edge(selected.x, sphere, instance_transform(selected.x)) < scale * sqrt(uintBitsToFloat(maximum_edge_squared)) * params.lod.y / 32.0;
 #ifdef VG_FUSED_SOFTWARE
 		group_software = !hardware;
 		// Software clusters finish in this dispatch. Only hardware work is

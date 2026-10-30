@@ -43,6 +43,7 @@ vec4 vg_transform_vector(uint word) {
 #endif
 }
 const uint INVALID = 0xffffffffu;
+const uint VG_ROOT_PATH_SINGLE_INTERNAL = 2u;
 uint instance_base() { return 16u; }
 uint queue_base(uint parity) { return params.offsets[parity]; }
 uint candidate_base() { return params.offsets.z; }
@@ -439,6 +440,25 @@ void visit_node(uint id) {
 			error_scale = params.lod.y * uintBitsToFloat(VG_SELECTION_WORK(instance_base() + instance * 16u + 12u));
 			far_fine = (VG_SELECTION_WORK(instance_base() + instance * 16u + 15u) & 4u) != 0u;
 		}
+	}
+	// Bit 1 is derived once for a sole internal root edge. Fine branches are
+	// already excluded by the far proof. Keep every ancestor's frustum test;
+	// branching roots and leaf parts retain ordinary feedback and selection.
+	for (uint step = 0u; far_fine && has_task && step < VG_SELECTION_INPUT.prefix.y; ++step) {
+		uint next_node = INVALID;
+		for (uint child = 0u; child < 4u; ++child) {
+			uint branch = VG_SELECTION_INPUT.addresses.x + 52u + node * 64u + child * 16u;
+			if ((vg_metadata_word(branch + 15u) & VG_ROOT_PATH_SINGLE_INTERNAL) == 0u) {
+				continue;
+			}
+			has_task = in_frustum(meta3(branch), meta3(branch + 3u), transform);
+			next_node = vg_metadata_word(branch + 12u);
+			break;
+		}
+		if (next_node == INVALID) {
+			break;
+		}
+		node = next_node;
 	}
 	// Empty and refused lanes still reach every group reservation barrier.
 	for (uint child = 0u; child < 4u && has_task; ++child) {

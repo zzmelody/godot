@@ -34,7 +34,7 @@ VirtualGeometryShading::~VirtualGeometryShading() {
 			memory.free(snapshot);
 		}
 	}
-	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, material_view, frame_history, previous_sources, previous_transforms, source_tasks, source_arguments, source_groups, batch_parameters, view_status, raster_material_buffer, extensions, source_addresses }) {
+	for (RID rid : { scene_buffer, bins_buffer, arguments, draw_arguments, material_view, frame_history, previous_sources, previous_transforms, source_tasks, source_arguments, batch_parameters, view_status, raster_material_buffer, extensions, source_addresses }) {
 		if (rid.is_valid()) {
 			memory.free(rid);
 		}
@@ -75,9 +75,6 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 	source_history_copies.clear();
 	source_reads.clear();
 	source_address_data.clear();
-	source_group_data.clear();
-	source_group_data.push_back(0);
-	source_group_count = 0;
 	direct_sources = !p_sources.is_empty() && p_sources[0].direct_source_reads;
 	size = p_size;
 	uint64_t instances = 0, visible = 0;
@@ -90,8 +87,6 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		instances += batch.count;
 		visible += result.selected_capacity;
 		ERR_FAIL_COND_V(instances > 0xffffffu, ERR_OUT_OF_MEMORY);
-		source_group_data.push_back(source_group_count);
-		source_group_count += (batch.count + 63u) / 64u;
 		for (const RID &requested : batch.materials) {
 			const RID material = requested.is_valid() ? requested : p_default_material;
 			ERR_FAIL_COND_V(!storage->owns_material(material), ERR_INVALID_DATA);
@@ -325,12 +320,6 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		rd->buffer_update(source_addresses, 0, uint32_t(uint64_t(source_address_data.size()) * sizeof(SourceAddresses)), source_address_data.ptr());
 	}
 	source_instances = uint32_t(instances);
-	source_group_data[0] = source_group_count;
-	error = ensure_words(memory, source_groups, source_group_words, source_group_data.size());
-	if (error != OK) {
-		return error;
-	}
-	rd->buffer_update(source_groups, 0, source_group_data.size() * sizeof(uint32_t), source_group_data.ptr());
 	uint64_t task_scratch = 16 + uint64_t(p_sources.size()) * 2;
 	if (!p_sources.is_empty()) {
 		ScanLevel level{ uint32_t(p_sources.size()), 16, 16 + uint32_t(p_sources.size()) };
@@ -372,7 +361,6 @@ Error VirtualGeometryShading::prepare(const Size2i &p_size, Span<VirtualGeometry
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 26, { previous_sources }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 27, { batch_parameters }));
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 28, { source_tasks }));
-		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 31, { source_groups }));
 		source_uniforms = cache->get_cache_vec(init_shader.version_get_shader(init_version, init_mode), 0, uniforms);
 		source_scan_uniforms = cache->get_cache(scan_shader.version_get_shader(scan_version, 0), 0, RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 9, { source_tasks }));
 		ERR_FAIL_COND_V(source_uniforms.is_null() || source_scan_uniforms.is_null(), ERR_CANT_CREATE);
@@ -418,8 +406,6 @@ void VirtualGeometryShading::record_sources(Span<VirtualGeometrySelection::Resul
 		rd->compute_list_set_push_constant(list, push, sizeof(push));
 		if (p_indirect) {
 			rd->compute_list_dispatch_indirect(list, source_arguments, 0);
-		} else if (p_mode == 1) {
-			dispatch_items(list, source_group_count, 1);
 		} else {
 			dispatch_items(list, p_items, 64);
 		}
